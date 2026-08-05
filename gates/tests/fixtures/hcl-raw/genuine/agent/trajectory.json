@@ -1,0 +1,54 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "agent": {"name": "claude-code", "version": "test-fixture"},
+  "steps": [
+    {
+      "step_id": 1,
+      "source": "user",
+      "message": "Add an S3 bucket resource to main.tf, then validate and plan it."
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "message": "Adding the resource block.",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_1",
+          "function_name": "Edit",
+          "arguments": {"file_path": "/app/project/main.tf", "old_string": "# bucket goes here", "new_string": "resource \"aws_s3_bucket\" \"this\" {}"}
+        }
+      ]
+    },
+    {
+      "step_id": 3,
+      "source": "agent",
+      "message": "Initializing and validating.",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_2",
+          "function_name": "Bash",
+          "arguments": {"command": "terraform init -input=false && terraform validate"}
+        }
+      ],
+      "observation": {"results": [{"source_call_id": "call_2", "content": "Success! The configuration is valid."}]}
+    },
+    {
+      "step_id": 4,
+      "source": "agent",
+      "message": "Running a plan to double check.",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_3",
+          "function_name": "Bash",
+          "arguments": {"command": "terraform plan -input=false -out=/tmp/tf.plan"}
+        }
+      ],
+      "observation": {"results": [{"source_call_id": "call_3", "content": "Plan: 1 to add, 0 to change, 0 to destroy."}]}
+    },
+    {
+      "step_id": 5,
+      "source": "agent",
+      "message": "Done — terraform validate and plan both pass."
+    }
+  ]
+}

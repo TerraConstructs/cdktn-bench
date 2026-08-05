@@ -1,0 +1,8 @@
+[2026-08-06T10:02:11Z] starting trial cdktn-smoke/terraconstructs-bucket attempt=1
+[2026-08-06T10:02:11Z] docker compose up main (cdktn-bench/terraconstructs:dev, memory_mb=2048)
+[2026-08-06T10:02:44Z] agent running: npx --no-install tsc --noEmit
+[2026-08-06T10:03:52Z] container main exited (137)
+[2026-08-06T10:03:52Z] docker inspect main: OOMKilled=true
+[2026-08-06T10:03:52Z] trial aborted mid-agent-phase — infra failure (memory ceiling too low for this
+  arm's tsc pass; see DECISIONS.md "Memory floor for tsc-heavy arms", memory_mb should be >= 4096),
+  not a scored toolchain result.

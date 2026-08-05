@@ -1,0 +1,5 @@
+[2026-08-06T09:14:02Z] starting trial cdktn-smoke/awscdk-bucket attempt=1
+[2026-08-06T09:14:02Z] building agent container from arms/awscdk/environment/Dockerfile
+[2026-08-06T09:14:03Z] docker compose up main
+[2026-08-06T09:14:03Z] ERROR: Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?
+[2026-08-06T09:14:03Z] trial aborted before the agent phase completed — this is a harness/infra failure, not an agent or toolchain result.

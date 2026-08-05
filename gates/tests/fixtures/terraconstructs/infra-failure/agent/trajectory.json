@@ -1,0 +1,23 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "agent": {"name": "claude-code", "version": "test-fixture"},
+  "steps": [
+    {
+      "step_id": 1,
+      "source": "user",
+      "message": "Add an S3 bucket construct to main.ts, then synthesize it."
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "message": "Running the type-check before synthesizing.",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_1",
+          "function_name": "Bash",
+          "arguments": {"command": "npx --no-install tsc --noEmit"}
+        }
+      ]
+    }
+  ]
+}

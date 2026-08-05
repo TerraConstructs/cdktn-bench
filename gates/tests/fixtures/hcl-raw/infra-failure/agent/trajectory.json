@@ -1,0 +1,11 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "agent": {"name": "claude-code", "version": "test-fixture"},
+  "steps": [
+    {
+      "step_id": 1,
+      "source": "user",
+      "message": "Add an S3 bucket resource to main.tf, then validate and plan it."
+    }
+  ]
+}

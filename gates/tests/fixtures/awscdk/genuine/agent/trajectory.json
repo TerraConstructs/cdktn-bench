@@ -1,0 +1,54 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "agent": {"name": "claude-code", "version": "test-fixture"},
+  "steps": [
+    {
+      "step_id": 1,
+      "source": "user",
+      "message": "Add an S3 bucket to the example stack, then make sure it type-checks and synthesizes cleanly."
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "message": "Editing lib/example-stack.ts to add the bucket.",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_1",
+          "function_name": "Edit",
+          "arguments": {"file_path": "/app/project/lib/example-stack.ts", "old_string": "// bucket goes here", "new_string": "new s3.Bucket(this, 'Bucket');"}
+        }
+      ]
+    },
+    {
+      "step_id": 3,
+      "source": "agent",
+      "message": "Type-checking before synth.",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_2",
+          "function_name": "Bash",
+          "arguments": {"command": "cd /app/project && npx --no-install tsc --noEmit"}
+        }
+      ],
+      "observation": {"results": [{"source_call_id": "call_2", "content": "tsc --noEmit clean, no errors"}]}
+    },
+    {
+      "step_id": 4,
+      "source": "agent",
+      "message": "Synthesizing the stack.",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_3",
+          "function_name": "Bash",
+          "arguments": {"command": "npx --no-install cdk synth --no-lookups --quiet -o /tmp/out"}
+        }
+      ],
+      "observation": {"results": [{"source_call_id": "call_3", "content": "Synthesized ExampleStack.template.json containing AWS::S3::Bucket"}]}
+    },
+    {
+      "step_id": 5,
+      "source": "agent",
+      "message": "Done — tsc and cdk synth both pass, the bucket is in the synthesized template."
+    }
+  ]
+}

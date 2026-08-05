@@ -1,0 +1,133 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/cdktn-bench/cdktn-bench/metrics/result_schema.json",
+  "title": "cdktn-bench published result row",
+  "description": "One row of the published cdktn-bench results table: one trial's outcome, with everything needed to know whether it can be pooled with another row. REQUIRED fields are schema-required, not optional-by-convention — this is the direct fix for the chant-bench gap documented in docs/chant-bench-diff.md §5, where `run.substrate` was specified in that project's own plan but silently absent from all 122 published result JSONs because nothing enforced it. `equipping_hash` (gates/equipping.py) additionally guards against pooling results produced under a silently-different instruction, skill/MCP/plugin config, or Docker image.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "equipping_hash",
+    "oracle_version",
+    "arm",
+    "model",
+    "harness",
+    "validity_class",
+    "tokens_input",
+    "tokens_output",
+    "tokens_total",
+    "reward",
+    "censored"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Version of this result-row schema. Bump on any breaking change to required fields; keep old rows valid against their own recorded schema_version rather than migrating them in place."
+    },
+    "equipping_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "sha256 hex digest from gates.equipping.compute_equipping_hash() over instruction.md, sorted skill/MCP/plugin config files, the resolved Docker image digest, and extra_cfg (model, harness flags). Two rows are only comparable if this matches."
+    },
+    "oracle_version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Identifies exactly which oracle tier stack (Rego/cfn-guard/Tier-0.5 jsonata-python rules, docs/iac-abstraction-aws-bench-plan.md Phase 2) graded this trial, e.g. a git rev or oracle package version. Required so a later oracle fix never gets silently pooled with results graded under the old rules."
+    },
+    "arm": {
+      "type": "string",
+      "enum": ["awscdk", "hcl-raw", "terraconstructs"],
+      "description": "Which of the three shipped arms produced this trial (DECISIONS.md Amendment 2)."
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Bare Anthropic-API model name passed to the agent harness, e.g. \"claude-sonnet-5\" or \"claude-haiku-4-5-20251001\" (not a Bedrock ARN/us.anthropic.* id)."
+    },
+    "harness": {
+      "type": "string",
+      "enum": ["empty", "tuned"],
+      "description": "The empty-vs-tuned equipping axis (prereg §2.2 / build plan Phase 2 item 4): \"empty\" = bare container, loop only; \"tuned\" = arm-specific MCP servers + skills injected."
+    },
+    "validity_class": {
+      "type": "string",
+      "enum": ["valid", "invalid-bypass", "invalid-infra"],
+      "description": "Output of Gates 2+3 of the three-gate integrity pattern (gates/README.md; values match gates/emit_result.py's VALID/INVALID_BYPASS/INVALID_INFRA exactly, so a gate-emitted record's validity_class always validates as-is). \"valid\" = the audit gate (gates/audit.py) found toolchain evidence in the trial's trajectory and no infra-failure signal was detected. \"invalid-bypass\" = the trial completed but never invoked the arm's own toolchain (e.g. answered via jq/cat instead of tsc/cdk synth/terraform validate) — not a scored failure of the arm, the trial never really tested it. \"invalid-infra\" = an infrastructure failure unrelated to code correctness (OOM, Docker-daemon unreachable, missing/invalid model-auth env var, the trial couldn't even be audited, or the audit gate found the toolchain was invoked but never actually available — command-not-found/SIGKILLed) — takes priority over a bypass verdict. validity_class is orthogonal to reward: an invalid row must never be pooled into a scored headline number, and reward/tokens are only meaningful when validity_class == \"valid\" — read validity_class first. NOTE: Gate 1 (preflight, gates/preflight.py) is intentionally NOT represented here. It is a pre-job check — \"does this arm's toolchain even work in its container, offline\" — that gates whether an arm's trials should run AT ALL, before any task/trial/equipping context exists to attach a schema row to; a preflight failure blocks a whole arm's job rather than producing a per-trial row. Run it with `make gate-preflight` (mk/rails.mk); its JSON report is not a validity_class value and is never expected to appear in a published result row."
+    },
+    "tokens_input": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total prompt/input tokens for the trial (TrialResult.compute_token_cost_totals(), docs/aws-bench-guide.md §6)."
+    },
+    "tokens_output": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Total completion/output tokens for the trial."
+    },
+    "tokens_total": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "tokens_input + tokens_output (+ any cached tokens counted by the harness). Carried as its own field rather than always recomputed so a result row is self-describing without re-deriving it."
+    },
+    "reward": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Reward float written by the verifier (docs/aws-bench-guide.md §3: 1.0 = pass, 0.0 = fail; partial credit permitted where a task's verifier defines it). Meaningless when validity_class != \"valid\" — read validity_class first."
+    },
+    "censored": {
+      "type": "boolean",
+      "description": "True if the trial hit the budget cap (MAX_ITERS/MAX_TOKENS) before reaching a natural stop — right-censored for the tokens-to-green metric (build plan Phase 2 item 2), recorded rather than dropped. Independent of validity_class and reward."
+    },
+    "scenario": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Scenario id (scenarios/<id>/scenario.toml [scenario].name)."
+    },
+    "task": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Task id (task.toml [task].name)."
+    },
+    "trial_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Harbor trial name; joins this row back to <job_dir>/<trial_id>/{result.json,agent/trajectory.json}."
+    },
+    "job_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "aws-bench job/run directory name this trial belongs to."
+    },
+    "tokens_cached": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Cached-read tokens, if the harness reports them separately from tokens_input."
+    },
+    "cost_usd": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Total cost in USD for the trial, if available (TrialResult.compute_token_cost_totals())."
+    },
+    "n_llm_calls": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Iteration count (LLM calls in the trial), for iterations-to-green."
+    },
+    "wall_seconds": {
+      "type": "number",
+      "minimum": 0,
+      "description": "Wall-clock duration of the trial in seconds."
+    },
+    "validity_reason": {
+      "type": "string",
+      "description": "Free-text detail for a non-\"valid\" validity_class (e.g. which preflight check failed, or the OOM/timeout signal observed) — required in spirit whenever validity_class != \"valid\", not schema-enforced since the exact detail is gate-specific."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp the trial completed."
+    }
+  }
+}

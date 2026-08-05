@@ -1,0 +1,9 @@
+{
+  "verifier_result": {"rewards": {"reward": 1.0}},
+  "agent_result": {
+    "cost_usd": 0.0412,
+    "n_input_tokens": 5211,
+    "n_output_tokens": 812,
+    "n_cache_tokens": 3980
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "agent": {"name": "claude-code", "version": "test-fixture"},
+  "steps": [
+    {
+      "step_id": 1,
+      "source": "user",
+      "message": "Add an S3 bucket to the example stack, then make sure it type-checks and synthesizes cleanly."
+    },
+    {
+      "step_id": 2,
+      "source": "agent",
+      "message": "Starting work.",
+      "tool_calls": [
+        {
+          "tool_call_id": "call_1",
+          "function_name": "Bash",
+          "arguments": {"command": "cat lib/example-stack.ts"}
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0",
+  "equipping_hash": "fd37e9973f6d557319489638c100539724604de99d56d9f7e2e48ba56cd43dac",
+  "oracle_version": "oracles@0000000",
+  "arm": "awscdk",
+  "model": "claude-sonnet-5",
+  "harness": "empty",
+  "validity_class": "valid",
+  "tokens_input": 12000,
+  "tokens_output": 850,
+  "tokens_total": 12850,
+  "reward": 1.0,
+  "censored": false,
+  "scenario": "anchor",
+  "task": "cdktn-smoke/anchor-write-file",
+  "trial_id": "example-trial-0001",
+  "job_id": "example-job",
+  "cost_usd": 0.0421,
+  "n_llm_calls": 4,
+  "wall_seconds": 22.5,
+  "timestamp": "2026-08-06T00:00:00Z"
+}
