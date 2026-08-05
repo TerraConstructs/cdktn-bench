@@ -11,12 +11,23 @@ per RECON.md §3) and walks ``steps[].tool_calls[]`` for Bash invocations
 (``function_name == "Bash"``, ``arguments.command``). Matching is
 **positional, not textual**: each ``&&``/``||``/``;``/``|``/newline-delimited
 segment of the command is shell-tokenized (``shlex``, with ``#``-comments
-stripped first), any leading wrapper the segment is invoked through
-(env-var assignments, ``sudo``, ``env``, ``npx [flags]``,
-``pnpm|yarn|npm exec|dlx|run``) is peeled off, and the arm's tool is credited
-ONLY if it is the resulting argv[0] (by basename) — with the required
-subcommand (``synth``/``validate``/``plan``) present as one of the later
-argv tokens. A bare mention of "terraform" or "cdk synth" as an *argument* to
+stripped first), a leading ``(``/``then``/``do``/``else`` shell-syntax token
+and a trailing subshell ``)`` are stripped (so ``(cd app && cdk synth)`` and
+``if ...; then cdk synth; fi`` still expose the real argv[0]), any leading
+wrapper the segment is invoked through (env-var assignments, ``sudo``,
+``env``, ``timeout``/``nice``/``ionice``/``stdbuf`` [+ their numeric/flag
+args], ``npx [flags]``, ``pnpm|yarn|npm exec|dlx|run``) is peeled off, and
+the arm's tool is credited ONLY if it is the resulting argv[0] (by
+basename) — with the required subcommand (``synth``/``validate``/``plan``)
+present as one of the later argv tokens. A versioned npx/dlx package
+argument (``npx aws-cdk@2 synth``) is resolved through
+``_resolve_npm_package_token`` to the CLI binary name it actually execs
+(``aws-cdk`` → ``cdk``) before the argv[0] comparison. A segment whose
+resolved argv[0] is a shell itself (``bash``/``sh``/``zsh``/``ksh``/``dash``)
+invoked as ``... -c '<command string>'`` is recursed into: the quoted
+argument is re-segmented and matched the same way, so ``bash -c 'cdk
+synth'`` is credited exactly like a direct invocation. A bare mention of
+"terraform" or "cdk synth" as an *argument* to
 ``echo``/``printf``/``grep``/``cat``/``which``/``man``/... never satisfies
 this, because those tools occupy argv[0] instead and the check fails on
 argv[0] alone — no separate denylist is needed. A ``#``-comment line, or the
@@ -32,6 +43,27 @@ was never actually available to run — "command not found"/exit 127, or
 SIGKILLed/exit 137 — is evidence of a *degraded arm*, not of the agent
 choosing to bypass a working toolchain, so it is tracked separately (see
 ``status``/``degraded`` below) rather than silently counted as valid.
+
+Structured exit codes, when available, are trusted over free-text
+classification. Harbor's ``claude_code.py``'s ``_format_tool_result``
+records the Bash tool's real exit code on the matching STEP's
+``extra.metadata.tool_use_result`` (``exitCode``/``exit_code``) — see
+``_extract_structured_exit_code``. When that signal is present and
+unambiguous (the step carries exactly one tool call, so there's no question
+which call it belongs to), it alone decides ``ok``/``failed``/``missing``/
+``sigkill``, and no agent-authored observation text can override it — an
+agent printing a forged ``bash: cdk: command not found`` after a real,
+successful, exit-0 run no longer routes the trial to invalid-infra.
+**Residual channel**: when no structured signal is available — a different
+harness/producer, a step whose ``extra`` covers more than one tool call, or
+a trajectory captured before this field existed — classification still
+falls back to the anchored free-text heuristics below (see
+``_classify_evidence_status``), and an agent can in principle still
+self-void its own trial there by printing an anchored fake status line as
+the first/last line of otherwise-suppressed real output. Anchoring bounds
+this (see ``_tool_missing_pattern``/``_EXIT_CODE_LINE_RE``) but does not
+eliminate it; closing it fully would require every trajectory producer to
+supply a structured exit code.
 """
 
 from __future__ import annotations
@@ -83,20 +115,75 @@ _SINGLE_TOKEN_WRAPPERS = {"sudo", "env"}
 _PACKAGE_RUNNER_SUBCOMMANDS = {"exec", "dlx", "run"}
 _PACKAGE_RUNNERS = {"pnpm", "yarn", "npm"}
 
-# Observation-text signals that a positionally-matched tool call never
-# actually ran the real tool (the container/toolchain was unavailable),
-# distinct from the tool running and genuinely failing. The agent's own Bash
-# command chooses what text lands in `observation.content` (ATIF's
-# ObservationResult has no structured exit-code/status field to read
-# instead — harbor/models/trajectories/observation_result.py — and the one
-# harness that does carry a structured exit code, claude_code.py's
-# `_format_tool_result`, puts it on the STEP's `extra.metadata`, not on this
-# gate's per-call observation, and isn't guaranteed present for every
-# agent/producer), so free-text matching here MUST be anchored, not a bare
-# substring search anywhere in the text — otherwise an agent (or a task
-# whose legitimate output happens to mention a phrase like "no such file or
-# directory" from an ordinary ENOENT) can self-void its own trial. Two
-# anchors, both required (see `_classify_evidence_status`):
+# `timeout`/`nice`/`ionice`/`stdbuf` all take a run of leading flags (some
+# with attached or space-separated values, e.g. `-n 10`, `--signal=KILL`)
+# and/or a bare numeric argument (timeout's DURATION, nice's niceness level)
+# before the real command's own argv[0] — e.g. `timeout 600 cdk synth`,
+# `nice -n 10 cdk synth`, `ionice -c2 -n7 cdk synth`, `stdbuf -oL cdk synth`.
+_MULTI_ARG_WRAPPERS = {"timeout", "nice", "ionice", "stdbuf"}
+_WRAPPER_NUMERIC_ARG_RE = re.compile(r"^\d+(?:\.\d+)?[smhd]?$")
+
+# Shells whose `-c '<command string>'` form embeds a real command as a
+# single quoted argument rather than as separate argv tokens — recursed
+# into by `_matches` so `bash -c 'cdk synth'` is credited like a direct
+# invocation (see module docstring).
+_SHELL_C_INVOKERS = {"bash", "sh", "zsh", "ksh", "dash"}
+
+# Leading shell-syntax tokens that can precede a real command in the same
+# segment without being a wrapper *around* it — a subshell opener glued to
+# the next token (`(cd app && cdk synth)` splits into segments `(cd app`
+# and `cdk synth)`, so the trailing `)` needs stripping too) or a
+# compound-statement keyword (`if ...; then cdk synth; fi`, `for x; do cdk
+# synth; done`, `... else cdk synth; fi`) whose own segment starts with the
+# keyword once `_segments` has split on the surrounding `;`.
+_LEADING_STRIP_TOKENS = {"(", "then", "do", "else"}
+
+# npm package name -> the CLI binary name npx/`pnpm|yarn dlx` actually
+# resolve and exec, for the (rare) cases where they differ. Most packages'
+# bin name equals the package name (`npx tsc`, `npx cdktn`, ...) and need
+# no entry here; `aws-cdk` -> `cdk` is the one that matters for the awscdk
+# arm (arms/awscdk/README.md: `npm install -g aws-cdk@...` installs a `cdk`
+# binary), so `npx -y aws-cdk@2 synth` must still credit `cdk`.
+_NPM_PACKAGE_BIN_ALIASES = {"aws-cdk": "cdk"}
+
+
+def _strip_npm_version_spec(token: str) -> str:
+    """``pkg@2`` -> ``pkg``, ``@scope/pkg@1.2.3`` -> ``@scope/pkg``, a
+    bare ``pkg`` (no version) -> unchanged. Only strips a version suffix
+    introduced by an ``@`` that is not the token's own leading scope
+    marker."""
+    if token.startswith("@"):
+        idx = token.rfind("@")
+        return token[:idx] if idx > 0 else token
+    idx = token.find("@")
+    return token[:idx] if idx > 0 else token
+
+
+def _resolve_npm_package_token(token: str) -> str:
+    """Resolve an npx/dlx package argument (possibly versioned) to the CLI
+    binary name it actually execs, per ``_NPM_PACKAGE_BIN_ALIASES``."""
+    return _NPM_PACKAGE_BIN_ALIASES.get(_strip_npm_version_spec(token), _strip_npm_version_spec(token))
+
+
+# FALLBACK PATH ONLY — consulted by `_classify_evidence_status` solely when
+# `_extract_structured_exit_code` returned `None` for the step (see the
+# module docstring's "Structured exit codes"/"Residual channel"
+# paragraphs). Observation-text signals that a positionally-matched tool
+# call never actually ran the real tool (the container/toolchain was
+# unavailable), distinct from the tool running and genuinely failing. The
+# agent's own Bash command chooses what text lands in `observation.content`
+# (ATIF's ObservationResult has no structured exit-code/status field of its
+# own to read instead — harbor/models/trajectories/observation_result.py —
+# and the harness that DOES carry a structured exit code, claude_code.py's
+# `_format_tool_result`, puts it on the STEP's `extra.metadata`, which is
+# now read directly by `_extract_structured_exit_code`, but isn't
+# guaranteed present for every agent/producer or when a step's `extra`
+# would be ambiguous across multiple tool calls), so free-text matching
+# here MUST stay anchored, not a bare substring search anywhere in the text
+# — otherwise an agent (or a task whose legitimate output happens to
+# mention a phrase like "no such file or directory" from an ordinary
+# ENOENT) can self-void its own trial. Two anchors, both required (see
+# `_classify_evidence_status`):
 #   - "command not found"/"not found" must be immediately attached to the
 #     SPECIFIC matched tool's own name, at the START of the observation
 #     (`bash: cdk: command not found`, `cdk: command not found`,
@@ -289,10 +376,21 @@ def _peel_wrappers(tokens: list[str]) -> list[str]:
             tokens.pop(0)
             while tokens and tokens[0].startswith("-"):
                 tokens.pop(0)
+            if tokens:
+                tokens[0] = _resolve_npm_package_token(tokens[0])
             changed = True
             continue
         if head in _PACKAGE_RUNNERS and len(tokens) > 1 and tokens[1] in _PACKAGE_RUNNER_SUBCOMMANDS:
+            subcommand = tokens[1]
             tokens = tokens[2:]
+            if subcommand == "dlx" and tokens:
+                tokens[0] = _resolve_npm_package_token(tokens[0])
+            changed = True
+            continue
+        if head in _MULTI_ARG_WRAPPERS:
+            tokens.pop(0)
+            while tokens and (tokens[0].startswith("-") or _WRAPPER_NUMERIC_ARG_RE.match(tokens[0])):
+                tokens.pop(0)
             changed = True
             continue
     return tokens
@@ -304,21 +402,47 @@ def _tool_argv(seg: str) -> list[str]:
     safely tokenized (e.g. unbalanced quotes) — such a segment is credited
     to no pattern rather than raising, since a malformed fragment is not
     positive evidence of anything.
+
+    Before tokenizing, a leading run of ``(`` and a trailing run of ``)``
+    are stripped from the raw segment text (string-level, so a subshell
+    opener glued to the next word — ``(cd app`` from ``(cd app && cdk
+    synth)`` — is handled the same as a spaced one), and after tokenizing,
+    a leading ``then``/``do``/``else`` keyword token is stripped (see
+    ``_LEADING_STRIP_TOKENS``) — both cases only arise because `_segments`
+    split a compound-statement/subshell command on its `;`/`&&`/`|`, not
+    because they're wrappers *around* a command the way `sudo`/`npx` are.
     """
+    seg = seg.strip().lstrip("(").rstrip(")")
     try:
         tokens = shlex.split(seg, comments=True)
     except ValueError:
         return []
+    while tokens and tokens[0] in _LEADING_STRIP_TOKENS:
+        tokens.pop(0)
     return _peel_wrappers(tokens)
 
 
+_MAX_SHELL_C_RECURSION_DEPTH = 5
+
+
 def _matches(
-    patterns: list[tuple[str, str, frozenset[str] | None]], command: str
+    patterns: list[tuple[str, str, frozenset[str] | None]], command: str, _depth: int = 0
 ) -> list[tuple[str, str, str]]:
     """Returns ``(pattern_name, segment_text, matched_tool_basename)``
     triples — the tool basename is threaded through to
     ``_classify_evidence_status`` so its "command not found" anchor checks
-    THIS call's own matched tool name, not a generic phrase."""
+    THIS call's own matched tool name, not a generic phrase.
+
+    A segment whose resolved argv[0] is a shell (``bash``/``sh``/``zsh``/
+    ``ksh``/``dash``) invoked with ``-c '<command string>'`` is recursed
+    into (the quoted argument is re-segmented and matched the same way),
+    so ``bash -c 'cdk synth'`` is credited exactly like a direct
+    invocation. ``_depth`` bounds the recursion (nested ``bash -c 'bash -c
+    ...'``) so a pathological/malicious trajectory can't cause unbounded
+    recursion.
+    """
+    if _depth > _MAX_SHELL_C_RECURSION_DEPTH:
+        return []
     hits: list[tuple[str, str, str]] = []
     for seg in _segments(command):
         argv = _tool_argv(seg)
@@ -326,6 +450,11 @@ def _matches(
             continue
         tool = Path(argv[0]).name
         rest = argv[1:]
+        if tool in _SHELL_C_INVOKERS and "-c" in rest:
+            c_idx = rest.index("-c")
+            if c_idx + 1 < len(rest):
+                inner_command = rest[c_idx + 1]
+                hits.extend(_matches(patterns, inner_command, _depth=_depth + 1))
         for name, tool_name, subcommands in patterns:
             if tool != tool_name:
                 continue
@@ -347,8 +476,42 @@ def _observation_text(observation: dict[str, Any] | None) -> str:
     return ""
 
 
-def _classify_evidence_status(observation: dict[str, Any] | None, tool: str) -> str:
-    """Classify one matched Bash call's outcome from its observation text.
+def _extract_structured_exit_code(step: dict[str, Any]) -> int | None:
+    """The structured Bash exit code Harbor's ``claude_code.py``
+    ``_format_tool_result`` attaches to a tool-call STEP's
+    ``extra.metadata.tool_use_result`` (``exitCode``/``exit_code``) — see
+    the module docstring's "Structured exit codes" paragraph and
+    ``gates/RECON.md`` §3.
+
+    Only trusted when the step carries exactly ONE tool call, so there is
+    no ambiguity about which call the code belongs to (``extra`` is a
+    step-level field). Returns ``None`` when absent, non-numeric, or
+    ambiguous, in which case callers fall back to text-based
+    classification (the residual channel documented in the module
+    docstring).
+    """
+    tool_calls = step.get("tool_calls") or []
+    if len(tool_calls) != 1:
+        return None
+    extra = step.get("extra")
+    if not isinstance(extra, dict):
+        return None
+    metadata = extra.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    tool_use_result = metadata.get("tool_use_result")
+    if not isinstance(tool_use_result, dict):
+        return None
+    code = tool_use_result.get("exitCode", tool_use_result.get("exit_code"))
+    if isinstance(code, bool) or not isinstance(code, int):
+        return None
+    return code
+
+
+def _classify_evidence_status(
+    observation: dict[str, Any] | None, tool: str, structured_exit_code: int | None = None
+) -> str:
+    """Classify one matched Bash call's outcome.
 
     ``tool`` is the specific tool basename THIS call positionally matched
     (e.g. ``"cdk"``/``"terraform"``) — the "command not found" check is
@@ -357,11 +520,30 @@ def _classify_evidence_status(observation: dict[str, Any] | None, tool: str) -> 
     mentioning an unrelated phrase (see the anchoring comment above
     ``_tool_missing_pattern``).
 
+    ``structured_exit_code``, when not ``None`` (see
+    ``_extract_structured_exit_code``), is TRUSTED OUTRIGHT and decides the
+    result — no free-text classification is consulted at all, so an
+    agent's own observation text can no longer override a real exit code
+    (the finding this parameter closes: a forged ``bash: cdk: command not
+    found`` printed after a genuine, successful run could otherwise still
+    route the trial to invalid-infra). When it is ``None`` (no structured
+    signal — see the module docstring's "Residual channel" paragraph),
+    behavior is unchanged from before: classify from the observation text.
+
     Returns one of ``ok`` / ``failed`` / ``missing`` / ``sigkill`` / ``unknown``.
-    ``unknown`` (no observation captured at all) is treated as non-degrading
-    by callers — the pre-existing, more permissive behavior — since its
-    absence is not positive evidence the toolchain was unavailable.
+    ``unknown`` (no observation captured at all, and no structured exit
+    code) is treated as non-degrading by callers — the pre-existing, more
+    permissive behavior — since its absence is not positive evidence the
+    toolchain was unavailable.
     """
+    if structured_exit_code is not None:
+        if structured_exit_code == 127:
+            return "missing"
+        if structured_exit_code == 137:
+            return "sigkill"
+        if structured_exit_code == 0:
+            return "ok"
+        return "failed"
     text = _observation_text(observation)
     if not text:
         return "unknown"
@@ -380,14 +562,17 @@ def _classify_evidence_status(observation: dict[str, Any] | None, tool: str) -> 
 
 
 def iter_bash_calls(trajectory: dict[str, Any]) -> Iterable[dict[str, Any]]:
-    """Yield ``{step_id, tool_call_id, command, observation}`` for every Bash
-    tool call. ``observation`` is the matching ``ObservationResult`` dict
-    (joined via ``observation.results[].source_call_id == tool_call_id``,
-    per Harbor's ATIF schema) or ``None`` if the step carries no observation
-    for that call.
+    """Yield ``{step_id, tool_call_id, command, observation,
+    structured_exit_code}`` for every Bash tool call. ``observation`` is the
+    matching ``ObservationResult`` dict (joined via
+    ``observation.results[].source_call_id == tool_call_id``, per Harbor's
+    ATIF schema) or ``None`` if the step carries no observation for that
+    call. ``structured_exit_code`` is the step's structured exit code (see
+    ``_extract_structured_exit_code``), or ``None`` if unavailable/ambiguous.
     """
     for step in trajectory.get("steps") or []:
         step_id = step.get("step_id")
+        structured_exit_code = _extract_structured_exit_code(step)
         obs_by_call_id: dict[str, dict[str, Any]] = {}
         for res in (step.get("observation") or {}).get("results") or []:
             call_id = res.get("source_call_id")
@@ -406,6 +591,7 @@ def iter_bash_calls(trajectory: dict[str, Any]) -> Iterable[dict[str, Any]]:
                     "tool_call_id": tool_call_id,
                     "command": command,
                     "observation": obs_by_call_id.get(tool_call_id),
+                    "structured_exit_code": structured_exit_code,
                 }
 
 
@@ -442,7 +628,7 @@ def audit_trajectory(trajectory: dict[str, Any], arm: str) -> dict[str, Any]:
     evidence: list[dict[str, Any]] = []
     for call in bash_calls:
         for name, seg, tool in _matches(patterns, call["command"]):
-            status = _classify_evidence_status(call["observation"], tool)
+            status = _classify_evidence_status(call["observation"], tool, call["structured_exit_code"])
             evidence.append(
                 {
                     "step_id": call["step_id"],
