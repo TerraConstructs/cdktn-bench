@@ -1,0 +1,103 @@
+# local-registry.json
+
+`registry.json`-shaped file (schema: `AwsBenchDatasetSpec` in
+`aws_bench/dataset/registry.py`, exactly `[{name, version, description, scenarios[], tasks[]}]`)
+describing one dataset, `cdktn-bench-anchor@0.1.0`: the anchor scenario plus its one
+dummy smoke task. Kept as a **separate markdown file** rather than inline JSON comments
+because `AwsBenchRegistry.from_path` parses the file as a strict `list[AwsBenchDatasetSpec]`
+— every element of the top-level array must validate as a dataset spec, so there is no
+comment-carrying slot inside `local-registry.json` itself (see "Format uncertainties"
+below).
+
+## CLI invocations this file is meant to be consumed with
+
+Run from the **repository root** (`/Users/vincentsmet/cdk/cdktn-bench`) — see the path-
+resolution caveat below for why this matters. No AWS credentials, Docker, or network
+access are exercised by any command in this document; none of them were run as part of
+authoring this file.
+
+```bash
+# One-time: install the pinned aws-bench runner (already done for this repo; see
+# DECISIONS.md).
+uv sync
+
+# 1. env init — provisions/maps the anchor scenario onto a real AWS Organizations
+#    member account under the given OU ("--env-name"). Hard-requires AWS credentials
+#    for a management account (docs/aws-bench-guide.md §4) — NOT run as part of this
+#    deliverable.
+uv run aws-bench env init --env-name cdktn-anchor \
+  --registry-path ./local-registry.json -d cdktn-bench-anchor@0.1.0 \
+  --wait-for-quotas
+
+# 2. env setup — deploys scenarios/anchor's CDK app (QARolesStack + AnchorStack) into
+#    that account via scenario/Dockerfile + deploy/deploy.sh.
+uv run aws-bench env setup --env-name cdktn-anchor \
+  --registry-path ./local-registry.json -d cdktn-bench-anchor@0.1.0
+
+# 3. run — one trial of tasks/anchor/smoke against the deployed anchor scenario.
+uv run aws-bench run --env-name cdktn-anchor \
+  --registry-path ./local-registry.json -d cdktn-bench-anchor@0.1.0 \
+  -a claude-code -m global.anthropic.claude-sonnet-5 \
+  -l 1 --yes
+
+# 4. env cleanup — tears the scenario account back down (scenario/cleanup/cleanup.sh +
+#    framework sweeper).
+uv run aws-bench env cleanup --env-name cdktn-anchor \
+  --registry-path ./local-registry.json -d cdktn-bench-anchor@0.1.0
+```
+
+### Equivalent local-path form (no registry file at all)
+
+`docs/aws-bench-guide.md` §4 documents a registry-free local mode; it works identically
+for this scenario/task pair and needs no `local-registry.json`:
+
+```bash
+uv run aws-bench run --env-name cdktn-anchor \
+  --scenario-path ./scenarios --path ./tasks/anchor \
+  -a claude-code -m global.anthropic.claude-sonnet-5 \
+  -l 1 --yes
+```
+
+Note the `--path` caveat from the guide: it does **not** recurse, so it must point at a
+directory whose *immediate* children are task dirs — `./tasks/anchor` (whose only child
+is `smoke/`), not `./tasks`.
+
+## Format uncertainties for the verifier to check
+
+1. **Local registry paths resolve relative to the process CWD, not to
+   `local-registry.json`'s own location.** Traced through
+   `RegistryScenarioId.to_source_id()` / `RegistryTaskId.to_source_task_id()` (no
+   `git_url` → `LocalScenarioId(path=...)` / `LocalTaskId(path=...)`,
+   `aws_bench/dataset/source_ids.py`) into Harbor's `LocalTaskId` (
+   `harbor/models/task/id.py`), whose `get_local_path()` is
+   `self.path.expanduser().resolve()` — `Path.resolve()` on a relative path resolves
+   against `Path.cwd()`, with no reference back to the registry file's directory
+   anywhere in that chain. This file's `scenarios[].path` / `tasks[].path` are therefore
+   written relative to the **repo root**, and the CLI invocations above are only correct
+   when run from there (or with `local-registry.json`'s paths rewritten to absolute paths).
+   This differs from how `--path` / `--scenario-path` behave (those are resolved directly
+   from the flag value, so relative-to-CWD is the same rule but at least applies
+   uniformly) — worth an explicit regression test before this file is relied on from a
+   CI working directory other than the repo root.
+2. **`RegistryValidator` never checks that a local `path` exists on disk at load time**
+   (`_check_semver_versions` / `_check_unique_*_names_per_dataset` /
+   `_warn_cross_dataset_scenario_consistency` are the only load-time checks in
+   `aws_bench/dataset/registry.py`) — a typo in `path` would surface only at
+   `env init` / `run` time as a `ScenarioDiscoveryError` / `TaskConfigInvalidError`, not
+   at registry-load time. Not exercised here since no `aws-bench` command was run.
+3. **Registry `tasks[].name` / `scenarios[].name` are not required to match the
+   corresponding `task.toml [task].name` / `scenario.toml [scenario].name`** — they're
+   independent identifiers (registry-level dedup and `--include/--exclude-*-names`
+   filtering only). Chosen here to be human-readable (`"anchor-smoke"`) rather than
+   mirroring `task.toml`'s `"cdktn-smoke/anchor-write-file"`; flagging in case the
+   verifier expected byte-identical names.
+4. **`tests/test.sh`'s reward is intentionally unconditional (`1.0` regardless of
+   whether the agent's output matched)** — this is a literal reading of "stub verifier
+   writing reward 1.0", chosen because Slice B's audit gate doesn't exist yet to
+   distinguish "informationally checked and logged" from "the score depends on it". If
+   the intent was instead a real (if trivial) pass/fail check, flip the unconditional
+   `echo "1.0"` to branch on the existing string-match logic already in the script.
+5. **No `env/verify/verify.sh` was written** for the anchor scenario (optional per
+   `scenario.toml [verify]`, and `ec2-multiregion` is the only upstream scenario that has
+   one). If Slice F's live validation wants a scene-state assertion beyond "the stack
+   deployed", one should be added there.

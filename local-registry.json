@@ -1,0 +1,19 @@
+[
+  {
+    "name": "cdktn-bench-anchor",
+    "version": "0.1.0",
+    "description": "cdktn-bench Slice A/F anchor: the near-empty anchor scenario plus its one dummy smoke task, used to validate the aws-bench plumbing end-to-end at ~$0 marginal AWS spend before any real IaC-abstraction scenario is added.",
+    "scenarios": [
+      {
+        "name": "anchor",
+        "path": "scenarios/anchor"
+      }
+    ],
+    "tasks": [
+      {
+        "name": "anchor-smoke",
+        "path": "tasks/anchor/smoke"
+      }
+    ]
+  }
+]

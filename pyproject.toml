@@ -1,0 +1,26 @@
+[project]
+name = "cdktn-bench"
+version = "0.1.0"
+description = "IaC-abstraction benchmark (AWS CDK L2 vs raw HCL vs terraconstructs) built on the aws-bench runner."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Apache-2.0" }
+
+dependencies = [
+    "aws-bench",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pyyaml>=6.0",
+    "jsonata-python>=0.5.0",
+]
+
+[tool.uv.sources]
+aws-bench = { git = "https://github.com/aws-bench/aws-bench.git", rev = "6450cb56c4552934a37feff492a6fd4eb84d1108" }
+
+[tool.uv]
+# No importable Python package of our own (yet) — this repo is scenario/task
+# content plus scripts. Skip the build-backend requirement entirely.
+package = false

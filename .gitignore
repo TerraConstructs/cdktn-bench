@@ -1,0 +1,25 @@
+# Node / CDK arms
+node_modules/
+cdk.out/
+
+# Terraform arms
+.terraform/
+terraform.tfstate
+terraform.tfstate.*
+*.tfplan
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Build output
+dist/
+build/
+
+# aws-bench local run artifacts (jobs are created wherever `aws-bench run` is invoked)
+jobs/
+
+# uv.lock IS tracked (do not ignore) — kept for reproducible dependency pins.
