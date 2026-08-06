@@ -56,6 +56,9 @@ if str(_REPO_ROOT) not in sys.path:
 from gates.audit import KNOWN_ARMS, audit_trial
 from gates.equipping import compute_equipping_hash
 
+sys.path.insert(0, str(_REPO_ROOT / "generator"))
+from split import spec_group  # noqa: E402
+
 VALID = "valid"
 INVALID_BYPASS = "invalid-bypass"
 INVALID_INFRA = "invalid-infra"
@@ -167,6 +170,211 @@ def read_tier1_not_verifiable(trial_dir: str | Path) -> tuple[bool, str | None]:
     except OSError:
         return True, None
     return True, (text or None)
+
+
+# `  PASS [name]` / `  FAIL [name]: ...` -- generator/gen.py's
+# `_assert_lib.sh::assert_check()` (build_static_tiers_sh, ~line 839-844)
+# echoes exactly this shape for every tier-"0" structural_assert it runs,
+# to the verifier's own stdout -- captured by Harbor at
+# `<trial_dir>/verifier/test-stdout.txt` (docs/aws-bench-guide.md §6's
+# documented trial-dir layout: "verifier/ test-stdout.txt, test-stderr.txt,
+# reward.json, reward.txt, reward-details.json"). `[^\]]+` (not `.+`)
+# because an assert name is generator-enforced kebab-case
+# (specs/SCHEMA.md §4.2: "unique within the spec", no `]` possible) --
+# using a non-greedy `.+?` would work too but this is both correct and
+# cheaper.
+_TIER0_ASSERT_LINE_RE = re.compile(r"^\s*(PASS|FAIL)\s*\[([^\]]+)\]", re.MULTILINE)
+
+# `== summary: tier0_pass=$tier0_pass tier1_status=$tier1_status ==` --
+# generator/gen.py::build_static_tiers_sh's template, always the last thing
+# echoed before the reward is written (unless a toolchain step failed
+# first and `exit 0`'d out of the script before this line ever runs -- in
+# that case tier1_status is correctly reported as absent below, not
+# guessed).
+_TIER1_SUMMARY_RE = re.compile(r"tier1_status=(\S+)")
+
+
+def read_tier_evidence(trial_dir: str | Path) -> dict[str, Any] | None:
+    """Read per-assert tier-0 PASS/FAIL evidence + the bundled tier-1
+    verdict from `<trial_dir>/verifier/test-stdout.txt`, for the per-catch
+    tier-attribution table (docs/iac-abstraction-aws-bench-plan.md Phase 2
+    item 3 / prereg §4's "per-tier catch attribution ... at what cost").
+
+    Two different granularities, and this function is honest about which
+    is which -- there is no third option available from the current
+    oracle design (see specs/SCHEMA.md §4.2 / generator/gen.py's own
+    tier-1 blocks):
+
+    - **tier-0 is per-catch-real**: each tier-"0" `structural_assert` is
+      independently invoked and independently echoes its own PASS/FAIL
+      (`assert_check()`, see `_TIER0_ASSERT_LINE_RE` above) -- this
+      function returns the real per-assert-name verdict, keyed by
+      `structural_assert.name` (specs/SCHEMA.md §4.2), under `"tier0"`.
+    - **tier-1 is bundle-only**: every tier-"1" `structural_assert` for a
+      given arm/scenario is graded by ONE `opa eval`/`cfn-guard validate`
+      call over the whole policy file (generator/gen.py's tier1_block),
+      producing exactly one `tier1_status` for the WHOLE bundle -- there
+      is no per-tier-1-assert breakdown to read, because the oracle itself
+      never computes one (the tier-1 assert *names* are compiled into a
+      bash `#`-comment for human readability, never echoed to stdout at
+      runtime -- verified directly against build_static_tiers_sh's own
+      f-string construction of `tier1_comment`). A tier-attribution table
+      built from this data can therefore report "which tier-0 catch" a
+      trial died on, or "the tier-1 bundle as a whole", but never "which
+      individual tier-1 catch" -- callers (metrics/tokens_to_green.py)
+      must treat all of a scenario/arm's tier-"1" catches as one unit.
+
+    Returns ``None`` if `verifier/test-stdout.txt` doesn't exist (verifier
+    never ran, or ran a non-static_tiers.sh test.sh) -- never an empty dict,
+    so a caller can distinguish "no evidence file at all" from "the file
+    exists but a toolchain step failed before tier-0/1 ever ran" (the
+    latter yields ``{"tier0": {}, "tier1_status": None}``, not ``None``).
+    """
+    path = Path(trial_dir) / "verifier" / "test-stdout.txt"
+    if not path.is_file():
+        return None
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return None
+
+    tier0: dict[str, str] = {}
+    for m in _TIER0_ASSERT_LINE_RE.finditer(text):
+        status, name = m.group(1), m.group(2)
+        # Last occurrence wins -- generator/gen.py enforces assert-name
+        # uniqueness within a spec, so in practice each name is only ever
+        # echoed once per run; this is just defensive, not load-bearing.
+        tier0[name] = status
+
+    tier1_status: str | None = None
+    summary_match = _TIER1_SUMMARY_RE.search(text)
+    if summary_match:
+        tier1_status = summary_match.group(1)
+
+    return {"tier0": tier0, "tier1_status": tier1_status}
+
+
+def extract_n_llm_calls(trial_dir: str | Path) -> int | None:
+    """Count LLM calls from `<trial_dir>/agent/trajectory.json`, mirroring
+    `aws_bench/metrics/run_data.py::_llm_usage_from_trajectory`'s own
+    `n_llm_calls` accumulation exactly (upstream source, verified against
+    the pinned `aws-bench` clone): for every step with `source == "agent"`,
+    add `step.llm_call_count` when it's an int, else add 1 iff `step.metrics`
+    is present, else add 0. Needed for `iterations-to-green`
+    (docs/iac-abstraction-aws-bench-plan.md Phase 2 item 3 / prereg §4) --
+    `result.json`'s `agent_result` never carries this field itself
+    (verified: only `cost_usd`/`n_input_tokens`/`n_output_tokens`/
+    `n_cache_tokens` do -- `_extract_score_fields` above), only the
+    trajectory does.
+
+    Deliberately dict-``.get``-only (no ATIF/harbor model import), same
+    defensive posture as `_extract_score_fields`'s own docstring explains:
+    the trajectory schema is a moving upstream target.
+
+    Returns ``None`` -- NOT ``0`` -- when the trajectory file is absent,
+    unreadable, malformed JSON, or has no top-level `steps` list at all:
+    "unknown" and "zero" are different claims (residual finding,
+    2026-08-06: "a SUCCESSFUL trial with an unreadable trajectory enters
+    iterations_to_green_km as an EVENT at time 0.0" -- one unparseable
+    trajectory used to silently drag a whole cell's iterations quartile to
+    zero). ``0`` is returned ONLY for a genuinely-parsed trajectory whose
+    `steps` list is a real list (however short) but contains no
+    agent-source step with either signal -- e.g. every synthetic
+    gates/tests fixture trajectory, which is hand-authored for audit-gate
+    testing and carries no per-step `metrics`/`llm_call_count` at all; that
+    IS a real, known answer ("this trajectory really made zero countable
+    LLM calls"), not a missing one.
+    """
+    path = Path(trial_dir) / "agent" / "trajectory.json"
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(errors="replace"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    steps = data.get("steps")
+    if not isinstance(steps, list):
+        return None
+
+    n_llm_calls = 0
+    for step in steps:
+        if not isinstance(step, dict) or step.get("source") != "agent":
+            continue
+        llm_call_count = step.get("llm_call_count")
+        if isinstance(llm_call_count, int) and not isinstance(llm_call_count, bool):
+            n_llm_calls += llm_call_count
+        elif step.get("metrics") is not None:
+            n_llm_calls += 1
+    return n_llm_calls
+
+
+def resolve_split_group(spec_id: str | None) -> str:
+    """``generator/split.py::spec_group``, resolved to the schema's
+    three-value enum (``"train"|"holdout"|"unclassified"``) required on
+    every published result row (``metrics/result_schema.json``'s
+    ``split_group``, added 2026-08-06: "the train/holdout split is
+    unenforceable at the layer that matters -- the published number").
+
+    ``spec_id`` here is the SPEC id (e.g. ``"apigw-openapi"`` --
+    ``generator/gen.py``'s ``Spec.id`` / ``specs/<id>.yaml``'s filename
+    stem, what ``specs/split.yaml`` actually keys on), which is NOT the
+    same string as this schema's own ``scenario``/``task`` row fields
+    (those name the aws-bench SCENARIO, always ``"anchor"`` in v1, and the
+    Harbor task name respectively) -- callers must pass it explicitly
+    (``build_result_record``/``to_result_row``'s own ``spec_id=`` kwarg,
+    or ``--spec-id`` on this module's CLI), not derive it from either.
+
+    Never raises: no ``spec_id``, no ``specs/split.yaml`` yet, or a
+    ``spec_id`` with no entry in it all map to ``"unclassified"`` -- the
+    same "not yet classified, don't guess a side" contract
+    ``spec_group()`` itself documents for its own ``None`` return.
+    """
+    if not spec_id:
+        return "unclassified"
+    try:
+        group = spec_group(spec_id)
+    except FileNotFoundError:
+        return "unclassified"
+    return group or "unclassified"
+
+
+def read_budget(jobs_dir: str | Path | None) -> tuple[int | None, int | None]:
+    """Read ``<jobs_dir>/budget.json`` (``scripts/run-bench.sh``'s own
+    output — see that script's header for the "MAX_ITERS = 8 feedback
+    cycles or MAX_TOKENS per trajectory, whichever first" budget-cap
+    contract) and return ``(max_iters, max_tokens)``.
+
+    Fixes the "MAX_TOKENS is inert" finding (2026-08-06): ``run-bench.sh``
+    already asserted budget.json "is the value gates/emit_result.py /
+    metrics/tokens_to_green.py actually read", but before this function
+    nothing in the repo ever opened the file at all — every emitted row's
+    ``censored`` came out ``False`` regardless of budget, and
+    ``n_budget_censored`` was structurally always 0. This is the read
+    side; ``main()``'s ``--jobs-dir`` flag below is the call site.
+
+    Returns ``(None, None)`` if ``jobs_dir`` is falsy, the file doesn't
+    exist, isn't valid JSON, isn't a JSON object, or a key is JSON
+    ``null``/absent/non-integer — never raises, so a missing/malformed
+    budget.json degrades to "no budget known" (auto-censoring becomes a
+    no-op, matching ``to_result_row``'s own documented default) rather
+    than crashing row emission.
+    """
+    if not jobs_dir:
+        return None, None
+    path = Path(jobs_dir) / "budget.json"
+    if not path.is_file():
+        return None, None
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None, None
+    if not isinstance(data, dict):
+        return None, None
+
+    def _int_or_none(v: Any) -> int | None:
+        return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+    return _int_or_none(data.get("max_iters")), _int_or_none(data.get("max_tokens"))
 
 
 def _as_number(value: Any) -> float | None:
@@ -358,6 +566,7 @@ def build_result_record(
         equipping_hash_error = str(exc)
 
     tier1_not_verifiable, tier1_not_verifiable_detail = read_tier1_not_verifiable(trial_dir)
+    tier_evidence = read_tier_evidence(trial_dir)
 
     record: dict[str, Any] = {
         "trial_dir": str(trial_dir),
@@ -376,6 +585,13 @@ def build_result_record(
         # audited as genuine.
         "tier1_not_verifiable": tier1_not_verifiable,
         "tier1_not_verifiable_detail": tier1_not_verifiable_detail,
+        # Per-catch tier-attribution evidence (see read_tier_evidence's own
+        # docstring for the tier-0-real / tier-1-bundle-only caveat). Also
+        # attached regardless of validity_class -- a bypassed/infra-invalid
+        # trial's verifier may still have left evidence behind from a PRIOR
+        # invocation of tests/static_tiers.sh in the same container, and
+        # this being present/absent is itself diagnostic.
+        "tier_evidence": tier_evidence,
     }
     if equipping_hash_error is not None:
         record["equipping_hash_error"] = equipping_hash_error
@@ -387,6 +603,7 @@ def build_result_record(
 
     record["score_emitted"] = True
     record.update(_extract_score_fields(trial_dir))
+    record["n_llm_calls"] = extract_n_llm_calls(trial_dir)
     return record
 
 
@@ -400,11 +617,14 @@ def to_result_row(
     model: str,
     harness: str,
     oracle_version: str,
-    censored: bool = False,
+    censored: bool | None = None,
+    max_iters: int | None = None,
+    max_tokens: int | None = None,
     scenario: str | None = None,
     task: str | None = None,
     trial_id: str | None = None,
     job_id: str | None = None,
+    spec_id: str | None = None,
 ) -> dict[str, Any]:
     """Map a ``build_result_record()`` record + run config into a
     ``metrics/result_schema.json``-shaped published result row.
@@ -423,6 +643,30 @@ def to_result_row(
     schema-required but not meaningful, so they're filled with 0/0.0 and
     ``validity_reason`` is set; callers must read ``validity_class`` first,
     exactly as the schema's own field description says.
+
+    ``censored`` (docs/iac-abstraction-aws-bench-plan.md Phase 2 item 2 /
+    prereg §4's budget cap): pass an explicit ``True``/``False`` when the
+    caller already knows it (e.g. from a job-level budget-tracking pass).
+    Leaving it ``None`` (the default) triggers **auto-detection** from
+    ``max_iters``/``max_tokens`` — mirrors ``scripts/run-bench.sh``'s
+    ``budget.json`` ("MAX_ITERS = 8 feedback cycles or MAX_TOKENS per
+    trajectory, whichever first"): a trial that did NOT reach reward 1.0
+    and either met/exceeded ``max_tokens`` (by ``tokens_total``) or
+    met/exceeded ``max_iters`` (by ``record["n_llm_calls"]``, when known)
+    is censored=True; everything else defaults to False. Passing neither
+    ``max_iters`` nor ``max_tokens`` (both ``None``, the default) makes
+    auto-detection a no-op — ``censored`` comes out ``False`` exactly like
+    this function's previous hardcoded default, so every existing caller
+    keeps its prior behavior unchanged.
+
+    ``spec_id`` (2026-08-06 fix, prereg §7.1 / DECISIONS.md Amendment 10):
+    the spec id (``"apigw-openapi"``, NOT the ``scenario``/``task`` schema
+    fields' aws-bench meanings — see ``resolve_split_group``'s own
+    docstring) used to resolve the schema-REQUIRED ``split_group`` field.
+    Omitting it does not skip the field (it cannot — the schema requires
+    it on every row) — it resolves to ``"unclassified"`` instead, so a
+    caller that forgets to pass it gets an honestly-labeled row, not a
+    silently train/holdout-mislabeled one.
     """
     if record.get("equipping_hash") is None:
         raise ValueError(
@@ -439,6 +683,13 @@ def to_result_row(
     if reward is None:
         reward = 0.0
 
+    if censored is None:
+        n_llm_calls = record.get("n_llm_calls")
+        censored = reward < 1.0 and (
+            (max_tokens is not None and tokens_total >= max_tokens)
+            or (max_iters is not None and n_llm_calls is not None and n_llm_calls >= max_iters)
+        )
+
     row: dict[str, Any] = {
         "schema_version": RESULT_ROW_SCHEMA_VERSION,
         "equipping_hash": record["equipping_hash"],
@@ -447,6 +698,7 @@ def to_result_row(
         "model": model,
         "harness": harness,
         "validity_class": record["validity_class"],
+        "split_group": resolve_split_group(spec_id),
         "tokens_input": tokens_input,
         "tokens_output": tokens_output,
         "tokens_total": tokens_total,
@@ -465,6 +717,15 @@ def to_result_row(
     }
     if scenario is not None:
         row["scenario"] = scenario
+    # spec_id (2026-08-06 fix): the BENCHMARK scenario id, distinct from
+    # the aws-bench `scenario` field above (always "anchor" in this repo --
+    # see result_schema.json's own field descriptions for why `scenario`
+    # cannot be used for per-benchmark-scenario grouping). Persisted on the
+    # row itself, not just consumed transiently for split_group above, so
+    # downstream tools (metrics/tokens_to_green.py) can group/attribute by
+    # it without re-deriving it.
+    if spec_id is not None:
+        row["spec_id"] = spec_id
     if task is not None:
         row["task"] = task
     if trial_id is not None:
@@ -477,6 +738,10 @@ def to_result_row(
         row["tier1_not_verifiable_detail"] = record["tier1_not_verifiable_detail"]
     if record.get("cost_usd") is not None:
         row["cost_usd"] = record["cost_usd"]
+    if record.get("n_llm_calls") is not None:
+        row["n_llm_calls"] = record["n_llm_calls"]
+    if record.get("tier_evidence") is not None:
+        row["tier_evidence"] = record["tier_evidence"]
     if record["validity_class"] != VALID:
         row["validity_reason"] = record["reason"]
     return row
@@ -496,6 +761,28 @@ def main(argv: list[str] | None = None) -> int:
         help="JSON object of extra equipping config (model, harness flags, ...). Default: '{}'.",
     )
     parser.add_argument("--out", default=None, help="Also write the JSON record to this path.")
+    # --- schema-row emission (2026-08-06 fix: "MAX_TOKENS is inert and
+    # budget.json has no reader" + "split_group is unenforceable at the
+    # layer that matters") -- optional; a row is emitted (via
+    # to_result_row, validated shape) only when --model/--harness/
+    # --oracle-version are all given, in addition to the raw record this
+    # CLI already always prints. ------------------------------------------
+    parser.add_argument("--model", default=None, help="If set (with --harness/--oracle-version), also emit a metrics/result_schema.json row.")
+    parser.add_argument("--harness", default=None, choices=["empty", "tuned"])
+    parser.add_argument("--oracle-version", default=None)
+    parser.add_argument("--spec-id", default=None, help="Spec id (e.g. 'apigw-openapi') for split_group resolution (generator/split.py) -- NOT the --scenario/--task values below.")
+    parser.add_argument("--scenario", default=None, help="Row's 'scenario' field (aws-bench scenario id, e.g. 'anchor').")
+    parser.add_argument("--task", default=None, help="Row's 'task' field (task.toml [task].name).")
+    parser.add_argument("--trial-id", default=None)
+    parser.add_argument("--job-id", default=None)
+    parser.add_argument(
+        "--jobs-dir",
+        default=None,
+        help="Job output dir containing budget.json (scripts/run-bench.sh's own output) -- read to auto-censor the emitted row via max_iters/max_tokens. Overridden per-field by --max-iters/--max-tokens if also given.",
+    )
+    parser.add_argument("--max-iters", type=int, default=None, help="Explicit MAX_ITERS override (wins over --jobs-dir's budget.json).")
+    parser.add_argument("--max-tokens", type=int, default=None, help="Explicit MAX_TOKENS override (wins over --jobs-dir's budget.json).")
+    parser.add_argument("--row-out", default=None, help="Also write the to_result_row()-shaped schema row to this path.")
     args = parser.parse_args(argv)
 
     try:
@@ -522,6 +809,28 @@ def main(argv: list[str] | None = None) -> int:
     print(text)
     if args.out:
         Path(args.out).write_text(text + "\n")
+
+    if args.model and args.harness and args.oracle_version:
+        budget_max_iters, budget_max_tokens = read_budget(args.jobs_dir)
+        max_iters = args.max_iters if args.max_iters is not None else budget_max_iters
+        max_tokens = args.max_tokens if args.max_tokens is not None else budget_max_tokens
+        row = to_result_row(
+            record,
+            model=args.model,
+            harness=args.harness,
+            oracle_version=args.oracle_version,
+            max_iters=max_iters,
+            max_tokens=max_tokens,
+            scenario=args.scenario,
+            task=args.task,
+            trial_id=args.trial_id,
+            job_id=args.job_id,
+            spec_id=args.spec_id,
+        )
+        row_text = json.dumps(row, indent=2)
+        print(row_text)
+        if args.row_out:
+            Path(args.row_out).write_text(row_text + "\n")
 
     return 0 if record["valid"] else 1
 

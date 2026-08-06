@@ -19,6 +19,7 @@ VALID_ROW = {
     "model": "claude-sonnet-5",
     "harness": "empty",
     "validity_class": "valid",
+    "split_group": "train",
     "tokens_input": 1000,
     "tokens_output": 200,
     "tokens_total": 1200,

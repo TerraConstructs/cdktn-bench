@@ -246,6 +246,189 @@ class TestTokenWiringEndToEnd:
         assert "fake-api-key-also-should-not-leak" not in proc.stderr
 
 
+class TestBudgetWiring:
+    """MAX_ITERS/MAX_TOKENS (docs/iac-abstraction-aws-bench-plan.md Phase 2
+    item 2 / prereg §4) — exercised entirely via --dry-run, same as every
+    other class in this file. budget.json is a real-run-only side effect
+    (see run-bench.sh's own comment) so it is deliberately NOT asserted on
+    here; only the dry-run-printed values and the injected --ak/--ae argv
+    are.
+    """
+
+    def test_max_iters_defaults_to_8_and_injects_ak_max_turns(
+        self, tmp_path: Path
+    ) -> None:
+        proc = run_dry([], env={}, tmp_path=tmp_path)
+
+        assert proc.returncode == 0, proc.stderr
+        assert "MAX_ITERS=8" in proc.stdout
+        assert "--ak max_turns=8" in proc.stdout
+
+    def test_max_iters_env_var_overrides_default(self, tmp_path: Path) -> None:
+        proc = run_dry([], env={"MAX_ITERS": "3"}, tmp_path=tmp_path)
+
+        assert proc.returncode == 0, proc.stderr
+        assert "MAX_ITERS=3" in proc.stdout
+        assert "--ak max_turns=3" in proc.stdout
+        assert "max_turns=8" not in proc.stdout
+
+    def test_max_iters_flag_overrides_env_var(self, tmp_path: Path) -> None:
+        proc = run_dry(
+            ["--max-iters", "5"], env={"MAX_ITERS": "3"}, tmp_path=tmp_path
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert "MAX_ITERS=5" in proc.stdout
+        assert "--ak max_turns=5" in proc.stdout
+
+    def test_max_iters_zero_skips_injection(self, tmp_path: Path) -> None:
+        proc = run_dry(["--max-iters", "0"], env={}, tmp_path=tmp_path)
+
+        assert proc.returncode == 0, proc.stderr
+        assert "MAX_ITERS=0" in proc.stdout
+        assert "--ak" not in proc.stdout
+        assert "max_turns" not in proc.stdout
+
+    def test_max_iters_injected_before_user_override_so_user_wins(
+        self, tmp_path: Path
+    ) -> None:
+        # harbor.cli.utils.parse_kwargs builds its dict by iterating the
+        # --ak list in argv order and overwriting on duplicate keys -- the
+        # caller's own explicit --ak max_turns=... (passed after `--`) must
+        # therefore appear AFTER the script's own injected default in argv.
+        proc = run_dry(
+            ["--", "--ak", "max_turns=20"], env={}, tmp_path=tmp_path
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        argv_line = proc.stdout.splitlines()[0]
+        assert argv_line.index("max_turns=8") < argv_line.index("max_turns=20")
+
+    def test_max_tokens_unset_by_default(self, tmp_path: Path) -> None:
+        proc = run_dry([], env={}, tmp_path=tmp_path)
+
+        assert proc.returncode == 0, proc.stderr
+        assert "MAX_TOKENS=\n" in proc.stdout
+        assert "CDKTN_BENCH_MAX_TOKENS" not in proc.stdout
+
+    def test_max_tokens_flag_sets_ae_and_dry_run_report(
+        self, tmp_path: Path
+    ) -> None:
+        proc = run_dry(
+            ["--max-tokens", "150000"], env={}, tmp_path=tmp_path
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert "MAX_TOKENS=150000" in proc.stdout
+        assert "--ae CDKTN_BENCH_MAX_TOKENS=150000" in proc.stdout
+
+    def test_max_tokens_env_var_works_too(self, tmp_path: Path) -> None:
+        proc = run_dry([], env={"MAX_TOKENS": "80000"}, tmp_path=tmp_path)
+
+        assert proc.returncode == 0, proc.stderr
+        assert "MAX_TOKENS=80000" in proc.stdout
+        assert "--ae CDKTN_BENCH_MAX_TOKENS=80000" in proc.stdout
+
+
+class TestHoldoutEquippingGuard:
+    """Runtime CLI counterpart of generator/gen.py::enforce_no_holdout_equipping
+    (2026-08-06 fix: "the holdout guard misses ... harbor's real knobs are
+    --skill/--mcp-config ... invisible to enforce_no_holdout_equipping").
+    Exercised entirely via --dry-run -- the refusal (or lack of one) must
+    be decidable before any real trial work happens. Slower than the other
+    classes in this file (each case that reaches the guard's `uv run
+    python -c` spends real subprocess time resolving specs/split.yaml),
+    so run_dry's own 10s timeout is generous enough to absorb it.
+    """
+
+    def test_refuses_skill_flag_against_a_holdout_scenario(self, tmp_path: Path) -> None:
+        # specs/split.yaml (checked in): sfn-jsonata -> holdout.
+        proc = run_dry(
+            ["--path", "tasks/anchor/sfn-jsonata-awscdk", "--", "--skill", "./my-skill"],
+            env={},
+            tmp_path=tmp_path,
+        )
+        assert proc.returncode == 1
+        assert "REFUSED" in proc.stderr
+        assert "sfn-jsonata" in proc.stderr
+        assert "HOLDOUT" in proc.stderr
+
+    def test_refuses_mcp_config_flag_against_a_holdout_scenario(self, tmp_path: Path) -> None:
+        proc = run_dry(
+            ["--path", "tasks/anchor/sfn-jsonata-awscdk", "--", "--mcp-config", "./mcp.json"],
+            env={},
+            tmp_path=tmp_path,
+        )
+        assert proc.returncode == 1
+        assert "REFUSED" in proc.stderr
+
+    def test_allows_skill_flag_against_a_train_scenario(self, tmp_path: Path) -> None:
+        # specs/split.yaml (checked in): ecs-swappiness -> train.
+        proc = run_dry(
+            ["--path", "tasks/anchor/ecs-swappiness-awscdk", "--", "--skill", "./my-skill"],
+            env={},
+            tmp_path=tmp_path,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "--skill ./my-skill" in proc.stdout
+
+    def test_holdout_scenario_with_no_equipping_flags_is_unaffected(
+        self, tmp_path: Path
+    ) -> None:
+        proc = run_dry(
+            ["--path", "tasks/anchor/sfn-jsonata-awscdk"], env={}, tmp_path=tmp_path
+        )
+        assert proc.returncode == 0, proc.stderr
+
+    def test_unclassified_path_does_not_refuse(self, tmp_path: Path) -> None:
+        # A path that doesn't resolve to any known spec id at all (no
+        # entry in specs/split.yaml) must not be treated as an implicit
+        # holdout -- see generator/split.py::spec_group's own "None is
+        # 'not yet classified', never an implicit default" contract.
+        proc = run_dry(
+            ["--path", "tasks/anchor/not-a-real-scenario-awscdk", "--", "--skill", "./s"],
+            env={},
+            tmp_path=tmp_path,
+        )
+        assert proc.returncode == 0, proc.stderr
+
+    def test_no_path_and_no_dataset_does_not_crash_on_empty_candidate_array(
+        self, tmp_path: Path
+    ) -> None:
+        # Regression test (2026-08-06 fix round 2): with neither --path nor
+        # -d/--dataset supplied, CANDIDATE_SPEC_IDS is legitimately empty
+        # (the documented KNOWN LIMITATION above the guard -- this shape
+        # cannot be statically narrowed to a scenario from argv alone).
+        # Under bash 3.2's `set -u`, expanding "${CANDIDATE_SPEC_IDS[@]}" on
+        # a genuinely empty array is an unbound-variable error unless the
+        # loop is guarded by an explicit length check first. This must exit
+        # 0 (documented can't-narrow-scenario behaviour), not crash with
+        # "CANDIDATE_SPEC_IDS[@]: unbound variable".
+        proc = run_dry(["--", "--skill", "./s"], env={}, tmp_path=tmp_path)
+        assert proc.returncode == 0, proc.stderr
+        assert "unbound variable" not in proc.stderr
+        assert "--skill ./s" in proc.stdout
+
+    def test_registry_path_with_no_dataset_flag_and_no_path_does_not_crash(
+        self, tmp_path: Path
+    ) -> None:
+        # Same shape via --registry-path (which does not populate DATASET
+        # or TASK_PATH) combined with --skill.
+        proc = run_dry(
+            [
+                "--",
+                "--registry-path",
+                "./local-registry.json",
+                "--skill",
+                "./s",
+            ],
+            env={},
+            tmp_path=tmp_path,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "unbound variable" not in proc.stderr
+
+
 class TestHelp:
     def test_help_flag_exits_zero_and_does_not_touch_token_resolution(
         self, tmp_path: Path

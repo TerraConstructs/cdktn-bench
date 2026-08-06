@@ -63,9 +63,21 @@ Usage:
 
 Exit 0 iff every declared structural_assert resolves+passes (its own
 op/expected) against its arm's reference fixture, for every arm that has
-one authored. Requires the real arm toolchain (terraform, node/npm, jq) on
-PATH, and network the first time `npm ci` needs to populate node_modules
-for awscdk/terraconstructs fixtures -- same assumptions as
+one authored. Exit 3 iff every enabled arm reports NOT_AUTHORED (no arm
+has a reference fixture yet under generator/tests/fixtures/<spec-id>/) --
+a DISTINCT, non-zero code from a real pass, added for the "check-paths is
+VACUOUS for every real scenario, yet `make ci` prints 'check-paths PASS'"
+finding (2026-08-06): before this, a spec with zero fixtures authored
+reported the exact same exit code (0) and the exact same PASS-shaped
+per-arm lines as a spec whose fixtures actually ran the real toolchain and
+resolved every path -- ci/run-ci.sh's summary table could not (and did
+not) tell the two apart. Callers that want NOT_AUTHORED to stay
+non-gating (this script's own long-documented convention -- Slice D simply
+hasn't authored a fixture yet) should treat rc==3 specially, not as a
+failure; see ci/run-ci.sh's own SKIP-status handling for the reference
+implementation. Requires the real arm toolchain (terraform, node/npm, jq)
+on PATH, and network the first time `npm ci` needs to populate
+node_modules for awscdk/terraconstructs fixtures -- same assumptions as
 gates/oracle_falsifiability.py; not wired into `make check`/test-gates for
 the same reason (mk/rails.mk's gate-preflight note).
 """
@@ -292,7 +304,10 @@ def main(argv: list[str]) -> int:
 
     spec = load_spec(args.spec_path)
     all_ok = True
+    any_authored = False
     for arm in spec.arms.enabled_arms():
+        if _is_authored(FIXTURES_DIR / spec.id / arm):
+            any_authored = True
         for r in check_arm(spec, arm):
             status = "PASS" if r.ok else "FAIL"
             first_line = r.detail.splitlines()[0] if r.detail else ""
@@ -302,11 +317,23 @@ def main(argv: list[str]) -> int:
                 for line in r.detail.splitlines()[1:]:
                     print(f"    {line}")
 
-    if all_ok:
-        print(f"\ncheck-reference-paths OK for {spec.id!r}")
-        return 0
-    print(f"\ncheck-reference-paths FAILED for {spec.id!r}", file=sys.stderr)
-    return 1
+    if not all_ok:
+        print(f"\ncheck-reference-paths FAILED for {spec.id!r}", file=sys.stderr)
+        return 1
+    if not any_authored:
+        # Distinct rc from a real pass -- see this module's own docstring
+        # ("Exit 3 iff...") for the finding this closes.
+        print(
+            f"\ncheck-reference-paths: NOT_AUTHORED for {spec.id!r} -- no enabled "
+            "arm has a reference fixture yet under generator/tests/fixtures/ "
+            "(the G2 path-resolution proof has NOT actually run for this "
+            "scenario; non-gating, but callers must not treat this the same "
+            "as a real PASS).",
+            file=sys.stderr,
+        )
+        return 3
+    print(f"\ncheck-reference-paths OK for {spec.id!r}")
+    return 0
 
 
 if __name__ == "__main__":

@@ -189,6 +189,37 @@ catches:
       hcl: "1"
       terraconstructs_override: null
 
+  - name: route-count-wrong
+    taxonomy: typed-value-trap
+    description: >
+      An extra, unnecessary API Gateway method exists beyond the three
+      routes the seeded OpenAPI spec describes (GET /widgets, POST
+      /widgets, GET /widgets/{id}) -- e.g. a stray DELETE method wired onto
+      an existing resource. This is a pure CARDINALITY fact
+      (`route-count-correct`): the tier-0 jq-compiled op table (SCHEMA.md
+      §4.2's `eq`/`in`/etc, none of which express "count of matched
+      nodes") cannot express "exactly 3", so it is caught ONLY by
+      Rego/cfn-guard's own `count()` builtin at tier 1
+      (`oracles/rego/apigw-openapi/policy.rego`'s `count(methods) != 3`
+      denial / `oracles/cfn-guard/apigw-openapi/policy.guard`'s
+      `route_count_correct` rule). Added 2026-08-06 (benchmark-integrity
+      review finding "An asymmetric tier-1 oracle-strictness break passes
+      `make ci` completely") after the existing
+      `deployment-missing-integration-dependency` catch was shown to leave
+      `route-count-correct` with ZERO covering negative fixture --
+      demonstrated directly: editing `route_count_correct`'s condition to
+      an always-false clause changed no `make falsifiability`/
+      `make grading-proof` verdict at all, because nothing exercised that
+      specific rule. This fixture is built by taking the reference
+      solution and adding ONE extra, fully-and-correctly-wired method
+      (own Lambda integration, own permission, covered by the deployment's
+      dependency edge) so every OTHER tier-0/tier-1 fact still holds --
+      isolating this fixture to ONLY the route-count-correct catch.
+    predicted_tier_caught:
+      awscdk: "1"
+      hcl: "1"
+      terraconstructs_override: null
+
 oracle:
   intent: >
     Exactly one API Gateway REST API exists, implementing every route the

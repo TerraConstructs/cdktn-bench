@@ -1,0 +1,130 @@
+name: ci
+
+# Two jobs, deliberately split by dependency weight -- see mk/ci.mk / ci/run-ci.sh
+# for the full per-check contract `make ci` runs.
+#
+# policy-only (no docker, no host toolchain beyond Python/uv):
+#   `make check` -- result-schema validation + the gates/metrics/oracles/generator
+#   pytest suite (test-gates) + the smoke-drift guard. This is the graceful-
+#   degradation floor: it must stay green even on a runner with no docker and
+#   none of terraform/node/npm/opa/cfn-guard installed, because none of those
+#   checks touch a real toolchain -- they are pure Python + a hand-authored
+#   example row. Runs on every push/PR, fast, no external installs beyond uv.
+#
+# full-ci (needs docker + the full host toolchain):
+#   `make ci` -- the policy-only battery PLUS, for every real spec under
+#   specs/*.yaml: gen-sync (regenerate + require a clean working tree),
+#   check-paths, falsifiability, and grading-proof (all four require
+#   terraform/node/npm/jq on PATH -- see generator/check_reference_paths.py
+#   and gates/oracle_falsifiability.py's own module docstrings), plus
+#   opa/cfn-guard for the tier-1 policy checks those gates shell out to
+#   (generator/gen.py's generated tests/static_tiers.sh). Docker itself is
+#   used for exactly one thing across this whole battery -- extracting each
+#   arm image's pre-baked terraform provider mirror via `docker cp`
+#   (gates/oracle_falsifiability.py::_arm_mirror_provider_versions) to prove
+#   a synthesized artifact's provider requirements are satisfiable OFFLINE --
+#   and even THAT degrades to a non-fatal warning (not a failure) if docker
+#   is unreachable or an arm image isn't built, per that function's own
+#   docstring; ci/run-ci.sh's own pre-flight step only builds an arm image if
+#   it's missing, never rebuilds one that already exists, keeping per-run cost
+#   to the host-toolchain work (terraform/npm/tsc) that dominates either way.
+#   ubuntu-latest ships docker already, so this job exercises the "docker
+#   present" path; policy-only above is what proves the "docker absent"
+#   degradation actually holds, without needing a docker-less runner to prove it.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  policy-only:
+    name: policy-only (make check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: uv sync
+        run: uv sync
+
+      - name: make check (schema validation + gates/metrics/oracles/generator pytest + smoke-drift)
+        run: make check
+
+  full-ci:
+    name: full-ci (make ci)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: uv sync
+        run: uv sync
+
+      # Pinned to the exact version arms/hcl-raw/environment/Dockerfile's own
+      # TERRAFORM_VERSION build arg uses, so CI's offline-plan behavior
+      # matches what the arm images themselves run.
+      - name: Install terraform (1.15.8, matches arms/hcl-raw/environment/Dockerfile)
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.15.8"
+          terraform_wrapper: false
+
+      # node/npm/jq ship preinstalled on the ubuntu-latest runner image;
+      # not pinned here beyond what that image provides -- only the arm
+      # Docker images themselves (which run the agent's actual solution)
+      # carry a hard version pin (DECISIONS.md "Pinning standard"). CI's
+      # own host-side node/npm is used only by
+      # generator/check_reference_paths.py / gates/oracle_falsifiability.py
+      # to run each arm's toolchain against a HAND-authored reference
+      # fixture outside any container, same tool family, looser pin.
+      - name: Show preinstalled node/npm/jq versions
+        run: node --version && npm --version && jq --version
+
+      # Pinned to the exact version + sha256 arms/hcl-raw/environment/Dockerfile
+      # and arms/terraconstructs/environment/Dockerfile install (opa 1.19.0) --
+      # this is the tool generator/gen.py's generated tests/static_tiers.sh
+      # actually invokes for tier-1 on both TF arms.
+      - name: Install opa 1.19.0 (pinned, sha256-verified — matches arms/hcl-raw + arms/terraconstructs Dockerfiles)
+        run: |
+          set -eu
+          OPA_SHA256="1dd5c5591ff856f5e20a1d66bafae9511ddf3c5552ed3b5070c70b2b6580ee3f"  # linux_amd64 (ubuntu-latest runner arch)
+          curl -fsSL -o /usr/local/bin/opa \
+            "https://github.com/open-policy-agent/opa/releases/download/v1.19.0/opa_linux_amd64_static"
+          echo "${OPA_SHA256}  /usr/local/bin/opa" | sha256sum -c -
+          sudo chmod 0755 /usr/local/bin/opa
+          opa version
+
+      # Pinned to the exact version + sha256 arms/awscdk/environment/Dockerfile
+      # installs (cfn-guard 3.2.0) -- the tool tests/static_tiers.sh invokes
+      # for tier-1 on the awscdk arm.
+      - name: Install cfn-guard 3.2.0 (pinned, sha256-verified — matches arms/awscdk Dockerfile)
+        run: |
+          set -eu
+          CFN_GUARD_ASSET="cfn-guard-v3-x86_64-linux-latest.tar.gz"  # linux_amd64 (ubuntu-latest runner arch)
+          CFN_GUARD_SHA256="c78f7a1a6c2674f7edbf0ebdc0590126487a14b103e434aea31205a4d1034d21"
+          curl -fsSL -o /tmp/cfn-guard.tar.gz \
+            "https://github.com/aws-cloudformation/cloudformation-guard/releases/download/3.2.0/${CFN_GUARD_ASSET}"
+          echo "${CFN_GUARD_SHA256}  /tmp/cfn-guard.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/cfn-guard.tar.gz -C /tmp
+          sudo install -m 0755 /tmp/cfn-guard-v3-*-linux-latest/cfn-guard /usr/local/bin/cfn-guard
+          rm -rf /tmp/cfn-guard.tar.gz /tmp/cfn-guard-v3-*-linux-latest
+          cfn-guard --version
+
+      - name: Confirm docker is reachable (informational -- make ci degrades gracefully if not)
+        run: docker info || echo "::warning::docker unreachable on this runner -- make ci's provider-mirror-coverage sub-check will degrade to warnings (see gates/oracle_falsifiability.py::_arm_mirror_provider_versions); every other check is unaffected."
+
+      - name: make ci
+        run: make ci

@@ -11,7 +11,7 @@
 #   make gen-all      # regenerate every specs/*.yaml (skips specs/_toy/)
 #   make parity-all    # parity-check every specs/*.yaml (skips specs/_toy/)
 
-.PHONY: gen parity falsifiability check-paths grading-proof gen-all parity-all validate-spec
+.PHONY: gen parity falsifiability check-paths tier1-coverage grading-proof gen-all parity-all validate-spec
 
 # Validate a spec against generator/spec_model.py without generating anything.
 validate-spec:
@@ -53,6 +53,25 @@ check-paths:
 	@if [ -z "$(SPEC)" ]; then echo "usage: make check-paths SPEC=specs/foo.yaml" >&2; exit 2; fi
 	uv run python generator/check_reference_paths.py $(SPEC)
 
+# Benchmark-integrity finding (2026-08-06, round 2): "An asymmetric tier-1
+# oracle-strictness break passes `make ci` completely" -- falsifiability
+# only exercises a tier-1 structural_assert that SOME catch's broken/
+# fixture happens to violate; a spec can declare more tier-1 asserts than
+# it has catches predicting a tier-1 catch, leaving the excess with zero
+# covering negative fixture (proven: apigw-openapi's `route-count-correct`
+# had none until this same fix added a covering catch). This is a coarse,
+# NUMERIC coverage floor (count(catches) >= count(tier-1 asserts) per arm),
+# not a true per-assert mapping -- see
+# generator/check_tier1_coverage.py's own module docstring for exactly
+# what it does and does not prove. Exit 0 = floor met; exit 3 = SKIP (a
+# TRACKED, pre-existing gap no worse than its recorded
+# `_KNOWN_UNCOVERED_GAP` baseline, non-gating); exit 1 = FAIL (gating -- a
+# gap that got WORSE than its baseline, i.e. NEW drift). Pure spec-model
+# computation, no toolchain required.
+tier1-coverage:
+	@if [ -z "$(SPEC)" ]; then echo "usage: make tier1-coverage SPEC=specs/foo.yaml" >&2; exit 2; fi
+	uv run python generator/check_tier1_coverage.py $(SPEC)
+
 # Benchmark-integrity finding F2 (2026-08-06): proves a scenario is
 # GRADEABLE for real -- a correct reference solution scores reward 1.0 AND
 # a tier-1-policy-family negative fixture scores reward 0.0, across every
@@ -75,10 +94,17 @@ grading-proof:
 # a benchmark scenario — specs/SCHEMA.md §7 — so it is excluded from the
 # "generate everything real" bulk targets and only ever run explicitly via
 # `make gen SPEC=specs/_toy/toy-ssm-parameter.yaml`).
+#
+# specs/split.yaml (Slice E, DECISIONS.md Amendment 10 — train/holdout
+# scenario split, generator/split.py) is skipped too: it lives alongside the
+# specs it splits but is metadata, not a spec (load_spec() would reject its
+# shape against spec_model.Spec anyway — the skip below just gives a clean
+# "not a spec" message instead of a validation stack trace).
 gen-all:
 	@set -e; \
 	for spec in specs/*.yaml; do \
 		[ -e "$$spec" ] || continue; \
+		[ "$$(basename "$$spec")" = "split.yaml" ] && continue; \
 		echo "==> gen: $$spec"; \
 		uv run python generator/gen.py "$$spec"; \
 	done
@@ -87,6 +113,7 @@ parity-all:
 	@set -e; \
 	for spec in specs/*.yaml; do \
 		[ -e "$$spec" ] || continue; \
+		[ "$$(basename "$$spec")" = "split.yaml" ] && continue; \
 		echo "==> parity: $$spec"; \
 		uv run python generator/check_parity.py "$$spec"; \
 	done

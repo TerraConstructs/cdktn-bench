@@ -52,10 +52,16 @@ check-result-schema:
 # either suite at all -- including the tier05_jsonata regression tests
 # guarding the materialize()-container-fallback fix (this same review
 # round) -- so a regression there could land and stay green in `make check`
-# forever. All four suites pass together as of this fix.
+# forever. ALSO runs test/ (2026-08-06 fix, same orphaned-code pattern:
+# test/test_run_bench_wrapper.py's MAX_ITERS/MAX_TOKENS --dry-run coverage
+# and test/test_resolve_claude_token.py had ZERO coverage from `make
+# check`/`make ci`/either ci.yml job -- pure Python + bash --dry-run, no
+# toolchain needed, so it fits the policy-only job's graceful-degradation
+# floor same as the other four). All five suites pass together as of this
+# fix.
 test-gates:
-	@echo "==> pytest: gates/ metrics/ oracles/ generator/"
-	uv run pytest gates metrics oracles generator -q
+	@echo "==> pytest: gates/ metrics/ oracles/ generator/ test/"
+	uv run pytest gates metrics oracles generator test -q
 
 # --- Gate 1 (preflight) wiring ----------------------------------------------
 #

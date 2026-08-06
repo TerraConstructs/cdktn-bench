@@ -70,6 +70,11 @@ def generate_rows() -> list[tuple[str, dict[str, Any]]]:
                 task=f"fixture/{arm}/{scenario}",
                 trial_id=f"{arm}-{scenario}",
                 job_id="fixture-job",
+                # No real spec.id -- these are synthetic gate fixtures, not
+                # a real scenario -- resolve_split_group() correctly falls
+                # back to "unclassified" (proves the fallback path, not
+                # just the classified one, round-trips through the schema).
+                spec_id=None,
             )
             rows.append((f"{arm}/{scenario}", row))
     return rows

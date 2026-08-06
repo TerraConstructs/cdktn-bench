@@ -13,6 +13,7 @@
     "model",
     "harness",
     "validity_class",
+    "split_group",
     "tokens_input",
     "tokens_output",
     "tokens_total",
@@ -40,6 +41,11 @@
       "type": "string",
       "enum": ["awscdk", "hcl-raw", "terraconstructs"],
       "description": "Which of the three shipped arms produced this trial (DECISIONS.md Amendment 2)."
+    },
+    "split_group": {
+      "type": "string",
+      "enum": ["train", "holdout", "unclassified"],
+      "description": "REQUIRED. The trial's scenario's train/holdout split group (generator/split.py::spec_group, specs/split.yaml, prereg §7.1 / DECISIONS.md Amendment 10), as of the time this row was emitted. \"unclassified\" means the scenario had no entry in specs/split.yaml yet (a scenario authored before the next re-split). Fixes the finding that the train/holdout split was unenforceable at the layer that matters -- the published number: metrics/tokens_to_green.py used to pool every row into cells keyed on (arm, model, harness) only, silently mixing train scenarios (the ones equipping is explicitly allowed to be tuned against) with holdout scenarios in one headline metric. Downstream analysis MUST stratify on this field for any headline number -- prereg §7.1 calls the train/holdout boundary \"the methodological safeguard most likely to be skipped and most damaging if it is.\""
     },
     "model": {
       "type": "string",
@@ -93,7 +99,12 @@
     "scenario": {
       "type": "string",
       "minLength": 1,
-      "description": "Scenario id (scenarios/<id>/scenario.toml [scenario].name)."
+      "description": "Scenario id (scenarios/<id>/scenario.toml [scenario].name) -- the aws-bench AWS scenario, e.g. \"anchor\". In this repo every task lives under the single \"anchor\" AWS scenario, so this field is CONSTANT across the whole benchmark and MUST NOT be used to group/attribute results by benchmark scenario (sfn-jsonata vs. apigw-openapi, ...) -- see spec_id for that."
+    },
+    "spec_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "REQUIRED-in-spirit (not schema-required, to keep old rows valid): the cdktn-bench BENCHMARK spec id (specs/<spec_id>.yaml, e.g. \"apigw-openapi\", \"sfn-jsonata\") this trial's task was generated from -- generator/gen.py::task_dir()'s own `<spec-id>-<arm>` naming convention. Distinct from `scenario` (always \"anchor\", the aws-bench AWS scenario every task in this repo shares) and from `task` (task.toml's own id). This is the field downstream per-scenario grouping (metrics/tokens_to_green.py::build_tier_attribution, _group_by_scenario/by_scenario/scenario_coverage) and prereg §7's paired-by-scenario analysis MUST key on -- `scenario` degenerates to one group (\"anchor\") for every benchmark row and cannot support that decomposition. Populated by gates/emit_result.py::to_result_row from its own `spec_id=` kwarg (already resolved there for split_group)."
     },
     "task": {
       "type": "string",
@@ -123,7 +134,27 @@
     "n_llm_calls": {
       "type": "integer",
       "minimum": 0,
-      "description": "Iteration count (LLM calls in the trial), for iterations-to-green."
+      "description": "Iteration count (LLM calls in the trial), for iterations-to-green. Populated by gates/emit_result.py::extract_n_llm_calls() from agent/trajectory.json (mirrors aws_bench/metrics/run_data.py::_llm_usage_from_trajectory's own n_llm_calls accumulation), since result.json's agent_result never carries this field itself."
+    },
+    "tier_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Per-catch tier-attribution evidence (docs/iac-abstraction-aws-bench-plan.md Phase 2 item 3 / prereg §4's per-tier catch attribution), read by gates/emit_result.py::read_tier_evidence() from verifier/test-stdout.txt. tier0 is REAL per-assert evidence (each tier-\"0\" structural_assert echoes its own PASS/FAIL independently); tier1_status is a single BUNDLED verdict covering every tier-\"1\" structural_assert for this arm/scenario at once (the oracle itself only ever computes one opa-eval/cfn-guard-validate verdict per bundle -- there is no per-tier-1-catch breakdown to read). Absent entirely when verifier/test-stdout.txt doesn't exist (verifier never ran a static_tiers.sh-shaped test.sh); present with tier0={} and tier1_status=null when the file exists but a toolchain step failed before tier-0/1 ever ran.",
+      "properties": {
+        "tier0": {
+          "type": "object",
+          "description": "structural_assert name -> \"PASS\" | \"FAIL\", for every tier-\"0\" assert this arm/scenario declares and that actually ran before any earlier toolchain step failed.",
+          "additionalProperties": {
+            "type": "string",
+            "enum": ["PASS", "FAIL"]
+          }
+        },
+        "tier1_status": {
+          "type": ["string", "null"],
+          "enum": ["PASS", "FAIL", "SKIPPED_NO_ASSERTS", "TOOL_MISSING", "SKIPPED_STUB", null],
+          "description": "The single bundled tier-1 verdict (generator/gen.py::build_static_tiers_sh's own tier1_status bash variable), or null if the verifier never reached the tier-1 block (an earlier toolchain/tier-0 step already wrote reward.txt and exited)."
+        }
+      }
     },
     "wall_seconds": {
       "type": "number",

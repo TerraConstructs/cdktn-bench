@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -23,11 +24,16 @@ from gates.emit_result import (
     VALID,
     build_result_record,
     classify_infra_failure,
+    extract_n_llm_calls,
+    read_budget,
     read_tier1_not_verifiable,
+    read_tier_evidence,
+    resolve_split_group,
     to_result_row,
 )
-from gates.tests.conftest import ARMS, SCENARIOS, trial_dir
+from gates.tests.conftest import ARMS, REPO_ROOT, SCENARIOS, trial_dir
 from metrics.validate_result import validate_result
+from oracles.tests.toolcheck import find_tool
 
 # @sha256: short-circuits compute_equipping_hash's docker-inspect fallback
 # path (gates/equipping.py `_resolve_image_digest`) so these tests never
@@ -467,6 +473,38 @@ class TestToResultRowIsARealSchemaProducer:
         assert row["harness"] == "tuned"
         assert validate_result(row) == []
 
+    def test_spec_id_is_persisted_on_the_row_distinct_from_scenario(self, task_dir) -> None:
+        # 2026-08-06 fix round 2: spec_id (the cdktn-bench BENCHMARK
+        # scenario id, e.g. "apigw-openapi") used to be consumed only
+        # transiently to resolve split_group and then discarded -- never
+        # actually persisted on the row. scenario is the aws-bench AWS
+        # scenario ("anchor" for every task in this repo) and must not be
+        # conflated with it; downstream per-scenario grouping
+        # (metrics/tokens_to_green.py) needs spec_id on the row itself.
+        record = build_result_record(
+            trial_dir("hcl-raw", "genuine"), "hcl-raw", task_dir, FAKE_DIGEST_IMAGE_REF, {}
+        )
+        row = to_result_row(
+            record,
+            model="claude-sonnet-5",
+            harness="tuned",
+            oracle_version="oracles@abc123",
+            scenario="anchor",
+            spec_id="apigw-openapi",
+        )
+        assert row["scenario"] == "anchor"
+        assert row["spec_id"] == "apigw-openapi"
+        assert row["spec_id"] != row["scenario"]
+        assert validate_result(row) == []
+
+    def test_spec_id_absent_when_not_passed(self, task_dir) -> None:
+        record = build_result_record(
+            trial_dir("hcl-raw", "genuine"), "hcl-raw", task_dir, FAKE_DIGEST_IMAGE_REF, {}
+        )
+        row = to_result_row(record, model="claude-sonnet-5", harness="empty", oracle_version="oracles@fixture")
+        assert "spec_id" not in row
+        assert validate_result(row) == []
+
 
 def test_missing_trial_dir_raises() -> None:
     with pytest.raises(FileNotFoundError):
@@ -587,3 +625,353 @@ class TestTier1NotVerifiableMarker:
         row = to_result_row(record, model="claude-sonnet-5", harness="empty", oracle_version="oracles@fixture")
         assert row["tier1_not_verifiable"] is True
         assert validate_result(row) == []
+
+
+class TestTierEvidence:
+    """docs/iac-abstraction-aws-bench-plan.md Phase 2 item 3's per-catch
+    tier-attribution table needs per-assert PASS/FAIL evidence from
+    verifier/test-stdout.txt. See read_tier_evidence's own docstring for
+    the tier-0-real / tier-1-bundle-only distinction these tests pin.
+    """
+
+    _REALISTIC_STDOUT = (
+        "== build: npm run build ==\n"
+        "== synth: npx cdk synth --no-lookups --quiet -o cdk.out ==\n"
+        "\n"
+        "== tier-0: structural asserts (2 applicable) ==\n"
+        "  PASS [taskdef-exists]\n"
+        "  FAIL [swappiness-value-correct]: op=eq expected=42 resolved=[41]\n"
+        "\n"
+        "== tier-1: cfn-guard ==\n"
+        "# tier-1 (Rego/cfn-guard-graded) structural_asserts for this arm: (none)\n"
+        "\n"
+        "== summary: tier0_pass=0 tier1_status=SKIPPED_NO_ASSERTS ==\n"
+    )
+
+    def _trial_with_stdout(self, tmp_path: Path, arm: str, stdout: str) -> Path:
+        trial = tmp_path / "trial"
+        shutil.copytree(trial_dir(arm, "genuine"), trial)
+        verifier_dir = trial / "verifier"
+        verifier_dir.mkdir(parents=True, exist_ok=True)
+        (verifier_dir / "test-stdout.txt").write_text(stdout)
+        return trial
+
+    def test_absent_file_returns_none(self) -> None:
+        # The checked-in genuine/ fixtures carry no verifier/ dir at all.
+        assert read_tier_evidence(trial_dir("awscdk", "genuine")) is None
+
+    def test_realistic_output_parses_tier0_and_tier1_summary(self, tmp_path: Path) -> None:
+        trial = self._trial_with_stdout(tmp_path, "awscdk", self._REALISTIC_STDOUT)
+        evidence = read_tier_evidence(trial)
+        assert evidence == {
+            "tier0": {"taskdef-exists": "PASS", "swappiness-value-correct": "FAIL"},
+            "tier1_status": "SKIPPED_NO_ASSERTS",
+        }
+
+    @pytest.mark.skipif(
+        find_tool("terraform") is None or find_tool("jq") is None,
+        reason="terraform and/or jq not found on PATH -- see oracles.tests.toolcheck.find_tool",
+    )
+    def test_real_generated_output_round_trips_through_read_tier_evidence(self) -> None:
+        """Producer/consumer pinning (residual finding, 2026-08-06: "the
+        per-catch tier-attribution pipeline rests on text-scraping ...
+        with no producer<->consumer test" -- `_REALISTIC_STDOUT` above is a
+        frozen, hand-written literal, never output captured from a real
+        generated `tests/static_tiers.sh` run, so a format change in
+        `generator/gen.py`'s PASS/FAIL echoes or its `== summary: ... ==`
+        template would silently yield `tier0: {}` with nothing going red).
+
+        Runs the REAL generated `tests/static_tiers.sh` for the toy spec's
+        hcl_raw arm (smallest toolchain footprint -- same precedent as
+        `gates/tests/test_oracle_falsifiability.py`, which needs neither
+        `npm ci` nor a mock-STS/cdktn synth step) via
+        `gates.oracle_falsifiability._run_solve`, and feeds its ACTUAL
+        stdout through `read_tier_evidence()` -- not a hand-frozen
+        literal. A future change to `generator/gen.py`'s echo/summary
+        format now has to break THIS test too, not just the fixture above.
+        """
+        sys.path.insert(0, str(REPO_ROOT / "generator"))
+        from gen import task_dir as _task_dir  # noqa: PLC0415
+        from spec_model import load_spec  # noqa: PLC0415
+
+        from gates.oracle_falsifiability import SOLVE_STUB_MARKER, _run_solve
+
+        spec = load_spec(REPO_ROOT / "specs" / "_toy" / "toy-ssm-parameter.yaml")
+        arm = "hcl_raw"
+        task = _task_dir(spec, arm)
+        solve_sh = task / "solution" / "solve.sh"
+        if not solve_sh.exists() or SOLVE_STUB_MARKER in solve_sh.read_text():
+            pytest.skip("toy hcl_raw solve.sh is still a generator stub")
+
+        result = _run_solve(task, arm, solve_sh, "real-round-trip")
+        assert result.reward == 1.0, f"reference solution should score 1.0: {result.detail[-2000:]}"
+
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp_s:
+            trial = Path(tmp_s) / "trial"
+            verifier_dir = trial / "verifier"
+            verifier_dir.mkdir(parents=True)
+            (verifier_dir / "test-stdout.txt").write_text(result.detail)
+
+            evidence = read_tier_evidence(trial)
+
+        assert evidence is not None
+        assert evidence["tier0"], "expected at least one real tier-0 PASS/FAIL line"
+        assert set(evidence["tier0"].values()) <= {"PASS", "FAIL"}
+        assert evidence["tier1_status"] in (
+            "PASS",
+            "FAIL",
+            "SKIPPED_NO_ASSERTS",
+            "TOOL_MISSING",
+            "SKIPPED_STUB",
+        )
+
+
+    def test_toolchain_failure_before_tier0_yields_empty_tier0_and_none_tier1(
+        self, tmp_path: Path
+    ) -> None:
+        # Mirrors a real early exit: generator/gen.py's toolchain_block
+        # writes reward.txt and `exit 0`'s before tier-0/1 ever run.
+        trial = self._trial_with_stdout(tmp_path, "awscdk", "== build: npm run build ==\nBUILD FAILED\n")
+        evidence = read_tier_evidence(trial)
+        assert evidence == {"tier0": {}, "tier1_status": None}
+
+    def test_various_tier1_status_values_parse(self, tmp_path: Path) -> None:
+        for status in ("PASS", "FAIL", "TOOL_MISSING", "SKIPPED_STUB", "SKIPPED_NO_ASSERTS"):
+            stdout = f"== summary: tier0_pass=1 tier1_status={status} ==\n"
+            trial = self._trial_with_stdout(tmp_path / status, "awscdk", stdout)
+            assert read_tier_evidence(trial)["tier1_status"] == status
+
+    def test_wired_into_record_and_schema_valid_row(self, task_dir, tmp_path: Path) -> None:
+        trial = self._trial_with_stdout(tmp_path, "hcl-raw", self._REALISTIC_STDOUT)
+        record = build_result_record(trial, "hcl-raw", task_dir, FAKE_DIGEST_IMAGE_REF, {})
+        assert record["tier_evidence"] == {
+            "tier0": {"taskdef-exists": "PASS", "swappiness-value-correct": "FAIL"},
+            "tier1_status": "SKIPPED_NO_ASSERTS",
+        }
+        row = to_result_row(record, model="claude-sonnet-5", harness="empty", oracle_version="oracles@fixture")
+        assert row["tier_evidence"] == record["tier_evidence"]
+        assert validate_result(row) == []
+
+    def test_absent_evidence_omits_the_row_field_entirely(self, task_dir) -> None:
+        # No verifier/test-stdout.txt in the checked-in genuine/ fixture.
+        record = build_result_record(
+            trial_dir("awscdk", "genuine"), "awscdk", task_dir, FAKE_DIGEST_IMAGE_REF, {}
+        )
+        assert record["tier_evidence"] is None
+        row = to_result_row(record, model="claude-sonnet-5", harness="empty", oracle_version="oracles@fixture")
+        assert "tier_evidence" not in row
+        assert validate_result(row) == []
+
+    def test_evidence_attached_even_on_an_invalid_trial(self, task_dir, tmp_path: Path) -> None:
+        trial = tmp_path / "trial"
+        shutil.copytree(trial_dir("awscdk", "bypass"), trial)
+        (trial / "verifier").mkdir(parents=True, exist_ok=True)
+        (trial / "verifier" / "test-stdout.txt").write_text(self._REALISTIC_STDOUT)
+        record = build_result_record(trial, "awscdk", task_dir, FAKE_DIGEST_IMAGE_REF, {})
+        assert record["validity_class"] == INVALID_BYPASS
+        assert record["tier_evidence"]["tier1_status"] == "SKIPPED_NO_ASSERTS"
+
+
+class TestReadBudget:
+    """gates/emit_result.py::read_budget -- the read side of the
+    "MAX_TOKENS is inert and budget.json has no reader" fix (2026-08-06):
+    scripts/run-bench.sh writes `<jobs-dir>/budget.json`; before this
+    function nothing in the repo ever opened it.
+    """
+
+    def test_no_jobs_dir_returns_none_none(self) -> None:
+        assert read_budget(None) == (None, None)
+
+    def test_missing_file_returns_none_none(self, tmp_path: Path) -> None:
+        assert read_budget(tmp_path) == (None, None)
+
+    def test_reads_both_values(self, tmp_path: Path) -> None:
+        (tmp_path / "budget.json").write_text(json.dumps({"max_iters": 8, "max_tokens": 50000}))
+        assert read_budget(tmp_path) == (8, 50000)
+
+    def test_null_max_tokens_is_none(self, tmp_path: Path) -> None:
+        (tmp_path / "budget.json").write_text(json.dumps({"max_iters": 8, "max_tokens": None}))
+        assert read_budget(tmp_path) == (8, None)
+
+    def test_malformed_json_degrades_to_none_none(self, tmp_path: Path) -> None:
+        (tmp_path / "budget.json").write_text("{not valid json")
+        assert read_budget(tmp_path) == (None, None)
+
+
+class TestResolveSplitGroup:
+    """gates/emit_result.py::resolve_split_group -- populates the
+    schema-REQUIRED split_group field (2026-08-06 fix: "the train/holdout
+    split is unenforceable at the layer that matters -- the published
+    number")."""
+
+    def test_no_spec_id_is_unclassified(self) -> None:
+        assert resolve_split_group(None) == "unclassified"
+
+    def test_known_train_spec(self) -> None:
+        # specs/split.yaml (checked in): ecs-swappiness/apigw-openapi ->
+        # train, s3-lambda-log-retention/sfn-jsonata -> holdout.
+        assert resolve_split_group("ecs-swappiness") == "train"
+
+    def test_known_holdout_spec(self) -> None:
+        assert resolve_split_group("sfn-jsonata") == "holdout"
+
+    def test_unknown_spec_id_is_unclassified(self) -> None:
+        assert resolve_split_group("not-a-real-spec-id") == "unclassified"
+
+
+class TestNLlmCalls:
+    """docs/iac-abstraction-aws-bench-plan.md Phase 2 item 3's
+    iterations-to-green needs n_llm_calls, mirroring
+    aws_bench/metrics/run_data.py::_llm_usage_from_trajectory's own
+    accumulation exactly (see extract_n_llm_calls's own docstring)."""
+
+    def _trial_with_trajectory(self, tmp_path: Path, extra_steps: list[dict]) -> Path:
+        """Copy the checked-in genuine/awscdk fixture and APPEND
+        `extra_steps` to its trajectory's own `steps` list (never replace
+        wholesale) -- the fixture's original steps carry the real
+        tsc/cdk-synth tool-call evidence the audit gate (gates/audit.py)
+        needs to classify the trial as VALID in the first place; discarding
+        them would make every test here exercise the invalid-bypass path
+        instead of the n_llm_calls extraction this class is testing. The
+        original steps carry no `metrics`/`llm_call_count` of their own
+        (verified: gates/tests/fixtures/awscdk/genuine/agent/trajectory.json
+        has neither key on any step), so they always contribute exactly 0
+        to extract_n_llm_calls()'s sum -- safe to append to without
+        disturbing this class's exact-count assertions.
+        """
+        trial = tmp_path / "trial"
+        shutil.copytree(trial_dir("awscdk", "genuine"), trial)
+        traj_path = trial / "agent" / "trajectory.json"
+        data = json.loads(traj_path.read_text())
+        data["steps"] = list(data.get("steps", [])) + extra_steps
+        traj_path.write_text(json.dumps(data))
+        return trial
+
+    def test_no_trajectory_file_returns_none_not_zero(self, tmp_path: Path) -> None:
+        # "unknown" (no trajectory to read at all) must never be
+        # indistinguishable from "0" (a real, parsed zero-step answer) --
+        # residual finding, 2026-08-06.
+        trial = tmp_path / "trial"
+        trial.mkdir()
+        assert extract_n_llm_calls(trial) is None
+
+    def test_malformed_trajectory_returns_none_not_zero(self, tmp_path: Path) -> None:
+        trial = tmp_path / "trial"
+        (trial / "agent").mkdir(parents=True)
+        (trial / "agent" / "trajectory.json").write_text("{not valid json")
+        assert extract_n_llm_calls(trial) is None
+
+    def test_missing_steps_key_returns_none_not_zero(self, tmp_path: Path) -> None:
+        trial = tmp_path / "trial"
+        (trial / "agent").mkdir(parents=True)
+        (trial / "agent" / "trajectory.json").write_text(json.dumps({"no_steps_key": True}))
+        assert extract_n_llm_calls(trial) is None
+
+    def test_checked_in_genuine_fixtures_have_no_per_step_metrics(self) -> None:
+        # The hand-authored gates/tests fixtures were built for audit-gate
+        # testing and carry no per-step `metrics`/`llm_call_count` --
+        # extract_n_llm_calls degrades to 0 for them, matching upstream's
+        # own "no signal" branch, not a crash or a guess.
+        assert extract_n_llm_calls(trial_dir("awscdk", "genuine")) == 0
+
+    def test_llm_call_count_int_is_summed(self, tmp_path: Path) -> None:
+        steps = [
+            {"source": "user", "message": "hi"},
+            {"source": "agent", "llm_call_count": 2},
+            {"source": "agent", "llm_call_count": 3},
+        ]
+        trial = self._trial_with_trajectory(tmp_path, steps)
+        assert extract_n_llm_calls(trial) == 5
+
+    def test_metrics_present_without_llm_call_count_counts_as_one(self, tmp_path: Path) -> None:
+        steps = [
+            {"source": "agent", "metrics": {"prompt_tokens": 10}},
+            {"source": "agent", "metrics": {"prompt_tokens": 20}},
+        ]
+        trial = self._trial_with_trajectory(tmp_path, steps)
+        assert extract_n_llm_calls(trial) == 2
+
+    def test_non_agent_source_steps_are_ignored(self, tmp_path: Path) -> None:
+        steps = [
+            {"source": "user", "llm_call_count": 99},
+            {"source": "observation", "metrics": {"prompt_tokens": 1}},
+            {"source": "agent", "llm_call_count": 1},
+        ]
+        trial = self._trial_with_trajectory(tmp_path, steps)
+        assert extract_n_llm_calls(trial) == 1
+
+    def test_agent_step_with_neither_signal_contributes_zero(self, tmp_path: Path) -> None:
+        steps = [{"source": "agent", "message": "just talking, no LLM metrics recorded"}]
+        trial = self._trial_with_trajectory(tmp_path, steps)
+        assert extract_n_llm_calls(trial) == 0
+
+    def test_wired_into_record_and_row(self, task_dir, tmp_path: Path) -> None:
+        steps = [{"source": "agent", "llm_call_count": 4}]
+        trial = self._trial_with_trajectory(tmp_path, steps)
+        record = build_result_record(trial, "awscdk", task_dir, FAKE_DIGEST_IMAGE_REF, {})
+        assert record["n_llm_calls"] == 4
+        row = to_result_row(record, model="claude-sonnet-5", harness="empty", oracle_version="oracles@fixture")
+        assert row["n_llm_calls"] == 4
+        assert validate_result(row) == []
+
+    def test_invalid_trial_never_computes_n_llm_calls(self, task_dir) -> None:
+        # build_result_record only calls extract_n_llm_calls() on the VALID
+        # branch (mirrors _extract_score_fields()'s own placement) -- an
+        # invalid trial's record simply has no n_llm_calls key, same as it
+        # has no reward/tokens.
+        record = build_result_record(
+            trial_dir("awscdk", "bypass"), "awscdk", task_dir, FAKE_DIGEST_IMAGE_REF, {}
+        )
+        assert "n_llm_calls" not in record
+
+
+class TestToResultRowAutoCensoring:
+    """to_result_row's censored=None auto-detection from max_iters/max_tokens
+    (docs/iac-abstraction-aws-bench-plan.md Phase 2 item 2's budget cap)."""
+
+    def _row_for(self, tokens_total: int, reward: float, n_llm_calls: int | None, **kwargs):
+        record = {
+            "arm": "awscdk",
+            "validity_class": VALID,
+            "equipping_hash": "a" * 64,
+            "reward": reward,
+            "n_input_tokens": tokens_total,
+            "n_output_tokens": 0,
+        }
+        if n_llm_calls is not None:
+            record["n_llm_calls"] = n_llm_calls
+        return to_result_row(
+            record, model="claude-sonnet-5", harness="empty", oracle_version="oracles@fixture", **kwargs
+        )
+
+    def test_no_budget_params_defaults_to_false_backward_compatible(self) -> None:
+        row = self._row_for(tokens_total=999999, reward=0.0, n_llm_calls=999)
+        assert row["censored"] is False
+
+    def test_explicit_censored_wins_over_auto_detection(self) -> None:
+        row = self._row_for(
+            tokens_total=10, reward=0.0, n_llm_calls=1, censored=True, max_tokens=100000
+        )
+        assert row["censored"] is True
+
+    def test_success_is_never_censored_even_over_budget(self) -> None:
+        row = self._row_for(tokens_total=999999, reward=1.0, n_llm_calls=999, max_tokens=1000, max_iters=1)
+        assert row["censored"] is False
+
+    def test_tokens_over_max_tokens_is_censored(self) -> None:
+        row = self._row_for(tokens_total=150000, reward=0.0, n_llm_calls=1, max_tokens=100000)
+        assert row["censored"] is True
+
+    def test_tokens_under_max_tokens_is_not_censored_by_tokens_alone(self) -> None:
+        row = self._row_for(tokens_total=500, reward=0.0, n_llm_calls=1, max_tokens=100000)
+        assert row["censored"] is False
+
+    def test_iters_at_or_over_max_iters_is_censored(self) -> None:
+        row = self._row_for(tokens_total=500, reward=0.0, n_llm_calls=8, max_iters=8)
+        assert row["censored"] is True
+
+    def test_missing_n_llm_calls_does_not_crash_max_iters_check(self) -> None:
+        row = self._row_for(tokens_total=500, reward=0.0, n_llm_calls=None, max_iters=8)
+        assert row["censored"] is False
