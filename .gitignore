@@ -22,4 +22,10 @@ build/
 # aws-bench local run artifacts (jobs are created wherever `aws-bench run` is invoked)
 jobs/
 
+# gates/oracle_falsifiability.py's per-arm offline provider-mirror cache
+# (extracted from cdktn-bench/<arm>:dev via `docker cp` -- see
+# _arm_mirror_provider_versions's own docstring). Regenerated on demand,
+# never hand-edited, safe to delete at any time.
+.cache/
+
 # uv.lock IS tracked (do not ignore) — kept for reproducible dependency pins.

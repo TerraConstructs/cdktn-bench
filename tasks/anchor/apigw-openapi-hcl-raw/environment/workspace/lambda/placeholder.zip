@@ -1,0 +1,11 @@
+placeholder lambda deployment package -- not a real zip archive.
+`terraform plan` only needs this file to EXIST on disk so
+filebase64sha256()/filename can resolve a source_code_hash at plan
+time; it never unzips or otherwise validates the content (that only
+happens on a real `apply`, which this benchmark's v1 oracle never
+runs -- DECISIONS.md, synth/plan-only). awscdk and terraconstructs
+solutions do not need this file at all (both have an inline-code
+construct: aws_cdk_lib.aws_lambda.Code.fromInline /
+terraconstructs compute.Code.fromInline), so it exists purely for
+hcl_raw, which has no inline-code equivalent -- a real
+aws_lambda_function resource always requires a code package.

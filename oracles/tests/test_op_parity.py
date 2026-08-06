@@ -279,3 +279,29 @@ class TestNotExistsParity:
     def test_present_field_fails_both(self, tmp_path: Path) -> None:
         doc = {"ContainerDefinitions": [{"Swappiness": 60}]}
         _agree(tmp_path, "$.ContainerDefinitions[*].Swappiness", "not_exists", None, doc)
+
+
+class TestNotRegexParity:
+    """not_regex -- added for specs/sfn-jsonata.yaml's mode-mixing catch
+    ("no raw un-evaluated JSONPath string anywhere in this JSONata-mode
+    ASL"). Literal negation of `regex`'s own per-value match test, except
+    0 resolved nodes vacuously PASSES (nothing present to violate a "must
+    never contain X" rule) rather than failing `regex`'s own ">=1 node"
+    requirement."""
+
+    def test_pattern_absent_passes_both(self, tmp_path: Path) -> None:
+        doc = {"Definition": '{"Output": "{% $states.input.orders %}"}'}
+        _agree(tmp_path, "$.Definition", "not_regex", r'"\$\.', doc)
+
+    def test_pattern_present_fails_both(self, tmp_path: Path) -> None:
+        # A raw, un-evaluated JSONPath string ("$.orders") used as a
+        # literal value instead of a proper {% ... %} expression -- exactly
+        # the mode-mixing trap this op exists to catch.
+        doc = {"Definition": '{"Output": "$.orders"}'}
+        _agree(tmp_path, "$.Definition", "not_regex", r'"\$\.', doc)
+
+    def test_zero_resolved_nodes_passes_both(self, tmp_path: Path) -> None:
+        # No node at all to check -- vacuously compliant, unlike `regex`
+        # (which requires >=1 match).
+        doc = {"Other": "irrelevant"}
+        _agree(tmp_path, "$.Definition", "not_regex", r'"\$\.', doc)

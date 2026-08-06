@@ -26,6 +26,7 @@ from oracles.lib.tier05_jsonata import (
     evaluate,
     find_asl_documents,
     jsonata_expressions,
+    materialize,
     run_tier05,
     run_tier05_or_raise,
     strip_braces,
@@ -53,6 +54,11 @@ def asl_bad() -> dict:
 @pytest.fixture
 def asl_multi_good() -> dict:
     return _load_json("mini_asl_cfn_multi_good.json")
+
+
+@pytest.fixture
+def asl_decomposed_output() -> dict:
+    return _load_json("mini_asl_cfn_decomposed_output.json")
 
 
 class TestStripBraces:
@@ -229,17 +235,29 @@ class TestRunTier05:
         by_path = {r.expression_path: r for r in results}
         # 2 results: the declared-but-nonexistent case itself (must FAIL,
         # not vanish), PLUS the real expression the artifact does contain,
-        # which is now uncovered by any case (must ALSO fail -- see
-        # test_uncovered_expression_is_caught).
+        # which is now uncovered by any case -- INFORMATIONAL only, not a
+        # failure (residual-findings fix, 2026-08-06: see
+        # test_uncovered_expression_is_caught / oracles/lib/tier05_jsonata.py's
+        # own docstring for why "found an expression no case names" must
+        # not fail a run whose decomposition simply differs from the
+        # spec's reference one).
         assert len(results) == 2
         assert not by_path["$.States.NoSuchState.Output"].passed
         assert "matches no" in (by_path["$.States.NoSuchState.Output"].error or "")
-        assert not by_path["$.States.ComputeGreeting.Output"].passed
-        assert "no case" in (by_path["$.States.ComputeGreeting.Output"].error or "")
+        assert by_path["$.States.ComputeGreeting.Output"].passed
+        assert "no covering case" in (by_path["$.States.ComputeGreeting.Output"].error or "")
 
     def test_uncovered_expression_is_caught(self, asl_multi_good):
         # An expression the artifact contains but that no case covers must
-        # also surface as a failure, not silently pass ungraded.
+        # still surface (visible in output), but as INFORMATIONAL only, not
+        # a failure -- benchmark-integrity review finding "sfn-jsonata /
+        # Tier 0.5 anti-L2 oracle — false-positives on equally-correct
+        # solutions" (2026-08-06): `oracle.tier05_jsonata.cases` is authored
+        # against ONE reference decomposition, and a correct solution that
+        # decomposes an object-literal Output/Arguments value differently
+        # (e.g. per-field {% %} sub-expressions instead of one whole-object
+        # {% %} expression) legitimately introduces {% %} expressions no
+        # case names -- that must not be scored as an anti-L2 catch hit.
         spec_tier05 = {
             "expressions_from": EXPRESSIONS_FROM,
             "cases": [
@@ -254,5 +272,94 @@ class TestRunTier05:
         results = run_tier05(asl_multi_good, spec_tier05)
         uncovered = [r for r in results if r.expression_path == "$.States.Count.Output"]
         assert len(uncovered) == 1
-        assert not uncovered[0].passed
-        assert "no case" in (uncovered[0].error or "")
+        assert uncovered[0].passed
+        assert "no covering case" in (uncovered[0].error or "")
+
+    def test_per_field_decomposition_of_a_cases_container_passes(self, asl_decomposed_output):
+        # THE regression test for the other half of the "Tier 0.5 anti-L2
+        # oracle — false-positives on an equally-correct solution" finding
+        # (2026-08-06): mirrors specs/sfn-jsonata.yaml's own ComputeTotals
+        # case verbatim (same input/expected_output), but the fixture's
+        # Output is decomposed into per-field `{% %}` sub-expressions
+        # (`orders`, `grandTotal`) instead of one whole-object `{% %}`
+        # expression -- ordinary, idiomatic JSONata-mode ASL the
+        # instruction never rules out. Before this fix, a case whose
+        # expression_path names a container (not a bare `{% %}` string
+        # leaf) always hard-failed as "matches no {% ... %} expression",
+        # i.e. this equally-correct solution was scored as an anti-L2
+        # catch hit purely for decomposition style.
+        spec_tier05 = {
+            "expressions_from": EXPRESSIONS_FROM,
+            "cases": [
+                {
+                    "expression_path": "$.States.ComputeTotals.Output",
+                    "input": {
+                        "orders": [
+                            {"id": "o1", "qty": 2, "price": 10},
+                            {"id": "o2", "qty": 1, "price": 5},
+                        ]
+                    },
+                    "expected_output": {
+                        "orders": [
+                            {"id": "o1", "qty": 2, "price": 10, "total": 20},
+                            {"id": "o2", "qty": 1, "price": 5, "total": 5},
+                        ],
+                        "grandTotal": 25,
+                    },
+                }
+            ],
+        }
+        results = run_tier05(asl_decomposed_output, spec_tier05)
+        assert len(results) == 1
+        assert results[0].passed, results[0].explain()
+        # Must not raise -- a correct (if differently-decomposed) solution
+        # is genuinely GRADEABLE, not merely non-crashing.
+        run_tier05_or_raise(asl_decomposed_output, spec_tier05)
+
+    def test_per_field_decomposition_with_wrong_value_still_fails(self, asl_decomposed_output):
+        # The flip side: decomposition tolerance must not become a
+        # rubber-stamp -- a genuinely wrong per-field sub-expression inside
+        # the same container shape must still fail, with the reconstructed
+        # (materialized) value visible in the failure, not silently pass
+        # just because the container as a whole was "found".
+        spec_tier05 = {
+            "expressions_from": EXPRESSIONS_FROM,
+            "cases": [
+                {
+                    "expression_path": "$.States.ComputeTotals.Output",
+                    "input": {
+                        "orders": [
+                            {"id": "o1", "qty": 2, "price": 10},
+                            {"id": "o2", "qty": 1, "price": 5},
+                        ]
+                    },
+                    "expected_output": {
+                        "orders": [
+                            {"id": "o1", "qty": 2, "price": 10, "total": 20},
+                            {"id": "o2", "qty": 1, "price": 5, "total": 5},
+                        ],
+                        "grandTotal": 999,  # wrong -- real sum is 25
+                    },
+                }
+            ],
+        }
+        results = run_tier05(asl_decomposed_output, spec_tier05)
+        assert len(results) == 1
+        assert not results[0].passed
+        assert results[0].actual_output["grandTotal"] == 25
+        assert "did not match" in (results[0].error or "")
+
+
+class TestMaterialize:
+    def test_evaluates_nested_expression_leaves(self):
+        assert materialize(
+            {"a": "{% $states.input.x + 1 %}", "b": "literal"},
+            {"x": 41},
+        ) == {"a": 42, "b": "literal"}
+
+    def test_recurses_through_lists(self):
+        assert materialize(["{% $states.input.x %}", 1, "plain"], {"x": "ok"}) == ["ok", 1, "plain"]
+
+    def test_plain_scalar_passes_through(self):
+        assert materialize(42, {}) == 42
+        assert materialize(None, {}) is None

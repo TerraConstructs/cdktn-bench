@@ -1,0 +1,101 @@
+#
+# oracles/cfn-guard/apigw-openapi/policy.guard -- HAND-AUTHORED (SCHEMA.md
+# §8.2 rule 7). Encodes specs/apigw-openapi.yaml's oracle.structural_asserts
+# tier-"1" entries + oracle.cfn_guard_hints. Graded against the awscdk arm's
+# synthesized CloudFormation template (cdk.out/ScenarioStack.template.json)
+# -- specs/SCHEMA.md §4.2/§8.
+#
+# Intent doc: oracles/apigw-openapi/intent.md
+#
+# IMPORTANT ASYMMETRY, read before touching this file (see
+# specs/apigw-openapi.yaml's oracle.intent for the full evidence trail):
+# cfn-guard 3.2.0's query language has no way to cross-reference two
+# independently CDK-logical-id-keyed resource collections by identity (no
+# `keys()`-style builtin -- confirmed against cfn-guard 3.2.0's own
+# FUNCTIONS.md / QUERY_PROJECTION_AND_INTERPOLATION.md at spec-authoring
+# time). The `deployment_depends_on_all_methods` rule below is therefore a
+# CARDINALITY proxy (DependsOn length >= method count), not the
+# identity-precise set-membership check policy.rego does for the
+# TF-shaped arms. Hand-verified this proxy IS sound for THIS one fact
+# (a correct template's DependsOn is always >= method count, monotonically,
+# because CDK also adds intermediate ApiGateway::Resource path nodes to it)
+# but is NOT reusable for "every function has its own permission": a
+# correct LambdaIntegration's default `allowTestInvoke: true` emits TWO
+# AWS::Lambda::Permission resources per correctly-wired method, so two
+# correct routes alone can numerically mask a third, entirely
+# permission-less route under a naive `count(permissions) >=
+# count(functions)` check -- reproduced directly against a crafted
+# 3-function/1-missing-permission fixture (4 permissions vs 3 functions,
+# `4 >= 3` passes despite the real violation). Do NOT add such a rule here;
+# awscdk is intentionally checked at tier "0" existence-only for that one
+# fact (see tests/_assert_lib.sh's lambda-permission-exists assert).
+#
+# RESIDUAL, DOCUMENTED GAP (2026-08-06, benchmark-integrity review finding
+# "apigw-openapi / deployment-missing-integration-dependency — tier-1 check
+# is strictly weaker on awscdk than on the TF arms", NOT closed by this
+# review -- recorded here rather than silently left implicit, per this
+# codebase's own "record the residual asymmetry explicitly ... if it cannot
+# be closed" convention): `deployment_depends_on_all_methods`'s cardinality
+# proxy (`count(DependsOn.*) >= count(Methods)`) can be satisfied by an
+# escape-hatch template that drops to a manual `CfnDeployment` whose
+# `DependsOn` names >= 3 resources that are NOT the three Methods at all --
+# e.g. the RestApi plus the two intermediate ApiGateway::Resource path
+# nodes. `policy.rego`'s TF-shaped identity-precise check (matching by
+# resource address, not just count) cannot be reproduced here because
+# cfn-guard 3.2.0 genuinely has no cross-collection identity-join primitive
+# (confirmed above). Closing this gap soundly needs a mechanism that CAN do
+# identity matching against the CFN template (e.g. evaluating it with
+# OPA/Rego instead of cfn-guard, or a small purpose-built jq-based tier-1
+# evaluator) -- deferred as a known, cited v1 scope limitation rather than
+# attempted here; the per-arm outcome for this planted catch on this
+# specific escape-hatch shape therefore still partly reflects oracle
+# strength, not purely arm ergonomics, and should be read that way in any
+# cross-arm (H1) comparison this catch feeds.
+#
+
+let methods = Resources.*[ Type == "AWS::ApiGateway::Method" ]
+let deployments = Resources.*[ Type == "AWS::ApiGateway::Deployment" ]
+
+# route-count-correct: exactly 3 methods, one per route in the seeded
+# OpenAPI spec (GET /widgets, POST /widgets, GET /widgets/{id}). No `when
+# %methods !empty` guard (removed 2026-08-06, benchmark-integrity review
+# finding "apigw-openapi / instruction-vs-oracle mismatch (seeded OpenAPI
+# spec is ungradeable)") -- the guard used to make this rule vacuously PASS
+# (skip entirely) at zero methods, whereas the Rego side's equivalent check
+# (`count(methods) != 3` in policy.rego) fires unconditionally and fails
+# closed at zero. `count(%methods)` is well-defined (0) even when %methods
+# resolves to an empty collection, so dropping the guard is safe and
+# restores parity.
+rule route_count_correct {
+	let mcount = count(%methods)
+	%mcount == 3
+	<<
+		Violation: expected exactly 3 AWS::ApiGateway::Method resources (one per route in the seeded OpenAPI spec)
+	>>
+}
+
+# deployment-depends-on-all-methods (THE PLANTED CATCH, cardinality proxy
+# -- see the header comment above for why this is sound for this one fact
+# specifically). Fails closed if a RestApi/Methods exist but no Deployment
+# resource is present at all.
+rule deployment_exists_when_methods_exist when %methods !empty {
+	%deployments !empty
+	<<
+		Violation: API Gateway methods exist but no AWS::ApiGateway::Deployment resource was found in the template
+	>>
+}
+
+rule deployment_depends_on_all_methods when %methods !empty %deployments !empty {
+	let mcount = count(%methods)
+	%deployments {
+		DependsOn exists
+		<<
+			Violation: AWS::ApiGateway::Deployment has no DependsOn at all -- the classic API Gateway deployment race
+		>>
+		let dcount = count(DependsOn.*)
+		%dcount >= %mcount
+		<<
+			Violation: AWS::ApiGateway::Deployment's DependsOn does not cover every route method
+		>>
+	}
+}

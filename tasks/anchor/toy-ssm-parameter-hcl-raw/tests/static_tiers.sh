@@ -14,8 +14,68 @@ mkdir -p /logs/verifier
 
 cd /app/project
 
-echo '== plan: terraform init && terraform validate && terraform plan -out=plan.tfplan && terraform show -json plan.tfplan > plan.json =='
-if ! ( terraform init && terraform validate && terraform plan -out=plan.tfplan && terraform show -json plan.tfplan > plan.json ); then
+echo '== plan: python3 /app/project/mock-sfn.py 17772 \
+  > /tmp/cdktn-bench-mock-sfn-toy-ssm-parameter.log 2>&1 &
+MOCK_SFN_PID=$!
+MOCK_SFN_READY=0
+for _attempt in $(seq 1 50); do
+  if (exec 3<>"/dev/tcp/127.0.0.1/17772") 2>/dev/null; then
+    exec 3<&- 3>&- 2>/dev/null
+    MOCK_SFN_READY=1
+    break
+  fi
+  sleep 0.1
+done
+if [ "$MOCK_SFN_READY" != "1" ]; then
+  {
+    echo "mock-sfn.py (pid $MOCK_SFN_PID) never opened"
+    echo "127.0.0.1:17772 within 5s (EADDRINUSE from a"
+    echo "leftover process, or a slow bind under load -- see"
+    echo "/tmp/cdktn-bench-mock-sfn-toy-ssm-parameter.log). This is a"
+    echo "run-invalidating test-infrastructure condition, NOT a bad"
+    echo "solution -- terraform plan was never attempted."
+  } | tee /logs/verifier/tf-plan-mock-sfn-unavailable
+  kill "$MOCK_SFN_PID" >/dev/null 2>&1 || true
+  wait "$MOCK_SFN_PID" 2>/dev/null
+  exit 1
+fi
+terraform init && terraform validate && terraform plan -out=plan.tfplan && terraform show -json plan.tfplan > plan.json
+TF_RC=$?
+kill "$MOCK_SFN_PID" >/dev/null 2>&1 || true
+wait "$MOCK_SFN_PID" 2>/dev/null
+exit "$TF_RC"
+ =='
+if ! ( python3 /app/project/mock-sfn.py 17772 \
+  > /tmp/cdktn-bench-mock-sfn-toy-ssm-parameter.log 2>&1 &
+MOCK_SFN_PID=$!
+MOCK_SFN_READY=0
+for _attempt in $(seq 1 50); do
+  if (exec 3<>"/dev/tcp/127.0.0.1/17772") 2>/dev/null; then
+    exec 3<&- 3>&- 2>/dev/null
+    MOCK_SFN_READY=1
+    break
+  fi
+  sleep 0.1
+done
+if [ "$MOCK_SFN_READY" != "1" ]; then
+  {
+    echo "mock-sfn.py (pid $MOCK_SFN_PID) never opened"
+    echo "127.0.0.1:17772 within 5s (EADDRINUSE from a"
+    echo "leftover process, or a slow bind under load -- see"
+    echo "/tmp/cdktn-bench-mock-sfn-toy-ssm-parameter.log). This is a"
+    echo "run-invalidating test-infrastructure condition, NOT a bad"
+    echo "solution -- terraform plan was never attempted."
+  } | tee /logs/verifier/tf-plan-mock-sfn-unavailable
+  kill "$MOCK_SFN_PID" >/dev/null 2>&1 || true
+  wait "$MOCK_SFN_PID" 2>/dev/null
+  exit 1
+fi
+terraform init && terraform validate && terraform plan -out=plan.tfplan && terraform show -json plan.tfplan > plan.json
+TF_RC=$?
+kill "$MOCK_SFN_PID" >/dev/null 2>&1 || true
+wait "$MOCK_SFN_PID" 2>/dev/null
+exit "$TF_RC"
+ ); then
   echo "PLAN FAILED"
   echo "0.0" > /logs/verifier/reward.txt
   exit 0

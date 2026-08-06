@@ -1,0 +1,449 @@
+# specs/s3-lambda-log-retention.yaml
+#
+# Seed scenario 1 (Slice D). Design source:
+# docs/iac-abstraction-aws-bench-plan.md Phase 1 seed-scenario table, row
+# `s3-lambda-log-retention` ("Typed value-trap"); aws-cdk source
+# aws-logs/lib/log-group.ts (local clone) and aws-s3-notifications/lib/lambda.ts
+# (local clone), both read in full at authoring time.
+#
+# IMPORTANT DEVIATION FROM THE ORIGINAL DESIGN HYPOTHESIS, recorded here
+# rather than silently reproduced (see the log-retention-not-a-valid-enum-value
+# catch below for the full evidence trail): the plan doc's original row for
+# this scenario, and iac-abstraction-benchmark-prereg.md §5's own catch-
+# taxonomy table, predict CDK: Tier 0 / HCL: Tier 1 for the retention
+# typed-value-trap. DECISIONS.md ("s3-lambda-log-retention catch is
+# falsified by the pinned provider") and arms/hcl-raw/README.md ("What
+# `terraform validate` actually catches") already found this FALSE against
+# the pinned `hashicorp/aws` provider (6.58.0 for hcl_raw, 6.52.0 for
+# terraconstructs) BEFORE this spec was authored -- `retention_in_days = 10`
+# is rejected by the provider's own schema `ValidateFunc` at `terraform
+# validate` itself, the SAME cheap toolchain-failure tier `tsc` rejects
+# CDK's equivalent typed-enum violation at. This spec re-verifies that
+# finding directly against BOTH pinned provider versions (6.58.0 via
+# arms/hcl-raw/README.md's own transcript; 6.52.0 re-verified at authoring
+# time here, see the catch's own description) and against terraconstructs'
+# `tsc` (also verified directly here) before freezing predicted_tier_caught
+# -- all three arms land on tier "0". This is a real, evidence-based null
+# result on the ORIGINAL predicted cross-arm tier gap for this specific
+# catch, not a design mistake papered over -- see the catch's own
+# description for what still discriminates the arms (steering, not
+# catching tier) and this scenario's second catch
+# (s3-lambda-invoke-permission-scoped) for the tier-1 Rego/cfn-guard
+# coverage this spec still needs and provides.
+
+id: s3-lambda-log-retention
+title: "S3 upload triggers Lambda; log group retains 10 days"
+difficulty: 2
+services: [s3, lambda, logs, iam]
+
+arms:
+  awscdk: true
+  hcl_raw: true
+  terraconstructs:
+    enabled: true
+    reason: >
+      arms/terraconstructs/README.md §4 ("Per-seed-scenario verdict"),
+      s3-lambda-log-retention row, rates this scenario SUPPORTED:
+      `storage.Bucket` (src/aws/storage/bucket.ts) + S3->Lambda notification
+      wiring (src/aws/storage/bucket-notifications.ts, a dedicated LAMBDA
+      destination type, confirmed at authoring time to synthesize a genuine
+      `aws_s3_bucket_notification` Terraform resource -- unlike awscdk's own
+      Custom::S3BucketNotifications custom-resource wrapper, since
+      Terraform's own provider has first-class notification support) +
+      `cloudwatch.LogGroup` (src/aws/cloudwatch/log-group.ts) with the same
+      typed `RetentionDays` enum aws-cdk-lib has (src/aws/log-retention.ts;
+      re-verified directly against the pinned 0.2.13 package at authoring
+      time -- see the log-retention-not-a-valid-enum-value catch below).
+      RESOLVED (2026-08-06, benchmark-integrity review finding
+      "s3-lambda-log-retention / terraconstructs — graph-dependency catch
+      does not exercise the L2 mechanism it claims"): a previous version of
+      this note flagged that `compute.Code.fromInline`/`.fromAsset` require
+      the `hashicorp/archive` Terraform provider, which this arm's offline
+      provider mirror did not carry, and that the reference solution worked
+      around this by constructing the Lambda function at the L1
+      (`@cdktn/provider-aws` `lambdaFunction.LambdaFunction`) level instead
+      -- which meant the L2 `storage.Bucket.addEventNotification` ->
+      `fn.addPermission()` mechanism this arm's SUPPORTED verdict actually
+      depends on was never exercised, so this catch measured "raw L1
+      TypeScript vs raw HCL" here, not the predicted L2-vs-HCL
+      discrimination. `hashicorp/archive` 2.8.0 is now mirrored
+      (arms/terraconstructs/environment/mirror-src/main.tf), and the
+      reference solution now uses the full L2 path this reason cites:
+      `storage.Bucket` + `compute.LambdaFunction` +
+      `compute.Code.fromInline` + `bucket.addEventNotification(EventType.
+      OBJECT_CREATED_PUT, new storage.targets.FunctionDestination(fn), {})`
+      -- verified directly (real `cdktn synth` + `terraform plan`) that
+      `FunctionDestination.bind()` (lib/aws/storage/notification-targets/
+      function.js) calls `fn.addPermission()` exactly as this reason
+      claims, producing a genuine `aws_lambda_permission` resource with no
+      hand-authored step. (Incidental finding while wiring this up: this
+      library version's `BucketNotifications.addNotification` only
+      registers a target inside its `for (const filter of filters)` loop,
+      so calling `addEventNotification` with zero filter args silently
+      registers nothing at all -- worked around by passing one all-optional
+      -fields filter object `{}`; see the reference solution's own comment.)
+
+instruction:
+  shared_body: |
+    Create a new S3 bucket.
+
+    Create a new AWS Lambda function. Configure the bucket so that the
+    function is automatically invoked whenever a new object is uploaded to
+    it (an s3:ObjectCreated:Put event).
+
+    Ensure the Lambda function's logs are retained for 10 days.
+  placeholders: []
+  per_arm:
+    awscdk:
+      language_line: "Author this as an AWS CDK (TypeScript) app using aws-cdk-lib L2 constructs."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdk.out/ScenarioStack.template.json
+        build_command: "npm run build"
+        synth_command: "npx cdk synth --no-lookups --quiet -o cdk.out"
+        json_fields: []
+    hcl_raw:
+      language_line: "Author this as hand-written Terraform HCL (no modules)."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields: []
+    terraconstructs:
+      language_line: "Author this using terraconstructs (TypeScript) L2 constructs, synthesized via cdktn."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdktf.out/stacks/s3-lambda-log-retention/plan.json
+        synth_command: "npx cdktn synth"
+        json_fields: []
+
+catches:
+  - name: log-retention-not-a-valid-enum-value
+    taxonomy: typed-value-trap
+    description: >
+      CloudWatch Logs retention is an enum-shaped value with no exact
+      10-day member: aws-cdk-lib's `RetentionDays` jumps `ONE_WEEK = 7` ->
+      `TWO_WEEKS = 14` (aws-logs/lib/log-group.ts:402-462, no `10` anywhere
+      in the enum) -- the instruction only ever says "retained for 10
+      days", never listing valid values, so a correct solution must pick a
+      neighboring valid value (7 or 14) instead of the literal the
+      instruction's own wording suggests. VERIFIED DIRECTLY at authoring
+      time (not assumed) against the pinned toolchain in every enabled arm,
+      because this exact catch was previously mis-specified upstream (see
+      this file's own header comment):
+        - awscdk: `retention: 10` against a `RetentionDays`-typed prop is
+          REJECTED by `tsc` (pinned 7.0.2) with `TS2322: Type '10' is not
+          assignable to type 'RetentionDays | undefined'` -- confirmed this
+          is TypeScript's real (if easy to assume otherwise, since numeric
+          enums are sometimes thought to accept any number) behavior for a
+          literal that is not a declared enum member, using the exact
+          pinned compiler version, both with and without `--strict`.
+        - hcl_raw: `retention_in_days = 10` is REJECTED by `terraform
+          validate` itself (pinned `hashicorp/aws` 6.58.0) --
+          `expected retention_in_days to be one of [0 1 3 5 7 14 30 60 90
+          120 150 180 365 400 545 731 1096 1827 2192 2557 2922 3288 3653],
+          got 10` (arms/hcl-raw/README.md's own transcript; the allowed set
+          is CloudWatch's real native retention values, the same set
+          aws-cdk-lib's enum encodes) -- the SAME toolchain-failure tier
+          `tsc` rejects the CDK arm's violation at, not a downstream
+          plan/apply-tier or Rego-graded failure as originally hypothesized
+          (docs/iac-abstraction-aws-bench-plan.md line 115, marked NEEDS
+          REVISION; DECISIONS.md "s3-lambda-log-retention catch is
+          falsified by the pinned provider").
+        - terraconstructs: BOTH mechanisms independently confirmed at
+          authoring time against the pinned 0.2.13 package. Using the L2
+          `cloudwatch.LogGroup`'s typed `retention: RetentionDays` prop
+          (this scenario's own reference solution's approach), `retention:
+          10` is rejected by `tsc` inside `cdktn synth` (which shells to
+          `ts-node`, so type errors surface at synth time) with the
+          identical `TS2322` diagnostic as awscdk. Separately, even
+          bypassing the typed L2 prop entirely (an L1
+          `cloudwatchLogGroup.CloudwatchLogGroup` with a bare
+          `retentionInDays: 10` -- no TS enum in the way at all), the
+          SAME-shaped `terraform validate` rejection fires against this
+          arm's pinned `hashicorp/aws` 6.52.0 mirror (identical allowed-
+          values list to hcl_raw's 6.58.0 transcript above) -- confirming
+          `retention_in_days = 10` is unreachable in a passing plan for
+          this arm through EITHER route, not just the idiomatic one.
+      NET EFFECT: on all three arms, an agent that emits the literal value
+      10 fails at the cheapest possible layer -- the toolchain step itself
+      (`npm run build` / `plan_command`'s `terraform validate` /
+      `synth_command`), before any `oracle.structural_asserts` entry or
+      Rego/cfn-guard policy ever runs. The generated `tests/static_tiers.sh`
+      already writes `reward=0.0` unconditionally the moment any toolchain
+      step fails (generator/gen.py::build_static_tiers_sh), so no dedicated
+      structural_assert exists for this specific negative fixture -- there
+      is nothing further downstream FOR it to reach. What still
+      discriminates the arms per H2 is the STEERING mechanism, not the
+      catching tier: CDK's typed enum surfaces the valid option set to the
+      model before it ever emits code (autocomplete-visible, IDE-surfaced);
+      HCL's `retention_in_days` is a bare untyped integer with no such
+      steering at all. The predicted advantage is fewer iterations/tokens
+      to reach a valid value, not a cheaper oracle tier -- this is a
+      genuine, evidence-checked correction to the original design
+      hypothesis, not an illustrative catch with an assumed tier.
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "0"
+      terraconstructs_override: null
+
+  - name: s3-lambda-invoke-permission-scoped
+    taxonomy: graph-dependency
+    description: >
+      S3 cannot invoke the Lambda function on upload unless a
+      resource-based Lambda permission (CFN: AWS::Lambda::Permission; TF:
+      aws_lambda_permission) grants principal s3.amazonaws.com AND is
+      scoped (SourceArn/source_arn) to the SPECIFIC bucket this scenario
+      creates -- omitted, or scoped to the wrong/no resource, and uploads
+      silently never invoke the function (a real, common Terraform
+      footgun: "S3 event triggers nothing" with no error at deploy time,
+      only discovered at first missed invocation). CDK's L2 notification
+      API makes the missing-permission half of this mistake structurally
+      unreachable through ordinary use: `bucket.addEventNotification(...,
+      new s3n.LambdaDestination(fn))` calls `fn.addPermission(...)`
+      internally as a side effect (aws-s3-notifications/lib/lambda.ts:26-32,
+      confirmed by direct source read: `principal: new
+      iam.ServicePrincipal('s3.amazonaws.com'), sourceArn:
+      bucket.bucketRef.bucketArn`) -- an agent using the idiomatic,
+      recommended API simply cannot omit the permission or leave it
+      unscoped. Hand-written HCL has no such automatic wiring: the agent
+      must remember to author a SEPARATE `aws_lambda_permission` resource
+      alongside `aws_s3_bucket_notification`, with no compiler/type-system
+      nudge telling them the second resource is required at all.
+      Existence + the principal literal is checkable directly on the raw
+      synth/plan artifact (tier 0, both are plan-time-known regardless of
+      arm). Whether the permission is genuinely SCOPED to the bucket this
+      scenario creates (not a wildcard/hardcoded/unrelated ARN) needs the
+      Rego/cfn-guard-graded checks below for the TF-shaped arms, because
+      SourceArn built from another resource's provider-computed `.arn` is
+      plan-time-unknown at plan time (specs/SCHEMA.md §4.2.1; verified
+      directly against a real hcl_raw AND terraconstructs plan: `source_arn`
+      is entirely ABSENT from `.planned_values...aws_lambda_permission.values`
+      whenever it references `aws_s3_bucket.<name>.arn`, present only in
+      `.configuration...expressions.source_arn.references`) -- for awscdk
+      the synthesized template is always fully static (SourceArn is a
+      resolvable `Fn::GetAtt` node either way), so the tier-1 check there
+      is a direct existence check on that property rather than a
+      graph-edge resolution, kept at tier "1" anyway (not demoted to tier
+      "0") to match the TF-shaped arms' strictness per the oracle-
+      equivalence requirement (specs/SCHEMA.md §4.2, mirroring
+      specs/_toy/toy-ssm-parameter.yaml's own
+      policy-resource-scoped-not-wildcard-cfn precedent for the same
+      reasoning).
+    predicted_tier_caught:
+      awscdk: "1"
+      hcl: "1"
+      terraconstructs_override: null
+
+oracle:
+  intent: >
+    An S3 bucket exists. A Lambda function exists to handle uploads to it.
+    The bucket is configured to invoke that function on s3:ObjectCreated:Put
+    (an object-upload event) — the notification configuration's Lambda
+    target must reference the function this scenario creates, and a
+    resource-based Lambda permission must grant s3.amazonaws.com the right
+    to invoke it, scoped to this specific bucket (no wildcard, no
+    unrelated/hardcoded ARN). The Lambda function's CloudWatch Logs log
+    group has its retention explicitly configured to a value near the
+    requested 10 days (7 or 14 — CloudWatch's retention enum has no exact
+    10-day value) — never left at the implied "never expire" default, and
+    never a materially different retention value.
+
+    Wording note (2026-08-06, benchmark-integrity review finding
+    "s3-lambda-log-retention / intent.md overstates what is graded and is
+    false for the awscdk reference solution"): this used to say "Exactly
+    one S3 bucket exists. Exactly one AWS Lambda function exists." Neither
+    cardinality is enforced by any structural_assert/policy below (all use
+    op:exists, never a count check), and the "exactly one Lambda function"
+    claim is factually FALSE for this scenario's own awscdk reference
+    solution: `bucket.addEventNotification(..., new
+    s3n.LambdaDestination(fn))` provisions CDK's singleton
+    BucketNotificationsHandler custom-resource Lambda alongside the
+    scenario's own handler function, so the synthesized template contains
+    TWO AWS::Lambda::Function resources, not one. Reworded to state only
+    what is actually graded and actually true across every arm.
+
+  structural_asserts:
+    - name: s3-bucket-exists
+      description: "An S3 bucket exists."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')]"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket')]"
+      op: exists
+
+    - name: lambda-function-exists
+      description: "An AWS Lambda function exists."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Lambda::Function')]"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_function')]"
+      op: exists
+
+    - name: log-group-exists
+      description: "A CloudWatch Logs log group exists."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Logs::LogGroup')]"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_cloudwatch_log_group')]"
+      op: exists
+
+    # log-retention-not-a-valid-enum-value's actual falsifying mechanism is
+    # the toolchain step failing outright (see that catch's own
+    # description) -- this assert is the FUNCTIONAL-correctness check every
+    # solution (buggy or not) must pass regardless: retention was actually
+    # SET to a reasonable reading of "10 days" (7 or 14, CloudWatch's
+    # nearest valid values), never left at the implied "never expire"
+    # default (an easy, separate mistake: syntactically doing nothing is
+    # also accepted by every toolchain, but violates the instruction just
+    # as much as picking a wrong-but-valid value like 365 would).
+    - name: log-group-retention-near-ten
+      description: >
+        The log group's retention is explicitly set to 7 or 14 days (the
+        two CloudWatch-valid values nearest the requested 10) -- never left
+        unset (implied infinite retention) and never a materially
+        different valid value.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Logs::LogGroup')].Properties.RetentionInDays"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_cloudwatch_log_group')].values.retention_in_days"
+      op: in
+      expected: [7, 14]
+
+    - name: s3-notification-put-event-configured
+      description: >
+        The bucket's notification configuration includes an
+        s3:ObjectCreated:Put (or the broader s3:ObjectCreated:*, which
+        subsumes Put) entry targeting a Lambda function. Checked as a plain
+        existence/value fact here (tier 0); WHICH function it targets is
+        covered by the permission-scoping checks below, since the
+        notification's own LambdaFunctionArn/lambda_function_arn field is
+        plan-time-unknown wherever it references the created function's
+        provider-computed `.arn` (same plan-time-unknown class as
+        s3-lambda-invoke-permission-scoped's SourceArn, verified the same
+        way against both TF arms' real plan output).
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='Custom::S3BucketNotifications')].Properties.NotificationConfiguration.LambdaFunctionConfigurations[*].Events"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_notification')].values.lambda_function[*].events"
+      op: contains
+      expected: "s3:ObjectCreated:Put"
+
+    - name: lambda-permission-principal-is-s3
+      description: >
+        A Lambda resource-based permission exists whose Principal/principal
+        is exactly s3.amazonaws.com. Both fields are plan-time-known
+        literals regardless of arm (neither depends on another resource's
+        computed output), so this is a sound tier-0 existence+value check;
+        WHETHER it is scoped to the right bucket is the tier-1 concern
+        below.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Lambda::Permission')].Properties.Principal"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_permission')].values.principal"
+      op: eq
+      expected: "s3.amazonaws.com"
+
+    # --- s3-lambda-invoke-permission-scoped (tier 1) ------------------------
+    # Split cfn/tf per specs/SCHEMA.md §4.2.1 (mirrors
+    # specs/_toy/toy-ssm-parameter.yaml's own G2-fixed
+    # policy-resource-scoped-not-wildcard-cfn/-tf pair): CFN's synthesized
+    # template is always fully static (SourceArn is a resolvable Fn::GetAtt
+    # node either way), so the awscdk check is a direct existence check.
+    # The TF-shaped arms' SourceArn is plan-time-unknown whenever it
+    # references the created bucket's provider-computed `.arn` (verified
+    # directly against real hcl_raw AND terraconstructs plan output: the key
+    # is entirely absent from `.planned_values`), so those use the
+    # plan-time-known graph-edge path instead
+    # (`.configuration...expressions.source_arn.references`) -- this is
+    # documentation/spec for oracles/rego/s3-lambda-log-retention/policy.rego
+    # (the file that actually runs), not directly executed (tier 1).
+    - name: lambda-permission-scoped-to-bucket-cfn
+      description: >
+        (awscdk only -- see lambda-permission-scoped-to-bucket-tf for the
+        TF-shaped arms.) The Lambda permission's SourceArn property is
+        present (not omitted) -- an omitted SourceArn grants ANY
+        s3.amazonaws.com-principal'd call account-wide, not just this
+        scenario's bucket, the realistic "forgot to scope it" mistake this
+        catch targets.
+      tier: "1"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Lambda::Permission')].Properties.SourceArn"
+      op: exists
+
+    - name: lambda-permission-scoped-to-bucket-tf
+      description: >
+        (hcl_raw + terraconstructs only -- see
+        lambda-permission-scoped-to-bucket-cfn for awscdk.) Graph-edge
+        check: the permission's source_arn expression must actually
+        REFERENCE the S3 bucket resource this scenario creates -- a
+        hardcoded literal (a wildcard-ish ARN string, an unrelated bucket
+        ARN, or an omitted source_arn) has no such reference and resolves
+        this path to zero nodes.
+      tier: "1"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_lambda_permission')].expressions.source_arn.references[*]"
+      op: regex
+      expected: "^aws_s3_bucket\\."
+
+  rego_hints:
+    - >-
+      package cdktn_bench.s3_lambda_log_retention, graded against
+      `terraform show -json` PLAN output (input) for hcl_raw AND
+      terraconstructs. Collect every aws_lambda_permission resource from
+      BOTH input.configuration.root_module.resources (for the graph-edge
+      fact) and input.planned_values.root_module.resources (for the
+      plan-time-known principal fact) -- do not read
+      input.planned_values...values.source_arn, it is absent whenever the
+      referenced bucket ARN is provider-computed (specs/SCHEMA.md §4.2.1,
+      re-verified for this scenario's own reference fixtures at authoring
+      time -- see the catch's own description).
+    - >-
+      deny if any aws_lambda_permission configured resource with
+      principal.constant_value == "s3.amazonaws.com" has NO
+      expressions.source_arn.references entry matching ^aws_s3_bucket\. --
+      this is the graph-edge check
+      (lambda-permission-scoped-to-bucket-tf's own spec).
+    - >-
+      fail-closed: deny if an aws_s3_bucket resource exists in the plan but
+      NO aws_lambda_permission resource with principal
+      "s3.amazonaws.com" exists anywhere (mirrors toy-ssm-parameter's own
+      "role_has_no_recognized_policy" fail-closed pattern -- guards against
+      the comprehension above being vacuously silent when the permission is
+      omitted entirely, not just mis-scoped).
+
+  cfn_guard_hints:
+    - >-
+      Graded against the awscdk arm's synthesized CloudFormation template.
+      `let permissions = Resources.*[ Type == "AWS::Lambda::Permission" ]`.
+    - >-
+      rule permission_scoped_to_bucket when %permissions !empty: every
+      permission with Principal == "s3.amazonaws.com" must have a
+      SourceArn property present (this is the direct, always-static CFN
+      form of lambda-permission-scoped-to-bucket-cfn -- no reference
+      resolution needed, CFN's template is never plan-time-unknown).
+    - >-
+      rule permission_exists_when_bucket_present: FAIL if an
+      AWS::S3::Bucket exists in the template but zero
+      AWS::Lambda::Permission resources with Principal == "s3.amazonaws.com"
+      exist at all (fail-closed companion to the rule above, mirrors
+      toy-ssm-parameter's cfn-guard fail-closed convention).
+
+  tier05_jsonata: null
+
+verifier:
+  budget:
+    max_iters: 8
+  live_check:
+    enabled: false
+    module: tests/live_check.py
+
+provenance:
+  author: "Vincent (via Claude Code, Slice D scenario-authoring task)"
+  date: "2026-08-06"
+  prereg_section_refs:
+    - "docs/iac-abstraction-aws-bench-plan.md Phase 1 seed-scenario table, s3-lambda-log-retention row (NEEDS REVISION note superseded by this spec's own re-derivation, see this file's header comment)"
+    - "iac-abstraction-benchmark-prereg.md §5 (catch taxonomy: typed value-trap, cross-resource graph dependency), §3 (oracle tiers)"
+    - "DECISIONS.md \"s3-lambda-log-retention catch is falsified by the pinned provider\" -- the finding this spec's headline catch re-derives predicted tiers from"

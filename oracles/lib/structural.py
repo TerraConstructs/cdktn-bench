@@ -32,7 +32,10 @@ from typing import Any
 from jsonpath_ng.ext import parse as _jsonpath_parse
 
 VALID_OPS = frozenset(
-    {"exists", "not_exists", "eq", "in", "contains", "regex", "set_eq", "absent_or_eq"}
+    {
+        "exists", "not_exists", "eq", "in", "contains", "regex", "set_eq",
+        "absent_or_eq", "not_regex",
+    }
 )
 
 # Matches generator/jsonpath_jq.py's FROMJSON_SEP grammar extension: one or
@@ -170,6 +173,24 @@ def apply_op(op: str, expected: Any, actual: list[Any]) -> bool:
         pattern = re.compile(expected)
         return len(actual) > 0 and all(
             isinstance(value, str) and pattern.search(value) is not None
+            for value in actual
+        )
+
+    if op == "not_regex":
+        # Literal negation of `regex` -- an unanchored search (matches
+        # ANYWHERE in the string, same as `regex`), never a full-string
+        # match. Unlike `regex`, 0 resolved nodes vacuously PASSES (nothing
+        # present to violate the "must never contain X" rule) rather than
+        # failing the ">= 1 node" requirement `regex` itself has -- added
+        # for the sfn-jsonata mode-mixing catch's "no raw un-evaluated
+        # JSONPath string anywhere in this JSONata-mode ASL" fact, which
+        # `regex` alone cannot express (it can only assert presence, never
+        # absence) and `not_exists` cannot express either (that checks for
+        # an absent KEY, not an absent substring inside an arbitrary
+        # string value) -- see specs/SCHEMA.md §4.2's op table entry.
+        pattern = re.compile(expected)
+        return all(
+            not (isinstance(value, str) and pattern.search(value) is not None)
             for value in actual
         )
 

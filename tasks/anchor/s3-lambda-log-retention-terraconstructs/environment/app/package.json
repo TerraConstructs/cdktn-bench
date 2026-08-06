@@ -1,0 +1,28 @@
+{
+  "name": "terraconstructs-preflight",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "scripts": {
+    "synth": "cdktn synth"
+  },
+  "dependencies": {
+    "terraconstructs": "0.2.13",
+    "cdktn": "0.23.0",
+    "constructs": "10.6.0",
+    "@aws-cdk/cloud-assembly-schema": "49.4.0",
+    "@aws-cdk/region-info": "2.233.0",
+    "@cdktn/provider-aws": "24.8.0",
+    "@cdktn/provider-archive": "13.1.0",
+    "@cdktn/provider-cloudinit": "13.1.0",
+    "@cdktn/provider-docker": "15.3.0",
+    "@cdktn/provider-time": "13.1.0",
+    "@cdktn/provider-tls": "13.1.0"
+  },
+  "devDependencies": {
+    "cdktn-cli": "0.23.0",
+    "typescript": "5.7.3",
+    "ts-node": "10.9.1",
+    "@types/node": "20.19.9"
+  }
+}

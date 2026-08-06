@@ -13,6 +13,50 @@
       {
         "name": "anchor-smoke",
         "path": "tasks/anchor/smoke"
+      },
+      {
+        "name": "apigw-openapi-awscdk",
+        "path": "tasks/anchor/apigw-openapi-awscdk"
+      },
+      {
+        "name": "apigw-openapi-hcl-raw",
+        "path": "tasks/anchor/apigw-openapi-hcl-raw"
+      },
+      {
+        "name": "apigw-openapi-terraconstructs",
+        "path": "tasks/anchor/apigw-openapi-terraconstructs"
+      },
+      {
+        "name": "ecs-swappiness-awscdk",
+        "path": "tasks/anchor/ecs-swappiness-awscdk"
+      },
+      {
+        "name": "ecs-swappiness-hcl-raw",
+        "path": "tasks/anchor/ecs-swappiness-hcl-raw"
+      },
+      {
+        "name": "ecs-swappiness-terraconstructs",
+        "path": "tasks/anchor/ecs-swappiness-terraconstructs"
+      },
+      {
+        "name": "s3-lambda-log-retention-awscdk",
+        "path": "tasks/anchor/s3-lambda-log-retention-awscdk"
+      },
+      {
+        "name": "s3-lambda-log-retention-hcl-raw",
+        "path": "tasks/anchor/s3-lambda-log-retention-hcl-raw"
+      },
+      {
+        "name": "s3-lambda-log-retention-terraconstructs",
+        "path": "tasks/anchor/s3-lambda-log-retention-terraconstructs"
+      },
+      {
+        "name": "sfn-jsonata-awscdk",
+        "path": "tasks/anchor/sfn-jsonata-awscdk"
+      },
+      {
+        "name": "sfn-jsonata-hcl-raw",
+        "path": "tasks/anchor/sfn-jsonata-hcl-raw"
       }
     ]
   }

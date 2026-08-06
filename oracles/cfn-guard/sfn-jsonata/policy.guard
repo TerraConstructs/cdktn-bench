@@ -1,0 +1,63 @@
+#
+# Hand-authored (Slice D). NOT a generator stub.
+#
+# Scenario:   sfn-jsonata (specs/sfn-jsonata.yaml)
+# Intent doc: oracles/sfn-jsonata/intent.md
+# Graded against the awscdk arm's synthesized CloudFormation template
+# (cdk.out/ScenarioStack.template.json) -- specs/SCHEMA.md §4.2/§8. A
+# generated tests/static_tiers.sh runs
+#   cfn-guard validate --data cdk.out/ScenarioStack.template.json --rules policy.guard
+# and fails tier-1 iff any rule below FAILs.
+#
+# Encodes the spec's mode-mixing-jsonpath-artifacts catch at the SAME
+# strictness as ../rego/sfn-jsonata/policy.rego (the oracle-equivalence
+# requirement: same intent, same strictness, both bundles) -- but by a
+# DIFFERENT mechanism than the Rego side, not just a syntax translation of
+# it: cfn-guard 3.x has NO built-in JSON-string-decode function (no
+# `from_json`/equivalent the way Rego's `json.unmarshal` or jq's
+# `|fromjson` are), so unlike the Rego bundle (which walks the DECODED ASL
+# structure) every rule below operates DIRECTLY on the raw
+# `Properties.DefinitionString` STRING value via regex comparison
+# (`==`/`!=` against a `/pattern/` literal -- Rust regex syntax, an
+# UNANCHORED search, never a full-string match, confirmed against a real
+# `cfn-guard validate` run below before this shipped).
+#
+# Verified against a real, hand-synthesized CFN template (this scenario's
+# own reference solution, solution/solve.sh's lib/scenario-stack.ts, plus a
+# deliberately-mode-mixed negative -- see
+# solution/broken/mode-mixing-jsonpath-artifacts/lib/scenario-stack.ts):
+# `cfn-guard validate` FAILs every rule below on the negative and PASSes
+# all of them on the reference solution.
+
+let state_machines = Resources.*[ Type == "AWS::StepFunctions::StateMachine" ]
+
+rule state_machine_exists {
+	%state_machines !empty
+}
+
+# Tolerate optional whitespace around the colon -- do not assume
+# compact-vs-pretty-printed JSON spacing (CDK's own `Stack.toJsonString`
+# happens to emit compact JSON with no such whitespace for this scenario's
+# reference solution, verified directly, but this rule is not meant to
+# depend on that incidental fact).
+rule query_language_is_jsonata when %state_machines !empty {
+	%state_machines.Properties.DefinitionString == /"QueryLanguage"\s*:\s*"JSONata"/
+}
+
+# One combined alternation covers all six banned JSONPath-only ASL keys in
+# a single rule -- specs/sfn-jsonata.yaml's own six no-jsonpath-*
+# structural_asserts document each individually as this rule's tier-1 spec
+# (jq's grammar needed one path per key via "..Field"; cfn-guard's regex
+# alternation does not).
+rule no_jsonpath_mode_keys when %state_machines !empty {
+	%state_machines.Properties.DefinitionString != /"(InputPath|OutputPath|Parameters|ResultPath|ResultSelector|ItemsPath)"\s*:/
+}
+
+# Raw, un-evaluated "$."-prefixed JSONPath string literal anywhere in the
+# still-encoded DefinitionString text -- same pattern as
+# specs/sfn-jsonata.yaml's own no-raw-jsonpath-string-literal
+# structural_assert's `not_regex` check and ../rego/sfn-jsonata/policy.rego's
+# own raw-"$."-string deny rule, at the same strictness.
+rule no_raw_jsonpath_string_literal when %state_machines !empty {
+	%state_machines.Properties.DefinitionString != /"\$\./
+}

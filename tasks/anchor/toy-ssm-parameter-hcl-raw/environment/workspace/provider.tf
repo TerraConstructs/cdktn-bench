@@ -24,6 +24,28 @@
 # prior state and no data sources — see ../../README.md "What `terraform
 # plan` needs" for the full breakdown of which flag suppresses which
 # network call.
+#
+# `endpoints.sfn`: a SEPARATE offline-plan gap from the four `skip_*` flags
+# above — `aws_sfn_state_machine`'s own `CustomizeDiff` runs a REAL
+# `states:ValidateStateMachineDefinition` API call whenever `definition`
+# changes (true for any brand-new resource), which none of the `skip_*`
+# flags suppress (those only cover the PROVIDER's own bootstrap calls, not
+# a resource's own CustomizeDiff-triggered service call) — confirmed
+# against the pinned hashicorp/aws 6.58.0
+# (internal/service/sfn/state_machine.go::stateMachineDefinitionValidate;
+# same unresolved upstream gap as
+# github.com/hashicorp/terraform-provider-aws issue #39472). Left
+# unhandled, `terraform plan` for ANY scenario using `aws_sfn_state_machine`
+# fails with `UnrecognizedClientException: The security token included in
+# the request is invalid` against real AWS, offline or not. Pointed at
+# mock-sfn.py (byte-copied alongside this file, started/stopped around the
+# WHOLE `terraform plan` step by generator/gen.py's build_static_tiers_sh
+# hcl_raw tf-plan-mock-sfn wrapper — mirroring
+# arms/terraconstructs/environment/app/mock-sts.js's identical role for
+# that arm's own offline-plan gap, `data "aws_caller_identity"`). Harmless
+# no-op for every hcl_raw scenario that never touches
+# `aws_sfn_state_machine` — nothing calls this endpoint unless the
+# resource itself is present in the plan.
 terraform {
   required_version = ">= 1.15"
   required_providers {
@@ -46,6 +68,19 @@ provider "aws" {
   skip_requesting_account_id  = true # don't call STS to resolve the account id for ARNs
   skip_region_validation      = true # don't validate region name against a partition list
   skip_metadata_api_check     = true # don't probe the EC2 instance-metadata service
+
+  # See this file's own header comment ("endpoints.sfn") for why this
+  # exists. Verified: `sfn` (not `states`/`stepfunctions`) is the correct
+  # endpoints{} block key for this provider version — confirmed empirically
+  # (a real `terraform plan` against a hand-built aws_sfn_state_machine
+  # config, pointed at a real mock-sfn.py responder on this port, produced
+  # "Plan: 2 to add, 0 to change, 0 to destroy" with zero network
+  # reachability beyond loopback), matching names/data/names_data.hcl's own
+  # `service "sfn" { ... provider_package_correct = "sfn" }` entry in the
+  # hashicorp/terraform-provider-aws source.
+  endpoints {
+    sfn = "http://127.0.0.1:17772"
+  }
 
   default_tags {
     tags = {

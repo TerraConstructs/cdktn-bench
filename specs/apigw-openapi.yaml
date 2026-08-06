@@ -1,0 +1,496 @@
+# specs/apigw-openapi.yaml
+#
+# Seed scenario 4 (Slice D). Design source: docs/iac-abstraction-aws-bench-plan.md
+# Phase 1 seed-scenario table, row `apigw-openapi` ("cross-resource graph
+# dependency: API Gateway deployment race"); iac-abstraction-benchmark-prereg.md
+# §5 (graph-dependency catch taxonomy). v1 scope is static-only (synth/plan,
+# never deploy) -- the redeploy-consistency half of this catch family (does a
+# NEW deployment actually get created when a route changes) needs a live
+# `terraform apply`/`cdk deploy` across two revisions to observe, which this
+# benchmark's v1 oracle (synth/plan-only, DECISIONS.md) cannot express. That
+# half is explicitly deferred to the Phase 2 mutation track (prereg §11) --
+# see provenance.prereg_section_refs and the catch's own description below.
+
+id: apigw-openapi
+title: "API Gateway REST API from an OpenAPI spec, with per-route Lambda integrations"
+difficulty: 3
+services: [apigateway, lambda, iam]
+
+arms:
+  awscdk: true
+  hcl_raw: true
+  terraconstructs:
+    enabled: true
+    reason: >
+      arms/terraconstructs/README.md §4 ("Per-seed-scenario verdict") rates
+      apigw-openapi "SUPPORTED": terraconstructs 0.2.13's
+      src/aws/compute/{restapi.ts,method.ts,integration.ts,integrations/lambda.ts}
+      cover RestApi, addResource/addMethod, and a LambdaIntegration whose
+      bind() calls handler.addPermission() automatically -- verified directly
+      by reading the installed 0.2.13 package
+      (node_modules/terraconstructs/lib/aws/compute/{deployment.js,restapi.js,
+      method.js,integrations/lambda.js}) at spec-authoring time: `Deployment`
+      exposes the identical `_addMethodDependency(method)` -> `this.node.
+      addDependency(method.node.defaultChild)` mechanism aws-cdk-lib's own
+      apigateway.Deployment uses (deployment.js:146-152), and RestApi's
+      addMethod path calls `deployment._addMethodDependency(method)` the same
+      way (restapi.js:614/624) -- so the SAME planted catch (a manually
+      constructed deployment that skips this wiring) reproduces identically
+      on this arm. README §4 also confirms `compute.Code.fromInline()` exists
+      (used by the reference solution below), so no S3/asset build step is
+      needed here either.
+
+instruction:
+  shared_body: |
+    A small OpenAPI 3 specification describing a "Widgets" HTTP API is
+    provided read-only in your workspace. It has three routes across two
+    paths. Implement an Amazon API Gateway REST API that provides every
+    route the specification describes: each route is its own API Gateway
+    resource and method, individually reachable and individually wired --
+    not an API whose routes exist only inside an imported OpenAPI document
+    body. For each route, create a Lambda function to handle it and wire a
+    Lambda proxy integration from that route to its function, granting API
+    Gateway permission to invoke the function. Deploy the API to a stage so
+    all three routes are reachable.
+
+    Two supporting files are seeded read-only in your workspace: the
+    OpenAPI 3 spec itself, at `openapi/widgets-api.json`, describing the
+    exact routes to implement; and a placeholder Lambda deployment package,
+    at `lambda/placeholder.zip`, which you may reference if your toolchain
+    requires an existing code archive rather than inline source (its
+    contents are not graded -- only that a real Lambda function exists and
+    is correctly wired).
+  placeholders: []
+  per_arm:
+    awscdk:
+      language_line: "Author this as an AWS CDK (TypeScript) app using aws-cdk-lib L2 constructs."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdk.out/ScenarioStack.template.json
+        build_command: "npm run build"
+        synth_command: "npx cdk synth --no-lookups --quiet -o cdk.out"
+        json_fields: []
+    hcl_raw:
+      language_line: "Author this as hand-written Terraform HCL (no modules)."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields: []
+    terraconstructs:
+      language_line: "Author this using terraconstructs (TypeScript) L2 constructs, synthesized via cdktn."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdktf.out/stacks/apigw-openapi/plan.json
+        synth_command: "npx cdktn synth"
+        json_fields: []
+
+seeded_files:
+  - path: openapi/widgets-api.json
+    content: |
+      {
+        "openapi": "3.0.3",
+        "info": {
+          "title": "Widgets API",
+          "version": "1.0.0"
+        },
+        "paths": {
+          "/widgets": {
+            "get": {
+              "operationId": "listWidgets",
+              "summary": "List all widgets",
+              "responses": {
+                "200": {
+                  "description": "OK"
+                }
+              }
+            },
+            "post": {
+              "operationId": "createWidget",
+              "summary": "Create a widget",
+              "responses": {
+                "201": {
+                  "description": "Created"
+                }
+              }
+            }
+          },
+          "/widgets/{id}": {
+            "get": {
+              "operationId": "getWidget",
+              "summary": "Get a widget by id",
+              "parameters": [
+                {
+                  "name": "id",
+                  "in": "path",
+                  "required": true,
+                  "schema": {
+                    "type": "string"
+                  }
+                }
+              ],
+              "responses": {
+                "200": {
+                  "description": "OK"
+                },
+                "404": {
+                  "description": "Not found"
+                }
+              }
+            }
+          }
+        }
+      }
+  - path: lambda/placeholder.zip
+    content: |
+      placeholder lambda deployment package -- not a real zip archive.
+      `terraform plan` only needs this file to EXIST on disk so
+      filebase64sha256()/filename can resolve a source_code_hash at plan
+      time; it never unzips or otherwise validates the content (that only
+      happens on a real `apply`, which this benchmark's v1 oracle never
+      runs -- DECISIONS.md, synth/plan-only). awscdk and terraconstructs
+      solutions do not need this file at all (both have an inline-code
+      construct: aws_cdk_lib.aws_lambda.Code.fromInline /
+      terraconstructs compute.Code.fromInline), so it exists purely for
+      hcl_raw, which has no inline-code equivalent -- a real
+      aws_lambda_function resource always requires a code package.
+
+catches:
+  - name: deployment-missing-integration-dependency
+    taxonomy: graph-dependency
+    description: >
+      The classic API Gateway deployment race (prereg §5's graph-dependency
+      family): an AWS::ApiGateway::Deployment / aws_api_gateway_deployment
+      resource is immutable and does not implicitly track the methods and
+      integrations that make up the API it deploys. If it is created
+      without an explicit dependency edge covering every route's method (a
+      CFN `DependsOn`, or a TF `depends_on`/`triggers` reference), the
+      deployment can be (and in a template with no methods created yet,
+      IS) provisioned before -- or without ever picking up -- the routes
+      that make the API actually work, deploying a REST API with no usable
+      routes despite every route resource technically existing in the same
+      template/plan. In hand-written CDK L2, this happens if a stack drops
+      to a low-level escape hatch to construct the deployment manually
+      (bypassing RestApi's automatic dependency wiring); in hand-written
+      Terraform, this is the single most commonly cited
+      aws_api_gateway_deployment footgun -- creating the resource without
+      `depends_on`/`triggers` referencing every `aws_api_gateway_integration`
+      it's meant to cover. Caught STRUCTURALLY (the dependency edge itself,
+      never a live invoke/behavioral check) per prereg §5. The
+      redeploy-consistency half of this same footgun family -- does a NEW
+      deployment actually get created when an existing route's integration
+      changes -- needs two `apply`-connected revisions to observe and is
+      out of v1's synth/plan-only scope; deferred to the Phase 2 mutation
+      track (see provenance below).
+    predicted_tier_caught:
+      awscdk: "1"
+      hcl: "1"
+      terraconstructs_override: null
+
+oracle:
+  intent: >
+    Exactly one API Gateway REST API exists, implementing every route the
+    seeded OpenAPI spec describes (GET /widgets, POST /widgets, GET
+    /widgets/{id} -- three routes total): one API Gateway method per route,
+    each with an AWS_PROXY Lambda integration pointing at a real Lambda
+    function, and each such function has an attached resource policy
+    (permission) allowing apigateway.amazonaws.com to invoke it. The API's
+    deployment resource depends on every one of the three routes' methods
+    (CFN DependsOn / TF depends_on+triggers) -- it must not be constructed
+    in a way that could provision before, or without ever picking up, any
+    route. The API is deployed to a stage.
+
+    Known v1 scope limitation, RESOLVED BY DROPPING THE DIVERGENT CHECK
+    (2026-08-06, benchmark-integrity review finding "apigw-openapi /
+    oracle-equivalence (per-function Lambda invoke permission)" -- see
+    oracle.structural_asserts' own removal note below for the full
+    rationale): "every function has its own permission" used to be checked
+    with full per-function identity precision on the TF-shaped arms
+    (hcl_raw, terraconstructs) via Rego's
+    `.configuration...expressions.<attr>.references` graph-edge matching,
+    but only EXISTENCE-only on awscdk (cfn-guard 3's query language cannot
+    soundly express the identity-precise version -- no cross-collection
+    identity-join builtin, confirmed by reading cfn-guard 3.2.0's own
+    FUNCTIONS.md / QUERY_PROJECTION_AND_INTERPOLATION.md, and a
+    CARDINALITY proxy was hand-verified silently vacuous: a correct
+    LambdaIntegration's default `allowTestInvoke: true` emits TWO
+    permissions per correctly-wired method, so two correct routes alone
+    can out-number a third, entirely permission-less route and still pass
+    a naive `>=` count check). Prereg §3 requires oracle-equivalence at
+    equal strictness across arms; documenting the divergence did not
+    remove it, and it was REFUTED directly (a hand-built fixture with only
+    one of three functions permissioned was denied by Rego but passed
+    cfn-guard's cardinality-proxy-free tier-0 check) -- see the removal
+    note below. This clause is now checked identically, at tier "0"
+    existence-only, on ALL THREE arms (>=1 Lambda::Permission with the
+    right principal exists) -- the deployment-dependency catch's own
+    cardinality proxy on awscdk (DependsOn length >= method count) is a
+    SEPARATE, independently-sound check for a different fact and is
+    unaffected by this change (see
+    oracles/cfn-guard/apigw-openapi/policy.guard's own header comment, and
+    its own documented residual gap for THAT check specifically).
+
+    RESIDUAL, NOT-FULLY-CLOSED GAP (2026-08-06, benchmark-integrity review
+    finding "apigw-openapi / deployment-missing-integration-dependency —
+    tier-1 check is strictly weaker on awscdk than on the TF arms"): the
+    cardinality proxy above, while sound against the REALISTIC missing-
+    dependency mistake (an omitted/empty DependsOn), is NOT sound against
+    an adversarial escape-hatch template whose manual DependsOn names >= 3
+    resources that are not the three Methods at all (e.g. RestApi plus two
+    intermediate ApiGateway::Resource path nodes). policy.rego's
+    identity-precise check catches the structurally identical TF mistake;
+    cfn-guard 3.2.0 has no cross-collection identity-join primitive to
+    reproduce that here (see oracles/cfn-guard/apigw-openapi/policy.guard's
+    own "RESIDUAL, DOCUMENTED GAP" comment for the full write-up). This
+    means the per-arm outcome for this catch's own cardinality-vs-identity
+    strictness, specifically on this one adversarial shape, still partly
+    reflects oracle strength rather than purely arm ergonomics -- recorded
+    explicitly here (rather than left implicit) so the H1 cross-arm
+    comparison this catch feeds accounts for it, per this codebase's own
+    convention of documenting a residual gap rather than silently shipping
+    it. Not closed in this pass; closing it soundly needs a mechanism that
+    CAN do identity matching against the CFN template (e.g. evaluating it
+    with OPA/Rego instead of cfn-guard).
+
+  structural_asserts:
+    - name: rest-api-exists
+      description: "An API Gateway REST API resource exists."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGateway::RestApi')]"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_api_gateway_rest_api')]"
+      op: exists
+
+    - name: deployment-exists
+      description: "An API Gateway deployment resource exists."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGateway::Deployment')]"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_api_gateway_deployment')]"
+      op: exists
+
+    - name: lambda-function-exists
+      description: "At least one Lambda function exists to back a route."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Lambda::Function')]"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_function')]"
+      op: exists
+
+    - name: proxy-integration-wired
+      description: >
+        At least one API Gateway method has an AWS_PROXY-type integration
+        (a Lambda proxy integration, as opposed to e.g. a MOCK integration
+        or no integration at all). Existence-only at tier 0 (does the
+        template contain the right SHAPE of integration at all) -- the
+        per-route/per-function completeness of this wiring is not
+        independently identity-checkable at tier 0 (see oracle.intent's
+        documented v1 scope limitation) and is not this assert's job.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGateway::Method')].Properties.Integration.Type"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_api_gateway_integration')].values.type"
+      op: contains
+      expected: "AWS_PROXY"
+
+    - name: lambda-permission-exists
+      description: >
+        At least one Lambda resource-policy permission exists, granting
+        apigateway.amazonaws.com invoke access. Existence-only at tier 0 --
+        see proxy-integration-wired's own note and oracle.intent's
+        documented v1 scope limitation for why this cannot be a per-function
+        identity check on awscdk.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Lambda::Permission')].Properties.Principal"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_permission')].values.principal"
+      op: contains
+      expected: "apigateway.amazonaws.com"
+
+    - name: route-count-correct
+      description: >
+        Exactly three API Gateway methods exist -- one per route in the
+        seeded OpenAPI spec (GET /widgets, POST /widgets, GET
+        /widgets/{id}). This is an exact-count fact, which the tier-0
+        jq-compiled op table (SCHEMA.md §4.2's `eq`/`in`/etc, none of which
+        express "count of matched nodes") cannot express directly -- kept
+        at tier "1" and enforced by Rego/cfn-guard's own `count()` builtin
+        (SCHEMA.md's tier "1" description: "the kind of graph/intent check
+        better expressed as Rego/cfn-guard policy"; the jsonpath below
+        documents which collection is counted, cross-checked by the
+        oracle-equivalence CI, same convention as every other tier-1 entry
+        in this spec -- it is not executed directly).
+      tier: "1"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGateway::Method')]"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_api_gateway_method')]"
+      op: exists
+
+    - name: deployment-depends-on-all-methods
+      description: >
+        THE PLANTED CATCH. The API Gateway deployment's dependency edge
+        must cover every route's method -- checked as a CARDINALITY proxy
+        on awscdk (cfn-guard: DependsOn list length >= total Method count
+        in the template -- sound for THIS fact specifically because CDK's
+        automatic dependency wiring is monotonic: a correct template's
+        DependsOn always includes every Method logical id plus, often,
+        additional intermediate Resource-path nodes, so length is always
+        >= method count and never spuriously higher for a REALISTIC
+        missing-dependency bug, i.e. an omitted/empty DependsOn -- the one
+        thing this catch's real-world failure mode actually produces, per
+        this assert's own description above; it does not defend against an
+        adversarially padded DependsOn naming unrelated resources, which is
+        an accepted, documented idealization consistent with how this
+        benchmark's other tier-1 checks already treat unrealistic
+        adversarial evasion as out of scope, e.g. the wildcard-resource "*"
+        checks elsewhere in this codebase). Checked with full per-resource
+        SET identity (not just cardinality) on the TF-shaped arms via Rego:
+        every aws_api_gateway_integration resource address must appear
+        (directly, or via the deployment's `triggers` attribute's own
+        `.references`) in the deployment resource's dependency coverage --
+        specs/SCHEMA.md §4.2.1's `.configuration...expressions.<attr>.
+        references` mechanism, which is plan-time-known regardless of
+        whether the referenced attribute's VALUE is.
+      tier: "1"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGateway::Deployment')].DependsOn"
+      tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_api_gateway_deployment')].depends_on"
+      op: exists
+
+  # REMOVED (2026-08-06, benchmark-integrity review finding "apigw-openapi
+  # / oracle-equivalence (per-function Lambda invoke permission)"): a
+  # `lambda-permission-per-function-tf` entry used to live here, checking
+  # the full identity-precise "every route's function has ITS OWN invoke
+  # permission" fact -- but ONLY on the TF-shaped arms (`applies_to:
+  # [hcl_raw, terraconstructs]`), because oracle.intent's own documented
+  # scope limitation explains this cannot be soundly expressed for awscdk
+  # via cfn-guard. Prereg §3 requires oracle-equivalence -- documenting a
+  # divergence does not remove it, and REFUTED directly: a hand-built
+  # fixture (3 methods/integrations/functions, only ONE
+  # aws_lambda_permission covering one function) was DENIED by
+  # policy.rego (reward 0.0) while the byte-equivalent CFN template PASSED
+  # cfn-guard's tier-0 existence-only check (reward 1.0) -- the TF-shaped
+  # arms were being graded on a criterion awscdk was not, systematically
+  # depressing their reward on the primary H1 comparison. Per that
+  # finding's own fix_hint (option (a) -- (b), a sound cfn-guard encoding,
+  # was already hand-verified vacuous by this same file's own header
+  # comment before this fix, via the allowTestInvoke double-permission
+  # cardinality failure mode), this check is DROPPED from the graded set
+  # entirely rather than kept asymmetric: every arm is now checked at the
+  # SAME strictness -- tier-0 existence-only ("at least one
+  # apigateway.amazonaws.com-principal'd permission exists") via
+  # `lambda-permission-exists` above, on all three arms alike. The
+  # identity-precise per-function form remains a real, uncaught gap in
+  # this scenario's discriminating power (a solution with N-1 of N
+  # functions permissioned now scores 1.0 on every arm), recorded here as
+  # an intentional, prereg-compliant trade-off rather than a silent
+  # regression -- see oracle.intent's own scope-limitation note.
+
+  rego_hints:
+    - >-
+      deployment-depends-on-all-methods: let integrations := {addr | some r
+      in input.configuration.root_module.resources; r.type ==
+      "aws_api_gateway_integration"; addr := r.address}. For each
+      aws_api_gateway_deployment resource `dep`: build `covered` as the
+      UNION of (a) `dep.depends_on` (the explicit meta-argument list, when
+      present -- a plain array of resource addresses in
+      .configuration...resources[].depends_on, NOT under .expressions) and
+      (b) every integration OR method address `a` such that some reference
+      string in `dep.expressions.triggers.references` (when the `triggers`
+      attribute exists) starts with `a` (references appear as both
+      "TYPE.NAME" and "TYPE.NAME.attr" -- match by prefix, do not require an
+      exact string match against the bare address). An integration is
+      COVERED if either its own address is in `covered`, OR the
+      aws_api_gateway_method address it is wired to (extracted from
+      `integration.expressions.http_method.references` -- the idiomatic
+      `http_method = aws_api_gateway_method.X.http_method` HCL pattern
+      always emits this reference) is in `covered` -- CORRECTION,
+      2026-08-06, benchmark-integrity review finding "apigw-openapi /
+      oracle-equivalence (deployment-depends-on-all-methods)": the previous
+      version of this rule accepted ONLY direct integration coverage, which
+      denied a correct solution whose `depends_on` names the three METHODS
+      -- literally what oracle.intent's own words describe ("depends on
+      every one of the three routes' methods") and what the cfn-guard side
+      of this catch counts (methods, not integrations). `deny` when
+      `integrations` is non-empty and some integration is covered by
+      neither mechanism for some deployment -- this is checking real
+      per-resource identity via Terraform's own reference graph, not a
+      cardinality proxy (unlike the cfn-guard side of this same catch,
+      which cannot do identity matching -- see oracle.intent's documented
+      scope limitation and this policy's own header comment). Fail closed
+      (deny) if an aws_api_gateway_rest_api exists but no
+      aws_api_gateway_deployment exists at all, the same "don't let a
+      too-narrow collection filter silently pass a real violation"
+      fail-closed convention toy-ssm-parameter's own policy.rego uses for
+      IAM-shape coverage.
+    - >-
+      route-count-correct: `let methods := [r | some r in
+      input.planned_values.root_module.resources; r.type ==
+      "aws_api_gateway_method"]`; `count(methods) == 3`. Graded against
+      `.planned_values`, not `.configuration`, since HttpMethod/resource
+      wiring is a plan-time-known, agent-authored literal, not a
+      provider-computed value (specs/SCHEMA.md §4.2's default case, no
+      §4.2.1 exception needed here).
+    # REMOVED (2026-08-06, same finding as the structural_asserts removal
+    # above): a `lambda-permission-per-function-tf` hint used to live here.
+    # policy.rego no longer defines that rule -- see the structural_asserts
+    # section's own removal note for the full rationale (dropped for
+    # oracle-equivalence, not replaced).
+
+  cfn_guard_hints:
+    - >-
+      route-count-correct: `let methods = Resources.*[ Type ==
+      "AWS::ApiGateway::Method" ]`; `let mcount = count(%methods)`; `%mcount
+      == 3`.
+    - >-
+      deployment-depends-on-all-methods (CARDINALITY proxy, not identity --
+      see oracle.intent's documented scope limitation for why cfn-guard 3
+      cannot do the identity-precise version the Rego side does): `let
+      methods = Resources.*[ Type == "AWS::ApiGateway::Method" ]`; `let
+      mcount = count(%methods)`; `let deployments = Resources.*[ Type ==
+      "AWS::ApiGateway::Deployment" ]`; for each deployment in
+      `%deployments`, `DependsOn exists` then `count(DependsOn.*) >=
+      %mcount`. Hand-verified against a crafted negative fixture (a manual
+      CfnDeployment/ApiGatewayDeployment L1 escape hatch with an empty
+      DependsOn while 3 correctly-wired methods exist elsewhere in the same
+      template): DependsOn length resolves to 0, method count resolves to
+      3, `0 >= 3` correctly fails. Also hand-verified this does NOT
+      false-positive against a correct reference solution, whose DependsOn
+      always includes every method logical id plus intermediate
+      ApiGateway::Resource path nodes (length > method count, not just
+      equal).
+    - >-
+      Do NOT attempt a per-function `lambda-permission-per-function`
+      cfn-guard rule modeled on the Rego side's identity matching --
+      hand-verified this is silently vacuous here: a correct
+      LambdaIntegration's default `allowTestInvoke: true` emits TWO
+      AWS::Lambda::Permission resources per correctly-wired method (one
+      scoped to the deployed stage, one "ApiPermission.Test" for
+      console test-invoke), so `count(Lambda::Permission) >=
+      count(Lambda::Function)` (or `>= count(Method)`) can pass even when
+      ONE function has zero permissions, as long as at least one OTHER
+      function's pair of permissions makes up the numeric difference --
+      reproduced directly against a crafted 3-function/1-missing-permission
+      fixture (4 permissions total against 3 functions, `4 >= 3` passes
+      despite the real violation). Only the tier-0 existence-only
+      lambda-permission-exists assert is checked on awscdk for this fact;
+      see oracle.intent's own note for the full write-up.
+
+  tier05_jsonata: null
+
+verifier:
+  budget:
+    max_iters: 8
+  live_check:
+    enabled: false
+    module: tests/live_check.py
+
+provenance:
+  author: "Vincent (via Claude Code, Slice D scenario-authoring task)"
+  date: "2026-08-06"
+  prereg_section_refs:
+    - "docs/iac-abstraction-aws-bench-plan.md Phase 1 seed-scenario table, apigw-openapi row"
+    - "iac-abstraction-benchmark-prereg.md §5 (catch taxonomy: graph-dependency), §3 (oracle tiers, tier-1 Rego/cfn-guard)"
+    - "iac-abstraction-benchmark-prereg.md §11 (Phase 2 mutation track) -- the redeploy-consistency half of this catch family is explicitly deferred there, not in v1's static synth/plan-only scope (see the catch's own description above)"

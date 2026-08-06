@@ -129,11 +129,29 @@ anything that has to *read* something from AWS to compute the plan —
 - a resource that already exists in Terraform state and needs a refresh,
 - provider features that call AWS regardless of the `skip_*` flags (e.g. some
   regional endpoint resolution paths, or S3 bucket "already exists" checks under
-  certain provider versions/configs).
+  certain provider versions/configs) — **confirmed, not just hypothetical**, for
+  `aws_sfn_state_machine` specifically (sfn-jsonata, Slice D): this resource's own
+  `CustomizeDiff` runs a REAL `states:ValidateStateMachineDefinition` API call
+  whenever `definition` changes, true for any brand-new resource, and none of the
+  four `skip_*` flags above suppress it (they only cover the provider's own
+  bootstrap calls, not a resource's own CustomizeDiff-triggered service call) —
+  `terraform plan` for this resource type fails offline with
+  `UnrecognizedClientException: The security token included in the request is
+  invalid` against real AWS, confirmed against the pinned `hashicorp/aws 6.58.0`
+  (unresolved upstream: `hashicorp/terraform-provider-aws` issue #39472). Fixed the
+  same way `arms/terraconstructs`' `mock-sts.js` fixes its own analogous
+  `data "aws_caller_identity"` gap: `environment/workspace/provider.tf`'s
+  `endpoints { sfn = "http://127.0.0.1:17772" }` points at
+  `environment/workspace/mock-sfn.py` (Python stdlib `http.server`, since this
+  arm's image has no `node` — `python3` was added to `environment/Dockerfile`
+  specifically for this fixture), started/stopped around the whole `plan_command`
+  chain by `generator/gen.py::build_static_tiers_sh`'s hcl_raw branch. Harmless
+  no-op for every scenario that never touches `aws_sfn_state_machine`.
 
 For scenario/task authoring downstream of this arm: keep `plan`-tier oracle fixtures to
 new-resource, no-data-source configs (as here) if the offline guarantee needs to hold;
-anything else needs either a reachable AWS account or accepts `plan` as
+anything else needs either a reachable AWS account, a mocked endpoint (see the
+`aws_sfn_state_machine` case above for the pattern), or accepts `plan` as
 network-dependent and gates on `validate` alone.
 
 `terraform apply` is out of scope for this arm — never invoked in `preflight.sh`, no

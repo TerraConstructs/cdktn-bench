@@ -51,6 +51,7 @@ original CFN-template-specific version this generalizes. This version:
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -64,10 +65,32 @@ __all__ = [
     "evaluate",
     "find_asl_documents",
     "jsonata_expressions",
+    "materialize",
     "run_tier05",
     "run_tier05_or_raise",
     "strip_braces",
 ]
+
+# "[<node-index>]<jsonpath>" -- the prefix run_tier05 stamps onto a found
+# expression's path when `expressions_from` matched more than one ASL
+# document (see run_tier05's own `full_path` construction). Used by the
+# decomposition-fallback path below to recover which parsed `asl` document
+# a case's `expression_path` should be resolved against.
+_MULTI_DOC_PREFIX_RE = re.compile(r"^\[(\d+)\](.*)$")
+
+
+def _split_multi_doc_path(expr_path: str, multi: bool) -> tuple[int, str]:
+    """Inverse of `run_tier05`'s `full_path` construction: split a possible
+    `"[<node-index>]<jsonpath>"` prefix back off, returning `(node_index,
+    bare_jsonpath)`. When `multi` is False (the common case -- one ASL
+    document), or the prefix isn't present, returns `(0, expr_path)`
+    unchanged."""
+    if not multi:
+        return 0, expr_path
+    m = _MULTI_DOC_PREFIX_RE.match(expr_path)
+    if not m:
+        return 0, expr_path
+    return int(m.group(1)), m.group(2)
 
 
 class Tier05Error(AssertionError):
@@ -75,6 +98,44 @@ class Tier05Error(AssertionError):
     sample) case failed, or when `expressions_from` located no ASL document
     at all (a spec/artifact bug — a scenario that declares `tier05_jsonata`
     is asserting at least one `{% ... %}` expression exists)."""
+
+
+def _resolve_expressions_from(spec_tier05: dict, document: dict) -> str:
+    """`expressions_from` (`specs/SCHEMA.md` §4.4) is either a single
+    JSONPath string (used against every arm's own artifact unmodified) or a
+    `{"cfn": <path>, "tf": <path>}` mapping -- the normal case for a real
+    cross-arm scenario, since a CFN template and a Terraform plan document
+    have structurally different roots (`Resources` vs. `planned_values`), so
+    one JSONPath cannot resolve against both. Auto-detects which family
+    `document` is by checking for the top-level key each family always has
+    (verified against real `cdk synth`/`terraform show -json` output --
+    CFN templates always carry a top-level `Resources` map; `terraform show
+    -json` PLAN output always carries a top-level `planned_values` object),
+    and returns the matching path. `hcl_raw` and `terraconstructs` share the
+    `tf` path (same collapsing convention as `predicted_tier_caught.hcl`,
+    SCHEMA.md §3, and `tf_jsonpath`, §4.2 -- both synthesize to the same
+    `terraform show -json` plan shape)."""
+    ef = spec_tier05["expressions_from"]
+    if isinstance(ef, str):
+        return ef
+    if "Resources" in document:
+        family = "cfn"
+    elif "planned_values" in document:
+        family = "tf"
+    else:
+        raise Tier05Error(
+            "oracle.tier05_jsonata.expressions_from is arm-keyed (cfn/tf) "
+            "but the artifact document has neither a top-level 'Resources' "
+            "(CFN template) nor 'planned_values' (Terraform plan) key -- "
+            "cannot tell which extraction path applies to this artifact"
+        )
+    if family not in ef:
+        raise Tier05Error(
+            f"oracle.tier05_jsonata.expressions_from has no {family!r} entry "
+            f"for this {'CFN template' if family == 'cfn' else 'Terraform plan'} "
+            f"artifact (declared keys: {sorted(ef)!r})"
+        )
+    return ef[family]
 
 
 def find_asl_documents(document: dict, expressions_from: str) -> list[Any]:
@@ -138,6 +199,49 @@ def evaluate(expression: str, sample_input: dict, context: dict | None = None) -
     return jsonata.Jsonata(strip_braces(expression)).evaluate(None, bindings)
 
 
+def materialize(node: Any, sample_input: dict, context: dict | None = None) -> Any:
+    """Recursively resolve `node` (a raw, still-unevaluated fragment of a
+    parsed ASL document -- a dict, a list, a bare `{% ... %}` string, or a
+    plain literal) into its fully-evaluated value: every `{% ... %}` string
+    leaf, at ANY depth, is replaced by `evaluate()`-ing it against
+    `sample_input`/`context`; every other leaf (a plain literal -- a
+    JSONata-mode ASL value that was never wrapped in `{% %}` in the first
+    place) passes through unchanged; dicts/lists recurse.
+
+    This is the decomposition-fallback half of the fix for benchmark-
+    integrity review finding "sfn-jsonata / Tier 0.5 anti-L2 oracle — still
+    false-positives on an equally-correct solution" (2026-08-06):
+    `oracle.tier05_jsonata.cases` is authored against ONE reference
+    decomposition (typically one whole-object `{% ... %}` expression at a
+    state's `Output`/`Arguments`), but `JsonataCommonOptions`' typed
+    surface (aws-cdk-lib's `outputs`/`arguments` props, and the hand-
+    written ASL on hcl_raw) is equally happy with an object literal whose
+    INDIVIDUAL fields are each their own `{% ... %}` sub-expression --
+    ordinary, idiomatic, equally-correct JSONata-mode ASL that this
+    scenario's own instruction never rules out. `run_tier05`'s exact-leaf
+    lookup (`found`, keyed by the JSON path a `{% %}` STRING was found at)
+    cannot match such a case's `expression_path` (which names the
+    CONTAINER, e.g. `.Output` -- a dict, not a string leaf) at all;
+    `materialize` is the fallback used when that direct lookup misses:
+    resolve `expression_path` against the raw parsed ASL document instead
+    (see `run_tier05`'s own fallback branch), and if something is found
+    there, materialize IT recursively and compare the fully-resolved value
+    to the case's `expected_output` -- semantically identical to evaluating
+    one whole-object expression, regardless of how many `{% %}` fragments
+    the solution actually split it into.
+    """
+    if isinstance(node, str):
+        stripped = node.strip()
+        if stripped.startswith("{%") and stripped.endswith("%}"):
+            return evaluate(node, sample_input, context)
+        return node
+    if isinstance(node, dict):
+        return {key: materialize(value, sample_input, context) for key, value in node.items()}
+    if isinstance(node, list):
+        return [materialize(value, sample_input, context) for value in node]
+    return node
+
+
 @dataclass(frozen=True)
 class Tier05CaseResult:
     expression_path: str
@@ -174,28 +278,53 @@ def run_tier05(document: dict, spec_tier05: dict) -> list[Tier05CaseResult]:
     "non-trivial input/output transformation" plus a mode-mixing trap,
     almost certainly >1 embedded expression).
 
-    Two conditions are themselves reported as *failed* cases (via
-    `Tier05CaseResult.error`, not a Python exception) rather than silently
-    skipped, so a spec/artifact mismatch is caught, not ignored:
-      - a case's `expression_path` matches no expression actually found in
-        the synthesized artifact (catches a renamed/removed state -- the
-        spec's case still exists, but the thing it was testing doesn't);
-      - an expression IS found but no case covers its path (an
-        under-tested embedded expression, silently un-graded).
+    THREE outcomes are possible for a case whose `expression_path` matches
+    no exact `{% ... %}` STRING leaf (residual-findings fix, 2026-08-06,
+    benchmark-integrity review finding "sfn-jsonata / Tier 0.5 anti-L2
+    oracle — still false-positives on an equally-correct solution": the
+    first fix round only softened the SIBLING mismatch below; this is the
+    other half):
+      1. `expression_path` also resolves to NOTHING at all in the raw
+         parsed ASL document (via `oracles.lib.structural.resolve`) --
+         genuinely nothing there. Catches a renamed/removed state -- the
+         spec's case still exists, but the thing it was testing doesn't --
+         `passed=False`, a real failure, unchanged from before.
+      2. `expression_path` resolves to exactly one node that ISN'T a bare
+         `{% ... %}` string (a dict/list container -- e.g. a state's whole
+         `Output` decomposed into per-field `{% %}` sub-expressions instead
+         of one whole-object expression -- or a plain, non-JSONata literal
+         value). `materialize()` recursively evaluates every nested
+         `{% ... %}` leaf found anywhere inside it (passing plain literals
+         through unchanged) and the fully-resolved value is compared to
+         `expected_output`, exactly as if the reference decomposition had
+         been used -- a correct solution that merely decomposed its output
+         differently no longer reads as an anti-L2 catch hit. A solution
+         that instead wrote a hardcoded literal where a computed value was
+         required also lands here and is correctly scored `passed=False`
+         (the materialized value won't match `expected_output`) -- a real
+         improvement over the old "not found" case, which could not tell
+         these two situations apart.
+      3. an expression IS found (case 0 above didn't apply) but no case
+         covers ITS path -- `passed=True`, INFORMATIONAL ONLY, unchanged
+         from the first fix round (see the loop at the bottom of this
+         function).
 
-    Never raises on a case *failure* (bad syntax, wrong value, or either
+    Never raises on a case *failure* (bad syntax, wrong value, or any
     mismatch above) — those are reported as `passed=False` results, exactly
     like a Tier-0 `StructuralAssertError`'s underlying `AssertResult` does.
     Use `run_tier05_or_raise` to fail fast with a summarized message.
     """
     results: list[Tier05CaseResult] = []
-    nodes = find_asl_documents(document, spec_tier05["expressions_from"])
+    nodes = find_asl_documents(document, _resolve_expressions_from(spec_tier05, document))
+    multi = len(nodes) > 1
 
+    asl_docs: list[dict] = []
     found: dict[str, str] = {}  # expression_path -> expression text
     for node_index, node in enumerate(nodes):
         asl = _as_asl_dict(node)
+        asl_docs.append(asl)
         for expr_path, expr in jsonata_expressions(asl):
-            full_path = f"[{node_index}]{expr_path}" if len(nodes) > 1 else expr_path
+            full_path = f"[{node_index}]{expr_path}" if multi else expr_path
             found[full_path] = expr
 
     cases = spec_tier05["cases"]
@@ -204,6 +333,56 @@ def run_tier05(document: dict, spec_tier05: dict) -> list[Tier05CaseResult]:
         expr_path = case["expression_path"]
         expr = found.get(expr_path)
         if expr is None:
+            doc_index, sub_path = _split_multi_doc_path(expr_path, multi)
+            matches = resolve(asl_docs[doc_index], sub_path) if 0 <= doc_index < len(asl_docs) else []
+            if len(matches) == 1:
+                # Case 2: a container (or a plain literal) sits at this
+                # path instead of one whole `{% ... %}` string leaf --
+                # materialize it (recursively evaluating any nested
+                # `{% ... %}` sub-expressions) and compare that, instead of
+                # declaring this a "not found" failure.
+                try:
+                    actual = materialize(matches[0], case["input"])
+                    passed = actual == case["expected_output"]
+                    error = None
+                    if not passed:
+                        error = (
+                            f"expression_path {expr_path!r} names a container/literal, "
+                            f"not one whole {{% ... %}} expression -- materialized every "
+                            f"nested {{% ... %}} sub-expression against sample#{sample_index} "
+                            f"and compared the reconstructed value, which did not match "
+                            f"expected_output (an equally-correct alternative decomposition "
+                            f"would have matched here; this is a genuine value mismatch)"
+                        )
+                except Exception as exc:  # noqa: BLE001 - see the identical except below
+                    actual = None
+                    passed = False
+                    error = f"{type(exc).__name__}: {exc}"
+                covered_paths.add(expr_path)
+                # Leaf {% %} expressions nested under this container were
+                # just accounted for via materialize() above -- mark them
+                # covered too so they don't ALSO surface as a separate,
+                # redundant "no covering case" informational line below.
+                container_prefix = f"[{doc_index}]{sub_path}" if multi else sub_path
+                for leaf_path in found:
+                    if leaf_path != container_prefix and (
+                        leaf_path.startswith(container_prefix + ".") or leaf_path.startswith(container_prefix + "[")
+                    ):
+                        covered_paths.add(leaf_path)
+                results.append(
+                    Tier05CaseResult(
+                        expression_path=expr_path,
+                        expression="<decomposed: container materialized from its nested {% ... %} sub-expression(s)>",
+                        sample_index=sample_index,
+                        expected_output=case["expected_output"],
+                        actual_output=actual,
+                        passed=passed,
+                        error=error,
+                    )
+                )
+                continue
+            # Case 1: genuinely nothing at this path either as a leaf
+            # expression OR as a resolvable container/literal.
             results.append(
                 Tier05CaseResult(
                     expression_path=expr_path,
@@ -214,9 +393,12 @@ def run_tier05(document: dict, spec_tier05: dict) -> list[Tier05CaseResult]:
                     passed=False,
                     error=(
                         f"expression_path {expr_path!r} matches no {{% ... %}} "
-                        f"expression in the synthesized artifact (found paths: "
-                        f"{sorted(found)!r}) -- a renamed/removed state, or a "
-                        f"stale case, would land here"
+                        f"expression in the synthesized artifact, and structural "
+                        f"resolution of that path against the raw ASL document "
+                        f"found {len(matches)} node(s) (need exactly 1 to fall back "
+                        f"to decomposition-materialization) -- a renamed/removed "
+                        f"state, or a stale case, would land here (found leaf "
+                        f"paths: {sorted(found)!r})"
                     ),
                 )
             )
@@ -244,6 +426,28 @@ def run_tier05(document: dict, spec_tier05: dict) -> list[Tier05CaseResult]:
 
     for expr_path, expr in found.items():
         if expr_path not in covered_paths:
+            # INFORMATIONAL, not a failure (residual-findings fix,
+            # 2026-08-06 -- benchmark-integrity review finding
+            # "sfn-jsonata / Tier 0.5 anti-L2 oracle — false-positives on
+            # equally-correct solutions"). This used to be `passed=False`,
+            # which meant a solution that expresses the SAME semantics as a
+            # spec's `cases` with a DIFFERENT (but equally correct)
+            # decomposition -- e.g. per-field `{% %}` sub-expressions inside
+            # an object literal, instead of one whole-object `{% %}`
+            # expression -- was scored as an anti-L2 catch hit purely for
+            # decomposition style, contaminating the H2 falsifiability
+            # signal this tier exists to produce. `oracle.tier05_jsonata.cases`
+            # is authored against ONE reference decomposition (this
+            # scenario's own solve.sh); an uncovered expression elsewhere in
+            # the artifact is surfaced here (passed=True, so it never fails
+            # `run_tier05_or_raise`/`tier05_ok`) so it's still visible to a
+            # human reviewing output, without penalizing a correct solution
+            # that merely decomposed differently. A case whose own
+            # `expression_path` matches NO expression in the artifact (the
+            # inverse mismatch -- a renamed/removed state, or genuinely a
+            # spec/fixture drift) is intentionally still a hard failure
+            # above; only "found more expressions than cases name" is
+            # softened here.
             results.append(
                 Tier05CaseResult(
                     expression_path=expr_path,
@@ -251,11 +455,14 @@ def run_tier05(document: dict, spec_tier05: dict) -> list[Tier05CaseResult]:
                     sample_index=-1,
                     expected_output=None,
                     actual_output=None,
-                    passed=False,
+                    passed=True,
                     error=(
-                        f"expression at {expr_path!r} has no case in "
-                        f"oracle.tier05_jsonata.cases -- every embedded "
-                        f"expression must have at least one covering case"
+                        f"INFORMATIONAL (non-failing): expression at {expr_path!r} "
+                        f"has no covering case in oracle.tier05_jsonata.cases -- "
+                        f"this scenario's cases are authored against one reference "
+                        f"decomposition; an equally-correct solution using a "
+                        f"different (e.g. more granular) decomposition legitimately "
+                        f"introduces {{% %}} expressions no case names"
                     ),
                 )
             )

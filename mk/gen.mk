@@ -59,9 +59,17 @@ check-paths:
 # enabled arm (six outcomes for a 3-arm spec). Reuses
 # gates/oracle_falsifiability.py's own sandbox-preparation code path (the
 # F1 fix), same host-toolchain/network assumption as `make falsifiability`.
+# CATCH= optionally names which solution/broken/<name> fixture to use as
+# the negative on every enabled arm (default: auto-selected PER ARM, see
+# gates/grading_proof.py's own auto_select_negative() docstring) --
+# generalized 2026-08-06 so this target works for any scenario, not just
+# the toy spec's own catch name; generalized again 2026-08-06 (residual-
+# findings fix, DECISIONS.md Amendment 9) to select independently per arm
+# rather than one spec-wide catch, since a scenario's whole point can be
+# that different arms catch the same mistake at different tiers.
 grading-proof:
-	@if [ -z "$(SPEC)" ]; then echo "usage: make grading-proof SPEC=specs/foo.yaml" >&2; exit 2; fi
-	uv run python gates/grading_proof.py $(SPEC)
+	@if [ -z "$(SPEC)" ]; then echo "usage: make grading-proof SPEC=specs/foo.yaml [CATCH=catch-name]" >&2; exit 2; fi
+	uv run python gates/grading_proof.py $(SPEC) $(if $(CATCH),--catch $(CATCH),)
 
 # Regenerate every real spec (specs/_toy/ is a generator-testing fixture, not
 # a benchmark scenario — specs/SCHEMA.md §7 — so it is excluded from the

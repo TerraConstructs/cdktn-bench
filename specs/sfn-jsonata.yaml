@@ -1,0 +1,449 @@
+# specs/sfn-jsonata.yaml
+#
+# Seed scenario 3 (Slice D). Design source:
+# docs/iac-abstraction-aws-bench-plan.md Phase 1 seed-scenario table, row
+# `sfn-jsonata` ("Anti-L2 catch (+ mode-mixing trap)"); Amendment №1
+# (Tier-0.5 embedded-expression oracle); catch patterns mined from (never
+# copied from) ../tyme/repos/tc-ai-pdlc-coding-features/tests/helpers_asl.py
+# and tests/pdlc_core/test_no_jsonpath.py -- read alongside this file's own
+# catches[] entries below for the parallel.
+#
+# Verified against the local aws-cdk clone at authoring time
+# (packages/aws-cdk-lib/aws-stepfunctions): `StateProps` unifies
+# `JsonPathStateOptions` (InputPath/OutputPath/Parameters/ResultPath/
+# ResultSelector) AND `JsonataStateOptions` (Arguments/Output) into ONE
+# TypeScript interface every state accepts regardless of `queryLanguage`
+# (lib/states/state.ts) -- so setting `resultPath`/`parameters` etc. on a
+# JSONata-mode state is NOT a TypeScript type error, and `Pass.toStateJson`/
+# `State.renderInputOutput` render `ResultPath`/`Parameters` unconditionally
+# whenever the props are set, with NO synth-time validation rejecting their
+# co-presence with `queryLanguage: JSONATA` (only a *different* per-state-vs-
+# top-level `queryLanguage` VALUE mismatch throws `ConflictingQueryLanguages`
+# -- lib/states/state.ts:592). This mode-mixing mistake therefore sails
+# through `tsc` AND `cdk synth` exactly like `terraform validate` never
+# parses ASL semantics inside a `definition`/`DefinitionString` JSON-string
+# attribute -- genuine tier-0-only-via-a-real-structural-check territory on
+# every arm, not a typed-value-trap CDK could out-steer HCL on.
+
+id: sfn-jsonata
+title: "Step Functions order-batch transform (JSONata query language)"
+difficulty: 2
+services: [stepfunctions, iam]
+
+arms:
+  awscdk: true
+  hcl_raw: true
+  terraconstructs:
+    enabled: false
+    reason: >
+      arms/terraconstructs/README.md §3/§4 ("Confirmed gap, source-verified")
+      and DECISIONS.md's own "Per-arm scenario-set scoping deviation" entry:
+      terraconstructs 0.2.13's Step Functions construct
+      (src/aws/compute/{state-machine.ts,state-machine-fragment.ts,
+      stepfunctions-api.ts,states/*.ts,task-*.ts}) has ZERO JSONata/
+      `QueryLanguage` support -- grepped for `jsonata`/`QueryLanguage` across
+      every one of those files, zero matches, confirmed via GitHub code
+      search there is no open PR adding it either. This scenario's entire
+      premise (author a JSONata-mode state machine) has no substrate to
+      exist in on this arm; excluding it is what Amendment 2's "limited-
+      coverage third arm... running only scenarios its L2 coverage supports"
+      framing exists for. Not authoring a JSONPath-mode variant for parity
+      (SCHEMA.md §6/prereg §6 prompt parity would be broken by a
+      fundamentally different query-language target, and
+      arms/terraconstructs/README.md §4 explicitly already recommends
+      against doing so for this exact scenario).
+
+instruction:
+  shared_body: |
+    Create a new AWS Step Functions state machine that processes a batch of
+    orders and applies a spending-budget check.
+
+    The state machine's execution input is shaped like:
+
+      { "orders": [ { "id": "<string>", "qty": <number>, "price": <number> }, ... ] }
+
+    Add a state named `ComputeTotals` whose output is a JSON object with two
+    fields: `orders` -- every input order, each with a `total` field added
+    equal to that order's quantity multiplied by its price (alongside its
+    existing `id`, `qty`, and `price` fields) -- and `grandTotal` -- the sum
+    of every order's `total` across the whole batch.
+
+    Add a state named `CheckBudget` that branches on `grandTotal`: if it
+    exceeds 1000, the execution must fail (reach a Fail state); otherwise
+    the execution must succeed (reach a Succeed state).
+
+    Build the entire state machine using AWS Step Functions' JSONata query
+    language (`QueryLanguage: JSONata`) for every state's input, output, and
+    branching logic -- not the classic JSONPath query language.
+  placeholders: []
+  per_arm:
+    awscdk:
+      language_line: "Author this as an AWS CDK (TypeScript) app using aws-cdk-lib L2 constructs (the aws-cdk-lib/aws-stepfunctions module)."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdk.out/ScenarioStack.template.json
+        build_command: "npm run build"
+        synth_command: "npx cdk synth --no-lookups --quiet -o cdk.out"
+        json_fields: []
+    hcl_raw:
+      language_line: "Author this as hand-written Terraform HCL (no modules), using the aws_sfn_state_machine resource."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields: []
+
+catches:
+  - name: mode-mixing-jsonpath-artifacts
+    taxonomy: nested-attribute
+    description: >
+      A JSONata-mode state machine's ASL definition mixes in JSONPath-mode
+      artifacts: any of the five JSONPath-only ASL fields
+      (InputPath/OutputPath/Parameters/ResultPath/ResultSelector -- plus
+      ItemsPath, the Map-state-specific sixth one) appearing anywhere in the
+      definition, or a raw, un-evaluated `"$."`-prefixed JSONPath string
+      used as a literal value in place of a proper `{% ... %}` JSONata
+      expression (Step Functions treats an unwrapped string as a literal
+      constant, per the service's own documented Output/Arguments/Assign
+      field semantics -- it is never itself evaluated as a path). Both
+      variants are syntactically valid JSON/ASL -- neither `tsc`, `cdk
+      synth`, nor `terraform validate` parses ASL semantics deeply enough to
+      reject either (verified directly against the local aws-cdk clone: see
+      this file's own header comment) -- and Step Functions will either
+      reject the state machine outright at CreateStateMachine (the banned
+      fields) or silently execute the literal string as a constant instead
+      of a dynamic reference (the raw un-evaluated string), producing wrong
+      behavior invisible to every synth/validate/plan step. Modeled on
+      `tc-ai-pdlc-coding-features/tests/pdlc_core/test_no_jsonpath.py`'s own
+      two-part check (banned-key presence + raw `"$."` substring search),
+      not copied from it. NOTE (verified while building this scenario's own
+      negative fixture): `cdk synth` DOES emit a non-blocking
+      `CloudFormation-Validate` WARNING for the banned-fields variant
+      ("'ResultPath' is not allowed when QueryLanguage is JSONata") -- but
+      only a warning; synth still exits 0 and writes the violating template
+      regardless, so this stays invisible to tier-0/reward.txt exactly as
+      assumed below. Also verified: `Pass.jsonata()`/`Choice.jsonata()`'s
+      own narrower factory-specific prop types (no `PassJsonPathOptions`)
+      DO reject `resultPath` etc. at `tsc` time -- only the raw
+      `new sfn.Pass(...)`/`new sfn.Choice(...)` constructors' general,
+      JSONPath-and-JSONata-unified prop types (`PassProps` etc.) admit the
+      mistake at all. An incidental, undocumented side effect of CDK's
+      factory-vs-constructor API shape, not a targeted mode-mixing
+      safeguard -- this scenario's own negative fixture
+      (solution/broken/mode-mixing-jsonpath-artifacts/) uses the raw
+      constructor form specifically to reproduce the mistake, and the catch
+      remains genuinely reachable via ordinary (if less-recommended)
+      idiomatic CDK usage -- see
+      solution/broken/mode-mixing-jsonpath-artifacts-raw-constructor-escape-hatch/
+      (an extra, non-catch-named fixture) for that path, still proven
+      reward=0.0 via tier-1 cfn-guard. Caught identically on both arms AT
+      TIER 1 for the raw-constructor idiom: the check extracts and walks
+      the same decoded ASL document (CFN `DefinitionString`, TF
+      `aws_sfn_state_machine.definition` -- both JSON-encoded string
+      attributes, `|fromjson`-decoded the same way any other
+      `jsonencode(...)`'d Terraform attribute is per SCHEMA.md §4.2) via
+      Rego (hcl_raw) / cfn-guard (awscdk) at the SAME strictness, since
+      neither jq's narrow JSONPath-subset grammar nor `jsonpath-ng` can
+      express an unanchored "does this arbitrarily-nested string ever
+      contain this substring" search the way a real policy language's
+      native regex/walk primitives can -- this is deliberately a tier-"1",
+      policy-graded catch, not a tier-"0" one, even though it is entirely
+      mechanical (see oracle.structural_asserts below for the 7 declared
+      facts this policy pair encodes).
+
+      CORRECTION (2026-08-06, benchmark-integrity review finding
+      "sfn-jsonata / mode-mixing-jsonpath-artifacts — awscdk tier '1' is
+      fixture-selected, not arm-determined"): the tier a given awscdk
+      solution actually gets caught at for THIS mistake is API-FORM
+      dependent, not a fixed arm property. Verified directly against the
+      local aws-cdk clone
+      (packages/aws-cdk-lib/aws-stepfunctions/lib/states/pass.ts:96):
+      `PassJsonataProps extends StateBaseProps, AssignableStateOptions,
+      JsonataCommonOptions` -- no `PassJsonPathOptions` mixed in -- so
+      setting `resultPath` on `Pass.jsonata()` (the factory idiom THIS
+      SCENARIO'S OWN reference solution uses throughout, see solution/solve.sh)
+      is a genuine `tsc` compile error, i.e. tier "0", not tier "1"; only
+      the raw `new sfn.Pass(...)`/`new sfn.Choice(...)` constructors' general
+      `PassProps`/etc. types (which mix in BOTH JsonPath- and Jsonata-mode
+      options) admit the mistake past `tsc` at all. The catch's PRIMARY
+      fixture (solution/broken/mode-mixing-jsonpath-artifacts/) now uses the
+      `.jsonata()` factory idiom and is caught at tier "0" (a BUILD FAILURE,
+      before `cdk synth` or any Rego/cfn-guard tooling runs) --
+      `predicted_tier_caught.awscdk` below is recorded as "0" to match. The
+      raw-constructor idiom (still genuinely reachable, and still only
+      caught at tier 1) is preserved as an extra, non-catch-named fixture
+      (see above) so that tier-1 coverage isn't lost, but it no longer
+      drives this catch's own recorded tier -- a tier "1" recorded here
+      would have UNDERSTATED CDK (implying the mistake is invisible to the
+      compiler on this arm, when for the idiom this scenario's own solution
+      teaches, CDK actually catches it EARLIER than the TF-shaped arms do).
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "1"
+      terraconstructs_override: null
+
+  - name: jsonata-expression-correctness
+    taxonomy: anti-L2
+    description: >
+      An embedded `{% ... %}` JSONata expression -- the ComputeTotals
+      transform (per-order `total`, batch `grandTotal`) or the CheckBudget
+      threshold condition -- computes the WRONG value while remaining
+      syntactically valid JSONata and structurally valid ASL. This is the
+      anti-L2 falsifiability catch (prereg §5/H2): the type system cannot
+      see inside a string literal in ANY of the three toolchains -- `tsc`
+      type-checks the TypeScript string type, not its JSONata content;
+      `cdk synth` emits the string verbatim into the template; `terraform
+      validate`/`plan` treat the whole ASL document as an opaque JSON blob;
+      cfn-guard/Rego (the mode-mixing catch's own tier-1 mechanism above)
+      inspect ASL STRUCTURE (which keys/strings are present), never
+      evaluate JSONata SEMANTICS. Only Tier 0.5 -- evaluating every embedded
+      expression with `jsonata-python` against this spec's own sample
+      inputs (oracle.tier05_jsonata below) -- can catch it. Predicted
+      PARITY across arms, not a CDK advantage: unlike the typed-value-trap
+      taxonomy member (where CDK's enum genuinely steers the model to a
+      valid value before emission), there is no typed surface for "the
+      right mathematical/logical expression" in any of the three
+      toolchains -- this is the scenario's H2 falsifiability instrument,
+      retained specifically to detect a CDK penalty/advantage if this
+      parity prediction turns out wrong, per prereg §5's own framing.
+    predicted_tier_caught:
+      awscdk: "0.5"
+      hcl: "0.5"
+      terraconstructs_override: null
+
+oracle:
+  intent: >
+    Exactly one AWS::StepFunctions::StateMachine exists, whose ASL
+    definition's top-level QueryLanguage is exactly "JSONata". The
+    definition contains a state named ComputeTotals whose output is an
+    object with an `orders` array (every input order plus a `total` field
+    equal to quantity times price) and a `grandTotal` number (the sum of
+    every order's total), computed via a `{% ... %}` JSONata expression. The
+    definition contains a state named CheckBudget that branches on
+    grandTotal via a `{% ... %}` JSONata condition: greater than 1000 leads
+    to a Fail state, otherwise to a Succeed state. Nowhere in the definition
+    does any JSONPath-mode ASL field (InputPath, OutputPath, Parameters,
+    ResultPath, ResultSelector, ItemsPath) appear, and nowhere does a raw,
+    un-evaluated `"$."`-prefixed JSONPath string appear as a literal value
+    in place of a proper JSONata expression.
+
+  structural_asserts:
+    - name: state-machine-exists
+      description: "An AWS::StepFunctions::StateMachine exists."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::StepFunctions::StateMachine')]"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_sfn_state_machine')]"
+      op: exists
+
+    # Plan-time-knownness (SCHEMA.md §4.2.1): the reference solution's ASL
+    # `definition` is a pure literal jsonencode() -- the state machine has
+    # no Task states calling any other resource, so nothing inside the ASL
+    # document itself is a provider-computed reference (the execution
+    # role's ARN is a SEPARATE `role_arn` attribute, never embedded in
+    # `definition`). Verified directly: `terraform show -json` on the
+    # hcl_raw reference fixture resolves `.values.definition` fully, not
+    # `(known after apply)`. CFN's synthesized `DefinitionString` is a
+    # plain JSON string too (verified against `Stack.toJsonString`'s own
+    # behavior: it only emits a CFN `Fn::Join` intrinsic when the object
+    # being serialized contains an actual token/Ref/GetAtt -- this
+    # definition contains none, since it references no other resource) --
+    # both arms resolve `|fromjson` against a literal string, no Fn::Join
+    # flattening required for this scenario's reference solution.
+    - name: query-language-is-jsonata
+      description: "The state machine's ASL top-level QueryLanguage is exactly \"JSONata\"."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::StepFunctions::StateMachine')].Properties.DefinitionString|fromjson.QueryLanguage"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_sfn_state_machine')].values.definition|fromjson.QueryLanguage"
+      op: eq
+      expected: "JSONata"
+
+    # --- mode-mixing-jsonpath-artifacts (tier 1 -- Rego/cfn-guard-graded,
+    # see that catch's own description above for why this is tier-1 rather
+    # than tier-0 despite being fully mechanical: jq's JSONPath-subset
+    # grammar this repo compiles cfn_jsonpath/tf_jsonpath into has no
+    # "search every string leaf, unanchored" primitive the way a real
+    # policy language's regex/walk builtins do; `..Field` (recursive
+    # descent to a NAMED key) covers the six banned-key facts fine, but
+    # "a raw $.-prefixed literal ANYWHERE, regardless of which key holds
+    # it" has no equivalent). Each entry below is independently verified
+    # against a hand-built ASL document via oracles.lib.structural.resolve
+    # (jsonpath_ng-based) at spec-authoring time -- see this scenario's own
+    # authoring notes; not fixture-pinned here since check_reference_paths.py
+    # is optional/non-gating (generator/check_reference_paths.py's own
+    # module docstring) and this scenario's real grading path is the
+    # hand-authored policy.rego/policy.guard themselves, which this
+    # spec-authoring session DID prove against real synth/plan output (see
+    # provenance / the accompanying grading-proof transcript).
+    - name: no-jsonpath-input-path
+      description: "No InputPath field appears anywhere in the ASL definition."
+      tier: "1"
+      applies_to: [awscdk, hcl_raw]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::StepFunctions::StateMachine')].Properties.DefinitionString|fromjson..InputPath"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_sfn_state_machine')].values.definition|fromjson..InputPath"
+      op: not_exists
+
+    - name: no-jsonpath-output-path
+      description: "No OutputPath field appears anywhere in the ASL definition."
+      tier: "1"
+      applies_to: [awscdk, hcl_raw]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::StepFunctions::StateMachine')].Properties.DefinitionString|fromjson..OutputPath"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_sfn_state_machine')].values.definition|fromjson..OutputPath"
+      op: not_exists
+
+    - name: no-jsonpath-parameters
+      description: "No Parameters field appears anywhere in the ASL definition."
+      tier: "1"
+      applies_to: [awscdk, hcl_raw]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::StepFunctions::StateMachine')].Properties.DefinitionString|fromjson..Parameters"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_sfn_state_machine')].values.definition|fromjson..Parameters"
+      op: not_exists
+
+    - name: no-jsonpath-result-path
+      description: "No ResultPath field appears anywhere in the ASL definition."
+      tier: "1"
+      applies_to: [awscdk, hcl_raw]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::StepFunctions::StateMachine')].Properties.DefinitionString|fromjson..ResultPath"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_sfn_state_machine')].values.definition|fromjson..ResultPath"
+      op: not_exists
+
+    - name: no-jsonpath-result-selector
+      description: "No ResultSelector field appears anywhere in the ASL definition."
+      tier: "1"
+      applies_to: [awscdk, hcl_raw]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::StepFunctions::StateMachine')].Properties.DefinitionString|fromjson..ResultSelector"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_sfn_state_machine')].values.definition|fromjson..ResultSelector"
+      op: not_exists
+
+    - name: no-jsonpath-items-path
+      description: "No ItemsPath field appears anywhere in the ASL definition (Map-state-specific JSONPath field)."
+      tier: "1"
+      applies_to: [awscdk, hcl_raw]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::StepFunctions::StateMachine')].Properties.DefinitionString|fromjson..ItemsPath"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_sfn_state_machine')].values.definition|fromjson..ItemsPath"
+      op: not_exists
+
+    - name: no-raw-jsonpath-string-literal
+      description: >
+        No raw, un-evaluated "$."-prefixed JSONPath string literal appears
+        anywhere in the ASL definition (a value that should have been a
+        `{% ... %}` JSONata expression but was written as a bare JSONPath
+        string instead -- syntactically valid JSON, semantically a wrong,
+        never-evaluated literal constant). `not_regex` searches the RAW
+        (still JSON-encoded) DefinitionString/definition text directly, not
+        the decoded structure -- no `|fromjson` needed, since this is a
+        literal substring search over the whole document text, mirroring
+        `tc-ai-pdlc-coding-features/tests/helpers.py::contains_jsonpath_artifact`'s
+        own `r'"\$\.'` pattern (a `"` immediately followed by `$.` never
+        appears in a legitimate JSONata reference like `$states.input` or
+        `{% $states... %}`, so this does not false-positive on correct
+        JSONata content).
+      tier: "1"
+      applies_to: [awscdk, hcl_raw]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::StepFunctions::StateMachine')].Properties.DefinitionString"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_sfn_state_machine')].values.definition"
+      op: not_regex
+      expected: "\"\\$\\."
+
+  rego_hints:
+    - >-
+      package cdktn_bench.sfn_jsonata, graded against `terraform show -json`
+      PLAN output (input) for hcl_raw. Collect every
+      aws_sfn_state_machine resource from
+      input.planned_values.root_module.resources; for each,
+      json.unmarshal its .values.definition (a jsonencode()'d STRING, same
+      |fromjson case as the tier-0 asserts above) into the decoded ASL
+      object.
+    - >-
+      QueryLanguage: deny if the decoded ASL's top-level QueryLanguage is
+      not exactly "JSONata" (belt-and-suspenders alongside the tier-0
+      query-language-is-jsonata assert -- this policy is meant to
+      comprehensively certify "well-formed JSONata-mode machine, no
+      JSONPath leakage" as one bundle, not rely on tier-0 alone).
+    - >-
+      banned keys: use Rego's `walk(doc)` builtin to visit every (path,
+      value) pair in the decoded ASL; deny if the LAST path segment
+      (the object key a value was found under) is one of
+      {InputPath, OutputPath, Parameters, ResultPath, ResultSelector,
+      ItemsPath} -- this is the native-Rego equivalent of the tier-0
+      "..Field"-style path each of the six no-jsonpath-* structural_asserts
+      above documents, done as one comprehension instead of six separate
+      rules.
+    - >-
+      raw "$." string: deny if `regex.match(`"\$\.`, sm.values.definition)`
+      is true for any collected aws_sfn_state_machine resource -- operates
+      on the RAW (still JSON-encoded) string, same as the
+      no-raw-jsonpath-string-literal structural_assert's own not_regex
+      check, not the decoded object.
+
+  cfn_guard_hints:
+    - >-
+      Graded against the awscdk arm's synthesized CloudFormation template.
+      `let state_machines = Resources.*[ Type ==
+      "AWS::StepFunctions::StateMachine" ]`; every rule below operates
+      DIRECTLY on the raw `Properties.DefinitionString` STRING value via
+      regex comparison (`==`/`!=` against a `/pattern/` literal, Rust regex
+      syntax -- an unanchored search, not a full-string match) -- cfn-guard
+      has no built-in JSON-string-decode function the way Rego's
+      json.unmarshal or jq's |fromjson do, so unlike the Rego bundle this
+      side cannot walk the DECODED ASL structure; every check here is
+      necessarily a text-pattern match against the still-encoded string.
+    - "rule state_machine_exists: %state_machines !empty"
+    - >-
+      rule query_language_is_jsonata when %state_machines !empty:
+      %state_machines.Properties.DefinitionString ==
+      /"QueryLanguage"\s*:\s*"JSONata"/ (tolerate optional whitespace around
+      the colon -- do not assume compact-vs-pretty-printed JSON spacing)
+    - >-
+      rule no_jsonpath_mode_keys when %state_machines !empty:
+      %state_machines.Properties.DefinitionString !=
+      /"(InputPath|OutputPath|Parameters|ResultPath|ResultSelector|ItemsPath)"\s*:/
+      -- one combined alternation covers all six banned keys in one rule,
+      matching the SAME six facts the six no-jsonpath-* structural_asserts
+      document individually for the Rego side (jq's grammar needed one path
+      per key; cfn-guard's regex alternation does not).
+    - >-
+      rule no_raw_jsonpath_string_literal when %state_machines !empty:
+      %state_machines.Properties.DefinitionString != /"\$\./ -- same pattern
+      as the no-raw-jsonpath-string-literal structural_assert's own
+      not_regex check and the Rego bundle's raw "$." rule, at the same
+      strictness.
+
+  tier05_jsonata:
+    expressions_from:
+      cfn: "$.Resources[?(@.Type=='AWS::StepFunctions::StateMachine')].Properties.DefinitionString|fromjson"
+      tf: "$.planned_values.root_module.resources[?(@.type=='aws_sfn_state_machine')].values.definition|fromjson"
+    cases:
+      - expression_path: "$.States.ComputeTotals.Output"
+        input:
+          orders:
+            - { id: "o1", qty: 2, price: 10 }
+            - { id: "o2", qty: 1, price: 5 }
+        expected_output:
+          orders:
+            - { id: "o1", qty: 2, price: 10, total: 20 }
+            - { id: "o2", qty: 1, price: 5, total: 5 }
+          grandTotal: 25
+      - expression_path: "$.States.CheckBudget.Choices[0].Condition"
+        input:
+          grandTotal: 2500
+        expected_output: true
+
+verifier:
+  budget:
+    max_iters: 8
+  live_check:
+    enabled: false
+    module: tests/live_check.py
+
+provenance:
+  author: "Vincent (via Claude Code, Slice D scenario-authoring task)"
+  date: "2026-08-06"
+  prereg_section_refs:
+    - "docs/iac-abstraction-aws-bench-plan.md Phase 1 seed-scenario table, sfn-jsonata row"
+    - "docs/iac-abstraction-aws-bench-plan.md 'New oracle sub-tier adopted (pre-registration amendment №1, logged)' -- Tier 0.5"
+    - "iac-abstraction-benchmark-prereg.md §5 (catch taxonomy: nested-attribute, anti-L2), §3 (oracle tiers, Tier 0.5)"
+    - "DECISIONS.md Amendment №1 (Tier-0.5 embedded-expression oracle) and 'Tier-0.5 runs host-side, non-gating'"

@@ -32,6 +32,17 @@ LABEL org.opencontainers.image.title="cdktn-bench hcl-raw" \
 # Baseline agent-container utility set shared with arms/awscdk and
 # arms/terraconstructs — see ../../DECISIONS.md "Agent-container baseline
 # contract". gnupg is needed for the HashiCorp apt-key step below.
+#
+# python3 (stdlib only, no pip package ever installed) is NOT part of that
+# shared baseline -- it exists solely to run workspace/mock-sfn.py, this
+# arm's own offline-plan fixture for `aws_sfn_state_machine`'s
+# CustomizeDiff-triggered `states:ValidateStateMachineDefinition` call (see
+# workspace/provider.tf's own header comment and mock-sfn.py's docstring
+# for the full mechanism -- the same class of gap arms/terraconstructs'
+# Node-based mock-sts.js fixes for that arm's `data "aws_caller_identity"`
+# call). Kept out of the grading-tool baseline deliberately: structural
+# assertions still run entirely on jq (generator/jsonpath_jq.py's own
+# docstring, "no Python, no jsonpath-ng" -- unaffected by this addition).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates \
       curl \
@@ -40,6 +51,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       jq \
       git \
       less \
+      python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # --- AWS CLI v2 (agent-container parity with arms/awscdk/arms/terraconstructs;
@@ -141,5 +153,6 @@ RUN chmod +x ./preflight.sh
 # solution — see ../../README.md "Generated-task workspace split".
 WORKDIR /app/project
 COPY workspace/provider.tf ./provider.tf
+COPY workspace/mock-sfn.py ./mock-sfn.py
 COPY workspace/main.tf ./main.tf
 CMD ["/bin/bash"]

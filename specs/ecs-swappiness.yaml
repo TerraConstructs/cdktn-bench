@@ -1,0 +1,308 @@
+# specs/ecs-swappiness.yaml
+#
+# Seed scenario 2 (Slice D). Design source:
+# docs/iac-abstraction-aws-bench-plan.md Phase 1 seed-scenario table, row
+# `ecs-swappiness` ("Nested-attribute misplacement"); aws-cdk source
+# aws-ecs/lib/linux-parameters.ts (local clone, read in full at authoring
+# time — see catches[] below for the exact lines cited).
+
+id: ecs-swappiness
+title: "ECS EC2 task definition: tuned container memory swappiness"
+difficulty: 2
+services: [ecs, iam]
+
+arms:
+  awscdk: true
+  hcl_raw: true
+  terraconstructs:
+    enabled: true
+    reason: >
+      arms/terraconstructs/README.md §4 ("Per-seed-scenario verdict") rates
+      ecs-swappiness "SUPPORTED, catch reproduces byte-for-byte": terraconstructs
+      0.2.13's src/aws/compute/ecs/linux-parameters.ts has the identical typed
+      `swappiness?: number` prop, the identical synth-time 0-100 range
+      validation, and — verified independently at spec-authoring time by
+      reading the installed 0.2.13 package directly (node_modules/terraconstructs
+      @0.2.13, the exact pinned version) — the identical silent-drop line
+      `this.swappiness = props.maxSwap ? props.swappiness : undefined;`
+      (linux-parameters.js:55, matching aws-cdk-lib's linux-parameters.ts:116
+      character-for-character). Enabled with high confidence; see this spec's
+      catches[].predicted_tier_caught.terraconstructs_override for the one
+      place this identical-construct fact actually changes a predicted tier
+      (relative to hcl_raw, not relative to awscdk).
+
+instruction:
+  shared_body: |
+    Create a new Amazon ECS task definition compatible with the EC2 launch
+    type. It must contain exactly one container definition — choose any
+    reasonable image, name, and memory allocation for it. Tune the
+    container's memory swappiness behavior to 42.
+
+    This is a definition-only task: nothing needs to be deployed, started,
+    or attached to a cluster or service.
+  placeholders: []
+  per_arm:
+    awscdk:
+      language_line: "Author this as an AWS CDK (TypeScript) app using aws-cdk-lib L2 constructs."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdk.out/ScenarioStack.template.json
+        build_command: "npm run build"
+        synth_command: "npx cdk synth --no-lookups --quiet -o cdk.out"
+        json_fields: []
+    hcl_raw:
+      language_line: "Author this as hand-written Terraform HCL (no modules)."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields: []
+    terraconstructs:
+      language_line: "Author this using terraconstructs (TypeScript) L2 constructs, synthesized via cdktn."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdktf.out/stacks/ecs-swappiness/plan.json
+        synth_command: "npx cdktn synth"
+        json_fields: []
+
+catches:
+  - name: swappiness-nested-attribute
+    taxonomy: nested-attribute
+    description: >
+      Memory swappiness lives at the exact nested location
+      container.linuxParameters.swappiness inside the task definition's
+      container definitions — not at the task-definition top level, not at
+      the container's own top level (a sibling of name/image), and not
+      under any other key. In hcl_raw, `container_definitions` is an
+      untyped JSON string (the terraform-provider-aws schema has no
+      sub-schema for its interior — confirmed: `terraform validate` never
+      inspects it below "is this valid JSON"), so a mis-nested `swappiness`
+      key is silently ACCEPTED by both `terraform plan` and, per the real
+      ECS RegisterTaskDefinition API, silently IGNORED at deploy time — no
+      error anywhere in the chain a static-only oracle can observe except
+      the resulting artifact simply not having swappiness where it needs
+      to be. In awscdk (and terraconstructs — see below), the L2
+      LinuxParameters construct's typed `swappiness` prop makes this
+      specific mistake structurally unreachable through ordinary use (the
+      only way to reproduce the mis-nested shape is an L1/override escape
+      hatch); the oracle catches it identically regardless of arm, because
+      it is checked directly against the synthesized/planned artifact
+      (aws-cdk-lib aws-ecs/lib/linux-parameters.ts:172-185
+      renderLinuxParameters(), and its container-definition.ts:986 call
+      site, confirm the ONE nesting CDK itself ever produces:
+      ContainerDefinitions[*].LinuxParameters.Swappiness).
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "0"
+      terraconstructs_override: null
+
+  - name: swappiness-requires-maxswap
+    taxonomy: graph-dependency
+    description: >
+      Swappiness has no effect unless maxSwap (the container's total swap
+      memory) is also set on the SAME container's Linux parameters — the
+      real ECS API silently ignores `swappiness` when `maxSwap` is absent
+      (aws-cdk-lib's own LinuxParametersProps.swappiness jsdoc says so
+      explicitly: "If a value is not specified for maxSwap then this
+      parameter is ignored"), and aws-cdk-lib's LinuxParameters construct
+      mirrors that exact behavior at synth time rather than surfacing it as
+      an error: `this.swappiness = props.maxSwap ? props.swappiness :
+      undefined;` (aws-ecs/lib/linux-parameters.ts:116) — an agent who sets
+      `swappiness: 42` and forgets `maxSwap` gets a CORRECTLY-TYPED,
+      CORRECTLY-VALIDATED (0-100 check passes fine) construct that
+      nonetheless synthesizes NO Swappiness property at all. The intent
+      requires the tuned value to be EFFECTIVE, not merely present, so the
+      oracle must independently confirm maxSwap accompanies it. This
+      produces a genuine per-arm divergence in WHICH tier catches the
+      natural "forgot maxSwap" mistake:
+        - awscdk: caught at tier "0" — the SAME swappiness-value-correct
+          structural_assert that catches the nested-attribute catch above
+          already fails, because CDK's own silent-drop means Swappiness is
+          simply absent from the synthesized template (no separate check
+          needed).
+        - hcl_raw: NOT caught at tier "0" — `container_definitions` is an
+          untyped JSON blob with no construct to silently drop anything;
+          `swappiness: 42` sits right there, literally and structurally
+          correct, in the plan JSON, with no accompanying `maxSwap` key.
+          Only a dedicated policy check (oracle.rego_hints below,
+          oracles/rego/ecs-swappiness/policy.rego) catches this.
+        - terraconstructs: caught at tier "0", like awscdk, NOT tier "1"
+          like hcl_raw — verified directly against the pinned 0.2.13
+          package (node_modules/terraconstructs@0.2.13,
+          lib/aws/compute/ecs/linux-parameters.js:55): `this.swappiness =
+          props.maxSwap ? props.swappiness : undefined;`, byte-for-byte
+          the same silent-drop logic as aws-cdk-lib. This is exactly the
+          kind of "terraconstructs' own construct is independently typed
+          for this property" case SCHEMA.md §3 names
+          terraconstructs_override for — set below to diverge from hcl's
+          predicted tier.
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "1"
+      terraconstructs_override: "0"
+
+oracle:
+  intent: >
+    Exactly one AWS::ECS::TaskDefinition exists, compatible with the EC2
+    launch type, containing exactly one container definition. That
+    container's Linux parameters set memory swappiness to exactly 42,
+    nested at container.linuxParameters.swappiness — not at the task
+    definition's top level, not at the container's own top level, and not
+    under any other key. The same container's Linux parameters also set
+    maxSwap (the container's total swap memory), because AWS ECS silently
+    ignores swappiness whenever maxSwap is absent: the tuned swappiness
+    value must be EFFECTIVE, not merely present in the artifact.
+
+  structural_asserts:
+    - name: taskdef-exists
+      description: "An AWS::ECS::TaskDefinition exists."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ECS::TaskDefinition')]"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_ecs_task_definition')]"
+      op: exists
+
+    - name: taskdef-ec2-compatible
+      description: >
+        The task definition's compatibility list includes EC2 (the
+        instruction asks for the EC2 launch type specifically — Fargate,
+        where LinuxParameters.swappiness is rejected outright rather than
+        silently dropped, per aws-cdk-lib's own jsdoc, is a materially
+        different, harder variant this scenario does not exercise).
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ECS::TaskDefinition')].Properties.RequiresCompatibilities"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_ecs_task_definition')].values.requires_compatibilities"
+      op: contains
+      expected: "EC2"
+
+    # --- swappiness-nested-attribute (tier 0, both catches partly land here) --
+    # This single assert is the primary oracle for the nested-attribute catch:
+    # a swappiness value nested anywhere else in the container_definitions
+    # JSON resolves this exact path to ZERO nodes, and `op: eq` fails
+    # outright on zero resolved nodes (SCHEMA.md §4.2's op table) — the
+    # ambiguity/absence rule does the catching, no extra logic needed. It
+    # ALSO independently catches the maxSwap-dependency catch on awscdk and
+    # terraconstructs (see that catch's own description above): their
+    # LinuxParameters construct silently renders NO Swappiness property at
+    # all when maxSwap is unset, so this same path resolves to zero nodes
+    # there too. It does NOT catch the maxSwap-dependency catch on hcl_raw —
+    # see maxswap-present-when-swappiness-tuned below for why that needs a
+    # dedicated tier-1 check instead of a second tier-0 assert (kept
+    # deliberately tier-1 rather than made a trivial "maxSwap key exists"
+    # tier-0 check, specifically so the awscdk/terraconstructs-vs-hcl_raw
+    # divergence documented above is actually exercised through the pipeline
+    # instead of erased by a uniform tier-0 shortcut).
+    #
+    # `|fromjson`: hcl_raw/terraconstructs's `values.container_definitions`
+    # is a `jsonencode(...)`'d STRING (SCHEMA.md §4.2's documented case),
+    # decoded before continuing the path. Plan-time-knownness (SCHEMA.md
+    # §4.2.1): the reference solution's container_definitions references NO
+    # other resource's provider-computed output (image is a literal
+    # registry string, no ECR repo/ARN lookups) — verified this stays fully
+    # `values`-resolved (not `(known after apply)`) for both TF arms'
+    # reference fixtures.
+    - name: swappiness-value-correct
+      description: >
+        The container's memory swappiness is set to exactly 42, nested at
+        container.linuxParameters.swappiness (never anywhere else — see
+        this assert's own comment in the spec source for how this single
+        check does double duty across both declared catches).
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ECS::TaskDefinition')].Properties.ContainerDefinitions[*].LinuxParameters.Swappiness"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_ecs_task_definition')].values.container_definitions|fromjson[*].linuxParameters.swappiness"
+      op: eq
+      expected: 42
+
+    # --- swappiness-requires-maxswap (tier 1 -- see catch description above
+    # for exactly why this is tier 1, not tier 0, and why that's a
+    # deliberate design choice, not an oversight). This entry is the SPEC
+    # for oracles/rego/ecs-swappiness/policy.rego (hcl_raw + terraconstructs)
+    # and oracles/cfn-guard/ecs-swappiness/policy.guard (awscdk) per
+    # SCHEMA.md §4.2 ("this entry is the spec for that policy... the policy
+    # file is still the thing that actually runs") -- written here as the
+    # simplified, unconditional-existence form (this scenario's instruction
+    # always requires swappiness to be tuned, so "maxSwap must accompany
+    # swappiness" reduces to "maxSwap must be present" for THIS scenario;
+    # the hand-authored policy files implement the fuller "IF swappiness is
+    # set THEN maxSwap must be set" form, which is the general shape the
+    # catch actually names).
+    - name: maxswap-present-when-swappiness-tuned
+      description: >
+        The same container's Linux parameters also set maxSwap — required
+        for the tuned swappiness value to actually take effect, per AWS
+        ECS's own documented behavior (swappiness is silently ignored
+        without it). Graded via Rego (hcl_raw, terraconstructs) / cfn-guard
+        (awscdk), not a tier-0 structural_assert -- see the
+        swappiness-requires-maxswap catch's own description for the
+        verified per-arm tier divergence this choice exists to preserve
+        rather than erase.
+      tier: "1"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ECS::TaskDefinition')].Properties.ContainerDefinitions[*].LinuxParameters.MaxSwap"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_ecs_task_definition')].values.container_definitions|fromjson[*].linuxParameters.maxSwap"
+      op: exists
+
+  rego_hints:
+    - >-
+      package cdktn_bench.ecs_swappiness, graded against `terraform show
+      -json` PLAN output (input) for hcl_raw AND terraconstructs. Collect
+      every aws_ecs_task_definition resource from
+      input.planned_values.root_module.resources; for each, json.unmarshal
+      its .values.container_definitions (a jsonencode()'d STRING, same
+      |fromjson case as the tier-0 asserts above) into a list of container
+      objects.
+    - >-
+      deny if any decoded container has a truthy/non-null
+      linuxParameters.swappiness AND no truthy/non-null
+      linuxParameters.maxSwap alongside it -- use object.get with a `null`
+      default at each level (linuxParameters itself may be entirely absent)
+      rather than direct field access, which errors on a missing key
+      instead of just evaluating false.
+    - >-
+      This rule can legitimately evaluate to an EMPTY deny set (pass) for a
+      correct hcl_raw/terraconstructs reference solution (maxSwap present
+      alongside swappiness) -- do not add a fail-closed
+      "zero task definitions found" rule here the way toy-ssm-parameter's
+      policy.rego does for IAM-shape coverage: that fail-closed pattern
+      exists to guard against a too-narrow resource-shape FILTER silently
+      producing an empty comprehension despite a real violation being
+      present; there is only one recognized resource shape here
+      (aws_ecs_task_definition), so it does not apply.
+
+  cfn_guard_hints:
+    - >-
+      Graded against the awscdk arm's synthesized CloudFormation template.
+      `let task_defs = Resources.*[ Type == "AWS::ECS::TaskDefinition" ]`,
+      then for every ContainerDefinitions[*] entry: `when
+      LinuxParameters.Swappiness exists { LinuxParameters.MaxSwap exists }`.
+    - >-
+      This rule can only ever fire against a template produced via an
+      L1/override escape hatch (see swappiness-requires-maxswap's own
+      description: the typed L2 already makes "swappiness present, maxSwap
+      absent" unreachable through ordinary use, and the EXISTING tier-0
+      swappiness-value-correct assert already independently fails the
+      natural "forgot maxSwap" mistake on this arm before this rule is ever
+      reached). Kept at the SAME strictness as the rego rule anyway, per
+      the oracle-equivalence requirement that both bundles encode the same
+      intent -- not because awscdk needs it to catch the realistic
+      negative fixture.
+
+  tier05_jsonata: null
+
+verifier:
+  budget:
+    max_iters: 8
+  live_check:
+    enabled: false
+    module: tests/live_check.py
+
+provenance:
+  author: "Vincent (via Claude Code, Slice D scenario-authoring task)"
+  date: "2026-08-06"
+  prereg_section_refs:
+    - "docs/iac-abstraction-aws-bench-plan.md Phase 1 seed-scenario table, ecs-swappiness row"
+    - "iac-abstraction-benchmark-prereg.md §5 (catch taxonomy: nested-attribute, graph-dependency), §3 (oracle tiers)"

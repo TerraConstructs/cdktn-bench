@@ -47,6 +47,8 @@ scenario should be registerable without it."
 from __future__ import annotations
 
 import argparse
+import json
+import re
 import shutil
 import subprocess
 import sys
@@ -55,12 +57,174 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "generator"))
-from gen import ARM_WORKSPACE_SUBDIR, task_dir  # noqa: E402
-from spec_model import Arm, Spec, load_spec  # noqa: E402
+from gen import ARM_DIRNAME, ARM_WORKSPACE_SUBDIR, task_dir  # noqa: E402
+from spec_model import Arm, Catch, Spec, load_spec  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from oracles.lib.tier05_jsonata import Tier05Error, run_tier05  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 SOLVE_STUB_MARKER = "is not yet authored (Slice D)"
+
+_MIRROR_CACHE: dict[str, dict[str, set[str]] | None] = {}
+
+
+def _arm_mirror_provider_versions(arm: Arm) -> dict[str, set[str]] | None:
+    """`{full_name: {version, ...}}` (e.g. `{"registry.terraform.io/hashicorp/aws":
+    {"6.52.0"}}`) actually baked into `cdktn-bench/<arm>:dev`'s own
+    `/opt/terraform-plugin-mirror`, by extracting it via `docker cp` and
+    reading the mirror's own `<namespace>/<type>/index.json` files (the
+    same format `terraform providers mirror` writes and a `filesystem_mirror`
+    block reads, SCHEMA.md §4.2's sibling contract -- see arms/*/environment/
+    terraformrc). Used by `_check_mirror_coverage` below to prove a
+    synthesized artifact's actual provider requirements are satisfiable
+    OFFLINE by this specific arm image, without needing to run `terraform
+    init` against a platform-matched copy of the mirror on the host (which
+    doesn't work cross-platform -- the mirror only contains packages for the
+    image's own build platform, e.g. linux_arm64, not darwin_arm64/host
+    dev-machine platforms; verified directly, see the fix commentary this
+    function's caller carries). Returns `None` for `awscdk` (no terraform
+    CLI in that arm's grading path) or if the image can't be inspected."""
+    if arm == "awscdk":
+        return None
+    if arm in _MIRROR_CACHE:
+        return _MIRROR_CACHE[arm]
+    image = f"cdktn-bench/{ARM_DIRNAME[arm]}:dev"
+    cache_dir = REPO_ROOT / ".cache" / "falsifiability-tf-mirror" / arm
+    mirror_dir = cache_dir / "mirror"
+    container = None
+    try:
+        created = subprocess.run(
+            ["docker", "create", image, "true"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        container = created.stdout.strip()
+        if mirror_dir.exists():
+            shutil.rmtree(mirror_dir)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["docker", "cp", f"{container}:/opt/terraform-plugin-mirror", str(mirror_dir)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        print(
+            f"WARNING: could not extract {image}'s own provider mirror ({exc}) "
+            "-- provider-mirror-coverage checking is DISABLED for this run, "
+            "which reopens the registry-vs-mirror divergence gap. Run "
+            "`make build-arms` first.",
+            file=sys.stderr,
+        )
+        _MIRROR_CACHE[arm] = None
+        return None
+    finally:
+        if container:
+            subprocess.run(["docker", "rm", "-f", container], capture_output=True, check=False)
+
+    versions: dict[str, set[str]] = {}
+    registry_root = mirror_dir / "registry.terraform.io"
+    if registry_root.is_dir():
+        for namespace_dir in registry_root.iterdir():
+            if not namespace_dir.is_dir():
+                continue
+            for type_dir in namespace_dir.iterdir():
+                index_json = type_dir / "index.json"
+                if not index_json.is_file():
+                    continue
+                full_name = f"registry.terraform.io/{namespace_dir.name}/{type_dir.name}"
+                try:
+                    versions[full_name] = set(json.loads(index_json.read_text()).get("versions", {}))
+                except (json.JSONDecodeError, OSError):
+                    continue
+    _MIRROR_CACHE[arm] = versions
+    return versions
+
+
+_PINNED_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+
+
+def _check_mirror_coverage(document: dict, arm: Arm) -> tuple[bool, str]:
+    """Every provider `configuration.provider_config` in a synthesized
+    artifact names (by `full_name` + a literal, pinned `version_constraint`
+    -- a range constraint doesn't pin one version to check, and is skipped,
+    not silently treated as covered) must actually be present in THIS arm
+    image's own offline mirror (`_arm_mirror_provider_versions`). Fixes the
+    root cause of benchmark-integrity finding "apigw-openapi / terraconstructs
+    arm -- catch cannot fire at all in the real image": a solution that
+    synthesizes cleanly and plans successfully on the HOST (which resolves
+    providers from the public registry) can still be fundamentally
+    unrunnable inside the arm's actual `--network none` image if a required
+    provider was never mirrored there -- exactly what happened with
+    `hashicorp/archive` before that finding's fix (arms/terraconstructs/
+    environment/mirror-src/main.tf). Returns `(True, "")` when mirror
+    checking is unavailable (image not built -- a separately reported,
+    louder warning) rather than silently failing every run for an unrelated
+    reason."""
+    mirror = _arm_mirror_provider_versions(arm)
+    if mirror is None:
+        return True, ""
+    missing: list[str] = []
+    for cfg in document.get("configuration", {}).get("provider_config", {}).values():
+        full_name = cfg.get("full_name") or f"registry.terraform.io/{cfg.get('name', '?')}"
+        constraint = str(cfg.get("version_constraint", "")).strip()
+        if not _PINNED_VERSION_RE.match(constraint):
+            continue  # not a single pinned version -- nothing to check statically
+        if constraint not in mirror.get(full_name, set()):
+            missing.append(f"{full_name}@{constraint} (mirror has: {sorted(mirror.get(full_name, set())) or 'nothing'})")
+    if missing:
+        return False, "provider(s) required by this artifact are MISSING from the arm image's own offline mirror: " + "; ".join(missing)
+    return True, ""
+
+
+# `== summary: tier0_pass=N tier1_status=X ==` -- generator/gen.py's
+# build_static_tiers_sh's own literal format, matched here to recover an
+# OBSERVED tier from a run's stdout (see observed_tier() below).
+_SUMMARY_RE = re.compile(r"== summary: tier0_pass=(\d) tier1_status=(\S+) ==")
+# Every generated toolchain step (build/synth/plan/validate/init) that fails
+# before tier-0 structural asserts even run prints "<LABEL> FAILED" and
+# writes reward 0.0 immediately (generator/gen.py's toolchain_block) -- a
+# rejection at this stage is a tier-"0"-equivalent catch (caught by the
+# compiler/synthesizer itself, with no Rego/cfn-guard tooling involved at
+# all), the same bucket predicted_tier_caught's "0" denotes.
+_TOOLCHAIN_FAILED_RE = re.compile(r"^[A-Z][A-Z0-9_ ]* FAILED$", re.MULTILINE)
+
+
+def observed_tier(stdout: str) -> str | None:
+    """Recover the tier a run's `tests/static_tiers.sh` actually caught a
+    violation at, from its stdout -- the mechanical backstop
+    `predicted_tier_caught` never had (benchmark-integrity review finding
+    "gates/oracle_falsifiability.py -- predicted_tier_caught is never
+    verified"). Returns `"0"`, `"1"`, or `None` (never caught by any static
+    tier -- the expected outcome for a "0.5"-predicted catch, and a mismatch
+    for anything else)."""
+    if _TOOLCHAIN_FAILED_RE.search(stdout):
+        return "0"
+    m = _SUMMARY_RE.search(stdout)
+    if not m:
+        return None
+    tier0_pass, tier1_status = m.group(1), m.group(2)
+    if tier0_pass == "0":
+        return "0"
+    if tier1_status == "FAIL":
+        return "1"
+    return None
+
+
+def predicted_tier(catch: Catch, arm: Arm) -> str:
+    """`catches[].predicted_tier_caught` for one arm (SCHEMA.md §3):
+    `.awscdk` for awscdk; `.hcl` for hcl_raw AND terraconstructs UNLESS
+    `.terraconstructs_override` is set, in which case that wins for
+    terraconstructs specifically (the "terraconstructs' own typed surface
+    diverges" escape hatch)."""
+    if arm == "awscdk":
+        return catch.predicted_tier_caught.awscdk
+    if arm == "terraconstructs" and catch.predicted_tier_caught.terraconstructs_override is not None:
+        return catch.predicted_tier_caught.terraconstructs_override
+    return catch.predicted_tier_caught.hcl
 
 
 @dataclass
@@ -69,6 +233,25 @@ class RunResult:
     reward: float | None
     ok: bool
     detail: str
+    # Populated only when the caller asked _run_solve to also evaluate
+    # Tier 0.5 against the artifact this run produced (tier05_spec passed) --
+    # None otherwise. See the "0.5"-predicted-catch branch in check_arm()
+    # below: unlike every other tier, a "0.5"-predicted catch's broken/
+    # fixture is EXPECTED to score reward 1.0 (Tier 0.5 never gates
+    # reward.txt, DECISIONS.md "Tier-0.5 runs host-side, non-gating" --
+    # that invisibility to the static tiers IS the catch's own defining
+    # property, the anti-L2 falsifiability instrument prereg §5/H2 names).
+    # Falsifying such a catch means proving Tier 0.5 ITSELF catches it,
+    # which needs the actual (still-warm) artifact this same sandboxed run
+    # produced -- not a second, separately-sandboxed invocation.
+    tier05_ok: bool | None = None
+    tier05_detail: str = ""
+    # Populated whenever this run produced an artifact on a terraform-shaped
+    # arm (hcl_raw/terraconstructs) -- False means this artifact requires a
+    # provider genuinely absent from that arm image's own offline mirror
+    # (see _check_mirror_coverage). None means the check didn't apply/run.
+    mirror_ok: bool | None = None
+    mirror_detail: str = ""
 
 
 def _is_stub(solve_sh: Path) -> bool:
@@ -77,7 +260,15 @@ def _is_stub(solve_sh: Path) -> bool:
     return SOLVE_STUB_MARKER in solve_sh.read_text()
 
 
-def _run_solve(task: Path, arm: Arm, solve_sh: Path, label: str) -> RunResult:
+def _run_solve(
+    task: Path,
+    arm: Arm,
+    solve_sh: Path,
+    label: str,
+    *,
+    tier05_spec: dict | None = None,
+    artifact_rel: str | None = None,
+) -> RunResult:
     """Copy `task`'s environment/<workspace-subdir> (the exact tree the
     arm's own Dockerfile COPYs into WORKDIR /app/project -- flattened, no
     'workspace'/'app' prefix, matching real container layout: `workspace/`
@@ -158,7 +349,50 @@ def _run_solve(task: Path, arm: Arm, solve_sh: Path, label: str) -> RunResult:
             reward = float(reward_file.read_text().strip())
         except ValueError:
             return RunResult(label, None, False, f"reward.txt unparseable: {reward_file.read_text()!r}")
-        return RunResult(label, reward, True, proc.stdout[-2000:])
+
+        document: dict | None = None
+        if artifact_rel is not None:
+            artifact = project / artifact_rel
+            if artifact.exists() and artifact.stat().st_size > 0:
+                document = json.loads(artifact.read_text())
+
+        tier05_ok: bool | None = None
+        tier05_detail = ""
+        if tier05_spec is not None:
+            if document is None:
+                tier05_ok = False
+                tier05_detail = f"tier05: no artifact at {project / (artifact_rel or '?')} to evaluate"
+            else:
+                try:
+                    results = run_tier05(document, tier05_spec)
+                    tier05_ok = bool(results) and all(r.passed for r in results)
+                    tier05_detail = "; ".join(r.explain() for r in results if not r.passed)
+                except Tier05Error as exc:
+                    tier05_ok = False
+                    tier05_detail = f"tier05: {exc}"
+
+        # Provider-mirror-coverage check (arms/*.hcl-shaped only -- see
+        # _check_mirror_coverage's own docstring for the finding this
+        # closes): a solution that reaches reward 1.0 on the HOST (public
+        # registry) but requires a provider genuinely absent from the arm
+        # image's own offline mirror is not really achievable inside a real
+        # trial's `--network none` container -- surfaced here as a distinct
+        # `mirror_ok=False`, folded into `.ok` by check_arm below, rather
+        # than silently trusting a host-side reward of 1.0.
+        mirror_ok: bool | None = None
+        mirror_detail = ""
+        if arm in ("hcl_raw", "terraconstructs") and document is not None:
+            mirror_ok, mirror_detail = _check_mirror_coverage(document, arm)
+
+        # Full stdout (not truncated) -- observed_tier() must see the
+        # "== summary: tier0_pass=... ==" / "<LABEL> FAILED" lines
+        # regardless of how much tier-0 assert-check chatter precedes them;
+        # main() truncates for display only.
+        return RunResult(
+            label, reward, True, proc.stdout,
+            tier05_ok=tier05_ok, tier05_detail=tier05_detail,
+            mirror_ok=mirror_ok, mirror_detail=mirror_detail,
+        )
 
 
 def check_arm(spec: Spec, arm: Arm) -> list[RunResult]:
@@ -170,8 +404,34 @@ def check_arm(spec: Spec, arm: Arm) -> list[RunResult]:
         results.append(RunResult(f"{arm}/solution/solve.sh", None, True, "NOT_AUTHORED (Slice D pending)"))
         return results
 
-    good = _run_solve(task, arm, solve_sh, f"{arm}/solution/solve.sh")
+    # Tier-0.5-aware plumbing (SCHEMA.md §4.4, DECISIONS.md "Tier-0.5 runs
+    # host-side, non-gating"): a catch whose predicted_tier_caught is "0.5"
+    # for THIS arm (the anti-L2 falsifiability instrument, prereg §5/H2) is
+    # by construction invisible to every static tier that feeds
+    # reward.txt -- that invisibility IS the catch. Its broken/ fixture is
+    # therefore EXPECTED to score reward 1.0 (not 0.0 like every other
+    # tier), and is only genuinely falsified by proving Tier 0.5 itself
+    # (oracles.lib.tier05_jsonata.run_tier05) catches it against the SAME
+    # artifact this sandboxed run produced.
+    tier05_spec = spec.oracle.tier05_jsonata.model_dump(mode="json") if spec.oracle.tier05_jsonata else None
+    artifact_rel = getattr(spec.instruction.per_arm, arm).output_contract.artifact_path
+
+    good = _run_solve(
+        task, arm, solve_sh, f"{arm}/solution/solve.sh",
+        tier05_spec=tier05_spec, artifact_rel=artifact_rel,
+    )
     good.ok = good.ok and good.reward == 1.0
+    if tier05_spec is not None:
+        # The REFERENCE solution's own embedded expressions must genuinely
+        # be correct too, not just structurally clean -- a good.reward==1.0
+        # that turns out tier05_ok==False would mean this spec's own
+        # solve.sh has a real JSONata bug the static tiers can't see either.
+        good.ok = good.ok and good.tier05_ok is True
+    if good.mirror_ok is False:
+        # A reward of 1.0 on the HOST doesn't mean this solution is really
+        # achievable inside the arm's own offline image -- see
+        # _check_mirror_coverage.
+        good.ok = False
     results.append(good)
 
     catch_names = {catch.name for catch in spec.catches}
@@ -181,8 +441,42 @@ def check_arm(spec: Spec, arm: Arm) -> list[RunResult]:
         if not broken_solve.exists():
             results.append(RunResult(label, None, False, "MISSING -- every catch needs a broken/ fixture once solve.sh is authored"))
             continue
-        bad = _run_solve(task, arm, broken_solve, label)
-        bad.ok = bad.ok and bad.reward == 0.0
+        tier = predicted_tier(catch, arm)
+        if tier == "0.5":
+            bad = _run_solve(
+                task, arm, broken_solve, label,
+                tier05_spec=tier05_spec, artifact_rel=artifact_rel,
+            )
+            # Falsified two ways at once, both required: (a) reward stays
+            # 1.0 -- proving the static tiers genuinely cannot see this
+            # catch, the parity claim itself; (b) tier05_ok is False --
+            # proving Tier 0.5 genuinely DOES catch it. Either alone is not
+            # enough: reward==1.0 with no tier05 check at all would just be
+            # an unfalsified catch again (this is exactly the "reward is
+            # constant 1.0, nothing proves grading" F2-shaped gap, applied
+            # to the one tier reward.txt can never cover by design).
+            bad.ok = bad.ok and bad.reward == 1.0 and bad.tier05_ok is False
+        else:
+            bad = _run_solve(task, arm, broken_solve, label, artifact_rel=artifact_rel)
+            observed = observed_tier(bad.detail)
+            # Mechanical backstop for `predicted_tier_caught` (benchmark-
+            # integrity review finding "gates/oracle_falsifiability.py --
+            # predicted_tier_caught is never verified"): reward==0.0 alone
+            # only proves SOMETHING caught the violation, never that it was
+            # caught at the TIER the spec records (and the per-catch tier-
+            # attribution table's headline H1/H2 comparison depends on that
+            # tier being right, not just on reward being 0). A catch
+            # recorded "1" that a real run actually catches at "0" (a
+            # stronger, earlier catch) or vice versa now fails this gate
+            # instead of passing silently.
+            bad.ok = bad.ok and bad.reward == 0.0 and observed == tier
+            if bad.reward == 0.0 and observed != tier:
+                bad.detail = (
+                    f"predicted_tier_caught={tier!r} but observed_tier={observed!r} "
+                    f"from this run's own static_tiers.sh output (reward 0.0 either "
+                    f"way -- this is a tier-attribution mismatch, not a grading miss)\n"
+                    + bad.detail
+                )
         results.append(bad)
 
     # Extra, non-catch-named negative fixtures under solution/broken/ --
@@ -222,7 +516,15 @@ def main(argv: list[str]) -> int:
     for arm in spec.arms.enabled_arms():
         for r in check_arm(spec, arm):
             status = "PASS" if r.ok else "FAIL"
-            print(f"[{status}] {r.label}: reward={r.reward} -- {r.detail.splitlines()[-1] if r.detail else ''}")
+            tier05_note = f" tier05_ok={r.tier05_ok}" if r.tier05_ok is not None else ""
+            last_line = r.detail.splitlines()[-1] if r.detail else ""
+            print(f"[{status}] {r.label}: reward={r.reward}{tier05_note} -- {last_line}")
+            if not r.ok and "tier-attribution mismatch" in r.detail:
+                print(f"    {r.detail.splitlines()[0]}")
+            if not r.ok and r.tier05_detail:
+                print(f"    tier05_detail: {r.tier05_detail}")
+            if r.mirror_ok is False:
+                print(f"    mirror_detail: {r.mirror_detail}")
             if not r.ok:
                 all_ok = False
 

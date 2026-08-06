@@ -1171,3 +1171,459 @@ real gate-fixture round-trip through the now-required field.
 
 **Proven:** `bash ci/check-smoke-drift.sh` → `smoke-drift: OK`; `make check`
 green.
+
+## Amendment 8 (2026-08-06) — sfn-jsonata (seed scenario 3): schema/gate
+## extensions + the `aws_sfn_state_machine` offline-plan gap
+
+`specs/sfn-jsonata.yaml` (Slice D, scenario 3) is a JSONata-query-language
+Step Functions state machine (order-batch transform + budget-threshold
+Choice), `terraconstructs` excluded (zero JSONata support, confirmed
+against `arms/terraconstructs/README.md` §3/§4 — no re-verification
+needed, unchanged since Amendment 3). Two catches: `mode-mixing-jsonpath-
+artifacts` (nested-attribute, tier "1" both arms — JSONPath-mode ASL
+fields or a raw un-evaluated `"$."` string leaking into a JSONata-mode
+machine) and `jsonata-expression-correctness` (anti-L2, tier "0.5" both
+arms — a wrong-but-syntactically-valid `{% ... %}` expression, invisible
+to every static tier by construction). Three infra gaps surfaced and were
+fixed while authoring it, all schema/gate-level (not scenario-specific
+one-offs), plus one genuine offline-plan blocker.
+
+### `not_regex` op added to the SCHEMA.md §4.2 table
+
+**Finding:** none of the eight existing ops can express "this string must
+NEVER contain pattern X anywhere" — `regex` only asserts presence
+(`>=1` match required); `not_exists` checks for an absent KEY, not an
+absent substring inside an arbitrary string value the key WOULD have. The
+mode-mixing catch's "no raw un-evaluated `\"$.\"`-prefixed JSONPath string
+literal anywhere in the ASL" fact (modeled on
+`tc-ai-pdlc-coding-features/tests/helpers.py::contains_jsonpath_artifact`'s
+own `r'"\$\.'` pattern) has no other way to be expressed.
+
+**Fix:** `not_regex` — literal negation of `regex`'s own per-value
+unanchored search; 0 resolved nodes vacuously PASSES (nothing present to
+violate), unlike `regex`'s own `>=1`-node requirement. Implemented
+identically in both evaluators (`oracles/lib/structural.py::apply_op`,
+`generator/gen.py`'s compiled-jq `assert_check`) and proven to agree via
+`oracles/tests/test_op_parity.py::TestNotRegexParity` (differential test,
+same convention as `absent_or_eq`'s own Amendment 7 addition). `specs/
+SCHEMA.md` §4.2 gained the op-table row.
+
+### `oracle.tier05_jsonata.expressions_from` gains a `{cfn, tf}` dict form
+
+**Finding:** `specs/SCHEMA.md` §4.4 previously documented `expressions_from`
+as one JSONPath string, silently assuming it could resolve against every
+arm's own artifact — false for any real cross-arm scenario: a CFN template
+and a `terraform show -json` plan document have structurally different
+ROOTS (`$.Resources[...]` vs. `$.planned_values.root_module.resources[...]`),
+so one path literally cannot resolve against both. `sfn-jsonata` is the
+first spec to ever populate `tier05_jsonata` for real (the toy spec leaves
+it `null`; ecs-swappiness has no embedded-expression content), so this gap
+had never been exercised before. §4.4 also still documented the stale,
+never-shipped `sample_inputs: [{input, expected_output}]` shape instead of
+the actually-implemented `cases: [{expression_path, input, expected_output}]`
+(the cartesian-product bug fix predates this amendment but the doc was
+never corrected) — fixed in the same pass.
+
+**Fix:** `expressions_from: str | {cfn: <path>, tf: <path>}`
+(`generator/spec_model.py::Tier05Jsonata`).
+`oracles/lib/tier05_jsonata.py::_resolve_expressions_from` auto-detects
+which artifact family `run_tier05`'s `document` argument is (top-level
+`Resources` key vs. `planned_values` key — both verified present/absent
+correctly on real `cdk synth`/`terraform show -json` output) and picks the
+matching path; `hcl_raw`/`terraconstructs` share the `tf` path (same
+collapsing convention as `predicted_tier_caught.hcl`/`tf_jsonpath`).
+Backward-compatible: the string form is untouched, `oracles/tests/
+test_tier05_jsonata.py`'s existing suite (string-form fixtures) unmodified
+and green.
+
+### `gates/oracle_falsifiability.py` becomes tier-0.5-aware
+
+**Finding:** a catch whose `predicted_tier_caught` is `"0.5"` is, by
+definition, invisible to every check that feeds `/logs/verifier/reward.txt`
+(Tier 0.5 is host-side and non-gating, Amendment 4's own "Tier-0.5 runs
+host-side, non-gating" entry). `check_arm`'s pre-existing per-catch
+contract unconditionally required every `solution/broken/<catch>/solve.sh`
+to score `reward == 0.0` — which a `"0.5"`-predicted catch's negative
+fixture structurally CANNOT do (it passes every static tier by design,
+exactly the parity claim H2/the anti-L2 instrument exists to test) — so
+`sfn-jsonata`'s own `jsonata-expression-correctness` catch could never
+satisfy `make falsifiability` at all under the old contract, despite being
+a real, working, intentional catch.
+
+**Fix:** `gates/oracle_falsifiability.py::predicted_tier(catch, arm)`
+(new — same `.awscdk` / `.hcl` / `.terraconstructs_override` resolution
+`specs/SCHEMA.md` §3 documents) branches `check_arm`'s per-catch handling:
+tier `"0"`/`"1"` catches keep the existing "broken fixture must score
+0.0" contract unchanged (toy/ecs-swappiness, zero behavior change,
+re-proven below); a tier `"0.5"` catch's broken fixture is instead
+required to score reward `1.0` **AND** fail Tier 0.5
+(`oracles.lib.tier05_jsonata.run_tier05` run directly against the SAME
+sandboxed artifact `_run_solve` already produced, not a second,
+separately-sandboxed invocation) — falsifying the catch means proving
+BOTH halves of the parity claim: the static tiers genuinely can't see it,
+and Tier 0.5 genuinely does. The scenario's own good `solve.sh` is now
+also required to pass Tier 0.5 (not just score `reward == 1.0`) whenever
+`tier05_jsonata` is declared, so a reference solution with its own latent
+JSONata bug can no longer look "GRADEABLE" while quietly being wrong.
+`gates/grading_proof.py`'s own generalization away from a hardcoded
+`NEGATIVE_CATCH` (picking the first `predicted_tier_caught.awscdk ==
+.hcl == "1"` catch, `--catch`/`CATCH=` override) landed independently in
+this same round of scenario-authoring work — `sfn-jsonata`'s
+`mode-mixing-jsonpath-artifacts` catch satisfies that selector directly,
+so `make grading-proof SPEC=specs/sfn-jsonata.yaml` needed no
+scenario-specific wiring at all.
+
+**CORRECTION (2026-08-06, Amendment 9):** the claim immediately above went
+false the moment `mode-mixing-jsonpath-artifacts`'s own
+`predicted_tier_caught.awscdk` was corrected from `"1"` to `"0"` (this same
+file, the "awscdk tier '1' is fixture-selected" fix, landed in this same
+round but not reflected here) — no catch in `sfn-jsonata` has
+`awscdk == hcl == "1"` any longer, so `make grading-proof
+SPEC=specs/sfn-jsonata.yaml` started exiting 1 unconditionally (and
+`ecs-swappiness` never satisfied this selector either — its own
+`swappiness-requires-maxswap` catch is `awscdk: "0"`, `hcl: "1"` by
+design, the same intentional per-arm-divergence shape). See Amendment 9
+for the real fix (`gates/grading_proof.py::auto_select_negative` — a
+per-arm, OBSERVED-tier selector, not a spec-wide predicted-tier one) and
+its own proof transcript, which supersedes the "4/4 PASS" transcript
+below.
+
+### `aws_sfn_state_machine` needs a mocked `states`/`sfn` endpoint for
+### offline `terraform plan` (hcl_raw arm)
+
+**Finding:** `terraform plan` for ANY `aws_sfn_state_machine` resource
+with a `definition` (i.e. every one) fails offline —
+`UnrecognizedClientException: The security token included in the request
+is invalid` — because the resource's own `CustomizeDiff`
+(`internal/service/sfn/state_machine.go::stateMachineDefinitionValidate`,
+confirmed against the pinned `hashicorp/aws 6.58.0`) runs a REAL
+`states:ValidateStateMachineDefinition` API call whenever `definition`
+changes, true for any brand-new resource. None of `provider.tf`'s four
+`skip_*` flags suppress it — those only cover the provider's OWN bootstrap
+calls (`GetCallerIdentity`, region validation, metadata-API probe), not a
+resource's own CustomizeDiff-triggered service call. Unresolved upstream
+(`hashicorp/terraform-provider-aws` issue #39472, filed against 5.67.0
+when this validation was introduced, still open, no maintainer-provided
+skip mechanism as of 6.58.0 — confirmed by reading the CustomizeDiff
+function directly, unchanged between those versions). Exactly the same
+SHAPE of gap `arms/terraconstructs`' `mock-sts.js` already fixes for that
+arm's own `data "aws_caller_identity"` call (Amendment 5's "terraconstructs
+offline `terraform plan` needs a mocked STS endpoint") — the `hcl_raw`-arm
+analogue, for a different resource/service.
+
+**Fix:** `arms/hcl-raw/environment/workspace/mock-sfn.py` (Python stdlib
+`http.server` — this arm's image has no `node`, so `python3` was added to
+`environment/Dockerfile` specifically for this fixture, stdlib only, no
+pip package), a dependency-free loopback responder answering ANY request
+with a fixed, valid `{"result":"OK","diagnostics":[]}` JSON body (the
+shape `stateMachineDefinitionValidate` checks `output.Result ==
+ValidateStateMachineDefinitionResultCodeOk` against).
+`arms/hcl-raw/environment/workspace/provider.tf` gained
+`endpoints { sfn = "http://127.0.0.1:17772" }` (verified empirically that
+`sfn`, not `states`/`stepfunctions`, is the correct `endpoints{}` block key
+for this provider version — a real `terraform plan` against a hand-built
+`aws_sfn_state_machine` config pointed at a real `mock-sfn.py` instance
+produced `Plan: 2 to add, 0 to change, 0 to destroy` with zero network
+reachability beyond loopback; cross-checked against
+`hashicorp/terraform-provider-aws`'s own `names/data/names_data.hcl`
+`service "sfn" { ... provider_package_correct = "sfn" }` entry).
+`generator/gen.py::build_static_tiers_sh`'s hcl_raw branch now wraps the
+WHOLE `plan_command` chain with the mock's start/readiness-poll/kill
+lifecycle (mirroring the terraconstructs tf-plan block's own G3-fixed
+readiness-polling pattern, `HCL_RAW_MOCK_SFN_PORT = 17772`, deliberately
+distinct from `TERRACONSTRUCTS_MOCK_STS_PORT = 17771`) — applied
+unconditionally to EVERY hcl_raw scenario (not just `sfn-jsonata`), same
+"always started, harmless no-op if unused" precedent as the
+terraconstructs mock. Regenerated `toy-ssm-parameter` and `ecs-swappiness`
+after this change and re-ran their own `make falsifiability` in full —
+both still 12/12 and 10/10 outcomes `PASS` respectively, confirming the
+change is inert for scenarios that never touch `aws_sfn_state_machine`.
+
+**Proven — sfn-jsonata, `make falsifiability SPEC=specs/sfn-jsonata.yaml`,
+6/6 outcomes `PASS`** (2 arms × {good `solve.sh`, `mode-mixing-jsonpath-
+artifacts` broken, `jsonata-expression-correctness` broken}):
+```
+[PASS] awscdk/solution/solve.sh: reward=1.0 tier05_ok=True
+[PASS] awscdk/solution/broken/mode-mixing-jsonpath-artifacts/solve.sh: reward=0.0
+[PASS] awscdk/solution/broken/jsonata-expression-correctness/solve.sh: reward=1.0 tier05_ok=False
+[PASS] hcl_raw/solution/solve.sh: reward=1.0 tier05_ok=True
+[PASS] hcl_raw/solution/broken/mode-mixing-jsonpath-artifacts/solve.sh: reward=0.0
+[PASS] hcl_raw/solution/broken/jsonata-expression-correctness/solve.sh: reward=1.0 tier05_ok=False
+falsifiability OK for 'sfn-jsonata'
+```
+The `jsonata-expression-correctness` rows are the scenario's own money
+result, not a gate quirk: the wrong-comparison-operator negative
+(`grandTotal < 1000` instead of `> 1000`) scores full `reward=1.0` through
+every static tier on BOTH arms — `tsc`/`cdk synth`, `terraform validate`/
+`plan`, and the tier-1 cfn-guard/Rego mode-mixing policy all pass it
+cleanly — and is caught ONLY by Tier 0.5, identically on both arms
+(`tier05_ok=False`), exactly the predicted parity the anti-L2 catch exists
+to test. A real, independently-noteworthy side finding from building the
+negative fixture: `cdk synth` itself emits a non-blocking
+`CloudFormation-Validate` WARNING for the (unrelated) mode-mixing mistake
+("'ResultPath' is not allowed when QueryLanguage is JSONata") when
+provoked via the raw `Pass`/`Choice` constructors' unified prop types —
+but only as a warning; synth still exits `0` and writes the violating
+template, so this stays invisible to `tier0_pass`/`reward.txt` exactly as
+the tier-1-not-tier-0 design for that catch already assumed. (Also
+confirmed, not assumed: `Pass.jsonata()`/`Choice.jsonata()`'s own narrower
+factory-specific prop types — `PassJsonataProps`, no
+`PassJsonPathOptions` — DO reject `resultPath` etc. at `tsc` time; the
+mode-mixing negative fixture had to use the raw `new sfn.Pass(...)`
+constructor with the general, JSONPath-and-JSONata-unified `PassProps`
+type to reproduce the mistake at all — an incidental, undocumented
+side-effect of CDK's factory-vs-constructor API shape, not a targeted
+mode-mixing safeguard, so it does not change the catch's tier-"1"/parity
+design.)
+
+**Proven — `make grading-proof SPEC=specs/sfn-jsonata.yaml`** (auto-selects
+`mode-mixing-jsonpath-artifacts` as the tier-1 negative, no `--catch`
+needed): 4/4 outcomes `PASS` (2 arms × {correct solution reward=1.0,
+negative reward=0.0}).
+
+**CORRECTION (2026-08-06, Amendment 9):** this transcript went false in
+the same round that corrected `mode-mixing-jsonpath-artifacts`'s
+`predicted_tier_caught.awscdk` from `"1"` to `"0"` (see the identical
+correction note earlier in this Amendment) — re-running the bare command
+above now exits 1 (`'sfn-jsonata' declares no catch with
+predicted_tier_caught awscdk == hcl == "1"`). Amendment 9 has the
+corrected, currently-true transcript (auto-selected per-arm negatives:
+awscdk's own `mode-mixing-jsonpath-artifacts-raw-constructor-escape-hatch`
+fixture, hcl_raw's `mode-mixing-jsonpath-artifacts` fixture).
+
+**Proven — no regression:** `make falsifiability
+SPEC=specs/_toy/toy-ssm-parameter.yaml` (12/12) and `make falsifiability
+SPEC=specs/ecs-swappiness.yaml` (10/10) both re-run clean after every
+schema/gate/hcl_raw-bootstrap change above. `uv run pytest gates metrics
+oracles generator -q` — **251 passed** (includes the new
+`TestNotRegexParity` differential-test class).
+
+## Amendment 9 (2026-08-06) — residual-findings fixes: the grading-proof
+## blocker (sfn-jsonata/ecs-swappiness both RED) and the Tier-0.5
+## decomposition false-positive (the other half of the original fix)
+
+Two findings from a fourth benchmark-integrity review, both against work
+landed earlier the same day (the "awscdk tier '1' is fixture-selected"
+correction to `specs/sfn-jsonata.yaml`, and the first half of the Tier-0.5
+anti-L2 false-positive fix). Full findings quoted in each section below;
+this Amendment's own fix/proof follows each.
+
+### F1 (blocker) — `make grading-proof` exits 1 unconditionally for BOTH
+### `sfn-jsonata` and `ecs-swappiness`, and Amendment 8's own proof
+### transcripts are now false
+
+**Finding:** `gates/grading_proof.py::default_negative_catch` required one
+catch with `predicted_tier_caught.awscdk == .hcl == "1"`, selected ONCE,
+spec-wide, and reused unmodified for every enabled arm. That was already
+fragile (see Amendment 8's own "generalized 2026-08-06" note, itself a fix
+for an earlier hardcoded-catch-name version) but it went outright broken
+the moment `sfn-jsonata`'s `mode-mixing-jsonpath-artifacts` catch was
+corrected (this same file, the "awscdk tier '1' is fixture-selected" fix)
+from `predicted_tier_caught.awscdk: "1"` to `"0"` — no catch in that spec
+has `awscdk == hcl == "1"` any longer, so `make grading-proof
+SPEC=specs/sfn-jsonata.yaml` started exiting 1 with no `--catch` given, and
+Amendment 8's own "4/4 PASS" transcript (its "Proven —
+`make grading-proof SPEC=specs/sfn-jsonata.yaml`" section) and its "needed
+no scenario-specific wiring at all" claim (its `Tier-0.5-aware` section)
+both went false without either being corrected — done above, as inline
+CORRECTION notes at both locations. `ecs-swappiness` was NEVER green under
+the old selector either (pre-existing, not a regression): its own
+`swappiness-requires-maxswap` catch is `awscdk: "0"`, `hcl: "1"`,
+`terraconstructs_override: "0"` BY DESIGN — the whole point of that catch
+is that CDK's typed `LinuxParameters` construct silently drops the
+mis-set property at tier 0, while hcl_raw's untyped JSON blob needs a
+dedicated tier-1 Rego rule to catch the same mistake (see that catch's own
+description in the spec). A selector that requires "tier 1 on EVERY
+arm-group simultaneously" can never find a catch in either scenario,
+because a genuine per-arm tier divergence — the exact thing several of
+these seed scenarios exist to demonstrate — is definitionally incompatible
+with "tier 1 on every arm at once".
+
+**Fix (`gates/grading_proof.py`, rewritten — see its own updated module
+docstring and `auto_select_negative()`'s docstring for the full
+rationale):** select independently PER ARM, by what a run actually
+OBSERVED (`oracle_falsifiability.observed_tier`, parsed from the same
+`tests/static_tiers.sh` stdout `check_arm` already captured), not by
+`predicted_tier_caught` alone. For each enabled arm, walk that arm's own
+`check_arm(spec, arm)` results (declared catches in `spec.catches[]`
+order, then any extra non-catch-named fixture directory, the same order
+`check_arm` itself produces them in) and pick the first
+`solution/broken/<name>/solve.sh` row whose run was actually caught at
+tier `"1"`. This is strictly more informative than the old predicted-tier
+selector (self-verifying: it only ever picks a fixture PROVEN, not merely
+declared, to exercise the tier-1 chain), and it makes fix_hint (a) from
+the review finding happen for free: a scenario's own hand-authored
+"escape hatch" fixture — `sfn-jsonata`'s own
+`mode-mixing-jsonpath-artifacts-raw-constructor-escape-hatch` (awscdk
+only — forces the raw `new sfn.Pass(...)` constructor's unified prop type
+past `tsc` so the tier-1 cfn-guard rule is genuinely exercised, since the
+catch's own primary, `.jsonata()`-factory fixture is caught at tier 0 on
+this arm) and `ecs-swappiness`'s own
+`swappiness-requires-maxswap-cfn-override` (awscdk only — forces
+`Swappiness` into the template via an L1 override, bypassing the typed
+`LinuxParameters` construct's silent-drop, so its own tier-1 cfn-guard
+rule is exercised too) — is picked up automatically, without this script
+needing to know either name in advance. `--catch`/`CATCH=` still overrides
+per-arm auto-selection with one explicit fixture name applied uniformly to
+every enabled arm (unchanged), and a scenario where NO enabled arm has any
+fixture observed at tier 1 still fails the gate outright (`any_tier1_proof`
+in `main()`) — "nothing tier-1-graded anywhere" remains a reportable
+finding, not a silent pass, matching fix_hint (c)'s spirit while applying
+it per-arm rather than per-spec (an arm with no tier-1 fixture, alongside
+sibling arms that DO have one, is reported as a per-arm `SKIP`, not a
+`FAIL` — a genuine, documented "this arm's own typed surface makes the
+mistake unreachable past tier 0" fact, not a gap).
+
+**Proven — `make grading-proof SPEC=specs/sfn-jsonata.yaml`** (no
+`--catch`; auto-selected per arm):
+```
+grading-proof for 'sfn-jsonata' -- 4 outcomes:
+  [PASS] awscdk           correct solution                             reward=1.0
+  [PASS] awscdk           negative (mode-mixing-jsonpath-artifacts-raw-constructor-escape-hatch) reward=0.0
+  [PASS] hcl_raw          correct solution                             reward=1.0
+  [PASS] hcl_raw          negative (mode-mixing-jsonpath-artifacts)    reward=0.0
+
+grading-proof OK for 'sfn-jsonata' -- every arm is GRADEABLE
+```
+Exactly the outcome fix_hint (a) predicted: awscdk auto-selects the
+raw-constructor escape-hatch fixture (the one that genuinely exercises
+cfn-guard on this arm); hcl_raw auto-selects the catch's own primary
+fixture. Exit 0.
+
+**Proven — `make grading-proof SPEC=specs/ecs-swappiness.yaml`** (no
+`--catch`; previously failed unconditionally, never claimed green before
+this Amendment):
+```
+grading-proof for 'ecs-swappiness' -- 6 outcomes:
+[PASS] awscdk           correct solution                             reward=1.0
+[PASS] awscdk           negative (swappiness-requires-maxswap-cfn-override) reward=0.0
+[PASS] hcl_raw          correct solution                             reward=1.0
+[PASS] hcl_raw          negative (swappiness-requires-maxswap)       reward=0.0
+[PASS] terraconstructs  correct solution                             reward=1.0
+[SKIP] terraconstructs  negative (no fixture reaches tier 1 on this arm) reward=None
+grading-proof OK for 'ecs-swappiness' -- every arm is GRADEABLE
+```
+terraconstructs' negative is a genuine, documented `SKIP` (its
+`swappiness-requires-maxswap` catch is `terraconstructs_override: "0"`,
+identical silent-drop logic to awscdk, and no L1-override escape-hatch
+fixture was authored for that arm) — `any_tier1_proof` is still `True`
+overall (awscdk and hcl_raw each proved it for real), so the gate exits 0
+rather than failing on an arm that has genuinely nothing tier-1-graded to
+prove. Exit 0.
+
+**Proven — no regression on the two previously-green specs**
+(`make grading-proof`, no `--catch`, both unaffected by either the
+selector rewrite's outcome or the catch-tier correction):
+```
+grading-proof for 'apigw-openapi' -- 6 outcomes:
+  [PASS] awscdk           correct solution                             reward=1.0
+  [PASS] awscdk           negative (deployment-missing-integration-dependency) reward=0.0
+  [PASS] hcl_raw          correct solution                             reward=1.0
+  [PASS] hcl_raw          negative (deployment-missing-integration-dependency) reward=0.0
+  [PASS] terraconstructs  correct solution                             reward=1.0
+  [PASS] terraconstructs  negative (deployment-missing-integration-dependency) reward=0.0
+grading-proof OK for 'apigw-openapi' -- every arm is GRADEABLE
+```
+`SPEC=specs/_toy/toy-ssm-parameter.yaml` re-run clean as well (still 4/4
+PASS, `policy-scoped-to-parameter` auto-selected on both arms — the one
+catch shape the OLD selector happened to also get right, since toy's own
+catch really is `awscdk == hcl == "1"`).
+
+### F2 (major) — Tier 0.5 still false-positives on a per-field
+### decomposition (only half the original fix landed)
+
+**Finding:** the first fix round softened only the "expression found, no
+covering case" mismatch to `passed=True` INFORMATIONAL. The OTHER
+mismatch — a case's `expression_path` matching no expression — was left a
+hard `passed=False` failure, which still rejected a solution that
+decomposes a state's whole-object `Output`/`Arguments` into per-field
+`{% ... %}` sub-expressions (ordinary, idiomatic JSONata-mode ASL —
+`JsonataCommonOptions.outputs` is typed `any`, the instruction never
+constrains decomposition) instead of the reference solution's one
+whole-object expression: the case's `expression_path` (naming the
+container, e.g. `$.States.ComputeTotals.Output`) matches no `{% ... %}`
+STRING leaf at all in that shape, since the leaves live one level deeper
+(`.Output.orders`, `.Output.grandTotal`).
+
+**Fix (`oracles/lib/tier05_jsonata.py`):** new `materialize()` function —
+recursively resolves a raw, unevaluated ASL fragment (dict/list/bare
+`{% ... %}` string/plain literal) into its fully-evaluated value, replacing
+every `{% ... %}` leaf at ANY depth with its `evaluate()`-ed result and
+passing plain literals through unchanged. `run_tier05`'s case loop now
+falls back to it when a case's `expression_path` misses the exact-leaf
+`found` lookup: resolve `expression_path` against the RAW parsed ASL
+document via `oracles.lib.structural.resolve` (the same JSONPath engine
+`tests/static_tiers.sh` uses for tier-0 asserts); if that resolves to
+EXACTLY ONE node, `materialize()` it and compare the reconstructed value to
+`expected_output` — semantically identical to evaluating one whole-object
+expression, regardless of how many `{% %}` fragments the solution actually
+split it into. Only when structural resolution ALSO finds nothing (or
+finds more than one ambiguous match) does the original hard "not found"
+failure fire — a genuinely renamed/removed state (the case
+`test_renamed_state_is_caught_not_silently_skipped` guards) is still
+caught, unchanged. A per-field sub-expression that is itself WRONG still
+fails (`materialize()`'s reconstructed value simply won't equal
+`expected_output`) — decomposition tolerance is not a rubber-stamp, proven
+by the new `test_per_field_decomposition_with_wrong_value_still_fails`
+test.
+
+**Proven — the review's own exact repro script** (a `$map`/`$merge`-based
+per-field decomposition of `specs/sfn-jsonata.yaml`'s own `ComputeTotals`
+case, evaluated via `run_tier05` directly against the real spec):
+```
+[PASS] $.States.ComputeTotals.Output sample#0 expr='<decomposed: container materialized from its nested {% ... %} sub-expression(s)>' expected={'orders': [...], 'grandTotal': 25} actual=...
+[PASS] $.States.CheckBudget.Choices[0].Condition sample#1 expr='{% $states.input.grandTotal > 1000 %}' expected=True actual=True
+tier05_ok = True
+```
+Was `tier05_ok = False` before this fix (the exact false-positive the
+finding reproduced); a semantically identical, fully-correct solution now
+scores `True`.
+
+**Proven — new regression tests**
+(`oracles/tests/test_tier05_jsonata.py`, `oracles/tests/fixtures/
+mini_asl_cfn_decomposed_output.json` — a fixture mirroring
+`specs/sfn-jsonata.yaml`'s own `ComputeTotals` case with a per-field
+`orders`/`grandTotal` decomposition):
+  - `test_per_field_decomposition_of_a_cases_container_passes` — the
+    positive case (mirrors the review's own repro, via the checked-in
+    fixture instead of an ad hoc script).
+  - `test_per_field_decomposition_with_wrong_value_still_fails` — same
+    shape, one sub-expression genuinely wrong (`grandTotal: 999` vs. the
+    real sum `25`) — must still fail, with the reconstructed value visible
+    in the result.
+  - `TestMaterialize` (3 tests) — `materialize()` in isolation: nested
+    `{% %}` leaves evaluated, list recursion, plain scalars pass through
+    unchanged.
+`uv run pytest oracles/tests/test_tier05_jsonata.py -q` — **19 passed**
+(was 14; +5 new).
+
+**Proven — no regression to the REAL anti-L2 detection this tier exists
+for:** `make falsifiability SPEC=specs/sfn-jsonata.yaml`'s
+`jsonata-expression-correctness` broken fixture (a genuinely wrong
+comparison operator, `grandTotal < 1000` instead of `> 1000`) still
+reports `tier05_ok=False` after this fix — `materialize()`'s tolerance is
+for DECOMPOSITION STYLE only; an actually-wrong expression, decomposed or
+not, is still caught.
+
+### Final state
+
+`make falsifiability SPEC=specs/sfn-jsonata.yaml` — 8/8 outcomes `PASS`
+(2 arms × {good, mode-mixing-jsonpath-artifacts, jsonata-expression-
+correctness, + awscdk's own raw-constructor-escape-hatch extra fixture}):
+```
+[PASS] awscdk/solution/solve.sh: reward=1.0 tier05_ok=True
+[PASS] awscdk/solution/broken/mode-mixing-jsonpath-artifacts/solve.sh: reward=0.0
+[PASS] awscdk/solution/broken/jsonata-expression-correctness/solve.sh: reward=1.0 tier05_ok=False
+[PASS] awscdk/solution/broken/mode-mixing-jsonpath-artifacts-raw-constructor-escape-hatch/solve.sh: reward=0.0
+[PASS] hcl_raw/solution/solve.sh: reward=1.0 tier05_ok=True
+[PASS] hcl_raw/solution/broken/mode-mixing-jsonpath-artifacts/solve.sh: reward=0.0
+[PASS] hcl_raw/solution/broken/jsonata-expression-correctness/solve.sh: reward=1.0 tier05_ok=False
+falsifiability OK for 'sfn-jsonata'
+```
+`make falsifiability SPEC=specs/ecs-swappiness.yaml` — 10/10 `PASS`,
+unchanged from Amendment 7. `make grading-proof` green for all four real
+specs (`_toy/toy-ssm-parameter`, `apigw-openapi`, `sfn-jsonata`,
+`ecs-swappiness`; transcripts above). `make check` — green
+(`check-result-schema` + `test-gates` + `ci/check-smoke-drift.sh`).
+`uv run pytest gates metrics oracles generator -q` — **256 passed** (was
+251; +5 new Tier-0.5 decomposition tests).

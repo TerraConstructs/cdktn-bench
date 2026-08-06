@@ -1,0 +1,89 @@
+#
+# Hand-authored (Slice D, 2026-08-06) -- NOT a generator stub. emit_oracles()
+# never overwrites this file once it exists (specs/SCHEMA.md §8.2 rule 7).
+#
+# Scenario:   s3-lambda-log-retention (specs/s3-lambda-log-retention.yaml)
+# Intent doc: oracles/s3-lambda-log-retention/intent.md
+# Graded against the awscdk arm's synthesized CloudFormation template
+# (cdk.out/ScenarioStack.template.json) -- specs/SCHEMA.md §4.2/§8. A
+# generated tests/static_tiers.sh runs
+#   cfn-guard validate --data cdk.out/ScenarioStack.template.json --rules policy.guard
+# and fails tier-1 iff any rule below FAILs.
+#
+# Encodes s3-lambda-invoke-permission-scoped's cfn_jsonpath spec
+# (lambda-permission-scoped-to-bucket-cfn, specs/s3-lambda-log-retention.yaml):
+# CFN's synthesized template is always fully static (no "plan" concept), so
+# unlike the TF-shaped arms' graph-edge check, this is a direct
+# property-presence check on SourceArn.
+#
+# Three rules, mirroring oracles/cfn-guard/toy-ssm-parameter/policy.guard's
+# own fail-closed convention:
+#   1. permission_source_arn_resolves_via_getatt: every AWS::Lambda::Permission
+#      whose Principal is s3.amazonaws.com must have a SourceArn property
+#      that is an `Fn::GetAtt` intrinsic (not a hardcoded/wildcard literal
+#      string, and not merely present -- see the CORRECTION below).
+#   2. permission_exists_when_bucket_present: fail-closed -- an
+#      AWS::S3::Bucket exists in the template but zero
+#      AWS::Lambda::Permission resources with Principal ==
+#      "s3.amazonaws.com" exist at all (guards against rule 1's `when`
+#      clause being vacuously skipped when the permission is omitted
+#      entirely rather than merely mis-scoped).
+#
+# CORRECTION (2026-08-06, benchmark-integrity review finding
+# "s3-lambda-log-retention / oracle-equivalence (tier-1 SourceArn scoping)"):
+# the previous version of rule 1 only checked `Properties.SourceArn EXISTS`
+# -- present-with-ANY-value, including a hardcoded literal ARN for an
+# unrelated bucket, or a bare `"*"` wildcard. REFUTED against the Rego side
+# of the SAME catch (oracles/rego/s3-lambda-log-retention/policy.rego, which
+# checks the source_arn expression actually REFERENCES the created
+# aws_s3_bucket, not merely that it's present): a hand-built template with
+# Principal=s3.amazonaws.com and SourceArn="arn:aws:s3:::some-totally-
+# unrelated-bucket" (or SourceArn="*") passed this rule (rc=0, reward 1.0)
+# while the semantically identical TF plan was correctly denied by Rego
+# (reward 0.0) -- a full-reward divergence on the exact intent clause
+# ("scoped to this specific bucket, no wildcard, no unrelated/hardcoded
+# ARN") both oracles claim to check at equal strictness. Fixed by requiring
+# SourceArn to be an `Fn::GetAtt` intrinsic: CDK's aws-s3-notifications
+# LambdaDestination always renders SourceArn as
+# `{"Fn::GetAtt": [<BucketLogicalId>, "Arn"]}` (aws-cdk-lib's
+# aws-s3-notifications/lib/lambda.ts:26-32) -- a hardcoded literal or "*"
+# string can never satisfy `.'Fn::GetAtt' EXISTS`, since neither is a JSON
+# object with that key. Verified against both the negative fixtures above
+# (FAIL, no `Fn::GetAtt` key on a plain string) and a real reference
+# solution's synthesized template (PASS). Restores parity with the Rego
+# graph-edge check's own strictness for the two concrete violation shapes
+# that check demonstrably catches. Residual, documented gap (cfn-guard 3.2.0
+# has no cross-collection identity-join builtin -- confirmed the same way
+# oracles/cfn-guard/apigw-openapi/policy.guard's own header comment
+# documents for a different catch in this same review): this rule cannot
+# also verify the `Fn::GetAtt` target's LOGICAL ID actually names an
+# AWS::S3::Bucket resource (as opposed to some other GetAtt-addressable
+# resource) -- an adversarial template that GetAtt's an unrelated resource's
+# Arn would still pass. Not defended against here, consistent with this
+# codebase's existing convention of treating such adversarial-construction
+# gaps as an accepted v1 idealization when the realistic mistake (omitted /
+# hardcoded / wildcarded SourceArn) is what's covered.
+#
+# Verified against real `cdk synth` output: this scenario's own reference
+# solution/solve.sh (PASS) and solution/broken/
+# s3-lambda-invoke-permission-scoped/ (SourceArn omitted entirely -- FAIL
+# on permission_source_arn_resolves_via_getatt), plus a hand-built
+# hardcoded-literal-SourceArn fixture (solution/broken/
+# s3-lambda-invoke-permission-hardcoded-arn/ -- FAIL, added by this fix).
+
+let s3_buckets = Resources.*[ Type == "AWS::S3::Bucket" ]
+let s3_permissions = Resources.*[ Type == "AWS::Lambda::Permission" ]
+let s3_invoke_permissions = Resources.*[
+	Type == "AWS::Lambda::Permission"
+	Properties.Principal == "s3.amazonaws.com"
+]
+
+rule permission_source_arn_resolves_via_getatt when %s3_invoke_permissions !empty {
+	%s3_invoke_permissions {
+		Properties.SourceArn.'Fn::GetAtt' EXISTS
+	}
+}
+
+rule permission_exists_when_bucket_present when %s3_buckets !empty {
+	%s3_invoke_permissions !empty
+}

@@ -1,0 +1,36 @@
+#
+# Hand-authored (Slice D). NOT a generator stub.
+#
+# Scenario:   ecs-swappiness (specs/ecs-swappiness.yaml)
+# Intent doc: oracles/ecs-swappiness/intent.md
+# Graded against the awscdk arm's synthesized CloudFormation template
+# (cdk.out/ScenarioStack.template.json) -- specs/SCHEMA.md §4.2/§8. A
+# generated tests/static_tiers.sh runs
+#   cfn-guard validate --data cdk.out/ScenarioStack.template.json --rules policy.guard
+# and fails tier-1 iff any rule below FAILs.
+#
+# Encodes the spec's one tier-"1" structural_assert,
+# maxswap-present-when-swappiness-tuned, at the SAME strictness as
+# ../rego/ecs-swappiness/policy.rego's hcl_raw/terraconstructs rule (the
+# oracle-equivalence requirement: same intent, same strictness, both
+# bundles) -- NOT because awscdk needs this rule to catch its own realistic
+# negative fixture. It doesn't: aws-cdk-lib's LinuxParameters construct
+# (aws-ecs/lib/linux-parameters.ts:116) silently drops `swappiness` to
+# absent whenever `maxSwap` is unset, so a natural "forgot maxSwap" mistake
+# already fails the EXISTING tier-0 swappiness-value-correct structural
+# assert before this rule is ever reached (see the spec's own
+# swappiness-requires-maxswap catch, predicted_tier_caught.awscdk: "0", for
+# the full reasoning). This rule can only ever fire against a template
+# produced via a deliberate L1/override escape-hatch fixture that forces
+# Swappiness into the template without MaxSwap -- kept here anyway so the
+# two policy bundles are equally strict.
+
+let task_defs = Resources.*[ Type == "AWS::ECS::TaskDefinition" ]
+
+rule swappiness_requires_maxswap when %task_defs !empty {
+	%task_defs.Properties.ContainerDefinitions[*] {
+		when LinuxParameters.Swappiness EXISTS {
+			LinuxParameters.MaxSwap EXISTS
+		}
+	}
+}

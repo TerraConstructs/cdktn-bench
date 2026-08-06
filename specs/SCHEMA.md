@@ -30,6 +30,7 @@ difficulty: <1|2|3>
 services: [<string>, ...]        # boto3 service ids, matches aws_services convention
 arms: {...}                       # §1
 instruction: {...}                # §2
+seeded_files: [{...}, ...]        # §2.5, optional, default []
 catches: [{...}, ...]             # §3
 oracle: {...}                     # §4
 verifier: {...}                   # §5
@@ -231,6 +232,61 @@ case" — every field here is a hard requirement the generated `tests/check`-
 equivalent (`static_tiers.sh`) will treat as a `output_contract` criterion
 (mirroring `create-eks-cluster`'s `output_contract` criterion), and a missing
 key fails the tier unconditionally.
+
+### 2.5 `seeded_files` (optional, top-level, default `[]`)
+
+```yaml
+seeded_files:
+  - path: <string, relative to /app/project, no leading "/" and no "..">
+    content: <string, written verbatim>
+```
+
+Added by the `apigw-openapi` scenario (2026-08-06) — the first spec needing
+to ship a **read-only reference input** into the agent's workspace that
+isn't the empty `entry_file` skeleton and isn't a per-arm non-agent-owned
+bootstrap file (§2.4's table). Use case: a small OpenAPI spec, a placeholder
+build artifact (e.g. a Lambda deployment package Terraform's
+`aws_lambda_function` needs `filename` to point at — HCL has no
+`Code.fromInline()`-equivalent), or any other fixed, scenario-supplied
+document the instruction asks the agent to *read* or *build against*
+without authoring it itself.
+
+Each entry is written **identically into every enabled arm's workspace**
+(`ARM_WORKSPACE_SUBDIR[arm]/<path>`, i.e. the same tree `entry_file` is
+relative to) by the generator, **after** `write_environment()`'s
+copytree+entry_file-overwrite step, chmod'd read-only (`0o444`) — this is a
+best-effort, host-filesystem-level signal that the file is not meant to be
+edited (not a hard sandbox guarantee; the generated `instruction.md` also
+says so explicitly, via `ownership_note()`'s extension for this field). A
+seeded file is regenerated (overwritten) on every `make gen` run, exactly
+like `entry_file`'s empty skeleton or a bootstrap file — it is spec-derived
+content, never hand-edited in place (§0).
+
+Validation (`generator/spec_model.py`):
+- `path` must not be absolute and must not contain a `..` segment (workspace
+  escape).
+- `path` must not equal any enabled arm's `output_contract.entry_file` or
+  known bootstrap filename (`bin/app.ts` / `provider.tf` / `main.ts`,
+  mirroring `generator/gen.py::ARM_BOOTSTRAP_FILE`) — a seeded file must
+  never collide with a file the generator or the agent already owns.
+- `content` must be non-empty.
+- `path` values must be unique within the list.
+
+Every seeded file's existence is a **spec-level fact, not an arm-specific
+one** — there is no per-arm seeding, and no `applies_to`-style filter,
+because the whole point is that the same reference input is available
+identically across arms (an arm that has no use for a given seeded file — a
+placeholder Lambda package only `hcl_raw` needs, since `awscdk`/
+`terraconstructs` both have `Code.fromInline()` — simply doesn't reference
+it; that asymmetry lives in the *solution*, not in what's seeded). If any
+`seeded_files` entries are declared, the generator appends one sentence
+per entry to the assembled `instruction.md` (via `ownership_note()`, §2.1)
+naming its path and marking it read-only reference input — this text is
+identical across arms (computed once, from spec-level `seeded_files`), so
+it does not threaten prompt parity even though it is technically part of
+the per-arm `own_note` (which is itself allowed to vary per arm, since it
+sits after the language line in the assembly template — §2.1's ordering
+note).
 
 ---
 
@@ -515,6 +571,7 @@ guiding it is exempt from ever being checked against reality.
 | `regex` | string (pattern) | the resolved string value matches `expected` as a regex (the one op that IS pattern matching by design) |
 | `set_eq` | list | every resolved value (flattened one level, same as `in`), taken as a SET, equals `expected` taken as a SET -- exactly, not a subset/superset. This is the "and nothing else" op the "scoped, not broader" catch family needs: `in`/`contains` only require every actual value to be *allowed*, so an otherwise-correct match plus one extra, unintended value (a second trusted principal, a second granted action) still passes them. Use `set_eq` wherever the natural-language intent is "trusts/grants ONLY \{X\}", not just "trusts/grants X". |
 | `absent_or_eq` | scalar | the path resolves to 0 nodes, OR to exactly 1 node equal to `expected` (>1 resolved node FAILS, same ambiguity rule as `eq`). Added by a residual-findings fix (2026-08-06): a bare `not_exists` used for "an enum-typed property was left at its implied default" false-negatives an equally-correct solution that wrote the semantically-identical value *explicitly* instead of omitting it (arm idioms differ in how readily they emit explicit defaults, so this is a real per-arm scoring bias, not a theoretical one). Neither `not_exists` alone (rejects the explicit form) nor `eq` alone (rejects the omitted form) can express "either form is fine" -- use `absent_or_eq` for any "left at its implied default, not set to some OTHER wrong value" catch, never bare `not_exists`, whenever the property's implied default has a concrete literal value a correct solution could also legitimately spell out. |
+| `not_regex` | string (pattern) | NONE of the resolved string values match `expected` as a regex (an unanchored search, same semantics as `regex` — matches ANYWHERE in the string, not a full-string match) -- 0 resolved nodes vacuously PASSES (nothing to violate), unlike `regex`'s own `>= 1 node` requirement. Added for `specs/sfn-jsonata.yaml`'s mode-mixing catch (the "no raw un-evaluated JSONPath string anywhere in this JSONata-mode ASL" fact, mirroring `tc-ai-pdlc-coding-features/tests/helpers.py::contains_jsonpath_artifact`'s own `r'"\$\.'` pattern): `regex` alone can only assert a pattern IS present, never that it is ABSENT, and no combination of the other seven ops can express "this string must never contain X" for an arbitrary substring (as opposed to "this key must be absent", which `not_exists` already covers structurally). Both evaluators implement it as the literal negation of `regex`'s own per-value match test -- `oracles/lib/structural.py::apply_op`'s `re.search`, `generator/gen.py`'s compiled-jq `test($e)` -- so no new regex engine/dialect is introduced. |
 
 Every `cfn_jsonpath`/`tf_jsonpath` may contain one or more `|fromjson`
 markers splitting the path into segments, e.g.
@@ -558,14 +615,88 @@ need to exist for it.
 
 Present **only** for scenarios embedding a JSONata `{% ... %}` expression
 (the `sfn-jsonata`-style scenario) — Amendment №1, `docs/iac-abstraction-aws-bench-plan.md`
-lines 120–127. `expressions_from` is a JSONPath locating every such string in
-the synthesized artifact (e.g. an ASL `Definition`/`DefinitionString` field);
-`sample_inputs` is the fixed set of `{input, expected_output}` pairs every
-extracted expression is evaluated against with `jsonata-python`, identically
-across all applicable arms (the ASL JSON is extractable from both CFN and TF
-plan output, so this adds no arm asymmetry — same rationale as the amendment
+lines 120–127.
+
+```yaml
+tier05_jsonata:
+  expressions_from: <JSONPath string> | {cfn: <JSONPath string>, tf: <JSONPath string>}
+  cases:
+    - expression_path: <string — the exact path oracles.lib.tier05_jsonata.jsonata_expressions()
+                         reports finding this expression at, e.g. "$.States.ComputeTotals.Output">
+      input: <object>          # bound to $states.input for THIS expression's own evaluation
+      expected_output: <any>   # compared to the evaluated expression's result via ==
+```
+
+**Correction (this doc previously described a stale, never-shipped shape —
+`sample_inputs: [{input, expected_output}]` with no way to pin a case to a
+specific expression.** The actually-implemented shape (`generator/spec_model.py`'s
+`Tier05Jsonata`/`Tier05Case`, `oracles/lib/tier05_jsonata.py::run_tier05`) is
+`cases: [{expression_path, input, expected_output}, ...]`, one case per
+declared `{% ... %}` expression, matched by `expression_path` — **not** the
+cartesian product of every found expression against every case (that shape
+rejects a fully-correct multi-expression state machine the moment it has more
+than one embedded expression: state A's expression evaluated against state
+B's sample input, compared against state B's expected output, fails despite
+A and B individually being correct — see `run_tier05`'s own docstring for the
+fixed bug this replaced). Every declared case must match an expression that
+actually exists in the artifact — a case whose `expression_path` resolves to
+nothing FAILS loudly (a renamed/removed state, or a stale case, is a
+spec/artifact drift, never silently ignored). **Correction (2026-08-06,
+residual-findings fix, benchmark-integrity review finding "sfn-jsonata /
+Tier 0.5 anti-L2 oracle — false-positives on equally-correct solutions"):**
+the *converse* direction — an expression found in the artifact that no case
+covers — is INFORMATIONAL ONLY (surfaced in `Tier05CaseResult`/`explain()`
+output, `passed=True`), not a failure. This doc previously said "either
+mismatch fails loudly"; that was wrong for this direction specifically —
+`oracle.tier05_jsonata.cases` is authored against one reference
+decomposition (this scenario's own reference `solve.sh`), and a correct
+solution that decomposes an object-literal `Output`/`Arguments` value
+differently (e.g. per-field `{% %}` sub-expressions instead of one
+whole-object `{% %}` expression) legitimately introduces `{% %}` expressions
+no case names — scoring that as an anti-L2 catch hit would contaminate the
+H2 falsifiability signal this tier exists to produce with an oracle-shape
+artifact instead of a real catch. See `oracles/lib/tier05_jsonata.py::run_tier05`'s
+own docstring for the mechanics.
+
+`expressions_from` locates every `{% ... %}`-embedding ASL document in the
+synthesized/planned artifact (e.g. a CFN `DefinitionString` property, or a
+TF `aws_sfn_state_machine.definition` attribute) via a JSONPath resolved
+through `oracles.lib.structural.resolve` (so `|fromjson` works here too, the
+common case since both attributes are JSON-encoded strings). **Two shapes**:
+a single string, when one path genuinely resolves against every arm's own
+artifact (rare — CFN template JSON and Terraform plan JSON have structurally
+different root shapes, `$.Resources[...]` vs.
+`$.planned_values.root_module.resources[...]`, so this is realistically only
+usable for a scenario checked against one artifact family); or a
+`{cfn: <path>, tf: <path>}` mapping (the normal case for a real cross-arm
+scenario) — `run_tier05` auto-detects which family a given artifact document
+is by checking for a top-level `Resources` key (CFN) vs. `planned_values`
+key (TF plan), and selects the matching path. `hcl_raw` and `terraconstructs`
+share the `tf` path, same collapsing convention as `predicted_tier_caught.hcl`
+(§3) and `tf_jsonpath` (§4.2) — both synthesize to the same `terraform show
+-json` plan shape.
+
+Every extracted expression is evaluated with `jsonata-python`, `$states.input`
+bound to that CASE's own `input` (i.e. whatever that specific state would
+actually receive as its effective input in a real execution — not one global
+workflow input reused for every expression), identically across all
+applicable arms (the ASL JSON is extractable from both CFN and TF plan
+output, so this adds no arm asymmetry — same rationale as the amendment
 itself). Leave `null` for every scenario that has no embedded expression
 language; do not populate it "for completeness."
+
+**Non-gating (SCHEMA.md §5's precedent, `DECISIONS.md` "Tier-0.5 runs
+host-side, non-gating"):** Tier 0.5 never runs inside a generated
+`tests/static_tiers.sh` and never affects `/logs/verifier/reward.txt` — no
+arm image ships Python/`jsonata-python`. Run it host-side, post-hoc, via
+`uv run python -m oracles.lib.tier05_jsonata <artifact.json> <spec.yaml>`
+(the generator emits a `tests/TIER05.md` pointer at this exact command for
+any scenario declaring this field). Because it never gates reward, a
+scenario whose only mechanism for a given catch is Tier 0.5 (the anti-L2
+falsifiability catch's own defining property — invisible to every synth/
+plan/validate/policy tier by construction) needs its negative fixture proven
+via the Tier 0.5 evaluator directly, not via `reward.txt` — see
+`gates/oracle_falsifiability.py`'s tier-aware per-catch handling.
 
 ---
 

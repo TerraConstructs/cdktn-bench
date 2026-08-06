@@ -189,6 +189,44 @@ class Instruction(BaseModel):
 
 
 # --------------------------------------------------------------------------
+# §2.5 seeded_files
+# --------------------------------------------------------------------------
+
+# Mirrors generator/gen.py::ARM_BOOTSTRAP_FILE -- duplicated here (not
+# imported) because gen.py imports THIS module, not the other way around.
+# Keep in sync by hand if a new arm's bootstrap filename ever changes.
+_KNOWN_BOOTSTRAP_FILES = {"bin/app.ts", "provider.tf", "main.ts"}
+
+
+@_strict
+class SeededFile(BaseModel):
+    path: str
+    content: str
+
+    @model_validator(mode="after")
+    def _path_and_content_sane(self) -> "SeededFile":
+        if not self.content:
+            raise ValueError(f"seeded_files entry {self.path!r}: content must be non-empty")
+        if self.path.startswith("/"):
+            raise ValueError(
+                f"seeded_files entry {self.path!r}: path must be relative "
+                "(no leading '/') -- SCHEMA.md §2.5"
+            )
+        if any(part == ".." for part in self.path.split("/")):
+            raise ValueError(
+                f"seeded_files entry {self.path!r}: path must not contain "
+                "'..' segments (workspace escape) -- SCHEMA.md §2.5"
+            )
+        if self.path in _KNOWN_BOOTSTRAP_FILES:
+            raise ValueError(
+                f"seeded_files entry {self.path!r}: collides with a known "
+                f"non-agent-owned bootstrap filename {sorted(_KNOWN_BOOTSTRAP_FILES)} "
+                "-- SCHEMA.md §2.5"
+            )
+        return self
+
+
+# --------------------------------------------------------------------------
 # §3 catches
 # --------------------------------------------------------------------------
 
@@ -225,7 +263,9 @@ class StructuralAssert(BaseModel):
     )
     cfn_jsonpath: str | None = None
     tf_jsonpath: str | None = None
-    op: Literal["exists", "not_exists", "eq", "in", "contains", "regex", "set_eq", "absent_or_eq"]
+    op: Literal[
+        "exists", "not_exists", "eq", "in", "contains", "regex", "set_eq", "absent_or_eq", "not_regex"
+    ]
     expected: object = None
 
     @model_validator(mode="after")
@@ -247,7 +287,9 @@ class StructuralAssert(BaseModel):
                 f"structural_assert {self.name!r}: tf_jsonpath required "
                 "because a TF-shaped arm is in applies_to"
             )
-        needs_expected = self.op in {"eq", "in", "contains", "regex", "set_eq", "absent_or_eq"}
+        needs_expected = self.op in {
+            "eq", "in", "contains", "regex", "set_eq", "absent_or_eq", "not_regex"
+        }
         if needs_expected and self.expected is None:
             raise ValueError(
                 f"structural_assert {self.name!r}: op={self.op!r} requires 'expected'"
@@ -284,8 +326,31 @@ class Tier05Case(BaseModel):
 
 @_strict
 class Tier05Jsonata(BaseModel):
-    expressions_from: str
+    # str: one JSONPath used against every arm's own artifact (only usable
+    # when a scenario is checked against a single artifact family). dict:
+    # {"cfn": <path>, "tf": <path>} -- the normal case for a real cross-arm
+    # scenario, since CFN template JSON and Terraform plan JSON have
+    # structurally different root shapes (`$.Resources[...]` vs.
+    # `$.planned_values.root_module.resources[...]`) -- one path literally
+    # cannot resolve against both. `oracles.lib.tier05_jsonata.run_tier05`
+    # auto-detects which family a given artifact document is (top-level
+    # `Resources` key vs. `planned_values` key) and selects the matching
+    # path; `hcl_raw`/`terraconstructs` share the `tf` path (SCHEMA.md §4.4).
+    expressions_from: str | dict[str, str]
     cases: Annotated[list[Tier05Case], Field(min_length=1)]
+
+    @model_validator(mode="after")
+    def _expressions_from_dict_keys_valid(self) -> "Tier05Jsonata":
+        if isinstance(self.expressions_from, dict):
+            allowed = {"cfn", "tf"}
+            keys = set(self.expressions_from)
+            if not keys or keys - allowed:
+                raise ValueError(
+                    "oracle.tier05_jsonata.expressions_from (dict form) keys "
+                    f"must be a non-empty subset of {sorted(allowed)}, got "
+                    f"{sorted(keys)} (SCHEMA.md §4.4)"
+                )
+        return self
 
     @model_validator(mode="after")
     def _case_paths_unique(self) -> "Tier05Jsonata":
@@ -382,6 +447,7 @@ class Spec(BaseModel):
     services: Annotated[list[str], Field(min_length=1)]
     arms: Arms
     instruction: Instruction
+    seeded_files: list[SeededFile] = Field(default_factory=list)
     catches: Annotated[list[Catch], Field(min_length=1)]
     oracle: Oracle
     verifier: Verifier
@@ -408,6 +474,28 @@ class Spec(BaseModel):
             raise ValueError(
                 "instruction.per_arm.terraconstructs is set but "
                 "arms.terraconstructs.enabled is false — remove one or the other"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _seeded_files_unique_and_no_entry_file_collision(self) -> "Spec":
+        paths = [f.path for f in self.seeded_files]
+        if len(paths) != len(set(paths)):
+            raise ValueError("seeded_files has duplicate path values -- SCHEMA.md §2.5")
+        entry_files = {
+            per_arm.output_contract.entry_file
+            for per_arm in (
+                self.instruction.per_arm.awscdk,
+                self.instruction.per_arm.hcl_raw,
+                self.instruction.per_arm.terraconstructs,
+            )
+            if per_arm is not None
+        }
+        collisions = set(paths) & entry_files
+        if collisions:
+            raise ValueError(
+                f"seeded_files path(s) {sorted(collisions)} collide with an "
+                "enabled arm's output_contract.entry_file -- SCHEMA.md §2.5"
             )
         return self
 

@@ -1,0 +1,12 @@
+{
+  "_fixture_note": "Regression fixture for benchmark-integrity review finding 'sfn-jsonata / Tier 0.5 anti-L2 oracle -- still false-positives on an equally-correct solution' (2026-08-06). Mirrors specs/sfn-jsonata.yaml's own ComputeTotals case (same input/expected_output shape), but decomposes the state's Output into TWO per-field {% ... %} sub-expressions (one for `orders`, one for `grandTotal`) instead of ONE whole-object {% ... %} expression the way solution/solve.sh writes it -- an equally-correct, ordinary JSONata-mode decomposition the instruction never rules out (JsonataCommonOptions.outputs is typed `any`). A case whose expression_path names the whole Output object (a dict here, not a {% ... %} string leaf) must resolve via materialize()'s recursive fallback and PASS, not be scored as a renamed/removed-state failure.",
+  "Resources": {
+    "OrderBatchStateMachine": {
+      "Type": "AWS::StepFunctions::StateMachine",
+      "Properties": {
+        "StateMachineName": "OrderBatchStateMachine",
+        "DefinitionString": "{\"QueryLanguage\":\"JSONata\",\"StartAt\":\"ComputeTotals\",\"States\":{\"ComputeTotals\":{\"Type\":\"Pass\",\"Output\":{\"orders\":\"{% $states.input.orders.{\\\"id\\\": id, \\\"qty\\\": qty, \\\"price\\\": price, \\\"total\\\": qty * price} %}\",\"grandTotal\":\"{% $sum($states.input.orders.(qty * price)) %}\"},\"End\":true}}}"
+      }
+    }
+  }
+}
