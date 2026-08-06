@@ -101,3 +101,24 @@ is `smoke/`), not `./tasks`.
    `scenario.toml [verify]`, and `ec2-multiregion` is the only upstream scenario that has
    one). If Slice F's live validation wants a scene-state assertion beyond "the stack
    deployed", one should be added there.
+
+## Slice F operational notes (2026-08-06, verified live)
+
+The end-to-end smoke run succeeded: reward 1.0, 57s, tokens captured
+(n_input_tokens/n_output_tokens/n_cache_tokens/cost_usd in `result.json`,
+full `agent/trajectory.json` persisted). Operational lessons for the next run:
+
+- **Task filters match directory basenames**, not registry `name` fields:
+  `--include-task-name smoke` (Harbor `LocalTaskId.get_name()`), NOT
+  `anchor-smoke` and NOT the task.toml `[task].name`.
+- **colima**: bind-mount sources under `/var/folders` are not shared into the
+  VM — run the CLI with `TMPDIR=$HOME/.awsbench-tmp` (or another home-dir
+  path). The `docker compose` CLI plugin is not bundled: `brew install
+  docker-compose` + symlink into `~/.docker/cli-plugins/`.
+- **Memory**: the scenario deploy container OOM-killed `tsc`/`ts-node` at
+  2048 MB (exit 137); `scenario.toml [environment]` now sets 4096 MB / 2 cpus.
+- **SCP side effect**: `env setup` creates and attaches an
+  `awsbench-region-restrict-<scenario>` SCP (deny non-us-east-1, global
+  services exempted) to the scenario account and re-creates it each setup.
+  On a shared/personal account this restricts unrelated regional work —
+  detach/delete after runs, or use a dedicated benchmark account.

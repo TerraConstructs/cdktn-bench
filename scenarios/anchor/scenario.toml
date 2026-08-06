@@ -8,8 +8,11 @@ regions = ["us-east-1"]
 
 [environment]
 build_timeout_sec = 600.0
-cpus = 1
-memory_mb = 2048
+cpus = 2
+# 2048 OOM-killed ts-node/tsc during deploy (exit 137) — the CDK-synth-OOM
+# infra-failure class DECISIONS.md/chant-bench-diff warned about. colima VM
+# carries 6GiB; 4096 leaves headroom for the daemon.
+memory_mb = 4096
 
 [deploy]
 timeout_sec = 900.0
