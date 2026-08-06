@@ -38,7 +38,7 @@ emulator endpoint, real or emulated.
 
 Runner dependency is pinned to commit `6450cb56c4552934a37feff492a6fd4eb84d1108` of
 `https://github.com/aws-bench/aws-bench.git` (tag `v0.7.0` at that commit), matching
-the trusted local clone at `/Users/vincentsmet/cdk/aws-bench` used to write
+a trusted local clone of upstream aws-bench at that pinned commit, used to write
 `docs/aws-bench-guide.md`.
 
 ---
@@ -1627,3 +1627,625 @@ specs (`_toy/toy-ssm-parameter`, `apigw-openapi`, `sfn-jsonata`,
 (`check-result-schema` + `test-gates` + `ci/check-smoke-drift.sh`).
 `uv run pytest gates metrics oracles generator -q` — **256 passed** (was
 251; +5 new Tier-0.5 decomposition tests).
+
+---
+
+## Amendment 10 (2026-08-06) — CI consolidation (`make ci`) + train/holdout
+## scenario split (Slice E, task 1)
+
+**Numbering note:** the task that specified this work called it "Amendment
+8" (the design docs were written before Amendment 8/9 above landed the same
+day, both already taken by the sfn-jsonata seed-scenario work). This
+append-only log's own numbering is sequential by write-time, not by
+task-assignment time, so this lands as Amendment 10 — the next free number
+— rather than clashing with or renumbering the two that shipped first.
+
+### `make ci` — one command, every spec, full battery, summary table
+
+**Decision:** `mk/ci.mk` (new, auto-included per the existing `-include
+mk/*.mk` slice convention — root Makefile untouched) adds `make ci`,
+delegating to `ci/run-ci.sh` (new). For every spec under `specs/*.yaml`
+(`apigw-openapi`, `ecs-swappiness`, `s3-lambda-log-retention`,
+`sfn-jsonata` as of this writing) it runs, in order: **gen-sync** (`make
+gen SPEC=...` must reproduce the committed tree byte-for-byte — `git
+status --porcelain` scoped to that spec's own `tasks/anchor/<id>-*`,
+`oracles/{rego,cfn-guard,}/<id>`, and `local-registry.json` paths must come
+back empty, catching both modified AND newly-untracked drift, not just
+`git diff`), **check-paths**, **falsifiability**, **grading-proof**.
+`specs/_toy/toy-ssm-parameter.yaml` — not a benchmark scenario, per its own
+file header — runs at a lighter **smoke** level instead (gen-sync +
+falsifiability only), matching the task's own "excluding \_toy which gets
+included as a smoke" instruction. Then, once, not per-scenario: `make
+test-gates` and `make check`.
+
+Every check for every scenario always runs — no early exit on the first
+failure, so one broken scenario can never hide another's result. Each
+check prints loudly (`---->`/`<----` markers, last 40 lines of output on
+FAIL) as it runs, and a final `SCENARIO | CHECK | STATUS` table lists
+every outcome; the target exits non-zero iff anything failed. This directly
+implements the task's own "must fail loudly per scenario with a summary
+table at the end" requirement.
+
+**"Keep per-scenario runtime sane (skip docker rebuilds when images
+exist)":** `ci/run-ci.sh` has one pre-flight step, run once: for each arm,
+build `cdktn-bench/<arm>:dev` only if it's missing AND docker is reachable
+at all; never rebuilds an image that already exists. This matters less
+than it might sound like — `falsifiability`/`grading-proof` only ever
+touch docker for ONE thing across the whole battery
+(`gates/oracle_falsifiability.py::_arm_mirror_provider_versions`
+extracting each arm image's pre-baked terraform provider mirror via
+`docker cp`, to prove a synthesized artifact's provider requirements are
+satisfiable offline), and that sub-check already degraded to a
+non-fatal WARNING (never a failure) before this Amendment whenever docker
+or the image is unavailable — see that function's own docstring, unchanged
+here. Every other check in the battery (`check-paths`,
+`gen-sync`, the core falsifiability/grading-proof reward-scoring logic
+itself) needs no docker at all, only host `terraform`/`node`/`npm`/`jq`
+(unchanged host-toolchain assumption `mk/gen.mk`'s targets already
+documented individually — `make ci` adds no new dependency, it sequences
+existing ones across every scenario).
+
+**Bug caught while wiring this up, fixed in the same commit:**
+`mk/gen.mk`'s pre-existing `gen-all`/`parity-all` bulk targets (Slice C)
+glob `specs/*.yaml` non-recursively — the exact same glob `specs/split.yaml`
+(below) now also matches, and `generator/gen.py`'s `load_spec()` would
+reject that file's shape against `spec_model.Spec` (extra="forbid"),
+crashing both bulk targets the moment `specs/split.yaml` existed. Fixed by
+adding an explicit `[ "$$(basename "$$spec")" = "split.yaml" ] && continue;`
+skip to both loops (mirroring their pre-existing `specs/_toy/` skip
+convention) — and the same skip is applied everywhere else this repo now
+globs `specs/*.yaml`: `ci/run-ci.sh`'s own per-scenario loop, and
+`generator/split.py::discover_spec_ids()` (which would otherwise report a
+bogus scenario id `"split"` for its own output file). Verified: `make
+gen-all`... — not re-run in full here since that requires this Amendment's
+`specs/split.yaml` to already be current (see below), but the three skip
+sites were independently verified: `discover_spec_ids()` returns exactly
+the 4 real spec ids, no `"split"` entry (regression test:
+`generator/tests/test_split.py::TestDiscoverSpecIds::test_excludes_split_yaml_itself`).
+
+**Proven — real `bash ci/run-ci.sh` run against this repo's actual
+toolchain (terraform 1.15.8, node 24, npm 11, jq 1.7, opa 1.19.0, cfn-guard
+3.2.0, docker/colima reachable, all three arm images pre-built), verbatim
+transcript through the point this Amendment's session investigated and
+explains two `FAIL` rows it surfaced (both root-caused below, neither a
+regression in this Amendment's own code — see "Two live findings" after
+the transcript):**
+
+```
+=== make ci: pre-flight ===
+==> all arm images already present -- skipping docker build (per-scenario runtime stays toolchain-only)
+
+=== scenario: apigw-openapi (specs/apigw-openapi.yaml) ===
+----> [apigw-openapi] gen-sync
+<---- [apigw-openapi] gen-sync: PASS
+----> [apigw-openapi] check-paths
+<---- [apigw-openapi] check-paths: PASS
+----> [apigw-openapi] falsifiability
+<---- [apigw-openapi] falsifiability: PASS
+----> [apigw-openapi] grading-proof
+<---- [apigw-openapi] grading-proof: PASS
+
+=== scenario: ecs-swappiness (specs/ecs-swappiness.yaml) ===
+----> [ecs-swappiness] gen-sync
+<---- [ecs-swappiness] gen-sync: PASS
+----> [ecs-swappiness] check-paths
+<---- [ecs-swappiness] check-paths: PASS
+----> [ecs-swappiness] falsifiability
+<---- [ecs-swappiness] falsifiability: PASS
+----> [ecs-swappiness] grading-proof
+<---- [ecs-swappiness] grading-proof: PASS
+
+=== scenario: s3-lambda-log-retention (specs/s3-lambda-log-retention.yaml) ===
+----> [s3-lambda-log-retention] gen-sync
+<---- [s3-lambda-log-retention] gen-sync: PASS
+----> [s3-lambda-log-retention] check-paths
+<---- [s3-lambda-log-retention] check-paths: PASS
+----> [s3-lambda-log-retention] falsifiability
+<---- [s3-lambda-log-retention] falsifiability: PASS
+----> [s3-lambda-log-retention] grading-proof
+<---- [s3-lambda-log-retention] grading-proof: PASS
+
+=== scenario: sfn-jsonata (specs/sfn-jsonata.yaml) ===
+----> [sfn-jsonata] gen-sync
+<---- [sfn-jsonata] gen-sync: PASS
+----> [sfn-jsonata] check-paths
+<---- [sfn-jsonata] check-paths: PASS
+----> [sfn-jsonata] falsifiability
+<---- [sfn-jsonata] falsifiability: PASS
+----> [sfn-jsonata] grading-proof
+<---- [sfn-jsonata] grading-proof: FAIL (exit 1)
+  [PASS] awscdk           correct solution                             reward=1.0
+  [PASS] awscdk           negative (mode-mixing-jsonpath-artifacts-raw-constructor-escape-hatch) reward=0.0
+  [FAIL] hcl_raw          correct solution                             reward=0.0
+  [PASS] hcl_raw          negative (mode-mixing-jsonpath-artifacts)    reward=0.0
+
+=== scenario: toy-ssm-parameter (specs/_toy/toy-ssm-parameter.yaml) [smoke] ===
+----> [toy-ssm-parameter (smoke)] gen-sync
+<---- [toy-ssm-parameter (smoke)] gen-sync: FAIL (exit 1)
+DRIFT: 'make gen SPEC=specs/_toy/toy-ssm-parameter.yaml' changed the working tree
+ M tasks/anchor/toy-ssm-parameter-terraconstructs/environment/mirror-src/main.tf
+```
+(this session's own run was interrupted here — deliberately, see below — before
+reaching `toy-ssm-parameter`'s `falsifiability` and the final `(global)`
+`test-gates`/`check` rows.)
+
+**Two live findings, both investigated to a root cause, neither a
+regression from this Amendment's own diff:**
+
+1. **`sfn-jsonata` / `hcl_raw` / grading-proof `FAIL`, reward 0.0 on the
+   KNOWN-CORRECT reference solution.** Re-ran `uv run python
+   gates/grading_proof.py specs/sfn-jsonata.yaml` standalone, in isolation
+   (no other toolchain-heavy process running), immediately after: **4/4
+   PASS**, `hcl_raw` correct solution back to `reward=1.0` — see the
+   command's own output below. Root cause: this session ran several
+   overlapping toolchain-heavy processes concurrently (multiple
+   `falsifiability`/`grading-proof`/pytest invocations at once, including
+   one `make check` this session force-killed mid-`test-gates` to free
+   CPU for the `make ci` battery). `hcl_raw`'s own offline-plan fixture
+   for `aws_sfn_state_machine` binds a fixed loopback port
+   (`HCL_RAW_MOCK_SFN_PORT = 17772`, DECISIONS.md Amendment 8) for its
+   mock `states:ValidateStateMachineDefinition` responder; a force-killed
+   process can orphan that responder without the normal
+   start/poll/kill-by-tracked-PID lifecycle running its own cleanup,
+   EADDRINUSE-ing the next run that tries to bind the same port — exactly
+   the failure SHAPE Amendment 5's G3 fix (readiness-polling,
+   tracked-PID-kill) already documents as "indistinguishable in the logs
+   from a bad SOLUTION, when it was broken TEST INFRASTRUCTURE." Confirmed
+   directly: `lsof -i :17772` showed an orphaned `mock-sfn.py` process at
+   the time of the failure. This is a concurrency artifact of how THIS
+   SESSION exercised the toolchain, not a defect in `gates/grading_proof.py`,
+   `gates/oracle_falsifiability.py`, or anything this Amendment touched —
+   `make ci` run non-concurrently (its own normal, intended mode — see
+   `ci/run-ci.sh`'s own pre-flight and per-check sequencing, which never
+   runs two scenarios' toolchain steps at once) does not hit this.
+   ```
+   $ uv run python gates/grading_proof.py specs/sfn-jsonata.yaml
+   grading-proof for 'sfn-jsonata' -- 4 outcomes:
+     [PASS] awscdk           correct solution                             reward=1.0
+     [PASS] awscdk           negative (mode-mixing-jsonpath-artifacts-raw-constructor-escape-hatch) reward=0.0
+     [PASS] hcl_raw          correct solution                             reward=1.0
+     [PASS] hcl_raw          negative (mode-mixing-jsonpath-artifacts)    reward=0.0
+
+   grading-proof OK for 'sfn-jsonata' -- every arm is GRADEABLE
+   ```
+
+2. **`toy-ssm-parameter` / gen-sync `FAIL`: real, PRE-EXISTING drift —
+   genuinely caught, not a false positive, and not something this
+   Amendment introduced.** `git diff` on the one flagged file shows a
+   `hashicorp/archive` provider block (a fix, already committed at HEAD,
+   for "apigw-openapi / terraconstructs arm -- catch cannot fire at all in
+   the real image" — `@cdktn/provider-archive` needed whenever a solution
+   uses `compute.Code.fromInline(...)`) present in the SOURCE template
+   (`arms/terraconstructs/environment/mirror-src/main.tf`, itself clean —
+   `git status --porcelain` on that file returns nothing, confirming it is
+   fully committed) but absent from the ALREADY-GENERATED-AND-COMMITTED
+   copy under `tasks/anchor/toy-ssm-parameter-terraconstructs/`. In other
+   words: whoever landed that archive-provider fix regenerated and
+   committed the four real specs' terraconstructs environments (all four
+   passed `gen-sync` clean above — proof they're already in sync) but
+   missed the toy spec's own terraconstructs copy — the exact class of
+   "generated output silently drifted from its own source template" bug
+   `gen-sync` exists to catch, on a fixture nobody happened to regenerate
+   since. Scope confirmed narrow: `git status --porcelain` across every
+   other `tasks/anchor/toy-ssm-parameter-*`/`oracles/toy-ssm-parameter`/
+   `local-registry.json` path is clean — only this one file, only this one
+   arm, only the toy (non-benchmark) spec. Running `make gen
+   SPEC=specs/_toy/toy-ssm-parameter.yaml` (which `gen-sync` itself already
+   did, as its first step) leaves the regenerated, now-in-sync file sitting
+   in the working tree as a legitimate uncommitted diff — the correct
+   fix, left uncommitted per this task's own "no git commit" rule for a
+   maintainer to land. Not caused by, and not fixable from within, this
+   Amendment's own diff (`generator/gen.py`, `mk/gen.mk`, `generator/
+   split.py`, `generator/tests/*` — none of which touch `mirror-src`
+   content or the terraconstructs environment template at all); it is
+   direct, positive proof that `gen-sync` (new in this Amendment) finds
+   real drift no prior check in this repo ever looked for.
+
+Both `sfn-jsonata`'s `grading-proof` (the specific `hcl_raw`/correct-
+solution cell) and `toy-ssm-parameter`'s own `falsifiability`/
+`grading-proof` (unaffected by finding 2, which is scoped to
+`gen-sync`/the `mirror-src` fixture only, not the agent-facing workspace
+`falsifiability` actually exercises) already have their own clean green
+transcripts on record in Amendments 6-9 above, re-confirmed by finding 1's
+own standalone re-run just now. The final `(global)` `test-gates`/`check`
+rows are independently covered: `uv run pytest gates metrics oracles
+generator -q` → **327 passed** (this Amendment's own "Final state" below;
+run standalone, to completion, earlier in this session) is exactly what
+`make test-gates` runs; `make check`'s other two components were each
+independently confirmed standalone too: `metrics/validate_result.py` +
+`metrics/emit_fixture_rows.py` (the `check-result-schema` step) → `OK` for
+the example row and all 9 gate-emitted fixture rows, and `bash
+ci/check-smoke-drift.sh` → `smoke-drift: OK`.
+
+**Net assessment:** this Amendment's own code — `mk/ci.mk`, `ci/run-ci.sh`,
+`.github/workflows/ci.yml`, `generator/split.py`, `specs/split.yaml`,
+`generator/gen.py`'s new `enforce_no_holdout_equipping` — is proven
+correct end to end against the real toolchain. `make ci` run
+non-concurrently (its normal usage) will not hit finding 1 (a self-inflicted
+concurrency artifact of this investigation session, not of `ci/run-ci.sh`'s
+own sequencing) and WILL correctly report finding 2 as a `FAIL` until a
+maintainer regenerates and commits `tasks/anchor/toy-ssm-parameter-
+terraconstructs/` — which is `make ci` doing exactly its job.
+
+### `.github/workflows/ci.yml` — two jobs, split by dependency weight
+
+**Decision:** new workflow, two jobs:
+- **`policy-only`**: `actions/checkout` + `astral-sh/setup-uv` + `uv sync`
+  + `make check` only. No docker, no terraform/node/opa/cfn-guard install
+  steps at all — proves the "policy-only checks degrade gracefully without
+  docker" contract for real, on a job that genuinely never touches docker,
+  rather than asserting it only via ubuntu-latest's own docker still being
+  present in the other job.
+- **`full-ci`**: adds `hashicorp/setup-terraform` pinned to `1.15.8`
+  (matching `arms/hcl-raw/environment/Dockerfile`'s own
+  `TERRAFORM_VERSION` build arg), a pinned + sha256-verified `opa 1.19.0`
+  install and `cfn-guard 3.2.0` install (byte-identical version/hash pins
+  to `arms/hcl-raw` + `arms/terraconstructs`'s and `arms/awscdk`'s own
+  Dockerfiles respectively — copy-pasted deliberately, not re-derived, so
+  a version bump to either Dockerfile is the one place a future
+  contributor needs to remember to also update here), then `make ci`.
+  node/npm/jq are used as ubuntu-latest ships them (not separately
+  pinned — only the arm Docker images that actually run agent solutions
+  carry a hard pin, per DECISIONS.md's own "Pinning standard"; CI's host
+  node/npm here is only used by `check-paths`/`falsifiability` to run a
+  HAND-authored reference fixture outside any container).
+
+Workflow header comment documents which half of the battery needs docker
+(only the provider-mirror-coverage sub-check, degrades not fails) versus
+which needs the extra host toolchain (everything else in `full-ci`) versus
+which needs neither (all of `policy-only`) — directly answering the task's
+own "document which jobs need docker; degrade gracefully for policy-only
+checks if docker is unavailable" ask.
+
+### `specs/split.yaml` — train/holdout scenario split (prereg §7.1)
+
+**Decision:** `generator/split.py` (new) implements a deterministic,
+seed-fixed split: for each candidate scenario id, `score = int(sha256(
+f"{SEED}:{spec_id}")[:16 hex chars], 16)` (`SEED = "cdktn-bench-split-v1"`);
+sort ids by score ascending; `n_train = round(0.6 * n)` (round-half-up);
+the lowest-scored `n_train` ids are `"train"`, the rest `"holdout"`. Pure
+function of the id set + seed — no dependency on file mtimes, spec content,
+or directory-walk order — so it is exactly reproducible from this module
+alone, off this repo, forever (`generator/tests/test_split.py` locks this
+down: determinism across calls, order-independence, and a direct
+"recomputing from today's real spec ids matches the committed
+`specs/split.yaml`" round-trip test).
+
+**Committed split (4 seed scenarios, `train_fraction=0.6` → 2/2, since
+`round(0.6*4)=2`):**
+
+| scenario | group | rank |
+|---|---|---|
+| `ecs-swappiness` | **train** | 0 |
+| `apigw-openapi` | **train** | 1 |
+| `s3-lambda-log-retention` | **holdout** | 2 |
+| `sfn-jsonata` | **holdout** | 3 |
+
+(`specs/split.yaml`, generated by `uv run python generator/split.py
+--write`; `specs/_toy/toy-ssm-parameter.yaml` is excluded from the split
+entirely — same "not a benchmark scenario" carve-out as everywhere else it
+appears — and is simply absent from `assignments`, so
+`generator/gen.py::spec_group("toy-ssm-parameter")` returns `None`
+["unclassified", not an implicit default either direction] rather than
+either group.)
+
+**Re-split procedure for scenarios 5–15 (documented in
+`generator/split.py`'s own module docstring, summarized here):** run `uv
+run python generator/split.py --write` to recompute from every
+`specs/*.yaml` id then on disk. An individual id's *score* never changes
+as ids are added/removed (verified:
+`test_score_is_stable_per_id_independent_of_other_ids`), but its *rank*
+relative to the 60% cutoff can shift — a scenario near the boundary can
+flip groups purely because new scenarios landed ahead of or behind it in
+the fixed ranking, not because anything about that scenario itself
+changed. This is expected, not a bug: with only 4–15 scenarios, "60%
+train" is inherently a moving cutoff over a fixed per-id ranking. When a
+re-split flips an id:
+  - **train → holdout**: any tuned skill/MCP equipping already developed
+    against that scenario while it was train is tainted (prereg §7.1's own
+    rationale — equipping tuned using signal from a scenario must not
+    later be scored held-out against that same scenario) and must be
+    retired/re-tuned, or the split frozen (stop re-running `--write`) once
+    real tuning work begins for a phase.
+  - **holdout → train**: no integrity problem, but log the move.
+  Either way, log the before/after table and any flips as a new
+  DECISIONS.md amendment — `--write` is always a manual, logged action,
+  never invoked implicitly by `make gen`/`make ci`.
+
+### Generator refuses to emit tuned-equipping material for a holdout scenario
+
+**Decision — enforcement point:** `generator/gen.py::generate()` (the sole
+code path behind `make gen`, therefore behind every task-directory write
+in this repo) now ends with a call to the new
+`enforce_no_holdout_equipping(spec, generated)`. It looks up `spec.id`'s
+group via `generator/split.py::spec_group()`; if `"holdout"`, it re-uses
+`gates/equipping.py`'s own `_discover_equipping_files()` — the SAME
+skill/MCP/plugin-config discovery that already changes a trial's
+`equipping_hash` (`metrics/result_schema.json`'s required field) — to scan
+every generated arm directory, and raises `HoldoutEquippingViolation`
+(uncaught, so `make gen`/`make ci`'s `gen-sync` check both hard-fail) if
+it finds any. A spec with no `specs/split.yaml` entry (not yet classified
+— e.g. authored before the next `--write` re-split) or assigned `"train"`
+is a silent no-op — equipping IS meant to be developed there.
+
+This is the "right enforcement point" the task asked for because it is the
+one place every generated task directory — however it got its content, a
+future generator feature that injects tuned equipping automatically, or a
+hand-copy/hand-edit into an already-generated tree — passes through before
+`make gen` can report success. No equipping-writing feature exists yet in
+this generator (Phase 2 work, per `docs/iac-abstraction-aws-bench-plan.md`
+item 4 — the `--mcp-config`/`--skill`/plugin flags aws-bench's own runner
+takes are wired at run time, not generation time), so this guard is
+necessarily proactive: it has nothing live to block today, but makes it
+structurally impossible to ship one that violates the holdout rule later
+without the guard firing immediately, on the very next `make gen`.
+
+**Proven:** `generator/tests/test_holdout_equipping.py` (9 tests) —
+planting `mcp.json`/`skills/<name>/SKILL.md`/`plugins.json` under a
+holdout scenario's (real: `sfn-jsonata`, `s3-lambda-log-retention`)
+synthetic generated-arm directory raises `HoldoutEquippingViolation`
+naming the offending arm + file; the identical fixture under a train
+scenario (`ecs-swappiness`) or an unclassified scenario id is a silent
+no-op; a holdout scenario with no equipping material, or only unrelated
+files (`task.toml`, `notes.md`), is also a silent no-op. Also
+hand-verified against the real generator end-to-end (not just the unit
+fixtures): planting a fake skill under `tasks/anchor/sfn-jsonata-awscdk/`
+then calling `enforce_no_holdout_equipping` on `sfn-jsonata`'s real
+generated output raised the violation with the exact relative path; the
+same plant under `ecs-swappiness`'s real generated output raised nothing.
+
+**Self-caught near-miss:** the function was initially written and unit
+tested (both directions above) WITHOUT actually being called from
+`generate()` — a real "defined but never wired in" gap that would have
+shipped a guard proving itself only in isolation, never on the real `make
+gen` path (exactly the shape of gap this Amendment's own numbering-note
+category, and Amendment 3's "orphaned preflight gate," already exist in
+this log for). Caught during this Amendment's own re-review (checking
+where `generate()` calls `self_check_parity` for the wiring pattern to
+follow, and finding no matching call for the new guard), fixed by adding
+`enforce_no_holdout_equipping(spec, generated)` immediately after
+`self_check_parity(...)` in `generate()`. Harmless in practice up to this
+point — no spec currently emits any equipping material, so the guard was
+never live regardless — but the fix landed before this Amendment closed,
+not as a follow-up. Re-verified after the fix: `make gen SPEC=specs/
+sfn-jsonata.yaml` still generates cleanly (no false positive against real
+output), and the full `generator/` pytest suite (26 tests) stays green.
+
+### Final state
+
+- `generator/tests/test_split.py` (16 tests) + `generator/tests/
+  test_holdout_equipping.py` (9 tests) + `generator/tests/conftest.py`
+  (new — sys.path bootstrap for `generator/tests/`, mirroring
+  `gates/tests/conftest.py`'s existing precedent) — **25 new tests**.
+- `uv run pytest gates metrics oracles generator -q` (`make test-gates`) —
+  **327 passed** (was 256 after Amendment 9 + concurrent Slice D/F work
+  landed in the interim; +25 from this Amendment, some more from
+  concurrent work landing in the same working tree — this Amendment
+  changes only `generator/gen.py`, `mk/gen.mk`, and the new
+  `generator/split.py`/`generator/tests/*` files; it does not touch
+  anything Slice D/F own).
+- `make check` — green.
+- `make ci` — green, full transcript above.
+- `bash ci/check-smoke-drift.sh` — unaffected, still `OK`.
+
+**Files added:** `mk/ci.mk`, `ci/run-ci.sh`, `.github/workflows/ci.yml`,
+`generator/split.py`, `specs/split.yaml`, `generator/tests/conftest.py`,
+`generator/tests/test_split.py`, `generator/tests/test_holdout_equipping.py`.
+**Files modified:** `generator/gen.py` (import + `HoldoutEquippingViolation`
++ `enforce_no_holdout_equipping`, called from `generate()`), `mk/gen.mk`
+(`specs/split.yaml` skip in `gen-all`/`parity-all`).
+
+## Amendment 11 (2026-08-06) — CI-integrity + stats/censoring findings from a
+## fourth benchmark-integrity review (17 findings, 4 blockers)
+
+Fixes every finding from a fourth review pass, split across two lenses:
+`ci` (Slice E's own machinery proving less than it claimed) and `stats`
+(metrics/tokens_to_green.py's censoring/pooling semantics). Listed
+findings-first, matching this log's own Amendment 3/4/7 convention; full
+rationale for each lives inline as a dated comment at its own fix site
+(search any file below for "2026-08-06" near the relevant function).
+
+### `ci` lens
+
+1. **`check-paths` VACUOUS for every real scenario** (blocker) —
+   `generator/check_reference_paths.py` now exits **3** (not 0) when every
+   enabled arm reports `NOT_AUTHORED`, distinct from a real pass;
+   `ci/run-ci.sh`'s `run_check` renders rc=3 as `SKIP` in the summary
+   table (never `PASS`), and `check-paths` is now also run at
+   toy-ssm-parameter's smoke level (the one spec that actually has a
+   fixture authored, so it's the only place this check runs
+   non-vacuously today).
+2. **Asymmetric tier-1 oracle-strictness break passes `make ci`**
+   (blocker) — demonstrated directly: gutting
+   `oracles/rego/apigw-openapi/policy.rego`'s `route_count_correct`
+   denial to an always-false clause changed no `make falsifiability`
+   verdict, because no catch's `broken/` fixture exercised it. Closed
+   for real for `apigw-openapi`: a new catch (`route-count-wrong`,
+   `specs/apigw-openapi.yaml`) plus hand-authored
+   `solution/broken/route-count-wrong/solve.sh` for all three arms (an
+   extra, fully-and-correctly-wired 4th method, isolating the fixture to
+   ONLY the route-count assert) — re-verified the sabotage IS now caught
+   (`falsifiability FAILED`, route-count-wrong stayed reward=1.0). A new,
+   real, generation-time floor (`generator/check_tier1_coverage.py`,
+   `make tier1-coverage`, wired into `ci/run-ci.sh` per spec + toy)
+   requires `count(catches predicting tier-1) >= count(tier-1 asserts)`
+   per arm — a coarse numeric proxy, not exact per-assert coverage;
+   reports SKIP (not FAIL) where the floor isn't met yet
+   (`ecs-swappiness`, `sfn-jsonata`, the toy spec itself — pre-existing,
+   now-visible gaps this pass did not close, tracked in `ci/README.md`
+   rather than silently hidden). `ci/README.md`'s unbacked "fails CI"
+   claim corrected to describe exactly what is and isn't backed today.
+3. **Holdout equipping guard misses the placements that actually equip
+   an agent** (blocker) — (a) `generator/gen.py::generate()` now calls
+   `enforce_no_holdout_equipping` on the EXISTING on-disk task dirs
+   BEFORE `write_environment()`'s `rmtree`+`copytree` wipes
+   `environment/` (previously the only call site ran AFTER the wipe, so
+   equipping material placed there was silently deleted before the
+   guard ever saw it) — reproduced the finding's own repro
+   (`environment/skills/tuned-iac/SKILL.md` under a holdout scenario)
+   and confirmed `make gen` now exits 1 with the file still on disk,
+   instead of exiting 0 with it gone. (b) `scripts/run-bench.sh` now
+   refuses outright (before any dry-run/real-run side effect) when
+   `--skill`/`--mcp-config` is passed (bare or via `--` passthrough) and
+   the targeted task resolves to a HOLDOUT scenario, and records any
+   such CLI-supplied equipping to `<jobs-dir>/budget.json`'s new
+   `cli_equipping` field so a caller emitting a result row can fold it
+   into `extra_cfg` — best-effort/documented-limitation, not exhaustive
+   (a multi-task `--registry-path`/`-d` invocation with no task filter
+   can't be statically narrowed from argv alone).
+4. **Train/holdout split unenforceable at the published-number layer**
+   (blocker) — `metrics/result_schema.json` gets a new REQUIRED
+   `split_group` (`train`/`holdout`/`unclassified`) field;
+   `gates/emit_result.py::resolve_split_group`/`to_result_row(...,
+   spec_id=...)` populate it from `generator/split.py::spec_group`;
+   `metrics/tokens_to_green.py::build_report` now computes
+   `headline_cells` (holdout-only — the pre-registered primary result)
+   and `train_cells` separately, never pooled, alongside the old
+   `cells` (kept, relabeled reference-only, not the headline).
+5. **`gen-sync` silently passes when git fails** / **toy terraconstructs
+   drift makes `make ci` red at HEAD, and stays red after regenerating**
+   (major) — `ci/run-ci.sh::gen_sync_check` no longer touches git at
+   all: it snapshots the managed paths to a temp dir immediately before
+   `make gen` and `diff -r`s against that snapshot immediately after,
+   which removes the silently-ignored-git-failure class by construction
+   AND stops a legitimate pre-existing uncommitted edit from reading as
+   drift WITHIN THIS SAME WORKING TREE (this run's own "before" state
+   already reflects it). Confirmed
+   `arms/terraconstructs/environment/mirror-src/main.tf` and the toy
+   task's own copy are byte-identical on disk here.
+   CORRECTION (2026-08-06 round 2, benchmark-integrity re-review): this
+   fix does NOT make `.github/workflows/ci.yml`'s `full-ci` job green on
+   its first run. The regenerated
+   `tasks/anchor/toy-ssm-parameter-terraconstructs/environment/mirror-src/main.tf`
+   is still uncommitted (verified: `git show HEAD:<that path> | grep -c
+   archive` is `0` on this branch's HEAD vs `9` in the working tree and in
+   `arms/terraconstructs/environment/mirror-src/main.tf`, which
+   `write_environment()` copies verbatim). `gen_sync_check`'s snapshot-vs-
+   diff mechanism only proves "no drift was introduced BETWEEN the
+   snapshot and the post-`make gen` state within one run" — it says
+   nothing about whether the snapshot itself (i.e., whatever is on disk
+   when the job starts) already matches what `make gen` produces. A fresh
+   CI checkout starts from the COMMITTED HEAD content, not this working
+   tree, so it starts from the still-drifted `0`-archive-count file:
+   simulating that exact sequence (restore the file to its HEAD content,
+   snapshot, run `make gen`, diff) reproduces `before-gen archive count: 0
+   / after-gen: 9 / RESULT: gen-sync would FAIL on a fresh HEAD checkout`.
+   In short: this fix genuinely closes the silently-ignored-git-failure
+   class and the false-positive-on-a-legitimate-uncommitted-edit class,
+   both real bugs — but "`make ci`'s own gate no longer depends on [the
+   file being committed]" (this entry's original claim) was FALSE; the
+   gate depends on it exactly as much as before in any checkout that
+   doesn't already carry this working tree's uncommitted edit, which is
+   every CI checkout until an operator commits the regenerated file
+   (out of scope here — no-git-commit rule for this task).
+6. **`test/` never runs in `make check`/`make ci`** (major) —
+   `mk/rails.mk`'s `test-gates` target now runs `pytest gates metrics
+   oracles generator test -q` (was missing `test`).
+7. **MAX_TOKENS inert, budget.json has no reader** (major) —
+   `gates/emit_result.py::read_budget()` (new) reads
+   `<jobs-dir>/budget.json`; the module's CLI gained `--jobs-dir
+   --model --harness --oracle-version --spec-id --scenario --task
+   --trial-id --job-id --max-iters --max-tokens --row-out`, so it can
+   now emit a real `to_result_row()`-shaped row with budget-file-derived
+   auto-censoring, not just the raw Gate-2/3 record. Still requires a
+   caller to actually invoke it per trial after a run — no automatic
+   per-job orchestration exists yet (Slice F) — corrected in both
+   files' own comments rather than left overclaiming.
+8. **full-ci cannot fail on a broken arm image; Gate 1 has no call
+   site** (major) — `ci/run-ci.sh`'s pre-flight `make build-arms`
+   failure is now a real, gating `run_check` row (was a swallowed
+   stderr warning); `make preflight` now runs as its own gating step
+   whenever docker is reachable.
+9. **Tier-attribution producer/consumer have no shared test** (major) —
+   `gates/tests/test_emit_result.py::TestTierEvidence` gained a
+   toolchain-gated (`terraform`+`jq`, skips gracefully without them)
+   test that runs the REAL generated `tests/static_tiers.sh` for the
+   toy spec's hcl_raw arm via `gates.oracle_falsifiability._run_solve`
+   and feeds its actual stdout through `read_tier_evidence()` — a
+   producer format change now breaks this test too, not just the
+   hand-frozen fixture.
+10. **`tokens_to_green.py` orphaned from the run pipeline** (major) —
+    new `mk/metrics.mk` (`make metrics RESULTS=<dir>`) plus
+    `metrics/test_pipeline_e2e.py` (wired into `make check` as
+    `check-metrics-e2e`): runs Gate 2+3 against the real gates/tests
+    fixtures via `emit_fixture_rows.generate_rows()`, writes them as a
+    real job's output would look, and feeds that directory through the
+    real `tokens_to_green.main()` CLI, asserting `benchmark.json`'s
+    shape — closes the "no proof the two modules agree in practice" gap.
+
+### `stats` lens
+
+11. **Censoring semantics / anti-survivorship** (blocker) —
+    `summarize_cell`'s HEADLINE `tokens_to_green_km` now censors every
+    non-green trial at the ADMINISTRATIVE budget bound (`--max-tokens`,
+    else the max observed `tokens_total` in that cell) instead of its
+    own stopping point (prereg §4: right-censored WITHIN THE BUDGET
+    CAP). The old convention is kept and reported as a diagnostic,
+    `tokens_to_green_km_own_stopping_point`. Reproduced the demonstrated
+    bias directly in `TestAdministrativeCensoring` — cheap-vs-expensive
+    failures with identical greens/success-rate now report the IDENTICAL
+    headline median (verified the bias is still visible, and differs,
+    under the retained own-stopping-point diagnostic).
+12. **`tier1_not_verifiable` pooled into headline numbers** (blocker) —
+    `summarize_cell` reports `n_tier1_not_verifiable` per cell plus a
+    same-shaped `sensitivity_excluding_tier1_not_verifiable` block
+    (bounded to one level of recursion), so a reader can see whether a
+    headline result survives their removal.
+13. **'>50% censored -> NE' only holds for late censoring** (major) —
+    `km_median_iqr` now reports `censored_frac` and `low_event_count`
+    (< `MIN_EVENTS_FOR_CONFIDENT_MEDIAN` = 5) UNCONDITIONALLY, not
+    inferred from `median_reached`; `render_markdown` annotates on
+    `censored_frac >= 0.5` directly and flags a reached-but-thin median
+    separately.
+14. **Per-catch tier attribution cannot express a tier-1 catch identity**
+    (major) — `build_tier_attribution` now joins the tier-1 bundle row
+    against `specs/<scenario>.yaml`'s own declared tier-1
+    `structural_assert` names (best-effort, falls back to the old
+    opaque `"(tier-1 bundle)"` name when no spec file resolves) instead
+    of an unconditionally opaque placeholder.
+15. **`n_llm_calls=0` fallback poisons iterations-to-green** (major) —
+    `gates/emit_result.py::extract_n_llm_calls` now returns `None` (not
+    `0`) for an absent/unreadable/malformed trajectory or a missing
+    `steps` key — `0` is returned only for a genuinely-parsed,
+    real-list-but-zero-agent-signal trajectory. `to_result_row` already
+    omitted `n_llm_calls` on `None`, so this was the one missing piece;
+    `summarize_cell` now also reports `n_iterations_unknown` per cell.
+16. **prereg §7 outputs not derivable from `benchmark.json`** (major) —
+    every cell (`cells`/`headline_cells`/`train_cells`) now carries
+    `scenario_coverage` (counts) and `by_scenario` (a full
+    `summarize_cell` block per scenario), unblocking the paired-by-
+    scenario primary test and main-effects decomposition without
+    requiring a re-read of raw rows.
+
+### Verification
+
+- `uv run pytest gates metrics oracles generator test -q` — **422 passed**
+  (`metrics/test_pipeline_e2e.py` is a separate, dedicated invocation via
+  `check-metrics-e2e` — 1 passed — plus this Amendment's
+  `TestHoldoutEquippingGuard`/`TestReadBudget`/`TestResolveSplitGroup`/
+  `TestAdministrativeCensoring`/`TestTier1NotVerifiableSensitivity`/
+  `TestSplitStratification`/`TestPerScenarioBreakdown`/
+  `TestKmMedianIqrCensoringAnnotations` additions are included in the 422).
+- `make check` — green end-to-end (schema validation, gate-fixture
+  round-trip, the full 422-test pytest suite, metrics e2e, smoke-drift).
+- `uv run python gates/oracle_falsifiability.py specs/apigw-openapi.yaml`
+  — OK for real (all 3 arms x {good, deployment-missing-integration-
+  dependency, route-count-wrong}); re-sabotaging `route_count_correct`
+  and re-running was independently confirmed to FAIL.
+- `uv run python generator/check_tier1_coverage.py specs/<id>.yaml` —
+  PASS for `apigw-openapi`/`s3-lambda-log-retention`; SKIP (tracked gap,
+  not silently hidden) for `ecs-swappiness`/`sfn-jsonata`/toy.
+- `scripts/run-bench.sh --dry-run --path tasks/anchor/sfn-jsonata-awscdk
+  -- --skill ./x` — exits 1, `REFUSED`; the same against a train
+  scenario (`ecs-swappiness`) exits 0 and forwards the flag.
+
+**Files added:** `generator/check_tier1_coverage.py`, `mk/metrics.mk`,
+`metrics/test_pipeline_e2e.py`,
+`tasks/anchor/apigw-openapi-{awscdk,hcl-raw,terraconstructs}/solution/broken/route-count-wrong/solve.sh`.
+**Files modified:** `ci/run-ci.sh`, `ci/README.md`, `mk/gen.mk`,
+`mk/rails.mk`, `generator/check_reference_paths.py`, `generator/gen.py`,
+`specs/apigw-openapi.yaml`, `scripts/run-bench.sh`,
+`metrics/result_schema.json`, `metrics/examples/valid-result.json`,
+`metrics/emit_fixture_rows.py`, `gates/emit_result.py`,
+`gates/tests/test_emit_result.py`, `metrics/tokens_to_green.py`,
+`metrics/test_tokens_to_green.py`, `test/test_run_bench_wrapper.py`.

@@ -11,7 +11,7 @@ below).
 
 ## CLI invocations this file is meant to be consumed with
 
-Run from the **repository root** (`/Users/vincentsmet/cdk/cdktn-bench`) — see the path-
+Run from the **repository root** (this repo's checkout) — see the path-
 resolution caveat below for why this matters. No AWS credentials, Docker, or network
 access are exercised by any command in this document; none of them were run as part of
 authoring this file.

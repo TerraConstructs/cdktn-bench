@@ -1,7 +1,7 @@
 # API Gateway deployment dependency + redeploy-on-change: exact mechanics
 
-Source: `/Users/vincentsmet/tcons/base/src/aws/compute/{deployment,restapi,method,resource,model,integration,integrations/{lambda,aws,stepfunctions}}.ts`
-(terraconstructs base library, ported from `/Users/vincentsmet/cdk/aws-cdk/packages/aws-cdk-lib/aws-apigateway`).
+Source: [terraconstructs/base](https://github.com/terraconstructs/base) `src/aws/compute/{deployment,restapi,method,resource,model,integration,integrations/{lambda,aws,stepfunctions}}.ts`
+(terraconstructs base library, ported from [aws/aws-cdk](https://github.com/aws/aws-cdk) `packages/aws-cdk-lib/aws-apigateway`).
 
 ## 0. TL;DR
 
