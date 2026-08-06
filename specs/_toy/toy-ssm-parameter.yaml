@@ -1,0 +1,476 @@
+# specs/_toy/toy-ssm-parameter.yaml
+#
+# NOT A BENCHMARK SCENARIO. Generator-testing fixture only — see specs/SCHEMA.md
+# §7. Deliberately boring: create an SSM parameter plus a read-only IAM role.
+# Exercises every field in SCHEMA.md at minimum cardinality (2 catches, all
+# three arms enabled, one of each optional-field shape populated, and
+# tier05_jsonata left null to exercise the "absent" path). Never register
+# this under a real dataset; it has no anti-L2 catch and its
+# predicted_tier_caught values are illustrative only — NOT verified against
+# a pinned provider schema the way the real seed scenarios' catches must be
+# (see DECISIONS.md "s3-lambda-log-retention catch is falsified by the
+# pinned provider" for why that verification step matters and was
+# deliberately skipped here).
+
+id: toy-ssm-parameter
+title: "Toy: SSM parameter + read-only IAM role"
+difficulty: 1
+services: [ssm, iam]
+
+arms:
+  awscdk: true
+  hcl_raw: true
+  terraconstructs:
+    enabled: true
+    reason: >
+      Generator-testing fixture only, not source-verified against
+      arms/terraconstructs/README.md's coverage table (SSM is not one of
+      the rows checked there — storage/iam cover S3, DynamoDB, ECR, and
+      IAM roles/policies, but no src/aws/ssm/ directory was confirmed to
+      exist). Enabled anyway so this fixture exercises the generator's
+      3-arm code path end-to-end, which is this file's only job. A real
+      scenario needing SSM must verify terraconstructs' actual SSM
+      construct coverage before setting enabled: true.
+
+instruction:
+  shared_body: |
+    Create a new SSM parameter of type String named `/cdktn-bench-toy/greeting`
+    with the value `hello-from-cdktn-bench`.
+
+    Create a new IAM role that a service can assume to read this parameter.
+    Trust only the EC2 service principal (`ec2.amazonaws.com`). Grant the
+    role permission to read this specific parameter's value — nothing
+    broader, and no permission to write, delete, or list other parameters.
+  placeholders: []
+  per_arm:
+    awscdk:
+      language_line: "Author this as an AWS CDK (TypeScript) app using aws-cdk-lib L2 constructs."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdk.out/ScenarioStack.template.json
+        build_command: "npm run build"
+        synth_command: "npx cdk synth --no-lookups --quiet -o cdk.out"
+        json_fields: []
+    hcl_raw:
+      language_line: "Author this as hand-written Terraform HCL (no modules)."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields: []
+    terraconstructs:
+      language_line: "Author this using terraconstructs (TypeScript) L2 constructs, synthesized via cdktn."
+      output_contract:
+        # lib/scenario-stack.ts, NOT main.ts -- finding G1 (benchmark-
+        # integrity review, fixed 2026-08-06): main.ts carries the App +
+        # providerConfig bootstrap (incl. the offline skip_*/dummy-
+        # credential fixture and the mock-STS endpoints pointer), and used
+        # to ALSO be entry_file / carry the ScenarioStack class body in one
+        # file. An agent that fully rewrites its own entry_file (normal,
+        # expected behavior) then silently deleted the bootstrap along with
+        # it, and `terraform plan` failed offline against real STS with no
+        # credentials even for a correct solution. Splitting the agent-
+        # owned resource logic into its own file (mirroring awscdk's
+        # bin/app.ts / lib/scenario-stack.ts split) makes that structurally
+        # impossible -- see generator/gen.py's terraconstructs_main_ts() /
+        # terraconstructs_stack_skeleton() docstrings.
+        entry_file: lib/scenario-stack.ts
+        # generator/gen.py::build_static_tiers_sh ALWAYS appends a real
+        # `terraform init && terraform plan && terraform show -json` step
+        # after synth_command for this arm (chdir'd into the synthesized
+        # stack's own cdktf.out/stacks/<id>/ dir), so tier-0/1 structural
+        # asserts are graded against `terraform show -json` PLAN shape
+        # (.planned_values...) -- the SAME shape hcl_raw's plan.json is in,
+        # per every tf_jsonpath below -- not raw `cdktn synth` output
+        # (resource.<type>.<id> shape, which has no `planned_values` key at
+        # all and would make every tf_jsonpath resolve to nothing).
+        artifact_path: cdktf.out/stacks/toy-ssm-parameter/plan.json
+        synth_command: "npx cdktn synth"
+        json_fields: []
+
+catches:
+  - name: parameter-tier-enum
+    taxonomy: typed-value-trap
+    description: >
+      Modeled on the real s3-lambda-log-retention catch's shape (an
+      enum-typed property with no exact natural-language equivalent), using
+      SSM's Tier property (Standard | Advanced | IntelligentTiering) as a
+      stand-in. The instruction never asks for a tier at all (Standard is
+      implied by omission), so a correct solution must leave Tier unset
+      (all three arms' toolchains synthesize/plan an omitted Tier as
+      genuinely ABSENT from the artifact, not a static "Standard" literal
+      -- verified directly: `cdk synth` on the awscdk reference fixture
+      omits `Properties.Tier` entirely; `terraform show -json plan` on the
+      hcl_raw reference fixture resolves `.values.tier` to `null` at plan
+      time, same provider/shape for terraconstructs). FIX (benchmark-
+      integrity review finding F2, 2026-08-06): this catch used to have no
+      corresponding oracle.structural_assert at all despite declaring
+      predicted_tier_caught "0" for every arm -- see the
+      parameter-tier-standard assert below, added to make this catch
+      genuinely gradeable rather than illustrative-only.
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "0"
+      terraconstructs_override: null
+
+  - name: policy-scoped-to-parameter
+    taxonomy: graph-dependency
+    description: >
+      The IAM role's policy must depend on the created parameter (its
+      Resource/ARN reference must point at the specific parameter this
+      scenario creates, not a wildcard and not an unrelated ARN) — a real,
+      soundly-checkable structural fact, unlike the illustrative catch
+      above. Caught by asserting the dependency-graph edge from the IAM
+      policy resource to the SSM parameter resource, and that the granted
+      action set excludes any write/delete/list action.
+    predicted_tier_caught:
+      awscdk: "1"
+      hcl: "1"
+      terraconstructs_override: null
+
+oracle:
+  intent: >
+    Exactly one AWS::SSM::Parameter (type String) named
+    /cdktn-bench-toy/greeting with value hello-from-cdktn-bench exists in the
+    synthesized artifact. Exactly one IAM role exists whose trust policy
+    permits only ec2.amazonaws.com to assume it. That role's attached
+    policy grants only ssm:GetParameter (and/or ssm:GetParameters) scoped to
+    this specific parameter's ARN — no wildcard resource, no other SSM
+    actions, no other services' actions.
+
+  structural_asserts:
+    - name: parameter-exists
+      description: "An AWS::SSM::Parameter of type String exists."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::SSM::Parameter')]"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_ssm_parameter')]"
+      op: exists
+
+    - name: parameter-name-correct
+      description: "The parameter's Name is exactly /cdktn-bench-toy/greeting."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::SSM::Parameter')].Properties.Name"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_ssm_parameter')].values.name"
+      op: eq
+      expected: "/cdktn-bench-toy/greeting"
+
+    - name: parameter-value-correct
+      description: "The parameter's Value is exactly hello-from-cdktn-bench."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::SSM::Parameter')].Properties.Value"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_ssm_parameter')].values.value"
+      op: eq
+      expected: "hello-from-cdktn-bench"
+
+    - name: role-trust-is-ec2-only
+      description: >
+        Exactly one IAM role's AssumeRolePolicyDocument trusts EXACTLY
+        {ec2.amazonaws.com} -- not a superset (e.g. ec2.amazonaws.com PLUS
+        an unintended second principal). `op: contains` (the original form
+        of this assert) cannot express that: it passes as long as
+        ec2.amazonaws.com is present anywhere among the resolved values, so
+        a broader-than-intended trust policy (a real "scoped, not broader"
+        catch) would be graded as correct. `set_eq` requires the resolved
+        principal set to equal expected exactly -- see the op-table note in
+        generator/gen.py's ASSERT_LIB_SH. tf_jsonpath uses the `|fromjson`
+        path extension because `values.assume_role_policy` in `terraform
+        show -json` plan output is a JSON-encoded STRING, not nested
+        structure (same as CFN's `AssumeRolePolicyDocument` would be if CFN
+        ever stringified it, which it doesn't -- this is TF-plan-JSON-
+        specific) -- without `|fromjson` this path would resolve against
+        the raw undecoded string and find nothing.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::IAM::Role')].Properties.AssumeRolePolicyDocument.Statement[*].Principal.Service"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_iam_role')].values.assume_role_policy|fromjson.Statement[*].Principal.Service"
+      op: set_eq
+      expected: ["ec2.amazonaws.com"]
+
+    # --- F2 fix (benchmark-integrity review, fixed 2026-08-06) -------------
+    # Gives the parameter-tier-enum catch (which already declared
+    # predicted_tier_caught "0" for every arm) an actual structural_assert to
+    # be caught BY -- previously none existed, so that catch could never be
+    # falsified (gates/oracle_falsifiability.py's solution/broken/<catch>/
+    # requirement had no fact left to violate). `not_exists` rather than
+    # `eq "Standard"`: verified directly against real synth/plan output
+    # (awscdk `cdk synth`, hcl_raw `terraform show -json plan`) that an
+    # omitted Tier is genuinely ABSENT from the artifact (CFN: no
+    # `Properties.Tier` key at all; TF: `.values.tier` resolves `null` at
+    # plan time, filtered out by _assert_lib.sh's own null-handling) rather
+    # than a static "Standard" literal either tool fills in -- `eq` would
+    # therefore reject every correct, tier-omitting solution.
+    # --- residual-findings fix (2026-08-06): "parameter-tier-standard
+    # assert -- false negative on a semantically-correct solution" --------
+    # This used to be `op: not_exists`, which rejects a fully correct
+    # solution that writes the semantically-identical EXPLICIT default
+    # (`tier = "Standard"` / `Tier: Standard`) instead of omitting the
+    # field. PROVEN on hcl_raw: a solution identical to the reference
+    # solve.sh except for an explicit `tier = "Standard"` produced
+    # `FAIL [parameter-tier-standard]: op=not_exists expected=null
+    # resolved=["Standard"]`, tier0_pass=0, reward=0.0, despite being
+    # exactly as correct as the omitted form -- and because arm idioms
+    # differ in how readily they emit explicit defaults, this injected a
+    # per-arm bias into the exact cross-arm comparison this benchmark
+    # measures. Fixed by switching to the new `absent_or_eq` op (SCHEMA.md
+    # §4.2's op table): passes on EITHER the omitted form (0 resolved
+    # nodes) OR the explicit-"Standard" form (1 resolved node equal to
+    # "Standard"), and still correctly rejects the wrong-enum-value catch
+    # case (Advanced/IntelligentTiering resolves to 1 node NOT equal to
+    # "Standard" -> fails, same as before). The description below is also
+    # corrected: the old text claimed this assert "only rejects the
+    # wrong-enum-value catch case", which was never true of `not_exists` --
+    # it also rejected the explicit-default case, a discrimination boundary
+    # it never actually had (SCHEMA.md's own general "op" contract only
+    # documents `not_exists` as "0 nodes = pass", full stop; nothing in it
+    # ever carved out "unless the resolved value happens to equal the
+    # default").
+    - name: parameter-tier-standard
+      description: >
+        The SSM parameter's Tier is left at its implied default -- either
+        genuinely unset/omitted, or explicitly written as "Standard"
+        (semantically identical; arms differ in how readily their idioms
+        emit an explicit default) -- never Advanced or IntelligentTiering.
+        The instruction never mentions a tier, so BOTH the omitted and the
+        explicit-"Standard" forms are equally correct; only a DIFFERENT
+        enum value is the catch this assert exists to reject.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::SSM::Parameter')].Properties.Tier"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_ssm_parameter')].values.tier"
+      op: absent_or_eq
+      expected: "Standard"
+
+    # --- G2 fix (benchmark-integrity review, fixed 2026-08-06) -------------
+    # `policy-resource-scoped-not-wildcard` used to be ONE entry sharing a
+    # single `tf_jsonpath` (`.planned_values...values.policy`) with
+    # `policy-actions-read-only`, per SCHEMA.md §4.2's original "one
+    # tf_jsonpath covers both TF arms" claim. That claim is FALSE for this
+    # attribute: `aws_iam_role_policy.policy` is a `jsonencode(...)` (hcl_raw)
+    # / equivalent JSON-serialization (terraconstructs) of a value that
+    # references the created parameter's ARN -- and Terraform can only
+    # compute a resource's own ARN (`aws_ssm_parameter.*.arn`) AFTER create,
+    # so on a CORRECT reference solution that references `.arn` directly,
+    # the entire encoded `policy` string is plan-time UNKNOWN, and
+    # `.planned_values...values.policy` resolves to NOTHING -- not "the
+    # value doesn't match", the path finds no node at all. Verified directly
+    # against real `terraform show -json` plan output for both TF arms (a
+    # hand-run hcl_raw fixture and a hand-run terraconstructs L1-construct
+    # fixture, both referencing `aws_ssm_parameter.*.arn`):
+    #   $ jq '.planned_values.root_module.resources[]
+    #         | select(.type=="aws_iam_role_policy") | .values.policy' plan.json
+    #   null
+    # A hand-authored Rego rule written against this path (as the original
+    # rego_hints/oracles/emit.py TODO scaffold pointed at) can therefore
+    # NEVER fire against a correct, `.arn`-referencing solution -- it isn't
+    # "strict", it's silently vacuous, identical in effect to `default
+    # allow := true`. This is fixed two ways below, per the corrected
+    # guidance in specs/SCHEMA.md §4.2:
+    #
+    # 1. Split into TWO structural_asserts (one per artifact family, since
+    #    the plan-time-unknown problem is TF-specific -- CFN's synthesized
+    #    template is always fully static, no "plan" concept, so the
+    #    original literal-Resource check remains sound there unmodified).
+    # 2. The TF-shaped entry targets the plan-time-KNOWN graph edge
+    #    (`.configuration...expressions.<attr>.references`) instead of the
+    #    plan-time-unknown VALUE (`.planned_values...values.<attr>`) --
+    #    this is the graph-dependency taxonomy's own natural mechanism
+    #    anyway ("the policy must depend on the created parameter"), and it
+    #    resolves identically regardless of whether the referenced ARN
+    #    attribute itself is known or unknown at plan time. Verified against
+    #    the same two fixtures:
+    #      correct (references aws_ssm_parameter.Greeting.arn or .name):
+    #        .configuration.root_module.resources[]
+    #          | select(.type=="aws_iam_role_policy") | .expressions.policy.references
+    #        -> ["aws_ssm_parameter.Greeting.arn", "aws_ssm_parameter.Greeting"]
+    #      bad (hardcoded Resource="*", Action="*", no reference at all):
+    #        -> {} (no ".references" key at all -- zero references)
+    #    i.e. the corrected path resolves to something for a correct
+    #    solution and to nothing for the exact violation this catch exists
+    #    to catch -- the opposite, sound direction from the old dead path.
+    - name: policy-resource-scoped-not-wildcard-cfn
+      description: >
+        (awscdk only -- see policy-resource-scoped-not-wildcard-tf for the
+        TF-shaped arms and the G2 fix note above; CFN's synthesized template
+        is always fully static so a literal-value check is sound here
+        unmodified by G2.) The role's policy grants no action with Resource
+        "*"; every granted Resource must reference the specific parameter's
+        ARN pattern (arn:*:ssm:*:*:parameter/cdktn-bench-toy/greeting).
+        NOTE (found by generator/check_reference_paths.py, fixed alongside
+        G2 since it lives in the same entry this fix already touches): the
+        ORIGINAL path here (`.Properties.Policies[*].PolicyDocument...`,
+        `|| @.Type=='AWS::IAM::Role'`) assumed an IAM Role's INLINE
+        `Policies` property shape unconditionally, but a standalone
+        `AWS::IAM::Policy` resource (what `role.addToPolicy()` -- the
+        idiomatic L2 shape this scenario's reference fixture uses --
+        actually synthesizes) has `Properties.PolicyDocument` directly, no
+        `.Policies[]` wrapper; querying `.Properties.Policies` on that
+        resource type resolves `null`, and iterating it (`[*]`) crashed jq
+        outright ("Cannot iterate over null") -- this tier-1 path had never
+        been resolved against a real synthesized template before that
+        checker existed, so nothing had ever caught it. Narrowed to the
+        shape a real solution actually produces; the bare-value wildcard
+        filter (`[?(@=='*')]`) directly on `.Resource` was ALSO unsound
+        (jsonpath_jq.py's filter compiler assumes its input is iterable,
+        which a single Resource value -- a scalar string or an Fn::Join
+        intrinsic object, never an array here -- is not) -- filtering at
+        the (always-array) Statement level instead, on the Resource FIELD
+        equalling "*", avoids that unconditionally.
+      tier: "1"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::IAM::Policy')].Properties.PolicyDocument.Statement[?(@.Resource=='*')]"
+      op: not_exists  # asserts no Statement with Resource=="*" exists — a cfn-guard check, see cfn_guard_hints
+
+    - name: policy-resource-scoped-not-wildcard-tf
+      description: >
+        (hcl_raw + terraconstructs only -- see the G2 fix note above and
+        policy-resource-scoped-not-wildcard-cfn for awscdk.) Graph-edge
+        check: the role's inline policy attribute must actually REFERENCE
+        the specific SSM parameter this scenario creates -- a hardcoded
+        literal (wildcard Resource, or any Resource string not derived from
+        the created parameter) has no such reference and resolves this path
+        to nothing. This is deliberately a graph-dependency check, not a
+        literal-value check (specs/SCHEMA.md §4.2's corrected note: the
+        literal policy VALUE is plan-time-unknown here whenever the
+        referenced ARN attribute is itself provider-computed, e.g. `.arn`
+        -- only the reference GRAPH EDGE is guaranteed plan-time-known).
+        Rego must additionally handle the one-hop-indirected shape a
+        `data "aws_iam_policy_document"`-composed policy produces (common
+        for terraconstructs' own L2 `Role.addToPolicy()` idiom, and equally
+        legitimate hand-written HCL) -- see rego_hints.
+      tier: "1"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_iam_role_policy')].expressions.policy.references[*]"
+      op: regex
+      expected: "^aws_ssm_parameter\\."
+
+    - name: policy-actions-read-only
+      description: >
+        The role's policy grants only ssm:GetParameter and/or
+        ssm:GetParameters — no ssm:PutParameter, ssm:DeleteParameter,
+        ssm:DescribeParameters, or any non-ssm action.
+        CAVEAT (G2 fix note, specs/SCHEMA.md §4.2): unlike
+        policy-resource-scoped-not-wildcard-tf above, this is a genuine
+        VALUE-content check (which actions were granted), not a graph edge
+        -- there is no plan-time-known `.configuration...references`
+        equivalent for "what's inside this JSON-encoded string" the way
+        there is for "does this attribute reference that resource". The
+        tf_jsonpath below therefore resolves ONLY when the referenced ARN
+        attribute in the SAME encoded policy stays plan-time-known (e.g.
+        the parameter's own `.name`, an agent-supplied literal echo -- NOT
+        its provider-computed `.arn`); verified both ways against real
+        `terraform show -json` output (both TF arms): `.name`-referencing
+        solutions leave `values.policy` fully resolved (actions AND
+        resource both visible), `.arn`-referencing solutions leave it
+        `null`. A correct solution that instead references `.arn` cannot
+        have this specific fact verified from plan JSON alone -- a known,
+        documented v1 scope limitation (this benchmark's oracle is
+        synth/plan-only, never live/apply-time, per DECISIONS.md), not
+        something this generator-testing fixture attempts to solve
+        generally. Slice D's hand-authored Rego must treat "values.policy
+        unresolved AND the graph-edge check above already passed" as
+        NOT independently verifiable here, rather than either a silent
+        pass or an incorrect fail of a legitimately-correct solution.
+        NOTE (found by generator/check_reference_paths.py, fixed alongside
+        G2 since it lives in the same entry this fix already touches): the
+        cfn_jsonpath had the same `.Properties.Policies[*]`-wrapper /
+        `|| @.Type=='AWS::IAM::Role'` bug as
+        policy-resource-scoped-not-wildcard-cfn (see that entry's own
+        note) -- narrowed the same way. The tf_jsonpath was also missing
+        `|fromjson.Statement[*].Action` (it read the whole undecoded
+        `values.policy` STRING with `op: in`, which can never match a
+        list membership check against a raw JSON string) -- this was
+        independent of, and in addition to, the G2 plan-time-unknown issue
+        above; also never caught because tier-1 paths were never resolved
+        against anything before this checker existed.
+      tier: "1"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::IAM::Policy')].Properties.PolicyDocument.Statement[*].Action"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_iam_role_policy')].values.policy|fromjson.Statement[*].Action"
+      op: in
+      expected: ["ssm:GetParameter", "ssm:GetParameters"]
+
+  rego_hints:
+    - >-
+      IAM-shape-coverage (residual finding, fixed 2026-08-06): do not
+      inspect ONLY aws_iam_role_policy (inline). A standalone aws_iam_policy
+      attached via aws_iam_role_policy_attachment /
+      aws_iam_role_policy_attachments_exclusive is an equally idiomatic
+      shape and must be checked by every rule below identically -- both
+      shapes carry the policy document JSON at the same
+      .expressions.policy / .values.policy attribute name. Also fail closed
+      (deny) when an aws_iam_role exists but NO resource of either
+      recognized shape exists anywhere in the plan -- every rule below is a
+      comprehension over the recognized-shape collection, which is silently
+      empty (no violation, vacuous pass) if that collection's own filter is
+      too narrow or the collection itself is empty.
+    - "deny if any statement in the role's attached policy has resource == \"*\""
+    - "deny if any statement's action set contains an action outside {ssm:GetParameter, ssm:GetParameters}"
+    - >-
+      graph-edge check (policy-resource-scoped-not-wildcard-tf): deny unless
+      input.configuration.root_module.resources[] with type=="aws_iam_role_policy"
+      has an expressions.policy.references entry matching ^aws_ssm_parameter\.
+      -- do NOT read input.planned_values...values.policy for this check, it is
+      plan-time-unknown whenever the referenced ARN attribute (e.g. .arn) is
+      itself provider-computed (specs/SCHEMA.md §4.2, G2 fix note above)
+    - >-
+      one-hop indirection (terraconstructs' own L2 Role.addToPolicy() idiom,
+      and equally valid hand-written HCL): when
+      expressions.policy.references points at a data.aws_iam_policy_document.*
+      address instead of directly at aws_ssm_parameter.*, follow that data
+      source's OWN expressions.statement[*].resources.references one hop
+      further before deciding this check fails -- both hcl_raw and
+      terraconstructs reference fixtures used to derive this hint are
+      committed under generator/tests/fixtures/toy-ssm-parameter/ (see
+      generator/check_reference_paths.py)
+    - >-
+      policy-actions-read-only's tf_jsonpath (values.policy|fromjson) only
+      resolves when the SAME encoded policy has no provider-computed
+      reference anywhere in it (see that assert's own description) -- when
+      it is null/absent AND the graph-edge check above passed, treat the
+      action-allowlist fact as NOT VERIFIABLE from plan JSON (log it, do not
+      silently deny OR silently allow) rather than guessing either way
+
+  cfn_guard_hints:
+    - >-
+      IAM-shape-coverage (residual finding, fixed 2026-08-06): do not
+      inspect ONLY the standalone AWS::IAM::Policy shape (role.addToPolicy()).
+      `new iam.Role(..., { inlinePolicies: {...} })` synthesizes ZERO
+      AWS::IAM::Policy resources -- the statement lands at
+      AWS::IAM::Role.Properties.Policies[*].PolicyDocument instead, and a
+      when %iam_policies !empty guard silently skips that template
+      entirely. Cover AWS::IAM::Policy, AWS::IAM::ManagedPolicy, and the
+      inline Role.Properties.Policies[*] shape with one wildcard-check and
+      one allowlist-check rule EACH, plus a fail-closed rule that FAILs
+      when an AWS::IAM::Role exists but none of the three shapes appear in
+      the template at all.
+    - "rule parameter_exists: Resources.*[ Type == \"AWS::SSM::Parameter\" ] exists"
+    - >-
+      rule policy_no_wildcard_resource (policy-resource-scoped-not-wildcard-cfn):
+      no Statement.Resource == "*" under any AWS::IAM::Policy / inline Role
+      policy -- CFN's synthesized template is always fully static (no "plan"
+      concept), so this literal check is unaffected by the G2 fix above; it
+      applies to awscdk only (the TF-shaped arms use a graph-edge check
+      instead, see rego_hints)
+    - "rule policy_actions_allowlist: Statement.Action subset of [\"ssm:GetParameter\", \"ssm:GetParameters\"]"
+
+  tier05_jsonata: null
+
+verifier:
+  budget:
+    max_iters: 8
+  live_check:
+    enabled: false
+    module: tests/live_check.py
+
+provenance:
+  author: "Vincent (via Claude Code, generator-authoring task)"
+  date: "2026-08-06"
+  prereg_section_refs:
+    - "NOT a prereg seed scenario — generator-testing fixture only (specs/SCHEMA.md §7)"
+    - "docs/iac-abstraction-aws-bench-plan.md Phase 1 (generator, mismatch M2) — the mechanism this fixture validates"
+    - "iac-abstraction-benchmark-prereg.md §3 (oracle tiers) and §6 (prompt parity) — the contracts this fixture's fields are shaped to exercise, not to satisfy scientifically"

@@ -1,0 +1,12 @@
+{
+  "_fixture_note": "The Tier-0.5 counterpart of mini_cfn_bad.json: an outer CFN template that is perfectly well-formed (a tier-0/tier-1 check on the template shape sees nothing wrong) but embeds two bad JSONata {% ... %} expressions inside its ASL definition — one with a semantic bug (wrong literal, evaluates to the wrong string), one with a syntax error (invalid JSONata, double '&'). Proves run_tier05 catches both classes without crashing the whole run.",
+  "Resources": {
+    "GreetingStateMachine": {
+      "Type": "AWS::StepFunctions::StateMachine",
+      "Properties": {
+        "StateMachineName": "GreetingStateMachine",
+        "DefinitionString": "{\"QueryLanguage\":\"JSONata\",\"StartAt\":\"ComputeGreeting\",\"States\":{\"ComputeGreeting\":{\"Type\":\"Pass\",\"Output\":\"{% 'hi-' & $states.input.name %}\",\"Next\":\"BrokenSyntax\"},\"BrokenSyntax\":{\"Type\":\"Pass\",\"Output\":\"{% 'hello-' & & $states.input.name %}\",\"End\":true}}}"
+      }
+    }
+  }
+}

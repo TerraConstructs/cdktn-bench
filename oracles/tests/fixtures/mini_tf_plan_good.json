@@ -1,0 +1,35 @@
+{
+  "_fixture_note": "terraform show -json shape, structurally analogous to specs/_toy/toy-ssm-parameter.yaml's oracle.intent — a 'good' plan every tier-0 structural_assert in that spec should PASS against (hcl_raw and terraconstructs both grade against this same shape).",
+  "planned_values": {
+    "root_module": {
+      "resources": [
+        {
+          "address": "aws_ssm_parameter.greeting",
+          "type": "aws_ssm_parameter",
+          "name": "greeting",
+          "values": {
+            "type": "String",
+            "name": "/cdktn-bench-toy/greeting",
+            "value": "hello-from-cdktn-bench"
+          }
+        },
+        {
+          "address": "aws_iam_role.read_only",
+          "type": "aws_iam_role",
+          "name": "read_only",
+          "values": {
+            "assume_role_policy": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"ec2.amazonaws.com\"},\"Action\":\"sts:AssumeRole\"}]}"
+          }
+        },
+        {
+          "address": "aws_iam_role_policy.read_greeting",
+          "type": "aws_iam_role_policy",
+          "name": "read_greeting",
+          "values": {
+            "policy": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":[\"ssm:GetParameter\",\"ssm:GetParameters\"],\"Resource\":\"arn:aws:ssm:us-east-1:123456789012:parameter/cdktn-bench-toy/greeting\"}]}"
+          }
+        }
+      ]
+    }
+  }
+}

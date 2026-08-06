@@ -1,0 +1,43 @@
+{
+  "_fixture_note": "Structurally analogous to specs/_toy/toy-ssm-parameter.yaml's oracle.intent — a 'good' synthesized awscdk template every tier-0 structural_assert in that spec should PASS against.",
+  "Resources": {
+    "GreetingParameter": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Type": "String",
+        "Name": "/cdktn-bench-toy/greeting",
+        "Value": "hello-from-cdktn-bench"
+      }
+    },
+    "ReadOnlyRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": { "Service": "ec2.amazonaws.com" },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "ReadGreetingParameter",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": ["ssm:GetParameter", "ssm:GetParameters"],
+                  "Resource": "arn:aws:ssm:us-east-1:123456789012:parameter/cdktn-bench-toy/greeting"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

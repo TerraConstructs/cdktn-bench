@@ -77,45 +77,68 @@ def _is_stub(solve_sh: Path) -> bool:
     return SOLVE_STUB_MARKER in solve_sh.read_text()
 
 
-def _run_solve(task: Path, solve_sh: Path, label: str) -> RunResult:
-    """Copy `task`'s environment/workspace (or app/, per arm) into a scratch
-    dir, run `solve_sh` there with cwd=that scratch dir and DIR/PROJECT_DIR
-    pointed at it, and read back /logs/verifier/reward.txt. Runs entirely
-    on the host using whatever toolchain is on PATH (terraform/cfn-guard/
-    opa/node/npm) -- the same approach used to hand-verify every other fix
-    in this review, not a new mechanism."""
+def _run_solve(task: Path, arm: Arm, solve_sh: Path, label: str) -> RunResult:
+    """Copy `task`'s environment/<workspace-subdir> (the exact tree the
+    arm's own Dockerfile COPYs into WORKDIR /app/project -- flattened, no
+    'workspace'/'app' prefix, matching real container layout: `workspace/`
+    for awscdk/hcl_raw, `app/` for terraconstructs, per gen.py's
+    ARM_WORKSPACE_SUBDIR) into the SANDBOX ROOT, run `solve_sh` there with
+    cwd=that scratch dir, and read back /logs/verifier/reward.txt. Runs
+    entirely on the host using whatever toolchain is on PATH
+    (terraform/cfn-guard/opa/node/npm) -- the same approach used to
+    hand-verify every other fix in this review, not a new mechanism.
+
+    Finding F1 (benchmark-integrity review, fixed 2026-08-06): this used to
+    copytree the WHOLE `environment/` dir (workspace/fixtures/mirror-src/
+    preflight.sh/terraformrc for hcl_raw; the analogous per-arm layout for
+    the others) into the sandbox, landing the arm's actual entry_file/
+    bootstrap files at `<sandbox>/workspace/main.tf` or `<sandbox>/app/
+    main.ts` -- one directory level too deep. But the generated
+    `tests/static_tiers.sh` (patched below to run against this sandbox
+    exactly the way it runs against `/app/project` in a real trial) does
+    `cd /app/project` and then reads `main.tf`/`cdk.out/...` etc directly
+    at that root -- so with the old copy, `terraform init`/`cdk synth`
+    always ran against an EMPTY directory (no .tf/.ts files at the root
+    the tools actually looked in), and every solve.sh, however correct,
+    could only ever fail. Reusing generator/check_reference_paths.py's own
+    `_prepare_project` pattern (`environment/<ARM_WORKSPACE_SUBDIR[arm]>`
+    flattened onto the sandbox root, the same mapping every arm's own
+    Dockerfile encodes) fixes this: proven below by a self-test
+    (gates/tests/test_oracle_falsifiability.py) that runs this exact
+    function against a known-good, hand-authored solve.sh and asserts
+    reward 1.0 -- a regression back to the whole-`environment/` copy makes
+    that test fail loudly instead of silently reintroducing the bug."""
     with tempfile.TemporaryDirectory(prefix="falsifiability-") as tmp:
         project = Path(tmp) / "project"
         logs = Path(tmp) / "logs" / "verifier"
         logs.mkdir(parents=True)
-        env_dir = task / "environment"
-        # Copy the whole environment/ (workspace + fixtures + terraformrc,
-        # whatever this arm needs), then overlay tests/ and solution/ on
-        # top so solve.sh -> tests/static_tiers.sh resolve real paths.
-        shutil.copytree(env_dir, project, dirs_exist_ok=True)
+        workspace_dir = task / "environment" / ARM_WORKSPACE_SUBDIR[arm]
+        shutil.copytree(workspace_dir, project, dirs_exist_ok=True)
         shutil.copytree(task / "tests", project / "tests", dirs_exist_ok=True)
         shutil.copytree(task / "solution", project / "solution", dirs_exist_ok=True)
+        # awscdk/terraconstructs ship package.json/package-lock.json in
+        # their workspace subdir but node_modules is only populated inside
+        # the arm's Docker image (`npm ci` at build time) -- on the host
+        # sandbox it must be installed for real, same as
+        # generator/check_reference_paths.py's own `_prepare_project`.
+        if (project / "package.json").exists():
+            subprocess.run(
+                ["npm", "ci", "--no-audit", "--no-fund"],
+                cwd=project,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
         rel_solve = solve_sh.relative_to(task)
-        proc = subprocess.run(
-            ["bash", str(project / rel_solve)],
-            cwd=project,
-            env={
-                **__import__("os").environ,
-                "DIR": str(project / "tests"),
-            },
-            capture_output=True,
-            text=True,
-        )
         reward_file = logs / "reward.txt"
-        # solve.sh's own docstring convention runs tests/static_tiers.sh,
-        # which writes to $DIR/../../../logs/verifier/reward.txt style
-        # absolute /logs/verifier paths in the generated script -- rewrite
-        # is impractical here, so this harness instead greps solve.sh's
-        # combined output for the same convention live_check.py/gates use:
-        # a bare float on its own line is not reliable to grep for, so we
-        # patch static_tiers.sh's /logs/verifier reference to this sandbox
-        # before running, mirroring the manual proof technique used
-        # throughout this review.
+        # tests/static_tiers.sh (generated with absolute /logs/verifier and
+        # /app/project paths, since that's where it really runs inside a
+        # trial's container) is patched to point at this scratch sandbox
+        # instead, mirroring the manual proof technique used throughout
+        # this review -- solve.sh's own docstring convention is "writes a
+        # known-good entry_file, then runs the same tests/static_tiers.sh a
+        # real trial's verifier runs", so patching that one file is enough
+        # to make the whole chain self-contained on the host.
         static_tiers = project / "tests" / "static_tiers.sh"
         if static_tiers.exists():
             text = static_tiers.read_text()
@@ -127,6 +150,7 @@ def _run_solve(task: Path, solve_sh: Path, label: str) -> RunResult:
             cwd=project,
             capture_output=True,
             text=True,
+            check=False,
         )
         if not reward_file.exists():
             return RunResult(label, None, False, f"no reward.txt written; stderr={proc.stderr[-2000:]}")
@@ -146,19 +170,44 @@ def check_arm(spec: Spec, arm: Arm) -> list[RunResult]:
         results.append(RunResult(f"{arm}/solution/solve.sh", None, True, "NOT_AUTHORED (Slice D pending)"))
         return results
 
-    good = _run_solve(task, solve_sh, f"{arm}/solution/solve.sh")
+    good = _run_solve(task, arm, solve_sh, f"{arm}/solution/solve.sh")
     good.ok = good.ok and good.reward == 1.0
     results.append(good)
 
+    catch_names = {catch.name for catch in spec.catches}
     for catch in spec.catches:
         broken_solve = task / "solution" / "broken" / catch.name / "solve.sh"
         label = f"{arm}/solution/broken/{catch.name}/solve.sh"
         if not broken_solve.exists():
             results.append(RunResult(label, None, False, "MISSING -- every catch needs a broken/ fixture once solve.sh is authored"))
             continue
-        bad = _run_solve(task, broken_solve, label)
+        bad = _run_solve(task, arm, broken_solve, label)
         bad.ok = bad.ok and bad.reward == 0.0
         results.append(bad)
+
+    # Extra, non-catch-named negative fixtures under solution/broken/ --
+    # added by the "tier-1 oracle vacuity" fix (2026-08-06) alongside the
+    # widened rego/cfn-guard bundles, to prove an alternate-but-equally-
+    # idiomatic IAM shape (e.g. aws_iam_policy+aws_iam_role_policy_attachment
+    # on the TF arms, inlinePolicies on awscdk) is caught too, not just the
+    # ONE shape a declared catch's own name happens to cover. Any directory
+    # here NOT matching a declared catch name is discovered and required to
+    # score reward 0.0 the same way, so a future regression that re-narrows
+    # the policy bundle back to a single shape turns this gate red instead
+    # of silently losing coverage no catch name names.
+    broken_dir = task / "solution" / "broken"
+    if broken_dir.is_dir():
+        for extra_dir in sorted(broken_dir.iterdir()):
+            if not extra_dir.is_dir() or extra_dir.name in catch_names:
+                continue
+            extra_solve = extra_dir / "solve.sh"
+            label = f"{arm}/solution/broken/{extra_dir.name}/solve.sh"
+            if not extra_solve.exists():
+                results.append(RunResult(label, None, False, "directory present but solve.sh missing"))
+                continue
+            bad = _run_solve(task, arm, extra_solve, label)
+            bad.ok = bad.ok and bad.reward == 0.0
+            results.append(bad)
 
     return results
 

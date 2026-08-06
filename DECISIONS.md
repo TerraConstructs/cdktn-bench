@@ -238,3 +238,607 @@ value that's syntactically accepted but semantically ignored (no schema-level
 `ValidateFunc` can catch that — the `ecs-swappiness` scenario's silent-drop-unless-
 `maxSwap` pattern is the model), or (b) a genuinely runtime-only constraint invisible to
 both `validate` and `tsc`.
+
+---
+
+## Amendment 4 (2026-08-06) — generator + oracle-evaluator fixes from a second
+## benchmark-integrity review
+
+A second review of Slices B/C found 16 findings (6 blockers on the generator's own
+correctness, the rest on the two oracle evaluators disagreeing with each other and with
+`specs/SCHEMA.md` §4.2's own documented op semantics). All 16 were fixed; the ones that
+changed a decision, not just a bug, are recorded here. Every fix below was proven against
+a real invocation (real `terraform`/`jq`/`opa`/`cfn-guard`/`docker build`/`npm install`/
+`cdktn synth`), not just unit-tested in isolation, per this log's own evidentiary
+standard.
+
+### `!`-negation of a compound shell command (generator/gen.py, all toolchain steps)
+
+**Fixed, no decision needed:** `if ! {command}; then` mis-binds `!` to only the first
+simple command when `{command}` contains `&&`/`||`/`;` (e.g. hcl_raw's whole
+`plan_command`), so bash's `!`-then-`&&`-short-circuit skipped every step after the
+first on the SUCCESS path. This made the hcl_raw arm's `plan.json` never get created —
+constant 0.0 reward regardless of solution quality. Fixed by wrapping the command in a
+subshell (`if ! ( {command} ); then`), which makes `!` negate the compound command's
+overall exit status instead. Also applied to `textwrap.dedent(f"""...""")` being called
+AFTER f-string interpolation of multi-line blocks (which silently no-ops dedent, since
+the interpolated blocks' column-0 lines collapse the common-prefix computation to `""`,
+leaving the generated `static_tiers.sh`'s own shebang indented and unexecutable via
+direct `execve`) — template is now dedented BEFORE the multi-line blocks are substituted
+in (string-token replacement, not f-string interpolation, post-dedent).
+
+### terraconstructs arm now runs a real `terraform init/plan/show` after synth
+
+**Decision:** `generator/gen.py::build_static_tiers_sh` now ALWAYS appends a
+`terraform init/plan/show` step (chdir'd into the synthesized stack's own
+`cdktf.out/stacks/<id>/`) after this arm's `synth_command`, and the arm's `main.ts`
+skeleton (`terraconstructs_main_ts()`) now carries the same `skip_*`/dummy-credential
+provider fixture `hcl_raw_main_tf()` already had. Previously the arm's `artifact_path`
+was raw `cdktn synth` output (`resource.<type>.<id>` shape), which has no
+`planned_values` key at all — every `tf_jsonpath` in `oracle.structural_asserts` (written
+in `terraform show -json` PLAN shape, matching hcl_raw) resolved to nothing, so this arm
+scored a constant 0.0 for every solution including a perfect one. Proven end-to-end
+offline in this repo's own `uv`/npm/terraform toolchain: installed the real
+`terraconstructs@0.2.13`/`cdktn@0.23.0` packages, ran `npx cdktn synth` against a correct
+hand-written `ScenarioStack`, then `terraform init && terraform plan && terraform show
+-json`, and confirmed `.planned_values.root_module.resources[...]` resolves as expected.
+
+**New limitation discovered while proving this (not previously known, not yet fixed —
+flagged for Slice D):** `AwsStack`'s generated Terraform JSON unconditionally includes a
+`data "aws_caller_identity"` lookup the moment ANY real resource construct is added (even
+a bare `StringParameter` with no ARN-formatting policy attached) — confirmed by
+comparing a truly-empty `ScenarioStack`'s synth output (no `data` block at all) against
+one with a single `StringParameter` (a `data.aws_caller_identity` block appears). Unlike
+`hcl_raw`'s dummy-credential fixture, `skip_requesting_account_id` does NOT suppress an
+*explicit* `data` resource's STS call the way it suppresses the provider's own implicit
+account lookup — so `terraform plan` for that data source needs either real (however
+tightly-scoped) AWS credentials, or a mocked STS endpoint (e.g. `AwsProviderConfig`'s
+`endpoints` field pointed at a LocalStack-style stub), in a `--network none` container.
+This is orthogonal to the artifact-shape fix above (the shape is now correct regardless);
+it blocks the *next* problem, "does a real terraconstructs solution's `terraform plan`
+succeed offline" — a Slice D concern once real scenarios need IAM policies scoped to
+resource ARNs, which is most of them.
+
+### `tests/` layout moved to `tasks/anchor/<spec.id>-<arm>/`
+
+**Decision:** `generator/gen.py::task_dir()` now emits
+`tasks/anchor/<spec.id>-<arm-dirname>/` instead of `tasks/<spec.id>/<arm>/`. The old
+layout made every generated `spec.id` look like its own scenario with no `scenarios/`
+directory to aws-bench-datasets' own registry generator
+(`aws_bench/scripts/update_registry.py` derives "scenario" from the `tasks/` PARENT
+directory name), even though every generated task's own `task.toml` declares
+`scenario_id = "anchor"`. The new layout matches that derivation AND the north-star
+example (`aws-bench-datasets/tasks/compute-and-data/create-eks-cluster/`). Non-toy specs
+(`specs/_toy/` is explicitly exempt, per its own file header) now also get a real
+`local-registry.json` entry (`generator/gen.py::update_local_registry`), idempotent by
+task name, so generated tasks are reachable in registry/dataset mode, not just
+`-p tasks/anchor/<id>-<arm>` local-path mode.
+
+### Single writer for `oracles/rego/<id>/policy.rego` + `oracles/cfn-guard/<id>/policy.guard`
+
+**Decision:** `generator/gen.py::generate_oracles` now calls `oracles.emit.emit_oracles`
+instead of maintaining its own, second `build_rego_stub`/`build_cfn_guard_stub`. Both
+used to write the same paths behind the same `if not exists` guard, unaware of each
+other — whichever ran first against a given scenario "won" permanently, including which
+one's stub-detection marker ended up on disk. This was live, not theoretical:
+`oracles/rego/toy-ssm-parameter/policy.rego` and `.../policy.guard` on disk were
+`emit.py`'s content (no `GENERATOR-STUB` marker), so `is_stub_policy()` (which greps for
+that literal string) mis-detected them as hand-authored. `emit.py`'s skeletons now also
+carry the `GENERATOR-STUB` marker (plus a `TODO(Slice D)` belt-and-suspenders fallback in
+`is_stub_policy()` itself), and `emit.py` is the sole writer going forward.
+
+### Tier-1 grading tools installed in every arm image; a missing tool is now a hard failure
+
+**Decision:** `arms/awscdk/environment/Dockerfile` now installs `cfn-guard 3.2.0`
+(sha256-pinned prebuilt binary); `arms/hcl-raw/environment/Dockerfile` and
+`arms/terraconstructs/environment/Dockerfile` now install `opa 1.19.0` (sha256-pinned
+static binary) — the tools `generator/gen.py`'s generated `tests/static_tiers.sh`
+actually invokes for tier-1. Verified: `docker build` succeeded for all three arms
+(`cfn-guard --version` / `opa version` run and print the pinned version during the build
+itself, hard-failing the build on a checksum mismatch), and the awscdk arm's PATCHED
+per-task `preflight.sh` (see below) passes `--network none` against a freshly-built
+`tasks/anchor/toy-ssm-parameter-awscdk` image.
+
+Independently of installing the tools, `generator/gen.py`'s generated
+`tests/static_tiers.sh` no longer treats "tool missing" the same as "nothing to check
+here": `tier1_status` is now one of `SKIPPED_NO_ASSERTS` (no tier-1 asserts declared —
+still non-gating), `SKIPPED_STUB` (tool present, but the policy is still an unauthored
+generator scaffold — still non-gating, an intentional Slice D deferral), `TOOL_MISSING`
+(tier-1 asserts ARE declared but the tool isn't on PATH — now a HARD reward-0.0 failure,
+plus a `/logs/verifier/tier1-unavailable` marker), or `PASS`/`FAIL` (the tool actually
+ran). Previously all four of the first three collapsed into one `SKIPPED` status the
+final reward gate always treated as non-blocking, so a scenario with real tier-1 asserts
+and a genuinely broken/incomplete arm image (tool never installed) scored full reward for
+any solution, tier-1 policy violations included. Verified locally: temporarily removed
+`opa` from `PATH`, confirmed a tier-0-passing hcl_raw solution now scores `0.0` with
+`tier1_status=TOOL_MISSING` (previously: `1.0`).
+
+### Oracle op table gets `set_eq` and a `|fromjson` path extension; jq semantics realigned to SCHEMA.md §4.2
+
+**Decision:** `specs/SCHEMA.md` §4.2's op table is the one authoritative semantics both
+evaluators (`generator/gen.py`'s compiled-jq `assert_check`, used by every real trial; and
+`oracles/lib/structural.py`, jsonpath-ng-based, used for spec-authoring-time and
+oracle-equivalence checks) must match — they didn't, on 3 of 6 ops, confirmed by a new
+differential test suite (`oracles/tests/test_op_parity.py`) that runs BOTH evaluators
+against shared fixtures:
+  - `eq` (jq: any-of-N-matches-equal passed; SCHEMA says "the *(single)* resolved value" —
+    jq now requires exactly one match, matching Python and the spec text);
+  - `contains` (jq used `test($e;"")`, a REGEX match, for strings — `"."` in `expected`
+    silently acted as a wildcard, e.g. `"ec2.amazonaws.com"` matched the string
+    `"ec2Xamazonaws.com"` — a real false-PASS on a role-trust check, not academic; jq now
+    uses `contains/1`, a literal substring test, matching Python and "contains" in plain
+    English);
+  - `in` (jq didn't flatten a bare-string-vs-list-of-strings property, e.g. IAM `Action`,
+    across matched statements the way Python already did; jq now flattens one level,
+    matching both);
+  - `not_exists` was ALSO shell-only-broken (not a cross-evaluator disagreement): jq's
+    plain field access returns `null` for a key that is simply absent, so a query
+    collecting across N matched objects where none has the field resolved to
+    `[null, ...]` (length N, not 0) — `not_exists` failed unconditionally, including
+    against a known-good, correctly-nested artifact (the ECS-swappiness-shaped
+    nested-attribute catch's flagship negative case). Fixed by stripping nulls from the
+    jq collection stage (`map(select(. != null))`) before every op's length check.
+
+Two grammar/op-table gaps were also closed, both proven against the toy spec's own
+`role-trust-is-ec2-only` assert (re-expressed with both extensions, regenerated, and
+verified with a real `terraform plan`: an over-broad trust policy — `ec2.amazonaws.com`
+PLUS an unintended `lambda.amazonaws.com` — now correctly drops reward from `1.0` to
+`0.0`, where it previously passed under `contains`):
+  - **`set_eq` op** — `in`/`contains` can only express "every actual value is allowed" or
+    "at least one match," so a correct value plus an extra, unintended one still passes
+    both. Every "scoped, not broader"/"trusts ONLY X" catch in the taxonomy needs exact
+    set equality, which the six-op table had no member for.
+  - **`|fromjson` path segment** — several Terraform plan JSON attributes the taxonomy's
+    catches target (`values.container_definitions`, `values.assume_role_policy`,
+    `values.policy`) are JSON-encoded STRINGS, not nested structure. Without a way to
+    decode into them, any TF-side assert targeting inside one of those blobs silently
+    resolves against the raw string and finds nothing — this was true of the toy spec's
+    OWN `role-trust-is-ec2-only` `tf_jsonpath` (it "worked" only by `contains`-substring-
+    matching the raw undecoded string, the same accidental mechanism that let the regex
+    bug above hide). Implemented in both evaluators identically (`generator/jsonpath_jq.py`
+    compiles it to jq's `fromjson`; `oracles/lib/structural.py::resolve` resolves
+    segment-by-segment, `json.loads`-ing between segments) — Rego/cfn-guard need no
+    equivalent extension, since native JSON-string decoding is a normal builtin in both.
+  - The translator also gained recursive descent (`..Field`) and bare-value filter
+    predicates (`[?(@=='V')]`), needed for the sfn-jsonata mode-mixing catch (finding
+    JSONPath-mode artifacts like `ResultPath` anywhere inside a JSONata-mode machine, at
+    unknown depth) and for wildcard-value checks respectively — not yet consumed by any
+    real spec (no Slice D scenario exists yet), but no longer blocked when one needs them.
+
+### Tier-0.5 runs host-side, non-gating (not wired into any arm's `static_tiers.sh`)
+
+**Decision:** Tier-0.5 (embedded JSONata-expression evaluation, Amendment №1) is
+deliberately NOT executed inside any arm's container. No arm image ships Python or
+`jsonata-python`, and installing that dependency into three separate Docker images to
+support a check that only applies to ASL-embedded-expression scenarios (not every
+scenario) was judged not worth the image-size/build-time cost versus running it
+host-side, post-hoc, from this repo's own `uv` environment (which already has
+`jsonata-python`, via `oracles/lib/tier05_jsonata.py`'s own test suite). Concretely:
+`oracles/lib/tier05_jsonata.py` gained a CLI (`uv run python -m
+oracles.lib.tier05_jsonata <artifact.json> <spec.yaml>`), and `generator/gen.py` now
+emits a `tests/TIER05.md` note (only for scenarios whose spec declares
+`oracle.tier05_jsonata`) documenting that exact command — mirroring `tests/live_check.py`'s
+existing non-gating precedent (`/logs/verifier/tier05-result.json`, never
+`/logs/verifier/reward.txt`). Verified: the CLI exits 0 against a correct fixture and 1
+(with a legible per-case diagnostic) against a fixture with a real JSONata syntax error.
+
+Separately, `run_tier05`'s cartesian-product bug (evaluating EVERY found expression
+against EVERY declared sample, rather than each case against the one expression it's
+meant to test) is fixed: `oracle.tier05_jsonata.sample_inputs` is now
+`oracle.tier05_jsonata.cases: [{expression_path, input, expected_output}, ...]`, keyed to
+a specific expression's path. A case whose `expression_path` matches no expression found
+in the artifact (a renamed/removed state) now fails loudly instead of being silently
+skipped, and an expression with no covering case also fails loudly (previously: silently
+ungraded). Regression-tested with a real 2-state, 2-correct-expression fixture
+(`oracles/tests/fixtures/mini_asl_cfn_multi_good.json`) that the old cartesian-product
+version would have unconditionally rejected.
+
+### Falsifiability gate: a solution must score 1.0 and a broken fixture per catch must score 0.0
+
+**Decision:** added `gates/oracle_falsifiability.py` (`make falsifiability
+SPEC=specs/foo.yaml`), making the Phase-2 exit criterion executable now rather than
+deferred. For every enabled arm: `solution/solve.sh` must score reward `1.0`, AND every
+`spec.catches[].name` must have a `solution/broken/<catch-name>/solve.sh` that scores
+`0.0` — or the gate fails, with a distinct `NOT_AUTHORED` (non-gating) status only for a
+scenario whose `solve.sh` is still a generator stub (Slice D hasn't gotten to it yet).
+This directly targets the finding that a hand-crafted artifact violating every clause of
+a scenario's own `oracle.intent` (wrong trust principal set, wildcard-resource inline
+policy) scored a clean `1.0` reward. Proven against the toy spec (temporarily, not
+committed to the tracked task dir — solution-authoring is Slice D's job): a real hcl_raw
+`solve.sh` scores `1.0`; a `broken/policy-scoped-to-parameter/` fixture reproducing the
+exact over-broad-trust attack scores `0.0`; the toy's OTHER catch
+(`parameter-tier-enum`, explicitly flagged "illustrative only, no real oracle backing" by
+the spec's own file header) correctly surfaces as `MISSING` — proving the gate has teeth
+and would refuse to let a real scenario register with an uncovered catch.
+
+### `tasks/anchor/*/environment/preflight.sh` is now scenario-shape-aware, not a byte-copy of the arm-dev fixture
+
+**Fixed, no decision needed:** the awscdk and terraconstructs `preflight.sh` scripts are
+written for their ARM-LEVEL dev image's fixture stack (`ExampleStack`/S3 bucket;
+`cdktn-bench-preflight`/S3+LogGroup) but `generator/gen.py::write_environment` byte-copies
+the same script into every generated task while ALSO overwriting the workspace with an
+empty `ScenarioStack` skeleton under a different stack id — so the copied preflight
+script's hardcoded stack-id/resource-type assertions could never pass on any generated
+task's own image. `write_environment` now patches the copied `preflight.sh` per arm
+(`patch_awscdk_preflight`/`patch_terraconstructs_preflight`): correct stack id, and a
+generic "produced valid, well-formed synth output" check instead of a hardcoded resource
+type an empty starting skeleton doesn't have yet (scenario correctness is
+`tests/static_tiers.sh`'s job, not preflight's). Verified with a real `docker build` +
+`docker run --network none` against `tasks/anchor/toy-ssm-parameter-awscdk`'s own image:
+all 5 preflight steps pass, including the previously-impossible step 5.
+
+### terraconstructs offline `terraform plan` needs a mocked STS endpoint
+
+**Decision, closing the limitation flagged above ("New limitation discovered while
+proving this... flagged for Slice D"):** confirmed by installing the real toolchain
+(`terraconstructs@0.2.13`, `cdktn@0.23.0`, `terraform 1.15.8`) that `AwsStack`'s `account`
+getter (`node_modules/terraconstructs/lib/aws/aws-stack.js`) lazily creates an EXPLICIT
+`data "aws_caller_identity"` the moment ANY construct references the stack's account —
+which most L2s do internally for ARN formatting, so this isn't limited to IAM/ARN-heavy
+scenarios: a bare `new Bucket(this, "B", {})` with no IAM at all already triggers it.
+`skip_requesting_account_id` only suppresses the AWS provider's own IMPLICIT account
+lookup, not this explicit data source's real STS call, so `terraform plan` for any
+non-trivial terraconstructs solution 403'd (`InvalidClientTokenId`) against real STS with
+no credentials and no network — making the arm ungradeable for any solution that actually
+uses the L2 abstraction, while a hand-rolled L1-only escape hatch (bypassing `AwsStack`'s
+`account`/`lookup` machinery entirely) planned fine. That inverted the incentive the arm
+exists to measure.
+
+**Fix:** `AwsProvider` (and `@cdktn/provider-aws`'s underlying `terraform-provider-aws`)
+supports a per-service `endpoints` override block, including `endpoints.sts`. Added
+`arms/terraconstructs/environment/app/mock-sts.js` — a dependency-free (`node`'s built-in
+`http` only) loopback HTTP responder that answers any request with a fixed, valid
+`GetCallerIdentity` XML body, ignoring SigV4-signed headers — byte-copied into every
+generated task's `/app/project/mock-sts.js` (`write_environment`'s `shutil.copytree` of
+the whole `environment/app/` tree; also explicitly `COPY`'d by the arm `Dockerfile`, which
+lists `app/*` files individually rather than copying the directory wholesale).
+`terraconstructs_main_ts()`'s generated `providerConfig` now points
+`endpoints: [{ sts: "http://127.0.0.1:17771" }]` at it, and
+`build_static_tiers_sh`'s terraconstructs tf-plan step starts the mock server
+immediately before `terraform init/plan/show` and kills it immediately after (tracking
+its PID, not just backgrounding-and-forgetting it) — the kill matters because
+`gates/oracle_falsifiability.py` runs `solve.sh` and every `broken/<catch>/solve.sh`
+sequentially on the same bare host, and an orphaned server on the same fixed port would
+`EADDRINUSE` the second run. `127.0.0.1` works even under `docker run --network none`
+since the `lo` interface is always present in a container's own network namespace
+regardless of external attachment, so the arm's offline-plan contract is unchanged.
+
+**Proven** end-to-end through the real generated `tests/static_tiers.sh` (not just a
+standalone `main.ts`, and not just the artifact-shape fix's earlier proof), using the
+installed toolchain: a bare `new Bucket(this, "B", {})` plus
+`new Role(this, "R", { assumedBy: new ServicePrincipal("ec2.amazonaws.com") })` —
+exactly the idiomatic-L2, no-manual-ARN-plumbing shape a prior review's repro (a)/(a2)
+showed failing — now reaches `terraform plan`'s "Plan: 2 to add, 0 to change, 0 to
+destroy" and `role-trust-is-ec2-only` PASSes at tier-0, where it previously 403'd before
+any tier-0 assert could even run. Not proven with the toy scenario's actual SSM parameter
+construct, because terraconstructs has no `src/aws/ssm/` L2 at all (see
+`arms/terraconstructs/README.md`'s coverage table and the spec's own
+`arms.terraconstructs.reason` disclosure) — this fix unblocks offline `plan` for L2
+constructs in general, independent of which service.
+
+**Side fix required to land this:** `build_static_tiers_sh`'s per-step preview echo
+(`echo "== {label}: {command} =="`) assumed `command` was always single-line with no
+embedded `"` — true of every step until this one, which needs embedded
+`"$MOCK_STS_PID"` references and multiple newlines to start/stop the mock server. Left
+unescaped, the literal `"` characters inside `command` prematurely closed/reopened the
+outer double-quoted echo argument, turning `>`/`>>` text that was meant to stay a literal
+label into a REAL shell redirection a few words later — a preview-only line able to
+silently diverge from (or corrupt files relative to) the real `if ! ( {command} ); then`
+executed immediately after. Now wrapped in `shlex.quote()`, safe for arbitrary embedded
+quotes/newlines in any future step's command, not just this one.
+
+### tier-1 `SKIPPED_STUB` is now a hard failure once a scenario declares tier-1 asserts
+
+**Decision:** the same "TOOL_MISSING must be run-invalidating, not scored as a pass"
+argument from the section above ("Tier-1 grading tools installed in every arm image...")
+applies equally to `SKIPPED_STUB` (a tier-1 policy file that's still a generator scaffold,
+`is_stub_policy`), which `build_static_tiers_sh`'s final reward gate did not previously
+account for: `[ "$tier0_pass" = "1" ] && [ "$tier1_status" != "FAIL" ] && [ "$tier1_status"
+!= "TOOL_MISSING" ]` scored `SKIPPED_STUB` as a pass, so a scenario whose tier-1 policy
+hadn't been hand-authored yet (Slice D pending) would award full `1.0` reward to ANY
+solution that got past tier-0 — including one that violates every tier-1 clause the
+unauthored policy was supposed to check. Reproduced exactly as described: an awscdk
+`ScenarioStack` with a correct SSM parameter, a correctly ec2-only-trusted role, and an
+inline policy of `Action: ["iam:*","s3:*","ssm:*"], Resource: "*"` (violating both of the
+toy spec's tier-1 asserts, `policy-resource-scoped-not-wildcard` and
+`policy-actions-read-only`) produced `tier0_pass=1 tier1_status=SKIPPED_STUB` and reward
+`1.0` against the pre-fix generated `static_tiers.sh`.
+
+**Fix:** the reward gate now also requires `[ "$tier1_status" != "SKIPPED_STUB" ]`, and
+the `SKIPPED_STUB` branch (both the awscdk/cfn-guard and hcl_raw+terraconstructs/OPA
+variants) now also writes a `/logs/verifier/tier1-unauthored` marker (mirroring
+`TOOL_MISSING`'s `tier1-unavailable`) so an un-authored-policy run is distinguishable in
+the logs from both a real policy `FAIL` and a `TOOL_MISSING` run. `SKIPPED_NO_ASSERTS`
+(a scenario with zero tier-1 `structural_asserts` at all) is unaffected — still
+legitimately non-gating, since there is nothing to have forgotten to author.
+
+**Proven** with the same reproduction above, re-run against the regenerated
+`static_tiers.sh`: `tier0_pass=1 tier1_status=SKIPPED_STUB`, reward now `0.0`, with
+`/logs/verifier/tier1-unauthored` written. Cross-checked on all three arms (awscdk,
+hcl_raw, terraconstructs) with equivalent violating solutions — same result on each.
+`gates/oracle_falsifiability.py` and its own test suite are unaffected by this change:
+the toy spec's `solve.sh` is still an un-authored Slice D stub on all three arms, so the
+gate still (correctly, per its own documented convention) reports `NOT_AUTHORED`
+rather than exercising this path — `make falsifiability SPEC=specs/_toy/toy-ssm-parameter.yaml`
+re-run clean after both fixes above.
+
+---
+
+## Amendment 5 (2026-08-06) — generator/schema fixes from a third benchmark-integrity
+## review (findings G1-G4)
+
+Four findings from a third review pass, scoped to the generator/schema half of Slice C.
+Fixed together; `make gen`/`make test-gates`/`make check` all re-run clean after all four
+(164 gates/metrics tests unchanged; `oracles`' own 63-test suite, unaffected by prior
+amendments, needed one update for a renamed assert, see G2).
+
+### G1 — offline-plan fixture lived inside the agent-editable `entry_file` on both TF arms
+
+**Finding:** `hcl_raw`'s `main.tf` (entry_file) carried its own `provider "aws" {}` block
++ `skip_*`/dummy-credential fixture inline; `terraconstructs`' `main.ts` (entry_file)
+carried both the `App`/`providerConfig` bootstrap (same fixture, plus the mock-STS
+`endpoints` pointer) AND the `ScenarioStack` class body in one file. An agent fully
+rewriting its own `entry_file` from scratch — ordinary, expected behavior; the
+instruction never mentions the fixture at all — silently deleted it, and `terraform
+plan` then failed offline with `Error: No valid credential sources found` (hcl_raw) or a
+403 against real STS (terraconstructs), scoring an otherwise-CORRECT solution `0.0`.
+
+**Reproduced before the fix:** a bare, oracle-correct `main.tf` (three resources, no
+provider block) against the pre-fix single-file `hcl_raw` workspace:
+```
+$ terraform plan
+Error: Invalid provider configuration
+Error: No valid credential sources found
+```
+
+**Fix:** split each TF-shaped arm's workspace into an agent-owned `entry_file` and a
+separate, non-agent-owned bootstrap file the generator never treats as `entry_file`:
+- `hcl_raw`: new `arms/hcl-raw/environment/workspace/provider.tf` (the bootstrap, byte-
+  copied unmodified per scenario) alongside a `main.tf` that is now resource-blocks-only
+  (`generator/gen.py::hcl_raw_main_tf()`).
+- `terraconstructs`: `output_contract.entry_file` moved from `main.ts` to
+  `lib/scenario-stack.ts` (new `generator/gen.py::terraconstructs_stack_skeleton()`,
+  mirroring `awscdk`'s `bin/app.ts`/`lib/scenario-stack.ts` split exactly); `main.ts` is
+  now App/`providerConfig`-bootstrap-only, regenerated every run
+  (`terraconstructs_main_ts()`), never `entry_file`. `write_environment()` now asserts
+  this shape for `terraconstructs` (`entry_rel == "lib/scenario-stack.ts"`), mirroring
+  the pre-existing `awscdk` assert. The arm's own dev-image preflight app
+  (`arms/terraconstructs/environment/app/`) was moved to the same two-file shape
+  (`main.ts` importing `lib/scenario-stack.ts`'s `PreflightStack`) so `make preflight`
+  exercises the split for real, not just generated tasks.
+- Every generated `instruction.md` now names both files explicitly
+  (`generator/gen.py::ownership_note()`, new, threaded into the §2.1 assembly template
+  right after the language line): "You own only `<entry_file>`... Do not create, modify,
+  or delete `<bootstrap file>`."
+
+**Proven** (both TF arms, `make gen SPEC=specs/_toy/toy-ssm-parameter.yaml` regenerated
+output): simulated a full-rewrite agent by overwriting the generated task's own
+`main.tf` / `lib/scenario-stack.ts` with a bare, oracle-correct, zero-offline-config
+solution and running `terraform init && terraform plan` against the untouched
+`provider.tf` / `main.ts`:
+- `hcl_raw`: `terraform plan` → `Plan: 3 to add, 0 to change, 0 to destroy` (previously:
+  `No valid credential sources found`).
+- `terraconstructs`: `cdktn synth` → `terraform init && terraform plan` (against a
+  locally-started `mock-sts.js`, matching the untouched `main.ts`'s `endpoints.sts`
+  pointer) → `Plan: 3 to add, 0 to change, 0 to destroy` (previously: 403 against real
+  STS, no credentials).
+
+### G2 — SCHEMA.md §4.2's "one tf_jsonpath, same shape, both TF arms" claim was false
+
+**Finding:** for a plan-time-UNKNOWN attribute (an `aws_iam_role_policy.policy`
+`jsonencode(...)`/equivalent whose `Resource` references another resource's
+provider-computed `.arn`), `terraform show -json` plan output's
+`.planned_values...values.policy` resolves to nothing at all — not "wrong value", no
+node. `specs/_toy/toy-ssm-parameter.yaml`'s `policy-actions-read-only` tier-1 assert
+targeted exactly this path; a Rego rule written against it (as the original
+`rego_hints`/`oracles/emit.py` scaffold pointed at) could never fire against a correct,
+`.arn`-referencing solution — silently as vacuous as `default allow := true` — and
+nothing had ever caught this, because tier-1 paths were never resolved against anything
+(tier-1 is Rego/cfn-guard-graded, not executed by the jq-based tier-0 evaluator).
+
+**Reproduced** directly against real `terraform show -json` plan output, both TF arms
+(a hand-run `hcl_raw` fixture and a hand-run `terraconstructs` L1-provider-construct
+fixture, both referencing the created SSM parameter's `.arn`):
+```
+$ jq '.planned_values.root_module.resources[]
+      | select(.type=="aws_iam_role_policy") | .values.policy' plan.json
+null
+```
+
+**Fix:**
+1. `specs/SCHEMA.md` §4.2 gets a new §4.2.1 documenting the mechanism (plan-time-unknown
+   contagion through `jsonencode`/equivalent), the fix pattern (graph-edge checks use
+   `.configuration...expressions.<attr>.references`, which is populated from HCL source,
+   not provider computation, and is plan-time-known regardless of the referenced value's
+   own knownness — verified: resolves to the created-resource address for a correct
+   fixture, to nothing at all for a hardcoded-wildcard one), and a new authoring rule
+   (never mark tier "0" an attribute that can be plan-time-unknown).
+2. `specs/_toy/toy-ssm-parameter.yaml`'s `policy-resource-scoped-not-wildcard` split into
+   `policy-resource-scoped-not-wildcard-cfn` (`applies_to: [awscdk]`, unchanged literal
+   check — CFN synth is always fully static, never has this problem) and
+   `-tf` (`applies_to: [hcl_raw, terraconstructs]`, now a references-based graph-edge
+   check). `policy-actions-read-only` keeps its `values.policy`-based check (a genuine
+   value-content fact with no plan-time-known graph-edge equivalent) but now carries an
+   explicit caveat + matching `rego_hints`: it only resolves when the reference solution
+   keeps the referenced ARN attribute plan-time-known (e.g. the parameter's own `.name`,
+   an agent-supplied literal echo, not its computed `.arn`) — a documented, known v1 scope
+   limitation, not something papered over.
+3. New generator-time check, `generator/check_reference_paths.py` (`make check-paths
+   SPEC=...`): resolves EVERY declared `structural_assert` (tier "0" and "1" alike)
+   against a real synthesized/planned artifact, built by running each arm's real
+   toolchain against a hand-authored, oracle-correct reference fixture
+   (`generator/tests/fixtures/<spec-id>/<arm>/`) — reusing the generated task's own,
+   already-generated `tests/_assert_lib.sh`/`assert_check` (the same jq-compiled
+   evaluator every trial's tier-0 actually runs), not a second Python-side evaluator.
+   Not wired into `make check`/`test-gates` (requires host terraform/node/npm/jq, same
+   as `make falsifiability`). Along the way this check also found and fixed two
+   PRE-EXISTING, independent bugs in the same two tier-1 `cfn_jsonpath`s (never
+   previously resolved against a real template either): `.Properties.Policies[*]` +
+   `|| @.Type=='AWS::IAM::Role'` crashed jq (`Cannot iterate over null`) against the
+   `AWS::IAM::Policy` shape a real `role.addToPolicy()` solution actually produces
+   (narrowed to that shape); and `policy-actions-read-only`'s `tf_jsonpath` was missing
+   `|fromjson.Statement[*].Action` (comparing a raw JSON string against a list with
+   `op: in`, which can never match).
+
+**Proven:** `make check-paths SPEC=specs/_toy/toy-ssm-parameter.yaml` — all 18
+applicable (structural_assert × enabled-arm) checks PASS, tier-0 and tier-1 alike,
+across all three arms, against hand-authored reference fixtures.
+
+### G3 — mock-sts startup had no readiness probe
+
+**Finding:** `generator/gen.py`'s terraconstructs `tf-plan` step started `mock-sts.js`
+in the background and `sleep 0.3`'d, unconditionally. EADDRINUSE (a leftover process
+from a prior run in the same container/host — the falsifiability gate's own
+solve.sh-then-broken/solve.sh sequence is exactly this scenario) or a slow bind under
+load meant `terraform plan` could run before the responder was listening, fail against
+nothing (connection refused, same shape as a genuinely-missing fixture), and score
+`0.0` — indistinguishable in the logs from a bad SOLUTION, when it was broken TEST
+INFRASTRUCTURE.
+
+**Fix:** poll `127.0.0.1:<port>` (bash's own `/dev/tcp`, no extra tool) for up to 5s
+(50 × 0.1s) before ever invoking `terraform plan`. On timeout, write
+`/logs/verifier/tf-plan-mock-sts-unavailable` (mirroring `tier1-unavailable`'s role for
+`TOOL_MISSING`) instead of silently falling through to a plan attempt that can only
+fail — `reward.txt` still ends up `0.0` (same mechanism as every other toolchain-step
+failure), but the marker makes this run-invalidating, not a genuine bad-solution
+signal, in any downstream log analysis.
+
+**Proven:** regenerated `tests/static_tiers.sh` for `toy-ssm-parameter-terraconstructs`
+contains the poll loop (`grep -c MOCK_STS_READY` → 2, one in the preview echo + one in
+the real command, `bash -n` clean); exercised for real (mock-sts started and ready well
+within 5s) as part of every G1/G2 proof run above — the terraconstructs `tf-plan` step
+never needed to fall back to the timeout path in any of those runs, confirming the
+readiness probe doesn't regress the happy path.
+
+### G4 — `tasks/anchor/smoke/environment` had drifted from `arms/awscdk/environment`
+
+**Finding:** `ci/check-smoke-drift.sh` (`make check`) was red — `arms/awscdk`'s
+Dockerfile gained a pinned `cfn-guard` install step (a prior amendment, "Tier-1 grading
+tools installed in every arm image") that the hand-maintained
+`tasks/anchor/smoke/environment/Dockerfile` byte-copy never picked up.
+
+**Fix:** re-synced the copy — added the same `ARG TARGETARCH` + sha256-verified
+`cfn-guard` install `RUN` block (byte-identical body text, since `check-smoke-drift.sh`
+only allows the LEADING comment header to diverge, confirmed by re-running the diff
+after a first attempt that adjusted an in-body relative path and got correctly flagged)
+and the matching `cfn-guard 3.2.0` bullet in the leading header's pinned-toolchain list.
+
+## Amendment 6 (2026-08-06) — grading-half fixes: the falsifiability-gate blocker and
+## the constant-zero-reward major (findings F1, F2)
+
+Two findings from a fourth review pass, scoped to whether this benchmark can grade
+anything at all end-to-end. Fixed together.
+
+### F1 (blocker) — `gates/oracle_falsifiability.py`'s `_run_solve` never actually ran
+### against a real sandbox
+
+**Finding:** `_run_solve` copied `task/environment` (the WHOLE dir — `workspace/` +
+`fixtures/` + `mirror-src/` + `preflight.sh` + `terraformrc` for hcl_raw; the analogous
+per-arm layout for the others) into the scratch sandbox wholesale, landing the arm's
+real entry_file/bootstrap files one directory level too deep
+(`<sandbox>/workspace/main.tf` instead of `<sandbox>/main.tf`). The patched
+`tests/static_tiers.sh` it then ran (`cd /app/project` rewritten to the sandbox root)
+reads `main.tf`/`cdk.out/...`/etc directly at that root — so `terraform init`/`cdk
+synth` always ran against a directory with no source files in it, and **no** authored
+`solve.sh`, however correct, could ever score above `0.0`. The gate only ever "passed"
+via its `NOT_AUTHORED` escape hatch (no scenario had an authored `solve.sh` yet), which
+is exactly how this shipped unnoticed.
+
+**Fix:** reused `generator/check_reference_paths.py`'s own already-correct
+`_prepare_project` pattern (added in Amendment 5, G2) — copy
+`environment/<ARM_WORKSPACE_SUBDIR[arm]>` (re-importing that constant from `gen.py`;
+`workspace/` for awscdk/hcl_raw, `app/` for terraconstructs — the exact per-arm mapping
+every arm's own Dockerfile's `COPY` lines encode) onto the sandbox ROOT, then overlay
+`tests/`/`solution/` as before. Also runs `npm ci` in the sandbox when a `package.json`
+lands there (awscdk/terraconstructs ship `node_modules` only inside their Docker image,
+built at image-build time — the host sandbox needs it installed for real, same as
+`check_reference_paths.py`).
+
+**Self-test added** (`gates/tests/test_oracle_falsifiability.py`, per the finding's own
+ask "the gate's own regressions must be visible"): runs the REAL gate against the toy
+spec's now hand-authored `hcl_raw` reference solution and asserts reward `1.0`, plus a
+second test asserting every `broken/<catch>/` fixture scores `0.0`. A regression back to
+copying the whole `environment/` dir turns both tests red immediately.
+
+**Proven:** `make falsifiability SPEC=specs/_toy/toy-ssm-parameter.yaml` — all 9 outcomes
+(3 arms × {good solve.sh, 2 broken/<catch> fixtures}) `PASS`, reward `1.0`/`0.0`/`0.0`
+per arm, **no `NOT_AUTHORED` anywhere** — the escape hatch this finding named is no
+longer load-bearing for this spec.
+
+### F2 (major) — tier-1 policies were still generator stubs; nothing proved any arm
+### GRADEABLE
+
+**Finding:** `oracles/rego/toy-ssm-parameter/policy.rego` and
+`oracles/cfn-guard/toy-ssm-parameter/policy.guard` were still `GENERATOR-STUB`
+skeletons; the (correct, fail-closed) `SKIPPED_STUB` behavior zeroed every trial's
+reward regardless of solution quality. Nothing demonstrated any arm could reach a
+nonzero, correct reward.
+
+**Fix:**
+- Hand-authored both policies for real. `policy.rego` (package
+  `cdktn_bench.toy_ssm_parameter`, one bundle graded against BOTH TF arms' `terraform
+  show -json` plan JSON, per spec) encodes the graph-edge check
+  (`policy-resource-scoped-not-wildcard-tf`, reading
+  `.configuration...expressions.policy.references` per the G2 fix, including one hop
+  through a `data.aws_iam_policy_document` indirection) and the action-allowlist check
+  (`policy-actions-read-only`, only asserted when `values.policy` is plan-time-known,
+  per the spec's own CAVEAT). `policy.guard` encodes the CFN-side equivalents at the
+  same strictness (`Resource == "*"` / `Action[*] IN [...]` over
+  `AWS::IAM::Policy.Properties.PolicyDocument.Statement`) — had to select-then-`empty`
+  rather than `!=` for the wildcard check: cfn-guard's `!=` on a real-shaped `Resource`
+  (an `Fn::Join` intrinsic object on the correct fixture) threw `ComparisonError: not
+  comparable map, String` and FAILED a correct solution; a filter (`Statement[ Resource
+  == "*" ]`) followed by an emptiness check sidesteps the type-mismatch entirely.
+  Verified directly with `opa eval`/`cfn-guard validate` against real synth/plan output
+  from both a hand-authored correct fixture and a wildcard-policy negative, for every
+  arm, before wiring anything.
+- **New finding surfaced while authoring this:** the `parameter-tier-enum` catch
+  declared `predicted_tier_caught: "0"` for every arm but had **no** corresponding
+  `oracle.structural_assert` at all — an unfalsifiable catch by construction (its own
+  description even said so: "not used as a real discriminator... exists purely so the
+  generator has a typed-value-trap-taxonomy catch to render"). Added the missing
+  tier-`"0"` assert (`parameter-tier-standard`, `op: not_exists` on `Properties.Tier` /
+  `values.tier` — verified directly that an omitted Tier is genuinely ABSENT from both a
+  synthesized CFN template and a `terraform show -json` plan, not a static `"Standard"`
+  literal either tool fills in, so `not_exists` — not `eq "Standard"` — is the sound
+  check) so this catch is now genuinely gradeable instead of illustrative-only.
+- Hand-authored `solution/solve.sh` (oracle-correct) for all three arms, plus
+  `solution/broken/<catch>/solve.sh` for both declared catches × three arms (six
+  negative fixtures) — required by `gates/oracle_falsifiability.py`'s own per-catch
+  contract, now satisfiable end-to-end for the first time.
+- New `gates/grading_proof.py` / `make grading-proof SPEC=...`: reuses
+  `gates.oracle_falsifiability.check_arm` (the F1-fixed sandbox path) to assert, per
+  enabled arm, the correct solution scores `1.0` and the `policy-scoped-to-parameter`
+  negative (the exact "wildcard IAM inline_policy
+  `Action:['ssm:*','iam:*','s3:*'],Resource:'*'`" case named in the finding) scores
+  `0.0` — six outcomes for this 3-arm spec, printed as a compact summary table.
+
+**Proven — all six `grading-proof` outcomes:**
+```
+[PASS] awscdk           correct solution             reward=1.0
+[PASS] awscdk           negative (policy-scoped-to-parameter) reward=0.0
+[PASS] hcl_raw          correct solution             reward=1.0
+[PASS] hcl_raw          negative (policy-scoped-to-parameter) reward=0.0
+[PASS] terraconstructs  correct solution             reward=1.0
+[PASS] terraconstructs  negative (policy-scoped-to-parameter) reward=0.0
+```
+
+### Final state
+
+- `make test-gates` (`uv run pytest gates metrics -q`) — **166 passed** (164 prior +
+  the 2 new `gates/tests/test_oracle_falsifiability.py` self-tests).
+- `make falsifiability SPEC=specs/_toy/toy-ssm-parameter.yaml` — green **for real**, no
+  `NOT_AUTHORED` escape; 9/9 outcomes `PASS`.
+- `make grading-proof SPEC=specs/_toy/toy-ssm-parameter.yaml` (new) — 6/6 outcomes
+  `PASS`.
+- `make check-paths SPEC=specs/_toy/toy-ssm-parameter.yaml` — 21/21 green (also updated
+  the `hcl_raw` `bad/` reference fixture to add `tier = "Advanced"` alongside its
+  existing wildcard policy, so the new `parameter-tier-standard` assert's
+  bad-fixture-discriminates informational check stays meaningful rather than passing
+  vacuously).
+- `make check` — green (schema validation + 166 tests + smoke-drift OK).
+- `uv run pytest gates metrics oracles test -q` — **261 passed** (broader suite;
+  `oracles/tests/test_structural.py`'s toy-spec integration tests updated for the fifth
+  tier-0 assert, same as Amendment 5's precedent for a renamed assert).
+
+**Proven:** `bash ci/check-smoke-drift.sh` → `smoke-drift: OK`; `make check` green.

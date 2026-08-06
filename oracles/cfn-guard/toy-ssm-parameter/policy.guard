@@ -1,0 +1,118 @@
+#
+# Hand-authored (benchmark-integrity review finding F2, fixed 2026-08-06;
+# widened 2026-08-06 by the residual-findings fix below) -- NOT a generator
+# stub. oracles/emit.py never overwrites this file once it exists
+# (specs/SCHEMA.md §8.2 rule 7), so it is safe across regeneration.
+#
+# Scenario:   toy-ssm-parameter (specs/_toy/toy-ssm-parameter.yaml)
+# Intent doc: oracles/toy-ssm-parameter/intent.md
+# Graded against the awscdk arm's synthesized CloudFormation template
+# (cdk.out/ScenarioStack.template.json) -- specs/SCHEMA.md §4.2/§8. A
+# generated tests/static_tiers.sh runs
+#   cfn-guard validate --data cdk.out/ScenarioStack.template.json --rules policy.guard
+# and fails tier-1 iff any rule below FAILs.
+#
+# --- IAM-shape-coverage fix (residual finding "tier-1 oracle vacuity --
+# IAM shape coverage", 2026-08-06) ---------------------------------------
+# PROVEN vacuous before this fix: `new iam.Role(..., { inlinePolicies: {
+# admin: new iam.PolicyDocument({ statements: [wildcard Action/Resource
+# statement] }) } })` -- an equally-idiomatic L2 alternative to
+# `role.addToPolicy()` -- synthesizes ZERO `AWS::IAM::Policy` resources;
+# the wide-open statement instead lands at
+# `AWS::IAM::Role.Properties.Policies[*].PolicyDocument`. The old
+# `let iam_policies = Resources.*[ Type == "AWS::IAM::Policy" ]` +
+# `when %iam_policies !empty` guards on both rules below therefore skipped
+# entirely (empty collection -> `when` clause never enters), and
+# `cfn-guard validate` returned rc=0 (PASS) on a template containing
+# Action=["ssm:*","iam:*","s3:*"]/Resource="*". Verified directly:
+#   $ cfn-guard validate --data <that template> --rules <old policy.guard>
+#   rc=0
+# Fixed by widening coverage to the two other recognized IAM-policy shapes
+# CDK/CFN can produce for "grant this role permissions" -- the inline
+# `AWS::IAM::Role.Properties.Policies[*].PolicyDocument` shape this exact
+# counterexample uses, and the (less common but equally legitimate)
+# standalone `AWS::IAM::ManagedPolicy` shape -- with one wildcard-check and
+# one allowlist-check rule per shape, PLUS a new `role_has_recognized_policy`
+# rule that fails closed when an `AWS::IAM::Role` exists but NONE of the
+# three recognized shapes are present anywhere in the template at all (the
+# `when %shape !empty` guard on every per-shape rule is, by construction,
+# silently skipped on an empty collection -- exactly the class of hole this
+# finding describes -- so an entirely unrecognized/absent policy shape
+# needed its own always-evaluated rule, not just more shapes to enumerate).
+#
+# Encodes the two tier-"1" structural_asserts this spec declares for
+# awscdk (mirroring ../rego/toy-ssm-parameter/policy.rego's TF-arm logic at
+# the same strictness -- CFN's synthesized template is always fully
+# static, so both remain literal-value checks here, no plan-time-unknown
+# concern), now covering all three recognized policy shapes:
+#
+#   policy-resource-scoped-not-wildcard-cfn: no Statement in ANY of
+#   {standalone AWS::IAM::Policy, AWS::IAM::ManagedPolicy, inline
+#   AWS::IAM::Role.Properties.Policies[*]} may grant Resource == "*".
+#
+#   policy-actions-read-only: every granted Action in ANY of those three
+#   shapes must be in {ssm:GetParameter, ssm:GetParameters}.
+#
+# Verified against real `cdk synth` output: generator/tests/fixtures/
+# toy-ssm-parameter/awscdk/lib/scenario-stack.ts (the oracle-CORRECT
+# reference fixture, standalone-AWS::IAM::Policy shape -- PASS), the
+# existing hand-built wildcard Action=["ssm:*","iam:*","s3:*"]/Resource="*"
+# negative on that SAME shape (FAIL, as before), PLUS two new checks added
+# by this fix: the inlinePolicies wildcard counterexample above (now FAIL
+# on both the wildcard-resource and actions-allowlist inline rules) and a
+# role with literally no policy resource of any shape (now FAIL on
+# role_has_recognized_policy) -- see this fix's DECISIONS.md entry for the
+# exact `cfn-guard validate` transcripts, and
+# solution/broken/policy-scoped-to-parameter-alt-shape/ for the fixture
+# gates/oracle_falsifiability.py runs to keep this red going forward.
+
+let iam_roles = Resources.*[ Type == "AWS::IAM::Role" ]
+let iam_policies = Resources.*[ Type == "AWS::IAM::Policy" ]
+let managed_policies = Resources.*[ Type == "AWS::IAM::ManagedPolicy" ]
+let inline_role_policies = Resources.*[ Type == "AWS::IAM::Role" ].Properties.Policies[*]
+
+# Fail-closed: an AWS::IAM::Role exists but NONE of the three recognized
+# policy shapes appear anywhere in the template. Every per-shape rule below
+# is silently skipped (`when %shape !empty`) when its own collection is
+# empty, so this is the only rule standing between "no recognized policy
+# shape" and a vacuous PASS.
+rule role_has_recognized_policy when %iam_roles !empty {
+	%iam_policies !empty
+	or
+	%managed_policies !empty
+	or
+	%inline_role_policies !empty
+}
+
+rule policy_no_wildcard_resource when %iam_policies !empty {
+	let wildcard_statements = %iam_policies.Properties.PolicyDocument.Statement[ Resource == "*" ]
+	%wildcard_statements empty
+}
+
+rule managed_policy_no_wildcard_resource when %managed_policies !empty {
+	let wildcard_statements = %managed_policies.Properties.PolicyDocument.Statement[ Resource == "*" ]
+	%wildcard_statements empty
+}
+
+rule inline_policy_no_wildcard_resource when %inline_role_policies !empty {
+	let wildcard_statements = %inline_role_policies.PolicyDocument.Statement[ Resource == "*" ]
+	%wildcard_statements empty
+}
+
+rule policy_actions_allowlist when %iam_policies !empty {
+	%iam_policies.Properties.PolicyDocument.Statement[*] {
+		Action[*] IN ["ssm:GetParameter", "ssm:GetParameters"]
+	}
+}
+
+rule managed_policy_actions_allowlist when %managed_policies !empty {
+	%managed_policies.Properties.PolicyDocument.Statement[*] {
+		Action[*] IN ["ssm:GetParameter", "ssm:GetParameters"]
+	}
+}
+
+rule inline_policy_actions_allowlist when %inline_role_policies !empty {
+	%inline_role_policies.PolicyDocument.Statement[*] {
+		Action[*] IN ["ssm:GetParameter", "ssm:GetParameters"]
+	}
+}

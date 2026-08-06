@@ -1,0 +1,12 @@
+{
+  "_fixture_note": "A mini CFN template embedding one JSONata {% ... %} expression in a Step Functions ASL definition, evaluating correctly against the sample input/output pair used by the matching test.",
+  "Resources": {
+    "GreetingStateMachine": {
+      "Type": "AWS::StepFunctions::StateMachine",
+      "Properties": {
+        "StateMachineName": "GreetingStateMachine",
+        "DefinitionString": "{\"QueryLanguage\":\"JSONata\",\"StartAt\":\"ComputeGreeting\",\"States\":{\"ComputeGreeting\":{\"Type\":\"Pass\",\"Output\":\"{% 'hello-' & $states.input.name %}\",\"End\":true}}}"
+      }
+    }
+  }
+}

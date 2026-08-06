@@ -140,6 +140,36 @@ network-dependent and gates on `validate` alone.
 credentials in the image are real, and the build plan (`docs/iac-abstraction-aws-bench-plan.md`
 §Phase 2) only requires `validate` + `plan`, no deploy.
 
+## Generated-task workspace split (Slice C generator, fixed 2026-08-06)
+
+`environment/workspace/` ships **two** `.tf` files, not one:
+
+- `main.tf` — `output_contract.entry_file` (`specs/SCHEMA.md` §2.4). Agent-owned:
+  `generator/gen.py` overwrites this wholesale per scenario with a resource-only
+  skeleton, and a normal agent solution rewrites it wholesale too — there is no
+  reason for hand-written HCL to preserve boilerplate it never authored and the
+  instruction never mentions.
+- `provider.tf` — the offline provider bootstrap (`terraform {}` / `provider "aws"
+  {}` block + the four `skip_*` flags + dummy credentials from "What `terraform
+  plan` needs" above). **Not** agent-owned: byte-copied unmodified into every
+  generated task (never regenerated per scenario, never listed as `entry_file`),
+  and the generated `instruction.md` tells the agent not to modify it.
+
+This split exists because the two used to be one file (the provider block at the
+top of `main.tf`). A normal agent solution that fully rewrites `main.tf` from
+scratch — completely reasonable behavior; the instruction never mentions the
+fixture and an agent has no reason to preserve boilerplate it didn't write —
+silently deleted the `skip_*`/dummy-credential lines along with it, and
+`terraform plan` then failed offline with `Error: No valid credential sources
+found` **even for an otherwise-correct solution**, scoring it 0.0. Reproduced
+before the fix: a bare, oracle-correct `main.tf` (three resources, no provider
+block) against the pre-split single-file workspace fails `terraform plan` with
+exactly that error; the same `main.tf` against the split workspace (`provider.tf`
+untouched alongside it) plans successfully. Splitting the fixture into a file the
+generator never treats as `entry_file` makes this failure mode structurally
+impossible — the file the agent both fully owns and fully rewrites is no longer
+the same file the offline-plan fixture lives in.
+
 ## Build + verify locally
 
 ```bash

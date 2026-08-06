@@ -1,0 +1,12 @@
+{
+  "_fixture_note": "Two states, each with its OWN correct {% ... %} expression and its OWN sample input/expected_output. Regression fixture for the tier-0.5 cartesian-product bug: the old run_tier05 evaluated every found expression against every declared case, so state G's greeting expression got compared against state C's count-shaped expected_output (and vice versa) and this fully-correct machine was unconditionally rejected. Named after the benchmark-integrity review finding's own repro (\"state C's count compared against state G's expected greeting\").",
+  "Resources": {
+    "TwoStepStateMachine": {
+      "Type": "AWS::StepFunctions::StateMachine",
+      "Properties": {
+        "StateMachineName": "TwoStepStateMachine",
+        "DefinitionString": "{\"QueryLanguage\":\"JSONata\",\"StartAt\":\"Greet\",\"States\":{\"Greet\":{\"Type\":\"Pass\",\"Output\":\"{% 'hello-' & $states.input.name %}\",\"Next\":\"Count\"},\"Count\":{\"Type\":\"Pass\",\"Output\":\"{% $count($states.input.items) %}\",\"End\":true}}}"
+      }
+    }
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "_fixture_note": "Deliberate mis-nesting: values.name/values.value pushed one level deeper (under values.config) than aws_ssm_parameter's real attribute shape. specs/_toy/toy-ssm-parameter.yaml's parameter-name-correct / parameter-value-correct tier-0 asserts must FAIL against this (tf_jsonpath resolves to zero nodes), the TF-plan counterpart of mini_cfn_bad.json. role-trust-is-ec2-only also fails here (trusts lambda, not ec2).",
+  "planned_values": {
+    "root_module": {
+      "resources": [
+        {
+          "address": "aws_ssm_parameter.greeting",
+          "type": "aws_ssm_parameter",
+          "name": "greeting",
+          "values": {
+            "config": {
+              "type": "String",
+              "name": "/cdktn-bench-toy/greeting",
+              "value": "hello-from-cdktn-bench"
+            }
+          }
+        },
+        {
+          "address": "aws_iam_role.read_only",
+          "type": "aws_iam_role",
+          "name": "read_only",
+          "values": {
+            "assume_role_policy": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Principal\":{\"Service\":\"lambda.amazonaws.com\"},\"Action\":\"sts:AssumeRole\"}]}"
+          }
+        },
+        {
+          "address": "aws_iam_role_policy.read_greeting",
+          "type": "aws_iam_role_policy",
+          "name": "read_greeting",
+          "values": {
+            "policy": "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"ssm:*\",\"Resource\":\"*\"}]}"
+          }
+        }
+      ]
+    }
+  }
+}

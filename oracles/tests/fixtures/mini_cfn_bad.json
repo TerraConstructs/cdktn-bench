@@ -1,0 +1,45 @@
+{
+  "_fixture_note": "Deliberate mis-nesting: Name/Value are pushed one level deeper than CFN's real AWS::SSM::Parameter shape (under Properties.Config instead of directly under Properties) — a 'nested-attribute' taxonomy mistake (specs/SCHEMA.md §3). specs/_toy/toy-ssm-parameter.yaml's parameter-name-correct / parameter-value-correct tier-0 asserts must FAIL against this (cfn_jsonpath resolves to zero nodes, not a wrong value), proving structural.py detects a missing/mis-nested attribute rather than only a wrong-value one. The IAM policy also grants a wildcard Resource, for completeness (not exercised by any tier-0 assert — that catch is tier-1/Rego-only per the toy spec).",
+  "Resources": {
+    "GreetingParameter": {
+      "Type": "AWS::SSM::Parameter",
+      "Properties": {
+        "Config": {
+          "Type": "String",
+          "Name": "/cdktn-bench-toy/greeting",
+          "Value": "hello-from-cdktn-bench"
+        }
+      }
+    },
+    "ReadOnlyRole": {
+      "Type": "AWS::IAM::Role",
+      "Properties": {
+        "AssumeRolePolicyDocument": {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Principal": { "Service": "lambda.amazonaws.com" },
+              "Action": "sts:AssumeRole"
+            }
+          ]
+        },
+        "Policies": [
+          {
+            "PolicyName": "OverbroadPolicy",
+            "PolicyDocument": {
+              "Version": "2012-10-17",
+              "Statement": [
+                {
+                  "Effect": "Allow",
+                  "Action": "ssm:*",
+                  "Resource": "*"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  }
+}
