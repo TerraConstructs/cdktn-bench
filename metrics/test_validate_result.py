@@ -24,6 +24,7 @@ VALID_ROW = {
     "tokens_total": 1200,
     "reward": 1.0,
     "censored": False,
+    "tier1_not_verifiable": False,
 }
 
 
@@ -59,6 +60,7 @@ def test_checked_in_example_fixture_is_valid():
         "tokens_total",
         "reward",
         "censored",
+        "tier1_not_verifiable",
     ],
 )
 def test_missing_required_field_is_rejected(missing_field):
@@ -111,6 +113,33 @@ def test_censored_must_be_boolean():
     row["censored"] = "false"  # string, not bool
     errors = validate_result(row)
     assert errors
+
+
+def test_tier1_not_verifiable_must_be_boolean():
+    row = copy.deepcopy(VALID_ROW)
+    row["tier1_not_verifiable"] = "true"  # string, not bool
+    errors = validate_result(row)
+    assert errors
+    assert any("tier1_not_verifiable" in e for e in errors)
+
+
+def test_tier1_not_verifiable_true_with_detail_accepted():
+    row = copy.deepcopy(VALID_ROW)
+    row["tier1_not_verifiable"] = True
+    row["tier1_not_verifiable_detail"] = (
+        "policy-actions-read-only: policy references the created parameter "
+        "but its encoded value is plan-time-unknown"
+    )
+    assert validate_result(row) == []
+
+
+def test_tier1_not_verifiable_detail_without_the_flag_is_still_schema_valid():
+    # tier1_not_verifiable_detail is optional/informational-only, not
+    # schema-coupled to tier1_not_verifiable being true -- see its own
+    # description ("never schema-enforced").
+    row = copy.deepcopy(VALID_ROW)
+    row["tier1_not_verifiable_detail"] = "some detail"
+    assert validate_result(row) == []
 
 
 def test_negative_token_count_is_rejected():

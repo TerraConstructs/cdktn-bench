@@ -17,7 +17,8 @@
     "tokens_output",
     "tokens_total",
     "reward",
-    "censored"
+    "censored",
+    "tier1_not_verifiable"
   ],
   "properties": {
     "schema_version": {
@@ -79,6 +80,15 @@
     "censored": {
       "type": "boolean",
       "description": "True if the trial hit the budget cap (MAX_ITERS/MAX_TOKENS) before reaching a natural stop — right-censored for the tokens-to-green metric (build plan Phase 2 item 2), recorded rather than dropped. Independent of validity_class and reward."
+    },
+    "tier1_not_verifiable": {
+      "type": "boolean",
+      "description": "REQUIRED, default-false semantics: true iff gates/emit_result.py found a `/logs/verifier/tier1-not-verifiable` marker for this trial (generator/gen.py::build_static_tiers_sh tees it whenever the scenario's tier-1 policy.rego defines a `not_verifiable` rule, specs/SCHEMA.md §4.2.1, that fired against this trial's plan). Fixes a per-arm scoring bias (residual finding, 2026-08-06): a tier-1 value-content check (e.g. an IAM action allowlist) can go plan-time-unknown on the TF arms whenever a correct solution references another resource's provider-computed output — an entirely normal, idiomatic pattern — silently skipping that check while the CFN/awscdk arm (always fully static, no plan concept) has no such gap. Without this field, an identical wildcard-IAM violation scores 0.0 on awscdk but 1.0 on hcl_raw/terraconstructs with nothing in the row to show the tier-1 check was never actually evaluated for those two. Independent of validity_class and reward — always false when no marker was written (including for non-\"valid\" trials, which never run a verifier at all). Downstream analysis MUST flag or segment true rows separately: a reward of 1.0 with tier1_not_verifiable=true is not the same claim of correctness as reward 1.0 with tier1_not_verifiable=false, and pooling them silently reintroduces the exact bias this field exists to surface."
+    },
+    "tier1_not_verifiable_detail": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Free-text detail from the `/logs/verifier/tier1-not-verifiable` marker file itself (the human-readable message a scenario's `not_verifiable` Rego rule produced), present only when tier1_not_verifiable is true. Optional even then — informational only, never schema-enforced."
     },
     "scenario": {
       "type": "string",

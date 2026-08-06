@@ -11,6 +11,7 @@
   "tokens_total": 12850,
   "reward": 1.0,
   "censored": false,
+  "tier1_not_verifiable": false,
   "scenario": "anchor",
   "task": "cdktn-smoke/anchor-write-file",
   "trial_id": "example-trial-0001",

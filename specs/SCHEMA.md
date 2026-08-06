@@ -459,7 +459,38 @@ generation/review time instead of shipping silent.
      pass or an incorrect fail of a legitimately-correct solution. This is
      a known, standing v1 scope limitation (the oracle is synth/plan-only,
      never live/apply-time, per `DECISIONS.md`), not something a single
-     scenario spec can fix on its own.
+     scenario spec can fix on its own. **Made non-silent by a
+     residual-findings fix (2026-08-06):** treating this as "not
+     independently verifiable" must itself be *recorded*, not just
+     tolerated — a `policy.rego` covering an assert like this may define
+     an optional top-level `not_verifiable` set alongside its `deny` set,
+     e.g.:
+     ```rego
+     not_verifiable contains msg if {
+         # the graph-edge check passed but the plan-time value needed for
+         # the value-content check is unresolved -- fires ONLY for this
+         # case, never for a genuine violation (which `deny` already
+         # catches) or a fully-verifiable pass (which stays silent here).
+         ...
+         msg := sprintf("...", [...])
+     }
+     ```
+     A generated `tests/static_tiers.sh` (`generator/gen.py::build_static_tiers_sh`)
+     evaluates `data.cdktn_bench.<pkg>.not_verifiable` after `deny` and,
+     whenever it's non-empty, tees the detail to
+     `/logs/verifier/tier1-not-verifiable` — mirroring the existing
+     `tier1-unavailable`/`tf-plan-mock-sts-unavailable` non-silent-marker
+     convention. This is **non-gating**: it never affects `tier1_status`
+     or `/logs/verifier/reward.txt`, only whether the fact "this could not
+     be checked" is ever recorded anywhere. `not_verifiable` is optional —
+     a `policy.rego` that never defines it is treated as declaring no such
+     gap (evaluates to empty, no marker written) — but any tier-1 assert
+     that reaches this third bullet SHOULD define one, or the gap this
+     bullet exists to document degrades right back into a silent one at
+     grading time. See `oracles/rego/toy-ssm-parameter/policy.rego`'s own
+     `not_verifiable` rule for the worked example, and
+     `oracles/emit.py`'s generated policy skeleton for the scaffolded
+     placeholder every new tier-1 policy starts from.
 
 **Authoring rule going forward:** never mark a `structural_assert` tier
 `"0"` for an attribute that *can* be plan-time-unknown depending on how a

@@ -131,6 +131,44 @@ def classify_infra_failure(trial_dir: str | Path) -> dict[str, Any] | None:
     return None
 
 
+def read_tier1_not_verifiable(trial_dir: str | Path) -> tuple[bool, str | None]:
+    """Read the non-gating `/logs/verifier/tier1-not-verifiable` marker a
+    generated `tests/static_tiers.sh` tees whenever a scenario's tier-1
+    `policy.rego` defines a `not_verifiable` rule that fired for this
+    trial's plan (`generator/gen.py::build_static_tiers_sh`; the rule
+    contract itself is `specs/SCHEMA.md` §4.2.1's option-3 bullet).
+
+    Residual finding (2026-08-06): the marker was written but consumed by
+    nothing, so a trial whose tier-1 action-allowlist was never actually
+    checkable from plan JSON (an entirely normal, idiomatic Terraform
+    pattern -- referencing another resource's provider-computed output,
+    per §4.2.1) was indistinguishable in the published data from one that
+    WAS checked and passed: an identical wildcard-IAM violation scores 0.0
+    on `awscdk` (cfn-guard has no plan-time-unknown gap -- CFN synth is
+    always fully static) but 1.0 on the TF arms, with nothing in the row
+    itself to show why. This closes the read side.
+
+    Host-side path is `<trial_dir>/verifier/tier1-not-verifiable`
+    (`harbor/models/trial/paths.py`: `verifier_dir = trial_dir /
+    "verifier"`, bind-mounted into the container at `/logs/verifier` --
+    the exact same host/container path convention `classify_infra_failure`
+    above already relies on for `/logs/agent`).
+
+    Returns ``(present, detail)``: ``present`` is always a bool (``True``
+    iff the marker file exists); ``detail`` is the marker's own text
+    (already human-readable -- written by `build_static_tiers_sh`) when
+    the file exists and is non-empty, else ``None``.
+    """
+    marker = Path(trial_dir) / "verifier" / "tier1-not-verifiable"
+    if not marker.is_file():
+        return False, None
+    try:
+        text = marker.read_text(errors="replace").strip()
+    except OSError:
+        return True, None
+    return True, (text or None)
+
+
 def _as_number(value: Any) -> float | None:
     """Mirrors ``aws_bench/metrics/run_data.py``'s own ``_as_number`` exactly
     (bool excluded even though ``bool`` is an ``int`` subclass; NaN rejected)
@@ -319,6 +357,8 @@ def build_result_record(
         equipping_hash = None
         equipping_hash_error = str(exc)
 
+    tier1_not_verifiable, tier1_not_verifiable_detail = read_tier1_not_verifiable(trial_dir)
+
     record: dict[str, Any] = {
         "trial_dir": str(trial_dir),
         "arm": arm,
@@ -330,6 +370,12 @@ def build_result_record(
         "equipping_hash": equipping_hash,
         "audit": audit,
         "infra": infra,
+        # Always attached regardless of validity_class (same reasoning as
+        # audit/infra above) -- present/absent is a fact about the trial's
+        # own logs, independent of whether the trial's toolchain use
+        # audited as genuine.
+        "tier1_not_verifiable": tier1_not_verifiable,
+        "tier1_not_verifiable_detail": tier1_not_verifiable_detail,
     }
     if equipping_hash_error is not None:
         record["equipping_hash_error"] = equipping_hash_error
@@ -406,6 +452,16 @@ def to_result_row(
         "tokens_total": tokens_total,
         "reward": reward,
         "censored": censored,
+        # Residual finding (2026-08-06): REQUIRED, defaulting False when
+        # build_result_record() found no `verifier/tier1-not-verifiable`
+        # marker -- schema-required-with-default-false semantics, same
+        # shape as `censored` above (always emitted by this producer, no
+        # JSON-Schema `default` keyword needed since the row is never
+        # missing it). See read_tier1_not_verifiable()'s own docstring for
+        # why this must never be silently absent: it is the only signal
+        # distinguishing "tier-1 was checked and passed" from "tier-1 was
+        # never actually checkable" in the published data.
+        "tier1_not_verifiable": bool(record.get("tier1_not_verifiable", False)),
     }
     if scenario is not None:
         row["scenario"] = scenario
@@ -417,6 +473,8 @@ def to_result_row(
         row["job_id"] = job_id
     if tokens_cached is not None:
         row["tokens_cached"] = tokens_cached
+    if record.get("tier1_not_verifiable_detail"):
+        row["tier1_not_verifiable_detail"] = record["tier1_not_verifiable_detail"]
     if record.get("cost_usd") is not None:
         row["cost_usd"] = record["cost_usd"]
     if record["validity_class"] != VALID:

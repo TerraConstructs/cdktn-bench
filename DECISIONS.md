@@ -842,3 +842,332 @@ nonzero, correct reward.
   tier-0 assert, same as Amendment 5's precedent for a renamed assert).
 
 **Proven:** `bash ci/check-smoke-drift.sh` → `smoke-drift: OK`; `make check` green.
+
+## Amendment 7 (2026-08-06) — residual-findings fixes
+
+Five findings closed together: two code-level fixes that shipped in the same
+round as Amendment 6's F2 (IAM-shape-coverage widening of
+`oracles/rego/toy-ssm-parameter/policy.rego`) but were never logged here —
+this entry backfills that gap, which is itself the first finding closed
+below — plus three follow-on hardening fixes making the `not_verifiable`/
+`tier1-not-verifiable` contract those two code fixes introduced actually
+documented outside the one hand-authored toy policy, and actually consumed
+on the metrics side instead of written-and-ignored.
+
+### R1 — `absent_or_eq`: `parameter-tier-standard` false-negatived a
+### semantically-correct explicit-default solution
+
+**Finding:** `parameter-tier-standard` used `op: not_exists` on the SSM
+parameter's `Tier` to catch the `parameter-tier-enum` wrong-value catch.
+PROVEN on `hcl_raw`: a solution identical to the reference `solve.sh` except
+for writing an explicit `tier = "Standard"` (semantically identical to
+omitting the field — the instruction never mentions a tier) produced `FAIL
+[parameter-tier-standard]: op=not_exists expected=null resolved=["Standard"]`,
+`tier0_pass=0`, `reward=0.0` — despite being exactly as correct as the
+omitted form. Arm idioms differ in how readily they emit explicit defaults,
+so this injected a per-arm scoring bias into the exact cross-arm comparison
+this benchmark exists to measure, not just a theoretical edge case.
+
+**Fix:** added a new `op: absent_or_eq` to `specs/SCHEMA.md` §4.2's op
+table: passes when the path resolves to 0 nodes (omitted) OR exactly 1 node
+equal to `expected` (explicit, semantically-identical value); >1 resolved
+nodes fails, same ambiguity rule as `eq`. Implemented identically across
+both evaluators (`oracles/lib/structural.py`'s `resolve`/op-dispatch and
+`generator/jsonpath_jq.py`-compiled tier-0 jq path via
+`generator/gen.py`'s assert-call emission), proven to agree via
+`oracles/tests/test_op_parity.py`'s dedicated `absent_or_eq` cases (CFN
+omitted-key, CFN explicit-match, CFN explicit-mismatch, TF `null`-filtered).
+`specs/_toy/toy-ssm-parameter.yaml`'s `parameter-tier-standard` assert
+switched from `not_exists` to `absent_or_eq` (`expected: "Standard"`) —
+still correctly rejects the wrong-enum-value catch (`Advanced`/
+`IntelligentTiering` resolves to 1 node not equal to `"Standard"` → fails,
+unchanged from before) while now also accepting the explicit-default form.
+The assert's own `description` was corrected too: the old text claimed this
+assert "only rejects the wrong-enum-value catch case", which was never true
+of `not_exists` (SCHEMA.md's general `op` contract only ever documented
+"0 nodes = pass" for `not_exists`, full stop — there was never a carve-out
+for "unless the resolved value happens to equal the default").
+
+**Proven:** the hand-run explicit-`tier = "Standard"` hcl_raw fixture now
+scores `tier0_pass=1`/`reward=1.0`; the `parameter-tier-enum` broken fixture
+(wrong enum value) still scores `reward=0.0` for all three arms per `make
+falsifiability` (below).
+
+### R2 — tier-1 oracle vacuity: IAM shape coverage, and the falsifiability
+### gate's `broken/<dir>/` discovery convention that proves it
+
+**Finding:** every `deny` rule in `policy.rego` filtered
+`resources[].type == "aws_iam_role_policy"` only. A standalone/managed
+`aws_iam_policy` (`Action:"*"`/`Resource:"*"`) attached to the role via a
+*separate* `aws_iam_role_policy_attachment` resource — an equally idiomatic
+Terraform shape, and the shape `terraconstructs`' own `iam.Role.
+addToPolicy()` L2 helper is not the only path to — scored `tier1_status=
+PASS` regardless of how wide-open its policy was. PROVEN vacuous directly:
+```
+$ opa eval -f raw -I -d policy.rego 'data.cdktn_bench.toy_ssm_parameter.deny' \
+    < <(terraform show -json against a wildcard aws_iam_policy +
+        aws_iam_role_policy_attachment plan)
+[]
+```
+
+**Fix:** widened the collection every `deny` rule iterates from
+`role_policies`/`planned_role_policies` (`aws_iam_role_policy` only) to
+`policy_resources`/`planned_policy_resources` (`aws_iam_role_policy` OR
+`aws_iam_policy` — both shapes attribute the policy document JSON at the
+same `.expressions.policy`/`.values.policy` paths, so every existing rule
+body needed zero further changes), plus a new `role_has_no_recognized_policy`
+deny that fails closed when an `aws_iam_role` exists but no resource of
+either recognized shape does at all (the comprehension-based rules are
+vacuously silent on an empty `policy_resources` list — "some rp in [] ..."
+can never generate a violation — so that gap needed its own rule, not just a
+wider collection). Two new negative fixtures added:
+`solution/broken/policy-scoped-to-parameter-alt-shape/` (the exact
+`aws_iam_policy` + `aws_iam_role_policy_attachment` shape from the
+reproduction) for all three arms — deliberately **not** named after a
+declared `catches[].name`, to exercise (and lock in) a convention
+`gates/oracle_falsifiability.py::check_arm` already had implicitly but had
+never been required to actually prove: any directory under
+`solution/broken/` **not** matching a declared catch name is still
+discovered (`sorted(broken_dir.iterdir())`, skipping only names already
+covered by a catch) and still required to score `reward == 0.0`. This
+matters beyond this one fixture: it means catching "an alternate, equally-
+idiomatic IAM shape hits the same violation" never depended on inventing a
+new named catch in the spec just to get gate coverage — a future scenario's
+policy bundle can be proven against as many alternate-shape negatives as its
+author writes, with no `catches[]` schema pressure to name each one, and a
+future regression that re-narrows the policy bundle back to a single shape
+turns this gate red instead of silently losing coverage no catch name names.
+
+**Proven:** `make falsifiability SPEC=specs/_toy/toy-ssm-parameter.yaml` —
+the alt-shape fixture scores `reward=0.0` for all three arms (see the 12/12
+transcript in "Final state" below — includes it as a fourth, non-catch-named
+outcome per arm alongside `solve.sh` and the two `catches[]`-named
+`broken/`s).
+
+### R3 — `not_verifiable`: the tier-1 action-allowlist check silently
+### skipped whenever the policy referenced a computed ARN
+
+**Finding:** `policy-actions-read-only`'s `deny` rule only evaluates when
+`values.policy` is plan-time-known (`pv.values.policy != null` guard, per
+the spec's own CAVEAT and the G2 fix, Amendment 5). PROVEN: an `hcl_raw`
+solution with `Resource = aws_ssm_parameter.greeting.arn` and `Action =
+["ssm:*", "iam:*", "s3:*"]` — the exact wildcard action set the
+`policy-scoped-to-parameter` negative fixture uses, just referencing `.arn`
+instead of `.name` — leaves `values.policy` plan-time-unknown
+(`specs/SCHEMA.md` §4.2.1). The graph-edge rule (`policy-resource-scoped-
+not-wildcard-tf`) still passes (the `.arn` reference IS present, so this is
+a legitimately-scoped solution by that check), tier-0 passes, and — before
+this fix — nothing anywhere recorded that the action allowlist was never
+actually checked for it. `specs/SCHEMA.md` §4.2.1 option 3 mandates this be
+"logged, not silently denied OR silently allowed"; the policy already did
+the correct *allow* half (an unverifiable fact must not be guessed as a
+denial) but was silent about it, which is the part this fix closes.
+
+**Also decided, same finding: §4.2.1 option 1 (narrow the scenario so the
+attribute stays fully static) was considered and explicitly NOT pursued for
+`policy-actions-read-only`.** `.configuration...expressions.policy` (option
+1's plan-time-known alternative source) was checked directly as a possible
+Action-list source and verified to not carry one: a `jsonencode(...)` call
+collapses to a bare references list in Terraform's own configuration JSON,
+nothing else survives:
+```
+$ jq '.configuration.root_module.resources[]
+      | select(.type=="aws_iam_role_policy") | .expressions.policy' plan.json
+{"references": ["aws_ssm_parameter.greeting.arn", "aws_ssm_parameter.greeting"]}
+```
+No nested `Action`/`Statement` structure exists at that path for *any*
+`jsonencode`'d policy, correct or not — there is no way to recover "just the
+statically-known parts" of an encoded attribute from `.configuration` any
+more than from `.planned_values`, so narrowing the scenario further (option
+1) would not have helped this specific check, and splitting into two
+per-artifact-family asserts (option 2) doesn't apply either since this is a
+TF-only check (`applies_to` never includes `awscdk` here — CFN has its own,
+always-static `policy-resource-scoped-not-wildcard-cfn` equivalent, and
+`awscdk`'s `policy-actions-read-only` copy is graded off the same fully-
+static `cfn_jsonpath`, no plan-JSON gap). Option 3 (document + log
+non-silently) is therefore the only one of the three that actually closes
+this gap for this assert — recorded here so a future contributor doesn't
+re-spend the investigation.
+
+**Fix:** added a second, non-`deny` top-level Rego set, `not_verifiable`,
+to `oracles/rego/toy-ssm-parameter/policy.rego` — fires exactly when the
+graph-edge check already passed but the encoded `policy` value is
+plan-time-unknown (`object.get(pv.values, "policy", null) == null`, not
+`pv.values.policy == null` — an attribute whose entire value is
+plan-time-unknown is *omitted* from real `terraform show -json` output, not
+present-with-literal-null; `pv.values.policy == null` would silently never
+match an omitted key either, the same silent-skip class of bug this whole
+fix exists to close, caught here before shipping by running it against a
+real plan.json). `generator/gen.py::build_static_tiers_sh` evaluates
+`data.cdktn_bench.<pkg>.not_verifiable` (captured to a variable first, not
+piped straight through `jq -e`, since a `policy.rego` that never defines
+this optional rule makes `opa eval` print nothing at all — not `"[]"` —
+which would otherwise make a naive `jq -e 'length==0'` check FAIL and write
+a false marker on every scenario that simply hasn't adopted the rule yet)
+and, when non-empty, tees the detail to `/logs/verifier/tier1-not-verifiable`
+— mirroring the existing `tier1-unavailable`/`tf-plan-mock-sts-unavailable`
+non-silent-marker convention (Amendments 4–6). Non-gating by construction:
+does not affect `tier1_status` or `/logs/verifier/reward.txt` either way.
+
+**Proven:** a hand-run `.arn`-referencing wildcard-action fixture (the exact
+reproduction above) now fires `not_verifiable` non-empty where it used to be
+silent, teed to `/logs/verifier/tier1-not-verifiable`, while `tier1_status`
+stays `PASS`/`reward=1.0` for that same fixture (unaffected — the point of
+the fix is recording the gap, not gating on it). `policy-actions-read-only`
+still correctly `deny`s the plan-time-known wildcard case (the
+`policy-scoped-to-parameter` catch, `.name`-referencing) — see the
+`grading-proof`/`falsifiability` transcripts below, both green.
+
+### R4 — the `not_verifiable`/`tier1-not-verifiable` contract R3 introduced
+### was undocumented outside the one hand-authored toy policy
+
+**Finding:** R3's fix (rule name, marker path, non-gating semantics, the
+`opa eval` "prints nothing, not `[]`" gotcha) existed only as inline
+comments in `oracles/rego/toy-ssm-parameter/policy.rego` and
+`generator/gen.py::build_static_tiers_sh`. `specs/SCHEMA.md` §4.2.1's
+option-3 bullet — the exact place a future scenario author would look when
+deciding whether their new tier-1 assert needs this — said only "document
+the gap ... Slice D's Rego must treat [it] as not independently verifiable",
+with no mention of a `not_verifiable` rule, its name, or where its output
+lands. A hand-authored `policy.rego` for the next scenario with this same
+gap shape had nothing to copy from and no schema-level nudge to define one.
+
+**Fix, three parts:**
+- `specs/SCHEMA.md` §4.2.1's option-3 bullet now names the contract
+  directly: an optional top-level `not_verifiable` set alongside `deny`, a
+  worked Rego snippet, and the exact marker path
+  (`/logs/verifier/tier1-not-verifiable`) the generated `static_tiers.sh`
+  tees it to — plus an explicit pointer to
+  `oracles/rego/toy-ssm-parameter/policy.rego`'s real rule and
+  `oracles/emit.py`'s scaffolded placeholder (next bullet) as the two
+  worked examples.
+- `oracles/emit.py::_render_rego_skeleton` now scaffolds an empty
+  `not_verifiable contains msg if { false; msg := "" }` placeholder + a
+  `TODO(Slice D, optional)` comment block into every freshly-generated
+  `policy.rego`, alongside the existing `allow`/`deny` placeholder — so
+  every *new* scenario's policy starts from a file that already has
+  somewhere to put this rule, closing the gap going forward without
+  touching any already-hand-authored policy (`emit_oracles()` never
+  overwrites an existing `policy.rego`, unchanged from Amendment 3/§8.2
+  rule 7). Verified the new skeleton is still syntactically valid Rego
+  (`opa check`) and that `oracles/tests/test_emit.py`'s existing
+  content/idempotency/`opa check` suite stays green unmodified.
+- `generator/gen.py` gained `check_not_verifiable_coverage(spec)`, called
+  from `generate()` right after oracle emission: for every tier-"1"
+  `structural_assert` whose `tf_jsonpath` reads a `.planned_values...
+  values.<attr>` shape (`specs/SCHEMA.md` §4.2.1's plan-time-unknown-prone
+  pattern), warn on stderr (`make gen`/`make gen-all`, non-fatal — a
+  missing rule is not itself proof of a bug, e.g. an `awscdk`-only tier-1
+  assert never needs one) if the scenario's `oracles/rego/<id>/policy.rego`
+  defines no `not_verifiable` rule at all (regex match on the rule head,
+  `contains`/`[`/`:=` forms — a static generation-time heuristic, not a
+  substitute for `build_static_tiers_sh`'s own real `opa eval` at trial
+  time). Verified against the real toy spec (clean, no warning — its
+  `policy.rego` already defines the rule) and against a temporary, restored
+  copy of that same `policy.rego` with the rule head renamed to disable the
+  match (warning fires, names the exact assert and path).
+
+**Proven:** `make gen SPEC=specs/_toy/toy-ssm-parameter.yaml` regenerates
+cleanly with no warning and no on-disk diff outside the three files this fix
+touched (`git status --short` showed only `generator/gen.py`,
+`oracles/emit.py`, `specs/SCHEMA.md` modified — no generated `tasks/`/
+`oracles/toy-ssm-parameter/` drift). `oracles/tests/test_emit.py` — 9/9
+green.
+
+### R5 — the `tier1-not-verifiable` marker R3 introduced was consumed by
+### nothing, biasing per-arm scoring data
+
+**Finding:** R3 made the tier-1 not-independently-verifiable fact
+non-silent *in the trial's own logs*, but nothing downstream ever read
+`/logs/verifier/tier1-not-verifiable` back out. Consequence: a trial whose
+tier-1 action-allowlist was never actually checkable from plan JSON (an
+entirely normal, idiomatic Terraform pattern — referencing another
+resource's computed output) is indistinguishable, in the published
+`metrics/result_schema.json` row, from one where tier-1 WAS fully evaluated
+and passed. Concretely: the identical wildcard-IAM violation
+(`Action:["ssm:*","iam:*","s3:*"], Resource: <computed ARN>`) scores
+`reward=0.0` on `awscdk` (cfn-guard has no plan-time-unknown concept — CFN
+synth is always fully static) but `reward=1.0` on `hcl_raw`/
+`terraconstructs`, with nothing in the row itself showing that the TF arms'
+`reward=1.0` came with tier-1 unchecked, not tier-1-passed. A downstream
+analysis pooling per-arm reward without this signal would read that as
+`awscdk` being stricter/worse, not as "the TF arms' tier-1 check for this
+trial never ran."
+
+**Fix:** `gates/emit_result.py` gained `read_tier1_not_verifiable(trial_dir)`
+— reads the host-side `<trial_dir>/verifier/tier1-not-verifiable` (the
+`verifier/` bind-mount is Harbor's own `TrialPaths.verifier_dir`, host
+mirror of the in-container `/logs/verifier`, exactly the same host/
+container path convention `classify_infra_failure` already relies on for
+`/logs/agent`) and returns `(present: bool, detail: str | None)`.
+`build_result_record()` now always attaches `tier1_not_verifiable`/
+`tier1_not_verifiable_detail` to every record (same "always attached
+regardless of validity_class" treatment as `audit`/`infra` — the marker is
+a fact about the trial's own logs, independent of whether the toolchain
+audited as genuine). `to_result_row()` surfaces `tier1_not_verifiable` as a
+**REQUIRED** schema field (default `false` when no marker was found — same
+producer-side "always emitted, no JSON-Schema `default` keyword needed"
+shape as the existing `censored` field) plus an optional
+`tier1_not_verifiable_detail` string when the marker had content.
+`metrics/result_schema.json` gained both properties, with
+`tier1_not_verifiable` added to `required` and its description stating
+downstream analysis must flag/segment `true` rows separately — pooling them
+with `tier1_not_verifiable=false` rows silently reintroduces the exact bias
+this field exists to surface. `metrics/examples/valid-result.json` and
+`metrics/test_validate_result.py`'s `VALID_ROW`/missing-field parametrize
+list updated to keep the now-required field present everywhere a row is
+asserted valid.
+
+**Tests added** (`gates/tests/test_emit_result.py::TestTier1NotVerifiableMarker`,
+11 cases; `metrics/test_validate_result.py`, 3 cases): marker absent (the
+untouched checked-in `genuine/` fixtures) → `tier1_not_verifiable is False`,
+no detail, on both the raw record and the schema-validated row, for all
+three arms. Marker present (a `tmp_path` copy of the `genuine` fixture with
+a `verifier/tier1-not-verifiable` file added — the checked-in fixtures
+themselves are never mutated) → `True` + detail text, for all three arms,
+still schema-valid. Also covers: an empty-but-present marker file → `True`
+with no detail; the marker never affects `validity_class`/`reward` either
+direction; and a marker present on an otherwise-`invalid-bypass` trial is
+still recorded on the record (`read_tier1_not_verifiable` only looks at the
+file, independent of audit/validity) even though that row's score fields
+stay zeroed.
+
+**Proven:** `gates/tests/test_emit_result.py` — 46/46 green (35 prior + 11
+new). `metrics/test_validate_result.py` — all green (schema round-trip
+covers `tier1_not_verifiable`'s boolean-type check, the true+detail case,
+and detail-without-the-flag staying schema-valid per its own "never
+schema-enforced" description). `make check` (`check-result-schema` +
+`test-gates`) green end-to-end, including `metrics/emit_fixture_rows.py`'s
+real gate-fixture round-trip through the now-required field.
+
+### Final state
+
+- `make falsifiability SPEC=specs/_toy/toy-ssm-parameter.yaml` — **12/12**
+  outcomes `PASS` (3 arms × {good `solve.sh`, `parameter-tier-enum` broken,
+  `policy-scoped-to-parameter` broken, `policy-scoped-to-parameter-alt-shape`
+  broken} — the fourth, non-catch-named outcome per arm is R2's discovery-
+  convention fixture).
+- `make grading-proof SPEC=specs/_toy/toy-ssm-parameter.yaml` — **6/6**
+  outcomes `PASS` (unchanged from Amendment 6 — correct solution
+  `reward=1.0` + `policy-scoped-to-parameter` negative `reward=0.0`, all
+  three arms).
+- `make check-paths SPEC=specs/_toy/toy-ssm-parameter.yaml` — **21/21**
+  green (7 asserts × 3 arms, tier-0 and tier-1 alike, unchanged path shapes
+  — none of R1–R5 touched a declared `tf_jsonpath`/`cfn_jsonpath`).
+- `uv run pytest gates metrics -q` (`make test-gates`) — **181 passed**
+  (166 prior + 15 new: 11 from `TestTier1NotVerifiableMarker`, 3 from
+  `metrics/test_validate_result.py`'s new `tier1_not_verifiable` cases, 1
+  from the widened missing-required-field parametrize list).
+- `uv run pytest gates metrics oracles test -q` — **280 passed** (broader
+  suite; 265 prior + the same 15 new — R1–R4 needed no new test-suite
+  entries: R1/R2/R3 predate this entry and already had `oracles/tests/
+  test_op_parity.py`/`test_structural.py` coverage baked into the 265, and
+  R4's `check_not_verifiable_coverage` is proven by the manual `make gen`
+  transcript above, the same convention `check_reference_paths.py`/
+  `oracle_falsifiability.py` already use for host-toolchain-dependent
+  checks that aren't wired into `test-gates`).
+- `make check` — green (schema validation, including the now-required
+  `tier1_not_verifiable` field, + 181 tests + smoke-drift OK).
+
+**Proven:** `bash ci/check-smoke-drift.sh` → `smoke-drift: OK`; `make check`
+green.

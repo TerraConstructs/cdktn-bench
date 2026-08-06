@@ -12,6 +12,7 @@ Each arm contributes three trial-dir fixtures:
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,7 @@ from gates.emit_result import (
     VALID,
     build_result_record,
     classify_infra_failure,
+    read_tier1_not_verifiable,
     to_result_row,
 )
 from gates.tests.conftest import ARMS, SCENARIOS, trial_dir
@@ -484,3 +486,104 @@ def test_missing_instruction_md_degrades_equipping_hash_to_null_not_a_crash(tmp_
     assert record["validity_class"] == VALID
     assert record["equipping_hash"] is None
     assert "equipping_hash_error" in record
+
+
+class TestTier1NotVerifiableMarker:
+    """Residual finding (2026-08-06): a trial whose tier-1 policy declared a
+    fact "not independently verifiable from plan JSON" (specs/SCHEMA.md
+    §4.2.1) writes /logs/verifier/tier1-not-verifiable, but nothing read it
+    back -- so that trial's row looked identical to one where tier-1 was
+    fully checked and passed. gates/emit_result.py now reads the marker
+    (host path <trial_dir>/verifier/tier1-not-verifiable, mirroring
+    /logs/agent's own bind-mount convention) and surfaces it as
+    tier1_not_verifiable (+ optional _detail) on the emitted row. These
+    tests prove both directions: marker present -> True on the row; marker
+    absent -> False (the schema's REQUIRED-with-default-false field).
+    """
+
+    def _trial_with_marker(self, tmp_path: Path, arm: str, detail: str | None) -> Path:
+        """Copy the checked-in `genuine` fixture for `arm` into `tmp_path`
+        and add a /logs/verifier/tier1-not-verifiable marker (host path
+        verifier/tier1-not-verifiable) -- never mutates the checked-in
+        fixture itself."""
+        trial = tmp_path / "trial"
+        shutil.copytree(trial_dir(arm, "genuine"), trial)
+        verifier_dir = trial / "verifier"
+        verifier_dir.mkdir(parents=True, exist_ok=True)
+        marker = verifier_dir / "tier1-not-verifiable"
+        marker.write_text(detail if detail is not None else "")
+        return trial
+
+    @pytest.mark.parametrize("arm", ARMS)
+    def test_marker_absent_reads_false_with_no_detail(self, arm: str) -> None:
+        # The checked-in genuine/ fixtures carry no verifier/ dir at all.
+        present, detail = read_tier1_not_verifiable(trial_dir(arm, "genuine"))
+        assert present is False
+        assert detail is None
+
+    @pytest.mark.parametrize("arm", ARMS)
+    def test_marker_present_reads_true_with_detail(self, arm: str, tmp_path: Path) -> None:
+        trial = self._trial_with_marker(
+            tmp_path / arm,
+            arm,
+            "policy-actions-read-only: value unresolved, not independently verifiable",
+        )
+        present, detail = read_tier1_not_verifiable(trial)
+        assert present is True
+        assert detail == "policy-actions-read-only: value unresolved, not independently verifiable"
+
+    def test_marker_present_but_empty_reads_true_with_no_detail(self, tmp_path: Path) -> None:
+        trial = self._trial_with_marker(tmp_path, "awscdk", "")
+        present, detail = read_tier1_not_verifiable(trial)
+        assert present is True
+        assert detail is None
+
+    def test_absent_marker_yields_false_field_on_row(self, task_dir) -> None:
+        record = build_result_record(
+            trial_dir("awscdk", "genuine"), "awscdk", task_dir, FAKE_DIGEST_IMAGE_REF, {}
+        )
+        assert record["tier1_not_verifiable"] is False
+        assert record["tier1_not_verifiable_detail"] is None
+        row = to_result_row(record, model="claude-sonnet-5", harness="empty", oracle_version="oracles@fixture")
+        assert row["tier1_not_verifiable"] is False
+        assert "tier1_not_verifiable_detail" not in row
+        assert validate_result(row) == []
+
+    def test_present_marker_yields_true_field_and_detail_on_row(self, task_dir, tmp_path: Path) -> None:
+        detail = "policy-actions-read-only: value unresolved, not independently verifiable"
+        trial = self._trial_with_marker(tmp_path, "hcl-raw", detail)
+        record = build_result_record(trial, "hcl-raw", task_dir, FAKE_DIGEST_IMAGE_REF, {})
+        assert record["tier1_not_verifiable"] is True
+        assert record["tier1_not_verifiable_detail"] == detail
+        row = to_result_row(record, model="claude-sonnet-5", harness="empty", oracle_version="oracles@fixture")
+        assert row["tier1_not_verifiable"] is True
+        assert row["tier1_not_verifiable_detail"] == detail
+        assert validate_result(row) == []
+
+    def test_marker_does_not_affect_validity_or_reward(self, task_dir, tmp_path: Path) -> None:
+        # tier1_not_verifiable is orthogonal to validity_class/reward -- the
+        # marker is non-gating by construction (generator/gen.py's own
+        # build_static_tiers_sh never lets it touch tier1_status or
+        # reward.txt); this is the emit_result.py-side half of that
+        # contract.
+        trial = self._trial_with_marker(tmp_path, "awscdk", "some detail")
+        record = build_result_record(trial, "awscdk", task_dir, FAKE_DIGEST_IMAGE_REF, {})
+        assert record["validity_class"] == VALID
+        assert record["reward"] == 1.0
+        assert record["tier1_not_verifiable"] is True
+
+    def test_marker_present_on_an_invalid_trial_is_still_recorded(self, task_dir, tmp_path: Path) -> None:
+        # A bypass trial still has the field on its record (always
+        # attached, same as audit/infra) even though the row's own
+        # score fields are zeroed -- read_tier1_not_verifiable() only
+        # looks at the marker file, not validity_class.
+        trial = tmp_path / "trial"
+        shutil.copytree(trial_dir("awscdk", "bypass"), trial)
+        (trial / "verifier").mkdir(parents=True, exist_ok=True)
+        (trial / "verifier" / "tier1-not-verifiable").write_text("some detail")
+        record = build_result_record(trial, "awscdk", task_dir, FAKE_DIGEST_IMAGE_REF, {})
+        assert record["validity_class"] == INVALID_BYPASS
+        assert record["tier1_not_verifiable"] is True
+        row = to_result_row(record, model="claude-sonnet-5", harness="empty", oracle_version="oracles@fixture")
+        assert row["tier1_not_verifiable"] is True
+        assert validate_result(row) == []

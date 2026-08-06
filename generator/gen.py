@@ -29,6 +29,7 @@ fully spec-derived and must never drift from the spec by hand-editing
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import shutil
 import stat
@@ -1439,6 +1440,76 @@ def generate_oracles(spec: Spec) -> None:
     emit_oracles(spec.model_dump(mode="json"), root=REPO_ROOT)
 
 
+# Matches a tf_jsonpath segment that reads a plan-time VALUE (`.values.<attr>`)
+# somewhere under `.planned_values` -- the exact shape specs/SCHEMA.md §4.2.1
+# warns can go plan-time-unknown (`(known after apply)`, absent from
+# `.planned_values` entirely) whenever a correct solution's relevant
+# attribute references another resource's provider-computed output. A tier-0
+# assert can use this same shape safely (tier-0 asserts are only ever
+# authored for attributes that stay statically known, per §4.2.1's
+# "Authoring rule going forward"); this check is scoped to tier-"1" only,
+# matching finding 2c's own ask.
+_PLAN_TIME_VALUE_PATH_RE = re.compile(r"planned_values.*\.values\.")
+
+# Coarse, generation-time heuristic for "does this policy.rego define a
+# `not_verifiable` rule at all" -- deliberately a plain substring/regex
+# check on the file text, not an `opa eval`/AST inspection: this runs at
+# `make gen` time, long before a real synth/plan artifact exists to
+# evaluate the policy against (gen.py::build_static_tiers_sh's own runtime
+# check IS the real `opa eval -- data.cdktn_bench.<pkg>.not_verifiable`
+# evaluation; this is only a static early-warning, not a substitute for
+# it). Matches either rego.v1 (`not_verifiable contains msg if {`) or
+# legacy (`not_verifiable[msg] {` / `not_verifiable := {`) rule-head forms.
+_NOT_VERIFIABLE_RULE_RE = re.compile(r"\bnot_verifiable\b\s*(contains\b|\[|:=)")
+
+
+def check_not_verifiable_coverage(spec: Spec) -> list[str]:
+    """Residual-findings fix (2026-08-06), finding 2c: warn at generation
+    time when a spec declares a tier-"1" structural_assert whose
+    `tf_jsonpath` reads a plan-time-unknown-prone `.planned_values...
+    values.<attr>` path (specs/SCHEMA.md §4.2.1) but the scenario's
+    `oracles/rego/<id>/policy.rego` defines no `not_verifiable` rule at all
+    -- the exact "silently skipped, nothing records it" shape the residual
+    finding this fix closes was named for (see
+    oracles/rego/toy-ssm-parameter/policy.rego's own `not_verifiable`
+    fix-header comment for the worked example this generalizes).
+
+    Non-fatal by design: a missing `not_verifiable` rule is not itself
+    proof of a bug (`applies_to: [awscdk]`-only tier-1 asserts, or ones
+    whose relevant attribute genuinely stays plan-time-known, never need
+    one), so this returns warnings for the caller to print rather than
+    raising -- `make gen`/`make check` must not start hard-failing on
+    already-shipped scenarios whose hand-authored policy predates this
+    check. Returns one message per affected assert; empty list means clean
+    (either no such tier-1 asserts, or the policy already defines the
+    rule).
+    """
+    flagged = [
+        a
+        for a in spec.oracle.structural_asserts
+        if a.tier == "1" and a.tf_jsonpath and _PLAN_TIME_VALUE_PATH_RE.search(a.tf_jsonpath)
+    ]
+    if not flagged:
+        return []
+
+    rego_path = ORACLES_DIR / "rego" / spec.id / "policy.rego"
+    if rego_path.exists() and _NOT_VERIFIABLE_RULE_RE.search(rego_path.read_text()):
+        return []
+
+    where = "policy.rego is missing" if not rego_path.exists() else f"{rego_path.relative_to(REPO_ROOT)} defines no `not_verifiable` rule"
+    return [
+        f"tier-1 assert {a.name!r} reads a plan-time-value path "
+        f"({a.tf_jsonpath!r}) that specs/SCHEMA.md §4.2.1 warns can go "
+        f"plan-time-unknown, but {where} -- a correct solution that "
+        f"references another resource's computed output may silently skip "
+        f"this check with nothing recorded. Add an optional top-level "
+        f"`not_verifiable` rule (see oracles/rego/toy-ssm-parameter/"
+        f"policy.rego, or the TODO in the scaffolded policy.rego skeleton) "
+        f"once this is authored."
+        for a in flagged
+    ]
+
+
 def self_check_parity(spec: Spec, generated: dict[Arm, Path]) -> None:
     """Re-verify prompt parity against what actually landed on disk (not just
     what build_instruction_md computed in memory) -- SCHEMA.md §8.2 point 2.
@@ -1499,6 +1570,8 @@ def update_local_registry(spec: Spec, generated: dict[Arm, Path]) -> None:
 def generate(spec_path: Path) -> dict[Arm, Path]:
     spec = load_spec(spec_path)
     generate_oracles(spec)
+    for warning in check_not_verifiable_coverage(spec):
+        print(f"WARNING: {warning}", file=sys.stderr)
     generated: dict[Arm, Path] = {}
     for arm in spec.arms.enabled_arms():
         generated[arm] = generate_arm(spec, arm)
