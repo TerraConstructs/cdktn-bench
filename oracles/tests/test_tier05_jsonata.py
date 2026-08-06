@@ -61,6 +61,11 @@ def asl_decomposed_output() -> dict:
     return _load_json("mini_asl_cfn_decomposed_output.json")
 
 
+@pytest.fixture
+def asl_hardcoded_literal_output() -> dict:
+    return _load_json("mini_asl_cfn_hardcoded_literal_output.json")
+
+
 class TestStripBraces:
     def test_strips_wrapper(self):
         assert strip_braces("{% 'hello-' & $states.input.name %}") == "'hello-' & $states.input.name"
@@ -348,6 +353,115 @@ class TestRunTier05:
         assert not results[0].passed
         assert results[0].actual_output["grandTotal"] == 25
         assert "did not match" in (results[0].error or "")
+
+
+    def test_hardcoded_literal_container_fails_despite_matching_expected_output(
+        self, asl_hardcoded_literal_output
+    ):
+        # THE regression test for benchmark-integrity review finding
+        # "tier05_jsonata materialize() container fallback accepts a
+        # fully-hardcoded literal" (2026-08-06): ComputeTotals' Output in
+        # this fixture is a FULLY hardcoded literal -- zero {% ... %}
+        # expressions anywhere inside it -- tuned to equal EXACTLY this
+        # one case's expected_output. Before the fix, case 2's materialize()
+        # fallback treated this identically to a genuinely decomposed
+        # solution (mini_asl_cfn_decomposed_output.json): it round-tripped
+        # the literal unchanged, compared equal by construction, and PASSED
+        # -- despite computing nothing. The docstring at run_tier05's case 2
+        # used to (wrongly) claim a hardcoded literal "is correctly scored
+        # passed=False" here; with exactly one sample per expression_path
+        # (this spec's own shape) that claim was false. Must now FAIL, with
+        # a reason string distinct from the normal "materialized value did
+        # not match" mismatch message.
+        spec_tier05 = {
+            "expressions_from": EXPRESSIONS_FROM,
+            "cases": [
+                {
+                    "expression_path": "$.States.ComputeTotals.Output",
+                    "input": {
+                        "orders": [
+                            {"id": "o1", "qty": 2, "price": 10},
+                            {"id": "o2", "qty": 1, "price": 5},
+                        ]
+                    },
+                    "expected_output": {
+                        "orders": [
+                            {"id": "o1", "qty": 2, "price": 10, "total": 20},
+                            {"id": "o2", "qty": 1, "price": 5, "total": 5},
+                        ],
+                        "grandTotal": 25,
+                    },
+                },
+                {
+                    "expression_path": "$.States.CheckBudget.Choices[0].Condition",
+                    "input": {"grandTotal": 2500},
+                    "expected_output": True,
+                },
+            ],
+        }
+        results = run_tier05(asl_hardcoded_literal_output, spec_tier05)
+        by_path = {r.expression_path: r for r in results if r.sample_index != -1}
+        literal_result = by_path["$.States.ComputeTotals.Output"]
+        assert not literal_result.passed, literal_result.explain()
+        assert "NO nested" in (literal_result.error or "")
+        # The bare {% ... %} CheckBudget expression is untouched by this
+        # fix (case 3, direct leaf match) and still passes normally.
+        assert by_path["$.States.CheckBudget.Choices[0].Condition"].passed
+
+        with pytest.raises(Tier05Error):
+            run_tier05_or_raise(asl_hardcoded_literal_output, spec_tier05)
+
+    def test_hardcoded_literal_container_fails_a_second_differing_sample(
+        self, asl_hardcoded_literal_output
+    ):
+        # Suspenders half of the same fix, exercised directly: even WITHOUT
+        # the code-level guard above, a literal tuned to satisfy one sample
+        # cannot also satisfy a second sample with a different
+        # expected_output -- multiple cases sharing one expression_path
+        # (generator/spec_model.py no longer rejects this) is exactly how
+        # specs/sfn-jsonata.yaml's own ComputeTotals case now guards against
+        # this class of false positive at the spec-authoring level too.
+        spec_tier05 = {
+            "expressions_from": EXPRESSIONS_FROM,
+            "cases": [
+                {
+                    "expression_path": "$.States.ComputeTotals.Output",
+                    "input": {
+                        "orders": [
+                            {"id": "o1", "qty": 2, "price": 10},
+                            {"id": "o2", "qty": 1, "price": 5},
+                        ]
+                    },
+                    "expected_output": {
+                        "orders": [
+                            {"id": "o1", "qty": 2, "price": 10, "total": 20},
+                            {"id": "o2", "qty": 1, "price": 5, "total": 5},
+                        ],
+                        "grandTotal": 25,
+                    },
+                },
+                {
+                    "expression_path": "$.States.ComputeTotals.Output",
+                    "input": {
+                        "orders": [
+                            {"id": "o3", "qty": 3, "price": 7},
+                            {"id": "o4", "qty": 4, "price": 2},
+                        ]
+                    },
+                    "expected_output": {
+                        "orders": [
+                            {"id": "o3", "qty": 3, "price": 7, "total": 21},
+                            {"id": "o4", "qty": 4, "price": 2, "total": 8},
+                        ],
+                        "grandTotal": 29,
+                    },
+                },
+            ],
+        }
+        results = run_tier05(asl_hardcoded_literal_output, spec_tier05)
+        container_results = [r for r in results if r.expression_path == "$.States.ComputeTotals.Output"]
+        assert len(container_results) == 2
+        assert all(not r.passed for r in container_results), [r.explain() for r in container_results]
 
 
 class TestMaterialize:

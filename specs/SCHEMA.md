@@ -631,9 +631,9 @@ tier05_jsonata:
 `sample_inputs: [{input, expected_output}]` with no way to pin a case to a
 specific expression.** The actually-implemented shape (`generator/spec_model.py`'s
 `Tier05Jsonata`/`Tier05Case`, `oracles/lib/tier05_jsonata.py::run_tier05`) is
-`cases: [{expression_path, input, expected_output}, ...]`, one case per
-declared `{% ... %}` expression, matched by `expression_path` — **not** the
-cartesian product of every found expression against every case (that shape
+`cases: [{expression_path, input, expected_output}, ...]`, matched by
+`expression_path` — **not** the cartesian product of every found expression
+against every case (that shape
 rejects a fully-correct multi-expression state machine the moment it has more
 than one embedded expression: state A's expression evaluated against state
 B's sample input, compared against state B's expected output, fails despite
@@ -657,6 +657,25 @@ no case names — scoring that as an anti-L2 catch hit would contaminate the
 H2 falsifiability signal this tier exists to produce with an oracle-shape
 artifact instead of a real catch. See `oracles/lib/tier05_jsonata.py::run_tier05`'s
 own docstring for the mechanics.
+
+**Correction (2026-08-06, benchmark-integrity review finding "tier05_jsonata
+materialize() container fallback accepts a fully-hardcoded literal"):** this
+doc previously implied one case per `expression_path` (`generator/spec_model.py`
+used to enforce it as a hard uniqueness constraint). Multiple cases MAY now
+share the same `expression_path` — each one an independent `(input,
+expected_output)` sample against that same expression, evaluated
+independently by `run_tier05`. Author at least two such samples (different
+inputs, different expected outputs) for any expression whose
+`expression_path` names a container rather than a bare `{% ... %}` string
+leaf (`run_tier05`'s case "2" — see its own docstring): a single sample lets
+a fully hardcoded literal (zero `{% %}` expressions anywhere in the
+container) satisfy `expected_output` by construction, indistinguishable from
+a genuinely computed value; a second, differently-valued sample cannot also
+be satisfied by that same literal. `oracles/lib/tier05_jsonata.py::run_tier05`
+also independently refuses to materialize-and-compare a zero-expression
+container at all (belt-and-suspenders — see its own docstring), but a
+second sample is the scenario-authoring-side half of the same fix and should
+be added regardless of that guard's presence.
 
 `expressions_from` locates every `{% ... %}`-embedding ASL document in the
 synthesized/planned artifact (e.g. a CFN `DefinitionString` property, or a

@@ -293,17 +293,31 @@ def run_tier05(document: dict, spec_tier05: dict) -> list[Tier05CaseResult]:
          `{% ... %}` string (a dict/list container -- e.g. a state's whole
          `Output` decomposed into per-field `{% %}` sub-expressions instead
          of one whole-object expression -- or a plain, non-JSONata literal
-         value). `materialize()` recursively evaluates every nested
-         `{% ... %}` leaf found anywhere inside it (passing plain literals
-         through unchanged) and the fully-resolved value is compared to
-         `expected_output`, exactly as if the reference decomposition had
-         been used -- a correct solution that merely decomposed its output
-         differently no longer reads as an anti-L2 catch hit. A solution
-         that instead wrote a hardcoded literal where a computed value was
-         required also lands here and is correctly scored `passed=False`
-         (the materialized value won't match `expected_output`) -- a real
-         improvement over the old "not found" case, which could not tell
-         these two situations apart.
+         value). IF that container has at least one nested `{% ... %}` leaf
+         anywhere inside it, `materialize()` recursively evaluates every
+         such leaf (passing plain literals through unchanged) and the
+         fully-resolved value is compared to `expected_output`, exactly as
+         if the reference decomposition had been used -- a correct solution
+         that merely decomposed its output differently no longer reads as
+         an anti-L2 catch hit.
+
+         A container with ZERO nested `{% ... %}` expressions anywhere
+         inside it is a different situation and is deliberately NOT
+         materialized-and-compared: it is a fully hardcoded literal, and
+         `oracle.tier05_jsonata.cases` (per `specs/SCHEMA.md` §4.4) carries
+         exactly one `sample_input`/`expected_output` pair per
+         `expression_path` for this spec, so a literal hand-tuned to that
+         one sample's `expected_output` would compare equal by construction
+         -- `materialize()` on a zero-expression node is just an identity
+         round-trip, not a check of anything. (This was the belt half of a
+         two-part fix for benchmark-integrity review finding "tier05_jsonata
+         materialize() container fallback accepts a fully-hardcoded
+         literal", 2026-08-06; the suspenders half is a second sample per
+         `expression_path` in this scenario's own `cases[]`, so a literal
+         cannot satisfy both even if this guard were ever removed.) Such a
+         container is unconditionally `passed=False` with a distinct reason
+         string, regardless of whether its literal value happens to equal
+         `expected_output`.
       3. an expression IS found (case 0 above didn't apply) but no case
          covers ITS path -- `passed=True`, INFORMATIONAL ONLY, unchanged
          from the first fix round (see the loop at the bottom of this
@@ -342,18 +356,42 @@ def run_tier05(document: dict, spec_tier05: dict) -> list[Tier05CaseResult]:
                 # `{% ... %}` sub-expressions) and compare that, instead of
                 # declaring this a "not found" failure.
                 try:
-                    actual = materialize(matches[0], case["input"])
-                    passed = actual == case["expected_output"]
-                    error = None
-                    if not passed:
+                    if not jsonata_expressions(matches[0]):
+                        # Belt half of the fix for benchmark-integrity review
+                        # finding "tier05_jsonata materialize() container
+                        # fallback accepts a fully-hardcoded literal"
+                        # (2026-08-06): zero nested {% ... %} leaves means
+                        # this container is a plain literal -- materialize()
+                        # would just echo it back unchanged, and with one
+                        # sample per expression_path a literal hand-tuned to
+                        # that sample's expected_output compares equal by
+                        # construction. Refuse to treat that as a pass; see
+                        # this function's own docstring (case 2) for the
+                        # full rationale.
+                        actual = materialize(matches[0], case["input"])
+                        passed = False
                         error = (
-                            f"expression_path {expr_path!r} names a container/literal, "
-                            f"not one whole {{% ... %}} expression -- materialized every "
-                            f"nested {{% ... %}} sub-expression against sample#{sample_index} "
-                            f"and compared the reconstructed value, which did not match "
-                            f"expected_output (an equally-correct alternative decomposition "
-                            f"would have matched here; this is a genuine value mismatch)"
+                            f"expression_path {expr_path!r} names a container/literal "
+                            f"with NO nested {{% ... %}} JSONata expression anywhere "
+                            f"inside it -- a fully hardcoded literal is indistinguishable "
+                            f"from a correct decomposition by value-comparison alone "
+                            f"against a single sample, so it is scored as a genuine "
+                            f"failure rather than materialized-and-compared, regardless "
+                            f"of whether its literal value happens to equal expected_output"
                         )
+                    else:
+                        actual = materialize(matches[0], case["input"])
+                        passed = actual == case["expected_output"]
+                        error = None
+                        if not passed:
+                            error = (
+                                f"expression_path {expr_path!r} names a container/literal, "
+                                f"not one whole {{% ... %}} expression -- materialized every "
+                                f"nested {{% ... %}} sub-expression against sample#{sample_index} "
+                                f"and compared the reconstructed value, which did not match "
+                                f"expected_output (an equally-correct alternative decomposition "
+                                f"would have matched here; this is a genuine value mismatch)"
+                            )
                 except Exception as exc:  # noqa: BLE001 - see the identical except below
                     actual = None
                     passed = False

@@ -1,0 +1,12 @@
+{
+  "_fixture_note": "Regression fixture for benchmark-integrity review finding 'tier05_jsonata materialize() container fallback accepts a fully-hardcoded literal' (2026-08-06). ComputeTotals' Output is a FULLY hardcoded literal -- zero {% ... %} expressions anywhere inside it, tuned to equal exactly one specific sample's expected_output -- unlike mini_asl_cfn_decomposed_output.json's per-field {% %} sub-expressions (a genuinely equivalent decomposition). A case whose expression_path names this container must NOT materialize-and-compare it as if it were a correct (if differently-decomposed) solution: materialize() on a zero-expression node is just an identity round-trip, so it would echo the literal back unchanged and compare equal by construction against the one sample it was tuned to -- this must be scored passed=False instead.",
+  "Resources": {
+    "OrderBatchStateMachine": {
+      "Type": "AWS::StepFunctions::StateMachine",
+      "Properties": {
+        "StateMachineName": "OrderBatchStateMachine",
+        "DefinitionString": "{\"QueryLanguage\":\"JSONata\",\"StartAt\":\"ComputeTotals\",\"States\":{\"ComputeTotals\":{\"Type\":\"Pass\",\"Output\":{\"orders\":[{\"id\":\"o1\",\"qty\":2,\"price\":10,\"total\":20},{\"id\":\"o2\",\"qty\":1,\"price\":5,\"total\":5}],\"grandTotal\":25},\"Next\":\"CheckBudget\"},\"CheckBudget\":{\"Type\":\"Choice\",\"Choices\":[{\"Condition\":\"{% $states.input.grandTotal > 1000 %}\",\"Next\":\"Fail\"}],\"Default\":\"Ok\"},\"Fail\":{\"Type\":\"Fail\"},\"Ok\":{\"Type\":\"Succeed\"}}}"
+      }
+    }
+  }
+}

@@ -319,6 +319,20 @@ class Tier05Case(BaseModel):
     # (the real predecessor state's output, or whatever `$states.input`
     # resolves to at that point in a real execution) instead of one global
     # workflow input auto-bound to every expression uniformly.
+    #
+    # MULTIPLE cases MAY share the same `expression_path` (relaxed
+    # 2026-08-06, suspenders half of the fix for benchmark-integrity review
+    # finding "tier05_jsonata materialize() container fallback accepts a
+    # fully-hardcoded literal"): the container-fallback path in
+    # `run_tier05` (case 2 of its own docstring) compares a materialized
+    # value against ONE sample's `expected_output`, and with exactly one
+    # sample per expression a fully hardcoded literal tuned to that one
+    # sample compares equal by construction. A second, independently-input
+    # sample against the SAME expression_path closes that gap without any
+    # oracle-side special-casing -- `run_tier05` already evaluates every
+    # case independently (see above), so two cases naming the same
+    # expression are just two more (sample_index, input, expected_output)
+    # rows through the exact same per-case loop, each checked on its own.
     expression_path: str
     input: dict
     expected_output: object
@@ -352,16 +366,16 @@ class Tier05Jsonata(BaseModel):
                 )
         return self
 
-    @model_validator(mode="after")
-    def _case_paths_unique(self) -> "Tier05Jsonata":
-        paths = [c.expression_path for c in self.cases]
-        if len(paths) != len(set(paths)):
-            raise ValueError(
-                "oracle.tier05_jsonata.cases has duplicate expression_path "
-                "values -- each declared expression should have exactly "
-                "one case (SCHEMA.md §4.4)"
-            )
-        return self
+    # NOTE: this used to reject duplicate `expression_path` values outright
+    # ("each declared expression should have exactly one case"). Relaxed
+    # 2026-08-06 (see Tier05Case's own docstring) -- multiple cases MAY
+    # legitimately share an `expression_path`, each supplying an
+    # independent (input, expected_output) sample against that same
+    # expression, so a single hardcoded-literal container can't satisfy
+    # every sample at once. `run_tier05` (oracles/lib/tier05_jsonata.py)
+    # already evaluates every case independently regardless of path
+    # collisions, so no oracle-side change was needed to support this --
+    # only this now-removed over-strict validator stood in the way.
 
 
 @_strict

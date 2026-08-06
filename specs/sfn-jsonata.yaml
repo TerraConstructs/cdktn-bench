@@ -427,6 +427,26 @@ oracle:
             - { id: "o1", qty: 2, price: 10, total: 20 }
             - { id: "o2", qty: 1, price: 5, total: 5 }
           grandTotal: 25
+      # Second sample_input/expected_output pair for the SAME
+      # expression_path (deliberately different orders/qty/price/totals
+      # from the sample above) -- the suspenders half of the fix for
+      # benchmark-integrity review finding "tier05_jsonata materialize()
+      # container fallback accepts a fully-hardcoded literal" (2026-08-06).
+      # A fully hardcoded literal Output tuned to satisfy the sample above
+      # cannot ALSO satisfy this one (different grandTotal, different
+      # per-order totals), so even absent the belt-half code guard in
+      # oracles/lib/tier05_jsonata.py, a zero-{% %}-expression literal now
+      # fails Tier 0.5 on this second case.
+      - expression_path: "$.States.ComputeTotals.Output"
+        input:
+          orders:
+            - { id: "o3", qty: 3, price: 7 }
+            - { id: "o4", qty: 4, price: 2 }
+        expected_output:
+          orders:
+            - { id: "o3", qty: 3, price: 7, total: 21 }
+            - { id: "o4", qty: 4, price: 2, total: 8 }
+          grandTotal: 29
       - expression_path: "$.States.CheckBudget.Choices[0].Condition"
         input:
           grandTotal: 2500

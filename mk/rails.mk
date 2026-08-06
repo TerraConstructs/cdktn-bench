@@ -46,9 +46,16 @@ check-result-schema:
 
 # Hash determinism/sensitivity (gates/test_equipping.py) + schema round-trip
 # (metrics/test_validate_result.py) — the pytest suite backing this slice.
+# ALSO runs oracles/ + generator/ (benchmark-integrity review finding
+# "mk/rails.mk:51 -- make check's test-gates never runs the 75 oracles/ +
+# generator/ tests", 2026-08-06): before this fix, `make check` never ran
+# either suite at all -- including the tier05_jsonata regression tests
+# guarding the materialize()-container-fallback fix (this same review
+# round) -- so a regression there could land and stay green in `make check`
+# forever. All four suites pass together as of this fix.
 test-gates:
-	@echo "==> pytest: gates/ metrics/"
-	uv run pytest gates metrics -q
+	@echo "==> pytest: gates/ metrics/ oracles/ generator/"
+	uv run pytest gates metrics oracles generator -q
 
 # --- Gate 1 (preflight) wiring ----------------------------------------------
 #
