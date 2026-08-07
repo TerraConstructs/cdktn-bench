@@ -1,0 +1,7 @@
+2026-08-08 00:50:49,176 INFO     aws_bench.scenario.trial:197 — [anchor__5CNncx4] Deploying... trial anchor__5CNncx4
+2026-08-08 00:50:49,177 INFO     aws_bench.scenario.container.awsbench-anchor__5cnncx4:211 — [anchor__5CNncx4] Building image awsbench-anchor ...
+2026-08-08 00:50:49,681 INFO     aws_bench.scenario.container.awsbench-anchor__5cnncx4:217 — [anchor__5CNncx4] Built image awsbench-anchor.
+2026-08-08 00:50:49,694 DEBUG    aws_bench.scenario.container.awsbench-anchor__5cnncx4:337 — [anchor__5CNncx4] Removed stale container awsbench-anchor__5cnncx4.
+2026-08-08 00:50:50,617 DEBUG    aws_bench.scenario.container.awsbench-anchor__5cnncx4:266 — [anchor__5CNncx4] Started container awsbench-anchor__5cnncx4.
+2026-08-08 00:50:51,414 DEBUG    aws_bench.scenario.trial:544 — [anchor__5CNncx4] Deploy failed; skipping baseline snapshot
+2026-08-08 00:50:51,416 ERROR    aws_bench.scenario.trial:256 — [anchor__5CNncx4] Trial anchor/anchor__5CNncx4 deploy failed: Scenario 'anchor' has 1 contaminated account(s): 886312446417. A prior reset failed to restore baseline. Run 'aws-bench env cleanup' to clean them and clear the flag.

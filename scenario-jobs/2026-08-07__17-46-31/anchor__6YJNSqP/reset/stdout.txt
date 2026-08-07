@@ -1,0 +1,9 @@
+[reset.sh] apigw-redeploy fixed-name sweep starting for account 886312446417
+[reset.sh] no REST API named apigw-redeploy-api found -- nothing to sweep
+[reset.sh] Lambda function apigw-redeploy-hello not found -- nothing to sweep
+[reset.sh] Lambda function apigw-redeploy-version not found -- nothing to sweep
+[reset.sh] log group /aws/lambda/apigw-redeploy-hello not found -- nothing to sweep
+[reset.sh] log group /aws/lambda/apigw-redeploy-version not found -- nothing to sweep
+[reset.sh] log group /aws/apigateway/welcome not found -- nothing to sweep
+[reset.sh] IAM role apigw-redeploy-lambda-exec not found -- nothing to sweep
+[reset.sh] apigw-redeploy fixed-name sweep done.

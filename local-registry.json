@@ -51,6 +51,18 @@
         "path": "tasks/anchor/ecs-swappiness-terraconstructs"
       },
       {
+        "name": "iam-e2e-role-awscdk",
+        "path": "tasks/anchor/iam-e2e-role-awscdk"
+      },
+      {
+        "name": "iam-e2e-role-hcl-raw",
+        "path": "tasks/anchor/iam-e2e-role-hcl-raw"
+      },
+      {
+        "name": "iam-e2e-role-terraconstructs",
+        "path": "tasks/anchor/iam-e2e-role-terraconstructs"
+      },
+      {
         "name": "s3-lambda-log-retention-awscdk",
         "path": "tasks/anchor/s3-lambda-log-retention-awscdk"
       },

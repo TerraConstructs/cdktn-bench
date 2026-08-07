@@ -3827,3 +3827,52 @@ gen.py` (`verification_explanation()` gating-aware), `README.md` (repo-
 layout table + "How it works" bullet linking the new doc),
 `tasks/anchor/apigw-redeploy-{awscdk,hcl-raw,terraconstructs}/task.toml`
 (regenerated, `make gen-all`).
+
+---
+
+## Amendment 17 (2026-08-08) — teardown: upstream's framework reset is sufficient; Amendments 14/15 corrected
+
+**Operator authorization (verbatim):** "I authorize the scoped destructive test in the
+dedicated account (teardown to test upstream framework reset solves the leak)."
+Also, same message: aws-nuke is **parked**, and no IAM account alias is to be set at this
+stage.
+
+**Experiment:** a dirty fixture was created in `886312446417` using names no fixed-name
+sweep could match — including a CloudFormation stack whose children carry CFN-random
+physical names (`zz-teardown-fixture-stack-FixtureRole-TtLnTWRe3ePF`,
+`…-FixtureFunction-kK7Ie24307I1`), two loose resources with agent-style names, and both an
+auto-created and an explicit log group. The **framework** reset path
+(`ResetManager.reset_account` → baseline diff over the live CFN type registry →
+`ResourceCleaner(ccapi_fallback=True)`) was then invoked directly — not `reset.sh`.
+
+**Result:** `ResetResult(success=True, reason='Account successfully reset to baseline
+state')`. Every fixture resource was deleted; the preserve-list (anchor stacks, CDKToolkit,
+bootstrap and QA roles) was intact; zero lambdas, log groups or REST APIs remained.
+Reset runtime ≈ 4 minutes, which is per-trial overhead for `mutating` tasks and must be
+budgeted for `apigw-redeploy` and `iam-e2e-role`. Full evidence:
+`docs/teardown-experiment-results.md`.
+
+**Correction to Amendments 14 and 15.** Those amendments concluded that no deleter existed
+for our resource types, inferring it from a missing API Gateway handler. Both were wrong:
+(a) `ccapi_fallback=True` is the actual delete path and covers types with no bespoke
+handler; (b) their evidence came from hand-running `scenarios/anchor/reset/reset.sh`, which
+is **not** the code path a real trial takes — the observed leak indicted our script, not the
+framework.
+
+**Decisions:**
+1. `scenarios/anchor/reset/reset.sh`'s fixed-name sweep is to be **removed**, not extended.
+   Teardown is the framework's job.
+2. The Slice G decision to take cleanup away from the agent (so `live_check` has something
+   to observe) is now **evidence-supported** rather than assumed.
+3. aws-nuke stays parked; `docs/teardown-options.md` retains the analysis and the
+   authorization design should an operator-invoked backstop ever be wanted for a
+   contaminated account. No account alias is set (its absence currently *prevents*
+   aws-nuke from running at all, which is a safety property while parked).
+
+**Process note (not a result).** The run used botocore DEBUG logging, so raw logs contained
+`X-Amz-Security-Token`/`Authorization` headers, and a subagent additionally wrote
+assume-role credentials to a scratch file despite an explicit instruction not to. All such
+files were deleted; nothing reached the repository or git history; the credentials were
+1-hour sessions scoped to the dedicated account. Standing rule for future live work: keep
+boto/botocore logging below DEBUG and pipe credentials directly into the consuming process
+instead of materializing them.

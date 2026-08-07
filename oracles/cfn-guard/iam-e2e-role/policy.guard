@@ -1,0 +1,81 @@
+#
+# Hand-authored (SCHEMA.md §8.2 point 7; the generator-stub marker has been
+# removed on purpose -- do not re-add it). oracles/emit.py never overwrites
+# this file once it exists, so it is safe across regeneration.
+#
+# Scenario:   iam-e2e-role (specs/iam-e2e-role.yaml)
+# Intent doc: oracles/iam-e2e-role/intent.md
+# Graded against the awscdk arm's synthesized CloudFormation template
+# (cdk.out/ScenarioStack.template.json) -- specs/SCHEMA.md §4.2/§8.
+#
+# Encodes the ONE tier-"1" structural_assert this scenario declares
+# (s3-resource-not-overbroad, THE wildcard-matches-protected-bucket catch),
+# at the three recognized IAM-policy shapes (specs/_toy/toy-ssm-parameter.yaml's
+# own IAM-shape-coverage convention: standalone AWS::IAM::Policy,
+# AWS::IAM::ManagedPolicy, and inline AWS::IAM::Role.Properties.Policies[*]),
+# plus the same fail-closed "a role exists but no recognized policy shape
+# covers it" rule that convention requires.
+#
+# HONEST STRICTNESS GAP vs. ../rego/iam-e2e-role/policy.rego (documented,
+# not silently accepted -- DECISIONS.md's iam-e2e-role amendment records
+# this too): cfn-guard 3's rule language has no general glob-match
+# builtin the way Rego's `glob.match` does. The rego bundle denies ANY
+# agent-authored Resource pattern that glob-matches the decoy bucket's
+# fixed ARN -- a real, general check. This guard bundle can only compare
+# against a fixed set of KNOWN-BAD literal strings (the specific
+# over-broad pattern the real episode's own A11 defect used, plus its
+# most obvious relative). A differently-shaped over-broad pattern this
+# denylist doesn't happen to name (e.g. a prefix shorter than
+# "cdktn-bench-iam-e2e-", or a suffix pattern other than a bare "*")
+# would PASS this guard bundle while still correctly FAILING the rego
+# bundle on hcl_raw/terraconstructs. This means: on the awscdk arm alone,
+# a sufficiently creative overbroad S3 scope could evade the
+# wildcard-matches-protected-bucket catch. See DECISIONS.md's "how this
+# scenario could be unfair or gamed" section for this exact risk stated
+# plainly, and specs/SCHEMA.md §3's own note that terraconstructs_override
+# exists for exactly this kind of confirmed per-arm divergence -- this is
+# the inverse case (a strictness gap in the STATIC CHECK ITSELF, not in
+# what tier catches it), which the schema does not yet have a first-class
+# field for; recorded here and in DECISIONS.md instead.
+
+let iam_roles = Resources.*[ Type == "AWS::IAM::Role" ]
+let iam_policies = Resources.*[ Type == "AWS::IAM::Policy" ]
+let managed_policies = Resources.*[ Type == "AWS::IAM::ManagedPolicy" ]
+let inline_role_policies = Resources.*[ Type == "AWS::IAM::Role" ].Properties.Policies[*]
+
+# Fail-closed: an AWS::IAM::Role exists but NONE of the three recognized
+# policy shapes appear anywhere in the template. Every per-shape rule
+# below is silently skipped (`when %shape !empty`) when its own collection
+# is empty, so this is the only rule standing between "no recognized
+# policy shape" and a vacuous PASS.
+rule role_has_recognized_policy when %iam_roles !empty {
+	%iam_policies !empty
+	or
+	%managed_policies !empty
+	or
+	%inline_role_policies !empty
+}
+
+# Known-bad literal denylist -- see this file's own header for why this is
+# a weaker, literal-only approximation of the rego bundle's general
+# glob-match check.
+rule policy_s3_resource_not_overbroad when %iam_policies !empty {
+	let bad = %iam_policies.Properties.PolicyDocument.Statement[*].Resource[*][
+		this in ["arn:aws:s3:::cdktn-bench-iam-e2e-*", "arn:aws:s3:::cdktn-bench-iam-e2e-*/*", "arn:aws:s3:::cdktn-bench-*", "arn:aws:s3:::cdktn-bench-*/*"]
+	]
+	%bad empty
+}
+
+rule managed_policy_s3_resource_not_overbroad when %managed_policies !empty {
+	let bad = %managed_policies.Properties.PolicyDocument.Statement[*].Resource[*][
+		this in ["arn:aws:s3:::cdktn-bench-iam-e2e-*", "arn:aws:s3:::cdktn-bench-iam-e2e-*/*", "arn:aws:s3:::cdktn-bench-*", "arn:aws:s3:::cdktn-bench-*/*"]
+	]
+	%bad empty
+}
+
+rule inline_policy_s3_resource_not_overbroad when %inline_role_policies !empty {
+	let bad = %inline_role_policies.PolicyDocument.Statement[*].Resource[*][
+		this in ["arn:aws:s3:::cdktn-bench-iam-e2e-*", "arn:aws:s3:::cdktn-bench-iam-e2e-*/*", "arn:aws:s3:::cdktn-bench-*", "arn:aws:s3:::cdktn-bench-*/*"]
+	]
+	%bad empty
+}

@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+  File "/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/trial.py", line 238, in run
+    await self._run_resource_management(phase, script_failed=script_error is not None)
+  File "/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/trial.py", line 550, in _run_resource_management
+    await self._run_reset()
+  File "/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/trial.py", line 880, in _run_reset
+    raise ResetFailedError(
+        failures=[r.reason or "reset failed" for r in failed],
+    )
+aws_bench.scenario.exceptions.ResetFailedError: env reset failed for 1 account(s): Dataset/script version mismatch - requires full cleanup

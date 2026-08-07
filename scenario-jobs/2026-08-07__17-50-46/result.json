@@ -1,0 +1,39 @@
+{
+  "id": "758bc950-b27d-402d-8edb-6047fa6c846b",
+  "job_name": "2026-08-07__17-50-46",
+  "job_dir": "/Users/vincentsmet/cdk/cdktn-bench/scenario-jobs/2026-08-07__17-50-46",
+  "started_at": "2026-08-07T17:50:49.174647Z",
+  "finished_at": "2026-08-07T17:51:01.631417Z",
+  "n_total": 1,
+  "n_succeeded": 0,
+  "n_failed": 1,
+  "trial_results": [
+    {
+      "id": "e2fe7110-7fde-48f3-be06-1595003e411b",
+      "scenario_name": "anchor",
+      "trial_name": "anchor__5CNncx4",
+      "phase": "deploy",
+      "started_at": "2026-08-07T17:50:49.176410Z",
+      "finished_at": "2026-08-07T17:51:01.630669Z",
+      "environment_setup": {
+        "started_at": "2026-08-07T17:50:49.177095Z",
+        "finished_at": "2026-08-07T17:50:50.618141Z"
+      },
+      "execute": null,
+      "exit_code": null,
+      "exception_info": {
+        "exception_type": "AccountContaminatedError",
+        "exception_message": "Scenario 'anchor' has 1 contaminated account(s): 886312446417. A prior reset failed to restore baseline. Run 'aws-bench env cleanup' to clean them and clear the flag.",
+        "exception_traceback": "Traceback (most recent call last):\n  File \"/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/trial.py\", line 242, in run\n    raise script_error\n  File \"/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/trial.py\", line 232, in run\n    await self._run_phase_in_container(phase)\n  File \"/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/trial.py\", line 356, in _run_phase_in_container\n    await self._raise_if_contaminated()\n  File \"/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/trial.py\", line 528, in _raise_if_contaminated\n    raise AccountContaminatedError(\n    ...<2 lines>...\n    )\naws_bench.exceptions.AccountContaminatedError: Scenario 'anchor' has 1 contaminated account(s): 886312446417. A prior reset failed to restore baseline. Run 'aws-bench env cleanup' to clean them and clear the flag.\n",
+        "occurred_at": "2026-08-08T00:50:51.416139"
+      },
+      "account_mapping": {
+        "PRIMARY": "886312446417"
+      },
+      "regions": [
+        "us-east-1"
+      ],
+      "resource_results": null
+    }
+  ]
+}
