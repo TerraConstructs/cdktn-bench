@@ -1,6 +1,29 @@
 // =============================================================================
+// SUPERSEDED -- DO NOT ADOPT THIS FILE. Kept for historical/design-rationale
+// reference only.
+//
+// The operator explicitly authorized adding `QADeployApplicationRole` (see
+// DECISIONS.md, "Adding a QADeployApplicationRole" amendment, for the
+// authorization quote on record) with a SIMPLER scoping than this proposal
+// drafted: full `apigateway:*`, full `lambda:*`, IAM role-lifecycle actions
+// path-scoped to `/cdktn-bench-task/` (not the unscoped `Resource: *` this
+// file used for IAM, and not the name-prefix-scoped Lambda/verb-enumerated
+// API Gateway statements below), plus logs permissions. The REAL,
+// deployed implementation is
+// scenarios/anchor/scenario/cdk_app/stacks/qa_roles_stack.ts's
+// `QADeployApplicationRole` construct -- read that file for the actual
+// policy. This proposal's per-statement reasoning (why apigateway has no
+// useful resource-level ARN pre-creation, why IAM role naming isn't
+// cross-arm-prefixed, the `iam:PassedToService` PassRole guard idea, the
+// CDKToolkit-bootstrap `sts:AssumeRole` open question) remains a useful
+// reference and is cited from the real implementation's own comments, which
+// is why this file is kept rather than deleted.
+// =============================================================================
+
+// =============================================================================
 // PROPOSED, UNDEPLOYED CODE -- DO NOT WIRE THIS INTO scenario/cdk_app/environment.ts
-// WITHOUT EXPLICIT OPERATOR SIGN-OFF.
+// WITHOUT EXPLICIT OPERATOR SIGN-OFF. (Original header, kept verbatim below
+// for history -- see the SUPERSEDED banner above for current status.)
 //
 // This file deliberately lives OUTSIDE scenarios/anchor/scenario/cdk_app/
 // (which IS live, deployed infrastructure code, picked up by that app's own

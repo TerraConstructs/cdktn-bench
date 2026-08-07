@@ -343,7 +343,7 @@ verifier:
     enabled: true
     module: "tests/live_check.py"
     hand_authored: true
-    agent_role_name: "QALocalInvocationApplicationAdmin"
+    agent_role_name: "QADeployApplicationRole"
     concurrency_mode: "mutating"
     # GATING (fix-round-3, DECISIONS.md Slice G amendment): live is the
     # ONLY signal that can ever catch triggers-incomplete-hash (a
@@ -352,21 +352,39 @@ verifier:
     # THIS scenario would mean the catch this whole scenario exists to
     # motivate can never actually cost a real trial any reward.
     #
+    # ROLE UPDATE (DECISIONS.md "Adding a QADeployApplicationRole"
+    # amendment): agent_role_name (above) was
+    # "QALocalInvocationApplicationAdmin" (full AdministratorAccess, a
+    # logged over-grant) through Amendments 12-15. The operator has now
+    # explicitly authorized and this repo has created a minimally-scoped
+    # QADeployApplicationRole (scenarios/anchor/scenario/cdk_app/stacks/
+    # qa_roles_stack.ts) -- full apigateway:*/lambda:*, IAM role-lifecycle
+    # path-scoped to /cdktn-bench-task/, scoped logs -- and this field now
+    # names it. This closes the composed-consequence gap the paragraph
+    # below originally described for the role side, but NOT for the IAM
+    # path-prefix side: the reference solutions below still create their
+    # Lambda execution role at the default IAM path (not
+    # /cdktn-bench-task/), so a live deploy under this role will still
+    # AccessDeny on CreateRole/PassRole until that follow-up lands (see
+    # qa_roles_stack.ts's own "KNOWN GAP" comment on IamRoleLifecycleScoped
+    # and docs/adding-scenarios.md's role-extension procedure). Also,
+    # `aws-bench env setup` must be re-run against the target account
+    # before any trial can assume this role for real -- code + docs only
+    # this round, no deploy (see DECISIONS.md).
+    #
     # COMPOSED CONSEQUENCE (fix-round-4, DECISIONS.md Amendment 15 finding
-    # 4 -- read that section for the full reasoning): gating: true is
-    # fail-closed on anything but a live_check.py outcome of "pass". This
-    # scenario's agent_role_name (above) is NOT the QADeployApplicationRole
-    # docs/slice-g-iam-proposal.md proposes -- that role is deliberately
-    # NOT created/deployed (Amendment 12's stance, still in force). Compose
-    # the two: as of this writing, NO agent credential set this scenario
-    # grants can perform the real deploy the gating check requires, so
-    # EVERY real apigw-redeploy trial on EVERY arm scores 0.0, including a
-    # perfect solution, until an operator approves and deploys that role.
-    # This is a deliberate, coherent choice (fail closed rather than
-    # silently score on statics alone while the scenario is genuinely
+    # 4 -- read that section for the full original reasoning, now partially
+    # superseded by the paragraph above): gating: true is fail-closed on
+    # anything but a live_check.py outcome of "pass". Until BOTH the role
+    # exists in the live account (env setup re-run) AND the IAM-path gap
+    # above is closed, NO agent credential set this scenario grants can
+    # perform the real deploy the gating check requires, so EVERY real
+    # apigw-redeploy trial on EVERY arm scores 0.0, including a perfect
+    # solution. This is a deliberate, coherent choice (fail closed rather
+    # than silently score on statics alone while the scenario is genuinely
     # unrunnable) -- not a bug -- but it means this scenario is NOT YET
     # TRIAL-RUNNABLE and must not be folded into an aggregate reward
-    # computed from real trials before that role lands.
+    # computed from real trials before both gaps close.
     gating: true
 
 provenance:

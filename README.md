@@ -49,6 +49,10 @@ failure to a cheaper tier is the mechanism under test.
 - A **Tier 0.5** oracle evaluates embedded JSONata `{% ... %}` expressions in Step
   Functions ASL against real sample inputs — the catch class that sails through every
   compiler and synth step on every arm alike.
+- Adding a new scenario or task variant? See
+  [`docs/adding-scenarios.md`](docs/adding-scenarios.md) — spec authoring, agent-role
+  selection, read-only vs. mutating, oracle authoring, and the reference-solution/
+  grading-proof/holdout-split requirements, in one practical walkthrough.
 
 ## Inspiration & prior work
 
@@ -86,7 +90,7 @@ failure to a cheaper tier is the mechanism under test.
 | `gates/` | preflight / trajectory-audit / result-validity / equipping-hash / falsifiability gates |
 | `metrics/` | Result schema, validation, tokens-to-green + tier-attribution aggregation |
 | `ci/` | Oracle-equivalence CI + drift checks |
-| `docs/` | Pre-registration, mechanics notes |
+| `docs/` | Pre-registration, mechanics notes, [`adding-scenarios.md`](docs/adding-scenarios.md) (how to add a scenario/task) |
 | `DECISIONS.md` | Append-only amendment log (pre-registration discipline) |
 
 ## Setup

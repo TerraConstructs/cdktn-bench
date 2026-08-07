@@ -704,6 +704,25 @@ def verification_explanation(spec: Spec, arm: Arm) -> str:
             "not yet hand-authored)"
         )
     if spec.verifier.live_check.enabled:
+        if spec.verifier.live_check.gating:
+            gating_note = (
+                "and IS GATING (verifier.live_check.gating is true): "
+                "tests/test.sh reads live_check.py's own JSON `.outcome` field "
+                "and ANDs it into /logs/verifier/reward.txt -- the final reward "
+                "is 1.0 only if the static tiers above already say 1.0 AND "
+                "`.outcome` is \"pass\"; a `.outcome` of \"fail_stale\" or "
+                "\"not_verifiable\" (live_check.py's own verdicts) or "
+                "\"run_invalid\" (the interpreter/script itself failed to "
+                "produce a verdict) forces reward.txt to 0.0, fail-closed. "
+                "See specs/SCHEMA.md §5 \"gating\" for the full contract."
+            )
+        else:
+            gating_note = (
+                "and is NON-GATING (its result never overrides reward.txt -- "
+                "SCHEMA.md §5's default non-gating semantics apply; only the "
+                "*presence* of live_check differs from every other v1 scenario "
+                "without gating, not its effect on reward)."
+            )
         live_note = (
             "Live AWS calls ARE part of this scenario (verifier.live_check.enabled "
             f"is true -- {spec.verifier.live_check.module}, hand-authored). Real "
@@ -711,10 +730,7 @@ def verification_explanation(spec: Spec, arm: Arm) -> str:
             "agent phase; tests/live_check.py, run by tests/test.sh, makes "
             "read-only/behavioral live AWS calls (curl the deployed API, "
             "apigateway describe calls) to confirm the modification actually "
-            "served, and is NON-GATING (its result never overrides "
-            "reward.txt -- SCHEMA.md §5's non-gating semantics still hold; only "
-            "the *presence* of live_check now differs from every other v1 "
-            "scenario, not its effect on reward)."
+            f"served, {gating_note}"
         )
     else:
         live_note = "No live AWS calls in v1 (verifier.live_check.enabled is false for this scenario)."

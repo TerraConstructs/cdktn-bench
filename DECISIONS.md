@@ -3511,3 +3511,319 @@ generated tasks' `environment/workspace/provider.tf` (`make gen-all`,
 byte-copy of the Finding-1 fix), `tasks/anchor/smoke/environment/
 {Dockerfile,preflight.sh}` (hand-mirrored `python3` addition, re-syncing
 `./ci/check-smoke-drift.sh` after Finding 2's arm Dockerfile edit).
+
+## Amendment 16 (2026-08-07) — Adding a `QADeployApplicationRole`: operator
+## authorization, the real role, spec-driven role wiring, a metadata-gating
+## bug fix, and removing the vestigial LLM-judge role
+
+Directed by the operator (Vincent, repo owner), who explicitly authorized,
+in writing, the change this amendment records. **Authorization on record
+(quoted verbatim):**
+
+> the operator (Vincent, repo owner) explicitly approved, in writing:
+> adding the named role `QADeployApplicationRole` as the minimally-scoped
+> middle option between the read-only `QALocalInvocationApplicationRole`
+> and the full-admin `QALocalInvocationApplicationAdmin`, to the anchor
+> scenario's `QARolesStack`, with full `apigateway:*`, full `lambda:*`,
+> scoped `iam:CreateRole`/`iam:PassRole` (path-prefixed to
+> `/cdktn-bench-task/`), plus logs permissions. Rationale on record:
+> required to run apigw-redeploy as a real benchmark task where the agent
+> itself deploys, rather than a host-side proof. The operator also
+> reviewed and accepted `docs/proposals/qa_deploy_application_role.proposed.ts`,
+> conditional on documenting how these roles are maintained as
+> scenarios/tasks are added.
+
+This closes the "explicitly NOT done" stance Amendments 12-15 repeated
+every time this exact question came up (most recently Amendment 15 finding
+4's "no agent credential set this scenario grants can perform the real
+deploy the gating check requires") — this run has that authorization on
+record, so it proceeds where every prior run correctly refused to.
+**Scope of this run: code + documentation only.** No `aws-bench env setup`
+was run and no `cdk deploy` was executed — the role exists in the CDK app's
+source but not yet in the live AWS account; the orchestrator deploys after
+review (see "What remains before this scenario is trial-runnable" below).
+
+### The role's exact scoping
+
+Promoted `docs/proposals/qa_deploy_application_role.proposed.ts`'s design
+intent into the real, deployed-when-`cdk deploy`d stack:
+`scenarios/anchor/scenario/cdk_app/stacks/qa_roles_stack.ts`, a new
+`QADeployApplicationRole` (`this.deployRole`), attached via a custom
+`ManagedPolicy` (`QADeployApplicationPolicy-<account>-<region>`, matching
+the file's existing `s3VectorsReadOnlyPolicy` convention — a plain
+`managedPolicies` array, not the proposal's `inlinePolicies` shape) with
+six statements:
+
+- `ApiGatewayFull` — `apigateway:*`, `Resource: "*"`. Simpler and WIDER
+  than the superseded proposal's verb-enumerated
+  (`GET`/`POST`/`PUT`/`PATCH`/`DELETE`) statement — this follows the
+  operator's literal authorization ("full `apigateway:*`") over the
+  proposal's own tighter draft. Still the tightest available bound: API
+  Gateway's control-plane actions have no useful resource-level ARN to
+  scope a `CreateRestApi`-family call to before the API exists
+  (`docs/slice-g-recon.md` §1's own conclusion, unchanged).
+- `LambdaFull` — `lambda:*`, `Resource: "*"`. Also simpler/wider than the
+  superseded proposal's name-prefix-scoped `LambdaManageScoped` statement,
+  per the same literal authorization ("full `lambda:*`") — and this
+  sidesteps the proposal's own flagged "Open gap" #1 (awscdk's default
+  unprefixed Lambda function names not matching a `function:apigw-redeploy-*`
+  resource scope) entirely, since there's no name-prefix scope to miss.
+- `LogsScoped` — `logs:{CreateLogGroup,CreateLogStream,PutLogEvents,
+  DescribeLogGroups,DescribeLogStreams}`, `Resource: "*"` —
+  `docs/slice-g-recon.md` §1's own log-permission list, for the deploying
+  identity's own logging needs (distinct from the Lambda execution role's
+  own runtime logging grant, which is a separate role this same policy
+  lets the agent create).
+- `IamRoleLifecycleScoped` — `iam:{CreateRole,GetRole,PutRolePolicy,
+  GetRolePolicy,AttachRolePolicy,DetachRolePolicy,DeleteRolePolicy,
+  DeleteRole,TagRole}`, `Resource:
+  arn:aws:iam::<account>:role/cdktn-bench-task/*`. The operator's
+  authorization names `iam:CreateRole`/`iam:PassRole` as the headline
+  scoped actions; per the task instruction to "follow the permission
+  scoping in docs/slice-g-recon.md — it spec'd this role," this is
+  implemented as that section's full path-scoped role-lifecycle action
+  list (Create/PassRole are the two most consequential of that set, worth
+  naming explicitly in a one-line summary — the rest is the supporting CRUD
+  a real `cdk deploy`/`terraform apply` needs to attach permissions to a
+  role it just created and clean it up on redeploy/destroy). This is the
+  ONE genuinely path-scoped statement in the policy — narrower than the
+  superseded proposal's `IamRoleLifecycleUnscopedName` (`Resource: "*"`),
+  per the operator's explicit "path-prefixed to /cdktn-bench-task/"
+  instruction.
+- `IamPassRoleScoped` — `iam:PassRole`, same path-scoped `Resource`, PLUS
+  (defense in depth, kept from the superseded proposal's own good idea) a
+  `StringEquals: {iam:PassedToService: lambda.amazonaws.com}` condition —
+  even a path-scoped PassRole can only ever be handed to the Lambda
+  service.
+- `StsSelfIdentity` — `sts:GetCallerIdentity`, `Resource: "*"` — needed by
+  every arm's own credential-sanity/account-guard checks (kept from the
+  proposal).
+
+**Not granted** (both flagged in code comments on the new construct, not
+silently omitted): `sts:AssumeRole` on the CDKToolkit bootstrap's own
+`cdk-hnb659fds-{cfn-exec,deploy}-role-*` (needed for the awscdk arm's `cdk
+deploy` to execute against the bootstrapped account,
+`docs/slice-g-recon.md` §1's open question, repeated by the superseded
+proposal) — the operator's authorization doesn't name this action, so it
+isn't granted; needs its own explicit sign-off per
+`docs/adding-scenarios.md`'s role-extension procedure before the awscdk
+arm can live-deploy under this role.
+
+**Known, honestly-flagged gap**: all three arms' current apigw-redeploy
+reference solutions create their shared Lambda execution role named
+`apigw-redeploy-lambda-exec` at IAM's DEFAULT path (`/`), not under
+`/cdktn-bench-task/` — so as authored today, `IamRoleLifecycleScoped`/
+`IamPassRoleScoped`'s path-scoped `Resource` does NOT yet cover that role's
+real ARN (`arn:aws:iam::<account>:role/apigw-redeploy-lambda-exec`, not
+`.../role/cdktn-bench-task/apigw-redeploy-lambda-exec`). A live deploy
+attempt under this role, as-is, would `AccessDenied` on `CreateRole`/
+`PassRole` for that role name. Closing this (pinning an explicit
+`path: "/cdktn-bench-task/"` on the role construct in all three arms'
+reference solutions/instruction, then a fresh live proof) is an explicit
+follow-up, out of scope for this change's own task boundary (code + docs
+only, no live deploy this round) — recorded here, in the role construct's
+own code comments, and in `specs/apigw-redeploy.yaml`'s updated `gating`
+comment, not silently glossed over.
+
+**Type-checked**: `cd scenarios/anchor/scenario/cdk_app && ./node_modules/.bin/tsc --noEmit`
+— clean, no errors, against the real installed `aws-cdk-lib`/`constructs`
+(not a temporary copy this time — the file is now IN the tree those
+packages are installed for).
+
+**Proposal file marked superseded, not deleted**: both
+`docs/proposals/qa_deploy_application_role.proposed.ts` and
+`docs/slice-g-iam-proposal.md` now carry a prominent banner pointing at the
+real implementation and explaining exactly what changed (simpler
+apigateway/lambda grants, path-scoped-not-unscoped IAM) — kept rather than
+deleted because their per-statement reasoning (why API Gateway has no
+useful pre-creation resource ARN, the `PassedToService` PassRole guard
+idea, the still-open CDKToolkit `sts:AssumeRole` question) remains a real
+design record, cited from the new construct's own code comments.
+
+### Spec-driven `agent_role_name`/`concurrency_mode` — already wired, now used for real
+
+Investigated `docs/slice-g-recon.md`'s gap 2 (`generator/gen.py` allegedly
+hardcoding `agent_role_name`/`[concurrency] mode`): this was **already
+fixed** by prior Slice G work (Amendment 12's own `spec_model.LiveCheck.
+agent_role_name`/`.concurrency_mode` fields, `generator/gen.py::
+build_task_toml`'s `live.agent_role_name or "QALocalInvocationApplicationRole"`
+fallback) — `specs/SCHEMA.md` §5 and §8.2 point 5 already documented both
+fields in full. Recon's own gap description predates that fix and is now
+stale (not corrected in place — recon docs are point-in-time findings
+records, not living docs, per this repo's own convention for `docs/
+slice-g-recon.md`'s header). The only real change needed here:
+`specs/apigw-redeploy.yaml`'s `verifier.live_check.agent_role_name` flips
+from `"QALocalInvocationApplicationAdmin"` (Amendments 12-15's logged
+over-grant, used because no narrower role existed) to
+`"QADeployApplicationRole"` (this amendment's new role).
+`concurrency_mode: "mutating"` was already correct and unchanged.
+`specs/SCHEMA.md` §5 and §8.2 point 5's own worked-example text updated to
+match (both previously named `QALocalInvocationApplicationAdmin` as
+`apigw-redeploy`'s role).
+
+### Metadata bug: `verification_explanation` hardcoded NON-GATING text for every `live_check.enabled` spec
+
+**Finding** (verifier-found, per this run's own task brief): `generator/
+gen.py`'s `verification_explanation()` (the function that fills
+`task.toml`'s `[metadata] verification_explanation` field) unconditionally
+wrote "...and is NON-GATING (its result never overrides reward.txt..."
+whenever `spec.verifier.live_check.enabled` was true, with no branch on
+`.gating` at all — even though Amendment 14 added the real gating AND
+logic (`build_test_sh`'s `SPEC_LIVE_CHECK_GATING` branch) and
+`specs/apigw-redeploy.yaml` has set `gating: true` since that same
+amendment. Every one of the three generated `apigw-redeploy-*/task.toml`
+files was shipping metadata that flatly contradicted its own generated
+`tests/test.sh` — a real, live discrepancy (not a hypothetical), confirmed
+by reading the pre-fix generated `task.toml`'s literal text alongside
+`tests/test.sh`'s own `SPEC_LIVE_CHECK_GATING` branch before this fix.
+
+**Fix**: `verification_explanation()` now branches on
+`spec.verifier.live_check.gating`. When gating, the generated text states
+that `live_check.py`'s own JSON `.outcome` field is ANDed into
+`reward.txt` (1.0 only if static tiers already say 1.0 AND `.outcome` is
+`"pass"`; `"fail_stale"`/`"not_verifiable"`/`"run_invalid"` all force 0.0,
+fail-closed), citing `specs/SCHEMA.md` §5 for the full contract. When not
+gating (every other spec with `live_check.enabled: true` — none exist yet,
+but the branch is real, not dead, since a future spec could set `enabled:
+true, gating: false`), the original non-gating text is preserved
+unchanged. Regenerated: the only diff in all three `apigw-redeploy-*/
+task.toml` files (beyond the role-name change above) is this one field's
+text; every other generated file for every other spec is byte-unchanged
+(`git diff --stat` confirmed after `make gen-all` — see "Verification"
+below).
+
+### Vestigial role investigated: `LLMJudgeFullBedrockAccessRole` — REMOVED
+
+**Investigated per this run's own task brief.** `qa_roles_stack.ts`
+(pre-this-amendment) also created `LLMJudgeFullBedrockAccessRole`
+(`AmazonBedrockFullAccess`), copied from the upstream aws-bench-datasets
+convention where introspection tasks are graded by a Bedrock-hosted LLM
+judge. Confirmed by repo-wide grep (`rewardkit|llm.?judge|bedrock`, case-
+insensitive, across `.py`/`.ts`/`.md`/`.sh`/`.toml`/`.yaml`): every
+Bedrock-related hit in this repo is either (a) the Claude Code CLI's own
+Bedrock-vs-plain-API invocation mode (`gates/RECON.md`,
+`scripts/run-bench.sh`, `test/test_run_bench_wrapper.py` — about which
+backend serves Claude Code ITSELF, unrelated to grading) or (b) the QA
+roles stack's own role/policy definitions and their mentions in
+`docs/slice-g-recon.md`. **Zero** occurrences of `rewardkit`, an LLM-judge
+invocation, or any grading logic anywhere in `gates/`, `oracles/`,
+`generator/`, or any generated `tests/` — this repo grades 100%
+programmatically (static tiers + `live_check.py`; confirmed exactly as the
+task brief expected). Separately grepped `verifier_role_name`/`judgeRole`/
+`LLMJudge` across `generator/`, `tasks/`, and `gates/`: **zero hits** —
+no generated `task.toml` has ever set `[scenario].verifier_role_name` to
+anything (the verifier always falls back to `OrganizationAccountAccessRole`,
+per `docs/slice-g-recon.md` §1's own trace through `aws_trial.py`), and
+`judgeRole` had no consumer anywhere outside its own definition in
+`qa_roles_stack.ts`.
+
+**Decision: removed**, not kept-with-a-note. Rationale: it was purely
+vestigial (defined, never assumed by anything this repo's own code path
+could reach), a real IAM over-grant (`AmazonBedrockFullAccess` is broad)
+sitting unused in the live account, and $0.00 Bedrock spend in the account
+confirms it (context provided for this run) — removing an unused
+broad-access role is a net security improvement with zero functional loss,
+consistent with the minimal-privilege reasoning behind adding
+`QADeployApplicationRole` in the first place. `qa_roles_stack.ts`'s class
+docstring now documents the removal explicitly (what it was, why it's
+gone, where to look — `docs/adding-scenarios.md` §4 — if a future
+scenario genuinely needs an LLM-judge-shaped role again). `this.judgeRole`
+(the exported field) is removed along with it — its removal is a breaking
+change to `QARolesStack`'s public surface, but nothing in this repo's own
+`environment.ts` or elsewhere referenced it (confirmed by grep before
+removing).
+
+### New docs: "Adding scenarios and tasks"
+
+New `docs/adding-scenarios.md`, linked from `README.md` (both the repo-
+layout table and a new bullet in "How it works"). Chosen over adding a
+section to `specs/SCHEMA.md` because `SCHEMA.md` is a field-by-field
+*reference* (kept skimmable on purpose) and this is a *procedure*
+(ordered steps, decision rules, commands to run) — mixing the two would
+make `SCHEMA.md` harder to use as a lookup table without making the
+procedure any more discoverable. Cross-linked both directions instead
+(`SCHEMA.md` §5's `agent_role_name`/§8.2 point 5 now point to
+`docs/adding-scenarios.md`; the new doc cites the exact `SCHEMA.md`
+section each of its own steps expands on). Covers, in order: authoring an
+intent spec (with the exact `make validate-spec`/`make gen`/`make parity`
+commands), the three-role selection rule ("pick the least-privileged role
+that lets the scenario run," with the full grant table), the read-only-
+vs-mutating decision (including the `gating` field and the reset.sh
+cleanup requirement), the role-extension maintenance procedure (propose →
+authorize → extend `QARolesStack` → re-run env setup → record in
+DECISIONS.md — explicitly modeled on how THIS amendment itself was done),
+oracle authoring (intent.md → structural_asserts → rego/cfn-guard at equal
+strictness → `make check-paths`/`make tier1-coverage`), the reference-
+solution + negative-fixture + `make falsifiability`/`make grading-proof`
+requirement, and the holdout-split rule (`specs/split.yaml`,
+`generator/split.py --write`, the re-split procedure). Closes a real gap:
+this was the operator's own explicit condition on accepting the proposal
+("conditional on documenting how these roles are maintained as
+scenarios/tasks are added") — see the authorization quote above.
+
+### What remains before this scenario is trial-runnable
+
+Stated plainly, not left implicit: even after this amendment,
+`apigw-redeploy` is **still not trial-runnable** for two independent
+reasons, both already flagged above and in the spec's own updated
+`gating` comment: (1) `QADeployApplicationRole` exists only in this repo's
+CDK source, not yet in the live account — `aws-bench env setup` (or the
+equivalent `cdk deploy`) must be re-run against the target account before
+any trial can assume it, deliberately NOT done this round (code + docs
+only, per this run's own task boundary); (2) even once deployed, the
+IAM-path gap (reference solutions creating their role at the default path,
+not under `/cdktn-bench-task/`) would still `AccessDeny` a real deploy
+attempt. Both are named, scoped follow-ups, not silently deferred.
+
+### Verification
+
+- `uv run python generator/spec_model.py specs/apigw-redeploy.yaml` — OK
+  (3 catches, 3 arms, 7 structural_asserts — unchanged shape).
+- `cd scenarios/anchor/scenario/cdk_app && ./node_modules/.bin/tsc --noEmit`
+  — clean, no errors.
+- `make gen-all` — regenerated all 5 real specs (`specs/split.yaml` and
+  `specs/_toy/` skipped, per that target's own design). `git status`/`git
+  diff --stat` after: the ONLY generated files that changed are the three
+  `tasks/anchor/apigw-redeploy-{awscdk,hcl-raw,terraconstructs}/task.toml`
+  files, each a 2-line diff (`agent_role_name` + the
+  `verification_explanation` gating text) — confirming the four Slice D
+  specs' (`apigw-openapi`, `ecs-swappiness`, `s3-lambda-log-retention`,
+  `sfn-jsonata`) generated task directories are BYTE-UNCHANGED, and no
+  other `apigw-redeploy` file (environment/, tests/, solution/) changed.
+- `make check` — **exit 0.** `uv run pytest gates metrics oracles generator
+  test -q` — 442 passed (328.13s). `metrics/test_pipeline_e2e.py` — 1
+  passed. `./ci/check-smoke-drift.sh` — `smoke-drift: OK`. Same 442-pass
+  count as Amendment 15's own last full run — this amendment's changes
+  (task.toml text, a generator function's dead-for-every-other-spec
+  branch, a CDK stack file, docs) touch no code path any of those tests
+  exercise differently.
+- `make falsifiability SPEC=specs/<id>.yaml` and `make grading-proof
+  SPEC=specs/<id>.yaml` for all four Slice D specs — unaffected in shape by
+  this amendment (touched only `apigw-redeploy`'s own task.toml fields and
+  a generator function whose branch is dead/unentered for every other
+  spec, same no-op convention as every prior Slice G amendment) — all
+  green:
+  - `apigw-openapi`: falsifiability OK (9/9 PASS); grading-proof OK, all 3
+    arms GRADEABLE (6/6 PASS).
+  - `ecs-swappiness`: falsifiability OK (9/9 PASS); grading-proof OK, all 3
+    arms GRADEABLE (5 PASS, 1 pre-existing non-gating SKIP — terraconstructs
+    "no fixture reaches tier 1 on this arm", unchanged from Amendment 4).
+  - `s3-lambda-log-retention`: falsifiability OK (9/9 PASS); grading-proof
+    OK, all 3 arms GRADEABLE (6/6 PASS).
+  - `sfn-jsonata` (2 arms, terraconstructs excluded per `arms/
+    terraconstructs/README.md` §4): falsifiability OK (7/7 PASS,
+    `tier05_ok` reported alongside reward for both `solve.sh` runs);
+    grading-proof OK, both arms GRADEABLE (4/4 PASS).
+
+**Files added:** `docs/adding-scenarios.md`.
+**Files modified:** `scenarios/anchor/scenario/cdk_app/stacks/
+qa_roles_stack.ts` (new `QADeployApplicationRole`/`QADeployApplicationPolicy`,
+removed `LLMJudgeFullBedrockAccessRole`/`judgeRole`), `docs/proposals/
+qa_deploy_application_role.proposed.ts` (superseded banner),
+`docs/slice-g-iam-proposal.md` (superseded banner), `specs/
+apigw-redeploy.yaml` (`agent_role_name`, updated `gating` comment),
+`specs/SCHEMA.md` (§5, §8.2 point 5 — role references updated), `generator/
+gen.py` (`verification_explanation()` gating-aware), `README.md` (repo-
+layout table + "How it works" bullet linking the new doc),
+`tasks/anchor/apigw-redeploy-{awscdk,hcl-raw,terraconstructs}/task.toml`
+(regenerated, `make gen-all`).

@@ -1,6 +1,23 @@
 # Slice G IAM proposal: `QADeployApplicationRole` (proposed, NOT deployed)
 
-Status: **proposal only**. Not created, not deployed, not wired into
+> **SUPERSEDED (DECISIONS.md "Adding a QADeployApplicationRole" amendment).**
+> The operator explicitly authorized and this repo has since created a REAL
+> `QADeployApplicationRole` in
+> `scenarios/anchor/scenario/cdk_app/stacks/qa_roles_stack.ts`, with a
+> **simpler** scoping than this document's table below proposed: full
+> `apigateway:*`, full `lambda:*` (not the verb-enumerated/name-prefix-scoped
+> statements below), IAM role-lifecycle actions path-scoped to
+> `/cdktn-bench-task/` (not the unscoped `Resource: *` this document's
+> `IamRoleLifecycleUnscopedName` argued for), plus logs permissions. This
+> document's per-statement reasoning remains a useful design record (why
+> API Gateway can't be resource-scoped pre-creation, the `PassedToService`
+> guard idea, the still-OPEN CDKToolkit `sts:AssumeRole` question) and is
+> cited from the real implementation's own code comments — kept for that
+> reason, not because the proposal below is what got built. See
+> `docs/adding-scenarios.md` for the current role-selection/extension
+> procedure and `DECISIONS.md` for the authorization on record.
+
+Status: **proposal only, historical**. Not created, not deployed, not wired into
 `scenarios/anchor/scenario/cdk_app/stacks/qa_roles_stack.ts`. `specs/
 apigw-redeploy.yaml` continues to set `verifier.live_check.agent_role_name:
 "QALocalInvocationApplicationAdmin"` (full `AdministratorAccess` — a real,

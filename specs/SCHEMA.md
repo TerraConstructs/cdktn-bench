@@ -802,10 +802,15 @@ verifier:
   outside this repo) — required for any scenario whose agent phase performs
   real AWS mutations, or the deployed/modified resources are never reset
   between trials. `agent_role_name` must name a role capable of the
-  mutations the scenario's instruction asks for; `apigw-redeploy` uses the
-  existing `QALocalInvocationApplicationAdmin` role (a real, logged
-  over-grant — no minimally-scoped deploy role exists yet, see
-  `docs/slice-g-recon.md` §1 and `DECISIONS.md` "Amendment 12").
+  mutations the scenario's instruction asks for; `apigw-redeploy` uses
+  `QADeployApplicationRole` (`scenarios/anchor/scenario/cdk_app/stacks/
+  qa_roles_stack.ts`) — a minimally-scoped role added by explicit operator
+  authorization (`DECISIONS.md` "Adding a QADeployApplicationRole"),
+  superseding the earlier `QALocalInvocationApplicationAdmin` (full
+  `AdministratorAccess`) over-grant Amendments 12-15 used while no
+  narrower role existed. See `docs/adding-scenarios.md` for how to pick
+  among the three agent roles, and when/how to extend `QARolesStack` if a
+  future scenario needs a permission none of the three grant.
 - `gating` (bool, default `false`): **by default, a live check's result
   never gates `/logs/verifier/reward.txt`** (§8's Phase-2 forward-compat
   note, point 4 below) — written instead to a separate
@@ -986,8 +991,10 @@ if the flat grouping was actually intended.
    override both via `verifier.live_check.agent_role_name`/
    `.concurrency_mode` (§5, Slice G addition) — required for any scenario
    whose agent phase performs real AWS mutations (`apigw-redeploy` is the
-   first: `agent_role_name = "QALocalInvocationApplicationAdmin"`,
-   `mode = "mutating"`).
+   first: `agent_role_name = "QADeployApplicationRole"`,
+   `mode = "mutating"` — see `docs/adding-scenarios.md` for the
+   role-selection rule and the maintenance procedure for extending
+   `QARolesStack`).
 6. `pre_invoke/` is generated **iff** `instruction.placeholders` contains a
    `source: pre_invoke_random` entry — never for any other reason, in
    particular never to seed starter files into the agent's workspace (that
