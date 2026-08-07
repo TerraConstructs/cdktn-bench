@@ -1,0 +1,400 @@
+{
+  "//": {
+    "metadata": {
+      "backend": "local",
+      "stackName": "iam-e2e-role",
+      "version": "0.23.0"
+    },
+    "outputs": {
+    }
+  },
+  "data": {
+    "aws_caller_identity": {
+      "CallerIdentity": {
+        "//": {
+          "metadata": {
+            "path": "iam-e2e-role/CallerIdentity",
+            "uniqueId": "CallerIdentity"
+          }
+        },
+        "provider": "aws"
+      }
+    },
+    "aws_iam_policy_document": {
+      "DeployerPolicy_113DD938": {
+        "//": {
+          "metadata": {
+            "path": "iam-e2e-role/DeployerPolicy/Resource/Resource",
+            "uniqueId": "DeployerPolicy_113DD938"
+          }
+        },
+        "statement": [
+          {
+            "actions": [
+              "ec2:Describe*",
+              "ec2:GetSecurityGroupsForVpc",
+              "ec2:DescribeVolumeStatus",
+              "ssm:DescribeParameters",
+              "sts:GetCallerIdentity"
+            ],
+            "effect": "Allow",
+            "resources": [
+              "*"
+            ],
+            "sid": "ReadOnlyDiscovery"
+          },
+          {
+            "actions": [
+              "ssm:GetParameter",
+              "ssm:GetParameters"
+            ],
+            "effect": "Allow",
+            "resources": [
+              "arn:aws:ssm:us-east-1:${data.aws_caller_identity.CallerIdentity.account_id}:parameter/cdktn-bench-iam-e2e-role/app/*"
+            ],
+            "sid": "SsmRead"
+          },
+          {
+            "actions": [
+              "iam:CreateInstanceProfile",
+              "iam:DeleteInstanceProfile",
+              "iam:GetInstanceProfile",
+              "iam:AddRoleToInstanceProfile",
+              "iam:RemoveRoleFromInstanceProfile",
+              "iam:TagInstanceProfile",
+              "iam:UntagInstanceProfile",
+              "iam:ListInstanceProfilesForRole",
+              "iam:GetRole",
+              "iam:ListRoleTags"
+            ],
+            "effect": "Allow",
+            "resources": [
+              "arn:aws:iam::${data.aws_caller_identity.CallerIdentity.account_id}:instance-profile/cdktn-bench-iam-e2e-role-workload-profile",
+              "arn:aws:iam::${data.aws_caller_identity.CallerIdentity.account_id}:role/cdktn-bench-task/iam-e2e-role-workload"
+            ],
+            "sid": "InstanceProfileLifecycle"
+          },
+          {
+            "actions": [
+              "sts:AssumeRole"
+            ],
+            "effect": "Allow",
+            "resources": [
+              "arn:aws:iam::${data.aws_caller_identity.CallerIdentity.account_id}:role/cdktn-bench-task/iam-e2e-role-workload"
+            ],
+            "sid": "AssumeWorkloadForTesting"
+          },
+          {
+            "actions": [
+              "ec2:CreateSecurityGroup",
+              "ec2:DeleteSecurityGroup",
+              "ec2:AuthorizeSecurityGroupEgress",
+              "ec2:RevokeSecurityGroupEgress",
+              "ec2:CreateTags",
+              "ec2:DeleteTags",
+              "ec2:CreateVolume",
+              "ec2:DeleteVolume"
+            ],
+            "effect": "Allow",
+            "resources": [
+              "*"
+            ],
+            "sid": "Ec2Write"
+          },
+          {
+            "actions": [
+              "kms:DescribeKey",
+              "kms:Decrypt",
+              "kms:GenerateDataKey",
+              "kms:GenerateDataKeyWithoutPlaintext",
+              "kms:CreateGrant"
+            ],
+            "condition": [
+              {
+                "test": "StringEquals",
+                "values": [
+                  "ec2.us-east-1.amazonaws.com"
+                ],
+                "variable": "kms:ViaService"
+              }
+            ],
+            "effect": "Allow",
+            "resources": [
+              "*"
+            ],
+            "sid": "KmsUseForEbs"
+          },
+          {
+            "actions": [
+              "s3:CreateBucket",
+              "s3:DeleteBucket",
+              "s3:ListBucket",
+              "s3:GetBucket*",
+              "s3:PutBucket*",
+              "s3:DeleteBucketPolicy",
+              "s3:ListTagsForResource",
+              "s3:GetAccelerateConfiguration",
+              "s3:GetLifecycleConfiguration",
+              "s3:GetReplicationConfiguration",
+              "s3:GetEncryptionConfiguration",
+              "s3:PutEncryptionConfiguration"
+            ],
+            "effect": "Allow",
+            "resources": [
+              "arn:aws:s3:::cdktn-bench-iam-e2e-*-scratch",
+              "arn:aws:s3:::cdktn-bench-iam-e2e-*-scratch/*"
+            ],
+            "sid": "S3Scratch"
+          }
+        ]
+      },
+      "DeployerRole_AssumeRolePolicy_89EBF177": {
+        "//": {
+          "metadata": {
+            "path": "iam-e2e-role/DeployerRole/AssumeRolePolicy/Resource",
+            "uniqueId": "DeployerRole_AssumeRolePolicy_89EBF177"
+          }
+        },
+        "statement": [
+          {
+            "actions": [
+              "sts:AssumeRole"
+            ],
+            "condition": [
+              {
+                "test": "StringEquals",
+                "values": [
+                  "iam-e2e-role-trial-2026"
+                ],
+                "variable": "sts:ExternalId"
+              }
+            ],
+            "effect": "Allow",
+            "principals": [
+              {
+                "identifiers": [
+                  "arn:${data.aws_partition.Partitition.partition}:iam::${data.aws_caller_identity.CallerIdentity.account_id}:root"
+                ],
+                "type": "AWS"
+              }
+            ]
+          }
+        ]
+      },
+      "WorkloadPolicy_57CF62A7": {
+        "//": {
+          "metadata": {
+            "path": "iam-e2e-role/WorkloadPolicy/Resource/Resource",
+            "uniqueId": "WorkloadPolicy_57CF62A7"
+          }
+        },
+        "statement": [
+          {
+            "actions": [
+              "ssm:GetParameter",
+              "ssm:GetParameters",
+              "ssm:GetParametersByPath",
+              "ssm:DescribeParameters"
+            ],
+            "effect": "Allow",
+            "resources": [
+              "arn:aws:ssm:us-east-1:${data.aws_caller_identity.CallerIdentity.account_id}:parameter/cdktn-bench-iam-e2e-role/app/*"
+            ],
+            "sid": "ReadAppParameters"
+          },
+          {
+            "actions": [
+              "kms:Decrypt",
+              "kms:DescribeKey"
+            ],
+            "condition": [
+              {
+                "test": "StringEquals",
+                "values": [
+                  "ssm.us-east-1.amazonaws.com"
+                ],
+                "variable": "kms:ViaService"
+              }
+            ],
+            "effect": "Allow",
+            "resources": [
+              "*"
+            ],
+            "sid": "DecryptSecureStringViaSsm"
+          },
+          {
+            "actions": [
+              "ec2:DescribeVolumes",
+              "ec2:DescribeInstances"
+            ],
+            "effect": "Allow",
+            "resources": [
+              "*"
+            ],
+            "sid": "SelfDiscovery"
+          }
+        ]
+      },
+      "WorkloadRole_AssumeRolePolicy_C884B01C": {
+        "//": {
+          "metadata": {
+            "path": "iam-e2e-role/WorkloadRole/AssumeRolePolicy/Resource",
+            "uniqueId": "WorkloadRole_AssumeRolePolicy_C884B01C"
+          }
+        },
+        "statement": [
+          {
+            "actions": [
+              "sts:AssumeRole"
+            ],
+            "effect": "Allow",
+            "principals": [
+              {
+                "identifiers": [
+                  "${data.aws_service_principal.aws_svcp_default_region_ec2.name}"
+                ],
+                "type": "Service"
+              }
+            ]
+          },
+          {
+            "actions": [
+              "sts:AssumeRole"
+            ],
+            "condition": [
+              {
+                "test": "StringEquals",
+                "values": [
+                  "iam-e2e-role-trial-2026"
+                ],
+                "variable": "sts:ExternalId"
+              }
+            ],
+            "effect": "Allow",
+            "principals": [
+              {
+                "identifiers": [
+                  "arn:${data.aws_partition.Partitition.partition}:iam::${data.aws_caller_identity.CallerIdentity.account_id}:root"
+                ],
+                "type": "AWS"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "aws_partition": {
+      "Partitition": {
+        "//": {
+          "metadata": {
+            "path": "iam-e2e-role/Partitition",
+            "uniqueId": "Partitition"
+          }
+        },
+        "provider": "aws"
+      }
+    },
+    "aws_service_principal": {
+      "aws_svcp_default_region_ec2": {
+        "//": {
+          "metadata": {
+            "path": "iam-e2e-role/aws_svcp_default_region_ec2}",
+            "uniqueId": "aws_svcp_default_region_ec2"
+          }
+        },
+        "service_name": "ec2"
+      }
+    }
+  },
+  "provider": {
+    "aws": [
+      {
+        "access_key": "AKIAIOSFODNN7EXAMPLE",
+        "endpoints": [
+          {
+            "sts": "http://127.0.0.1:17771"
+          }
+        ],
+        "region": "us-east-1",
+        "secret_key": "dummy-secret-key-not-real",
+        "skip_credentials_validation": true,
+        "skip_metadata_api_check": "true",
+        "skip_region_validation": true,
+        "skip_requesting_account_id": true
+      }
+    ]
+  },
+  "resource": {
+    "aws_iam_role": {
+      "DeployerRole_DE45734B": {
+        "//": {
+          "metadata": {
+            "path": "iam-e2e-role/DeployerRole/Resource",
+            "uniqueId": "DeployerRole_DE45734B"
+          }
+        },
+        "assume_role_policy": "${data.aws_iam_policy_document.DeployerRole_AssumeRolePolicy_89EBF177.json}",
+        "name": "iam-e2e-role-deployer",
+        "path": "/cdktn-bench-task/",
+        "tags": {
+          "Name": "cdktn-bench-DeployerRole",
+          "grid:EnvironmentName": "cdktn-bench",
+          "grid:UUID": "iam-e2e-role"
+        }
+      },
+      "WorkloadRole_A63FFF66": {
+        "//": {
+          "metadata": {
+            "path": "iam-e2e-role/WorkloadRole/Resource",
+            "uniqueId": "WorkloadRole_A63FFF66"
+          }
+        },
+        "assume_role_policy": "${data.aws_iam_policy_document.WorkloadRole_AssumeRolePolicy_C884B01C.json}",
+        "name": "iam-e2e-role-workload",
+        "path": "/cdktn-bench-task/",
+        "tags": {
+          "Name": "cdktn-bench-WorkloadRole",
+          "grid:EnvironmentName": "cdktn-bench",
+          "grid:UUID": "iam-e2e-role"
+        }
+      }
+    },
+    "aws_iam_role_policy": {
+      "DeployerPolicy_ResourceRoles0_3AD97DC1": {
+        "//": {
+          "metadata": {
+            "path": "iam-e2e-role/DeployerPolicy/ResourceRoles0",
+            "uniqueId": "DeployerPolicy_ResourceRoles0_3AD97DC1"
+          }
+        },
+        "name": "iame2eroleDeployerPolicy3C93325C",
+        "policy": "${data.aws_iam_policy_document.DeployerPolicy_113DD938.json}",
+        "role": "${aws_iam_role.DeployerRole_DE45734B.name}"
+      },
+      "WorkloadPolicy_ResourceRoles0_EDC0BDFE": {
+        "//": {
+          "metadata": {
+            "path": "iam-e2e-role/WorkloadPolicy/ResourceRoles0",
+            "uniqueId": "WorkloadPolicy_ResourceRoles0_EDC0BDFE"
+          }
+        },
+        "name": "iame2eroleWorkloadPolicyB2A47146",
+        "policy": "${data.aws_iam_policy_document.WorkloadPolicy_57CF62A7.json}",
+        "role": "${aws_iam_role.WorkloadRole_A63FFF66.name}"
+      }
+    }
+  },
+  "terraform": {
+    "backend": {
+      "local": {
+        "path": "/Users/vincentsmet/cdk/cdktn-bench/tasks/anchor/iam-e2e-role-terraconstructs/environment/app/terraform.iam-e2e-role.tfstate"
+      }
+    },
+    "required_providers": {
+      "aws": {
+        "source": "hashicorp/aws",
+        "version": "6.52.0"
+      }
+    }
+  }
+}

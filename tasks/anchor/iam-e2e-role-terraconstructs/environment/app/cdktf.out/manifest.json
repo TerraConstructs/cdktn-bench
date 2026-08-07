@@ -1,0 +1,16 @@
+{
+  "stacks": {
+    "iam-e2e-role": {
+      "annotations": [
+      ],
+      "constructPath": "iam-e2e-role",
+      "dependencies": [
+      ],
+      "name": "iam-e2e-role",
+      "stackMetadataPath": "stacks/iam-e2e-role/metadata.json",
+      "synthesizedStackPath": "stacks/iam-e2e-role/cdk.tf.json",
+      "workingDirectory": "stacks/iam-e2e-role"
+    }
+  },
+  "version": "0.23.0"
+}

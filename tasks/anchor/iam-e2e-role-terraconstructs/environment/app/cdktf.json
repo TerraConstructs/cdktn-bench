@@ -1,5 +1,6 @@
 {
   "language": "typescript",
   "app": "npx ts-node main.ts",
-  "sendCrashReports": "false"
+  "sendCrashReports": "false",
+  "projectId": "78309d9a-b89a-4e10-9a0a-d308a2c32475"
 }

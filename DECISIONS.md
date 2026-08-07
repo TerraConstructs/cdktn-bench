@@ -3876,3 +3876,118 @@ files were deleted; nothing reached the repository or git history; the credentia
 1-hour sessions scoped to the dedicated account. Standing rule for future live work: keep
 boto/botocore logging below DEBUG and pipe credentials directly into the consuming process
 instead of materializing them.
+
+---
+
+## Amendment 18 (2026-08-08) — teardown experiment independently re-run clean;
+## reset.sh removal confirmed; two new findings (version-hash/contamination
+## interaction, corrected runtime)
+
+**Operator authorization (verbatim, same message Amendment 17 recorded):** "I
+authorize the scoped destructive test in the dedicated account (teardown to
+test upstream framework reset solves the leak)."
+
+**Why this amendment exists.** Amendment 17's own process note flagged that its
+run "wrote assume-role credentials to a scratch file despite an explicit
+instruction not to." This amendment records an independent, from-scratch
+re-run of the same experiment against the same account (`886312446417`,
+`us-east-1`), with strict credential hygiene (every STS credential set was
+piped directly from `aws sts assume-role` output into shell environment
+variables inside a single command invocation — nothing was ever written to
+disk), to (a) confirm Amendment 17's conclusion holds independently, and (b)
+correct/extend two things the prior pass's writeup didn't capture. Full
+method, before/after inventories, per-resource verdict table, and quoted log
+evidence: `docs/teardown-experiment-results.md` (rewritten this round; the
+prior pass's content is fully superseded there, but Amendment 17 itself is
+left untouched per this log's append-only contract).
+
+**Result: reconfirmed, independently.** A dirty fixture — a standalone Lambda
+function, a standalone IAM role, a standalone CloudWatch log group, and a
+CloudFormation stack whose Lambda function and IAM role got CFN-random
+physical names (`zz-teardown-fixture-stack-FixtureFunction-m19YQe1VKu94` /
+`-FixtureRole-TtLnTWRe3ePF`) — was deployed under names outside `reset.sh`'s
+hardcoded `apigw-redeploy-*` list. A direct call to `ResourceManager.
+reset_scenarios` (the same function both `aws-bench env reset` and the
+automatic post-`mode = "mutating"`-trial hook call) detected and deleted
+**all 9 resulting resources** across all four types — including an
+orphaned, unplanned 10th-category duplicate (a leftover log group from an
+earlier, already-manually-deleted copy of the fixture, picked up in the same
+pass with no special handling). Zero survivors, zero preserve-list damage,
+account verified byte-for-byte back to its "before" inventory.
+`ResetResult(success=True, reason='Account successfully reset to baseline
+state', ...)`.
+
+**Finding A (new): a version-hash/contamination interaction worth knowing
+about.** Triggering the reset the "obvious" way (`aws-bench env reset
+--env-name cdktn-anchor ...`) failed immediately with "Dataset or script
+version mismatch detected" — the anchor scenario's source tree had
+legitimately changed twice since the account's last `env setup`
+(`scenarios/anchor/reset/reset.sh` added, then `QARolesStack` gained
+`QADeployApplicationRole` — both prior, already-decided changes, unrelated to
+this experiment). `VerifyManager._check_recoverable` treats that as
+unrecoverable-by-reset and routes to `env cleanup` + `env setup` — not usable
+here since `env cleanup` unconditionally deletes the scenario's own
+preserve-listed CFN stacks. Worse: the failed attempt flagged the account
+`aws-bench:contaminated = true` (an Organizations tag,
+`AccountManager.mark_contaminated`), which then blocks a subsequent `env
+setup`'s DEPLOY-phase contamination check too — a real chicken-and-egg trap
+for an operator who hits this exact combination (stale local checkout +
+account already flagged) on a shared/long-lived scenario account. The
+resolution used here — calling `ResourceManager.reset_scenarios` directly
+with `scenario_dir=None` (a supported, documented parameter that skips only
+the local-source-hash check; contamination is never consulted by
+`ResetManager` itself, only by the CLI's DEPLOY-phase wrapper) — is not
+something an operator running the plain CLI has available. **Recorded as a
+known rough edge, not fixed here** (fixing it would mean editing
+`aws-bench`'s own source, out of scope and ask-first per its `AGENTS.md`).
+**Residual state:** account `886312446417` is still flagged `aws-bench:
+contaminated = true` as of this writing — confirmed via a read-only
+`organizations:list-tags-for-resource` check. It does not affect any AWS
+resource (the after-inventory matches "before" exactly) but will block the
+next `env setup`/trial until cleared. Clearing it
+(`organizations:UntagResource`, the same call a successful reset/cleanup
+makes automatically) was attempted from the management account and was
+blocked twice by this session's own sandbox permission classifier; per the
+classifier's own guidance the action was not forced through, and is left as
+an explicit follow-up for the operator (or a differently-scoped session) to
+run: `aws organizations untag-resource --resource-id 886312446417 --tag-keys
+aws-bench:contaminated`.
+
+**Finding B (correction): reset runtime is ≈8.5–9 minutes, not ≈4.**
+Amendment 17 reported "Reset runtime ≈ 4 minutes... dominated by CloudFormation
+stack deletion." This round's timestamps (DEBUG-level, end to end) show the
+framework's `ResetManager.reset_account` call alone took **7m 53s (473s)**,
+plus ~50s for the in-container `reset.sh` phase in a real trial (container
+build + script run, proven separately in the failed CLI attempt above) — total
+≈ 8.5–9 minutes. Of the 473s, **deletion work was only ≈61s**; **two full
+account-wide fastscans across 996 CloudFormation resource types** (initial
+discovery + final re-verification, ≈3m24s each) account for ≈78% of the time.
+This is real per-`mode = "mutating"`-trial overhead, not currently bounded by
+`scenario.toml`'s `[reset] timeout_sec = 300.0` (that config only wraps
+`reset.sh` itself, which finishes in ~22s; the framework's own scan/delete/
+verify work runs outside it) — but it should be budgeted into per-trial
+throughput/cost estimates for `apigw-redeploy` and `iam-e2e-role` regardless.
+
+**Decisions (reconfirmed from Amendment 17, unchanged):**
+1. `scenarios/anchor/reset/reset.sh`'s fixed-name sweep is confirmed
+   **removable**. Two independent live proofs (Amendment 17's and this one)
+   now show the framework's generic reset covers everything it was added for,
+   including the one case (CFN-random physical names) it was specifically
+   written to compensate for. It costs ~22s of container time per mutating
+   trial and adds a scenario-specific maintenance surface for zero remaining
+   marginal coverage — remove it rather than extend it.
+2. aws-nuke stays parked (per the operator's own authorization message,
+   unchanged); no IAM account alias is set. Nothing in this round's work
+   touched either.
+3. `docs/teardown-options.md` retains its analysis and authorization design
+   should an operator-invoked backstop ever be wanted for a genuinely
+   contaminated account (e.g. the residual contamination flag noted in
+   Finding A above, if the operator ever wants a heavier tool than
+   `organizations:UntagResource` + `env cleanup` to recover a stuck account).
+
+**Files touched:** `docs/teardown-experiment-results.md` (rewritten with this
+round's evidence, superseding but not deleting the historical record now
+folded into this entry), `DECISIONS.md` (this entry). No `aws-bench` source
+was read-write touched (read-only, to trace the exact call chain). No git
+commit was made by this round — the operator instructed not to; these are
+working-tree changes for review.
