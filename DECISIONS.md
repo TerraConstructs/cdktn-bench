@@ -3991,3 +3991,382 @@ folded into this entry), `DECISIONS.md` (this entry). No `aws-bench` source
 was read-write touched (read-only, to trace the exact call chain). No git
 commit was made by this round — the operator instructed not to; these are
 working-tree changes for review.
+
+## Amendment 19 (2026-08-08) — Adding `iam-e2e-role`: IAM derivation
+## scenario, Route53 drop, two-roles-one-task, no-terratest, and an honest
+## gaming assessment
+
+Directed by the operator (Vincent, repo owner). **Authorization on record
+(quoted verbatim from the task brief):**
+
+> 1. "Add the IAM Derivation scenario" — build it.
+> 2. "I authorize pre-provisioned fixtures (CMK, decoy bucket, ..)" —
+>    fixtures in the dedicated benchmark account are approved. You WRITE
+>    the provisioning script; you do NOT run it (the orchestrator runs it
+>    later).
+> 3. "for the R53 hosted zone see if we can drop it" — EVALUATE and
+>    recommend.
+> 4. "however do keep the 2 roles in 1 task" — the task MUST require BOTH
+>    roles ... One task, both roles. This is the load-bearing design
+>    decision.
+
+**Scope of this run: spec + module + harness + oracle + reference
+solutions + a partial negative-fixture set + fixture-provisioning scripts
++ docs, all authored and verified OFFLINE. No AWS call was made, mutating
+or read-only, at any point in this run** — every claim below that would
+normally be confirmed by a real trial is instead confirmed by direct local
+invocation of `terraform`/`opa`/`cfn-guard`/`npx cdk synth`/`npx cdktn
+synth` against dummy/offline credentials, or left explicitly unproven (see
+"What remains before this scenario is trial-runnable" below).
+
+### Files added
+
+- `specs/iam-e2e-role.yaml` — the intent spec (7 catches, 7
+  `structural_asserts`, 3 arms enabled).
+- `tasks/anchor/iam-e2e-role-{awscdk,hcl-raw,terraconstructs}/` —
+  generated via `make gen SPEC=specs/iam-e2e-role.yaml`, plus hand-authored
+  `solution/solve.sh` for all three arms and `solution/broken/<catch>/
+  solve.sh` for all seven catches on `hcl_raw` (see the honest gap below
+  for why `awscdk`/`terraconstructs` negatives are not yet authored).
+- `oracles/iam-e2e-role/intent.md` (generated verbatim from `oracle.intent`),
+  `oracles/rego/iam-e2e-role/policy.rego`, `oracles/cfn-guard/iam-e2e-role/
+  policy.guard` (both hand-authored).
+- `ops/fixtures/iam-e2e-role/{provision.sh,teardown.sh}` — written, not run.
+
+### 1. The Route53 recommendation
+
+**Recommendation: DROP the Route53 hosted zone fixture.** The reduced
+module (§2 below) does not create a `aws_route53_record`/reference a
+hosted zone at all.
+
+Reasoning, per the operator's own instruction to check whether the lost
+defect classes survive elsewhere before recommending a drop:
+
+- **A6** (`route53:ListTagsForResource`, a data source's own tag read) and
+  **route53:GetChange's** "this action does not support resource-level
+  permissions, must be `Resource: "*"`" mechanism are the two classes at
+  stake. The module keeps an `aws_security_group` in the default VPC
+  specifically so `ec2:GetSecurityGroupsForVpc` is reachable — and that
+  action is BOTH (a) a `Describe*`-does-not-cover-`Get*` naming trap
+  (already A9's own class) AND (b) one of the many EC2 actions that do not
+  support resource-level permissions at all, so it must be granted on
+  `Resource: "*"` too — the exact same mechanical class `GetChange`
+  exemplified. One kept resource reaches both classes at once; dropping
+  Route53 does not lose the "action has no resource-level ARN" class.
+- **C-2** (the construct path's own `route53:ListHostedZonesByName`
+  defect) is genuinely lost — there is no substitute for it in this
+  reduced scenario. Flagged honestly, not hidden: this specific defect
+  instance is gone, though its GENERAL class ("the harness makes its own
+  direct AWS call the module's own HCL never makes") is independently
+  reachable via `harness/validate.sh`'s own `ec2:DescribeVolumeStatus`
+  call (deliberately not something granted by a naive `ec2:Describe*`
+  wildcard's most literal reading, though in practice a `Describe*`
+  wildcard DOES cover it — see the module's own header comment for the
+  honest limit of this substitution).
+- A6's specific "tag read on a DATA SOURCE, not the resource itself"
+  flavor is a narrower instance of a broader lesson (`missing-tag-on-create`
+  and the `iam:ListRoleTags`/refresh-time-read pattern already cover
+  "a read/tag call is invisible from reading the resource block" more
+  generally in this scenario).
+- **Trade-off, stated plainly**: a hosted zone costs ~$0.50/month and is
+  trivially provisioned — the operator's own framing. The decision to drop
+  it is NOT about cost. It is because (a) DNS propagation is a documented,
+  real source of live-check flakiness this scenario's own gating design
+  cannot afford (`docs/scenario-proposal-iam-e2e-role.md` §6 point 6 — the
+  same finding-1 lesson `apigw-redeploy`'s own `live_check.py` had to
+  learn the hard way), and (b) the one defect class that would be
+  genuinely and irreplaceably lost (C-2) is a single specific instance of
+  a class already reachable elsewhere, not a unique category. If a future
+  revision wants C-2 back specifically, add the hosted zone back with full
+  awareness this reintroduces the propagation-flakiness risk.
+
+### 2. The reduced module
+
+`module/main.tf` (seeded via `seeded_files`, byte-identical across all
+three arms, never touched by the agent) creates: a default-VPC security
+group (A9 + the no-resource-level-ARN class, see above), an encrypted
+`aws_ebs_volume` under the pre-provisioned CMK (A8, EC2 side), an
+`aws_s3_bucket` + ownership-controls + policy behind a flag defaulted ON
+(A3), a `data "aws_ssm_parameter"` read of the pre-provisioned plain
+parameter (the deployer's own `ssm:GetParameter` requirement), and —
+the one IAM resource the module itself creates — an
+`aws_iam_instance_profile` that wraps the agent-authored workload role BY
+NAME (reaches A7, tag-on-create, on the DEPLOYER's side, since the
+deployer is the one running `terraform apply` against this module).
+Dropped entirely relative to the full proposal: Packer/AMI, ASG/launch
+template/instance refresh (and therefore A5,
+`iam:CreateServiceLinkedRole`, deliberately — it is account-state-dependent
+and unreproducible in a shared account where the SLR already exists, same
+reasoning the proposal itself gave), the EC2 instance/EIP/cloud-init/Caddy/
+Datadog/git-sync/Atlantis itself (all boot-time, add no policy class).
+Measured (not estimated, unlike the original proposal's own §5.2 caveat):
+a full `terraform init && apply` of this module against a hand-run local
+credential set was not attempted (no AWS calls made this pass, per the
+operator's own directive) — cycle time remains genuinely unmeasured;
+flagged as unproven below, same as the original proposal's own §7 caveat.
+
+### 3. Two roles, one task — design resolution
+
+The operator's directive ("keep the 2 roles in 1 task") is implemented
+exactly as the proposal's own §5.1 described, with one concrete
+resolution the proposal itself left ambiguous (its own KEEP-table row 1,
+"aws_iam_role + _role_policy + _instance_profile... A7 tag-on-create",
+appeared to have the MODULE create the workload role, which would
+contradict "the agent authors both roles"): **the module creates ONLY the
+EC2 instance profile (an `aws_iam_instance_profile` wrapping the
+agent-supplied role NAME), never the role itself.** Both roles' full
+definitions (trust policy AND permissions policy) are 100% agent-authored,
+in the agent's own substrate, deployed via the agent's own real deploy
+command. This reconciles A7 (needs the DEPLOYER to run an apply that
+creates a tagged IAM resource) with the operator's own requirement (the
+workload role itself is authored by the agent, not the module) — see
+`specs/iam-e2e-role.yaml`'s own `module/main.tf` `seeded_files` entry
+comment for the load-bearing reasoning spelled out in place.
+
+Trust mechanism (SCHEMA.md `verifier.live_check`, mirroring the
+proposal's own §5.4): both roles trust the account root, gated by an
+`sts:ExternalId` condition the agent chooses; the workload role
+additionally trusts `ec2.amazonaws.com` for production realism. The
+harness (`harness/validate.sh`, `agent_role_name`'s own credentials as the
+caller) assumes the deployer role, applies `module/` under it twice
+(forcing refresh-time reads — A4), makes its own direct
+`ec2:DescribeVolumeStatus` call under the deployer identity (the
+"harness's own AWS call is itself a defect source" requirement — an
+analogue of the real episode's `ssm:GetInventory`), assumes the workload
+role, runs `harness/assertions.py` (an `ssm get-parameters-by-path
+--with-decryption` call — reaching A8/C-1 together in one call — plus an
+`ec2:DescribeVolumes` self-discovery proxy standing in for a real
+instance's own cloud-init, since this reduced module boots no instance),
+then destroys everything under the deployer identity.
+
+### 4. No terratest — confirmed, not just proposed
+
+Implemented exactly as `docs/scenario-proposal-iam-e2e-role.md` §5.5
+recommended: `harness/validate.sh` (bash) + `harness/assertions.py`
+(stdlib `python3`, no `boto3`, matching every arm image's documented
+baseline) over the `aws` CLI v2 and `terraform` CLI already present in all
+three arm images — verified directly: `aws`, `terraform`, `jq`, `python3`
+all confirmed present via each arm's own `Dockerfile`/README. Zero image
+delta. Both scripts are seeded as read-only reference input (`seeded_files`,
+chmod 0o444) into every arm's workspace, identically.
+
+### 5. `QADeployApplicationRole` — a real, small gap, NOT closed this round
+
+`agent_role_name: "QADeployApplicationRole"` is set in the spec, following
+`docs/adding-scenarios.md`'s own decision rule (checked against this
+scenario's actual mutating calls, not assumed). Concretely checked against
+`qa_roles_stack.ts`'s existing grants: `IamRoleLifecycleScoped`
+(`CreateRole`/`GetRole`/`PutRolePolicy`/`GetRolePolicy`/`AttachRolePolicy`/
+`DetachRolePolicy`/`DeleteRolePolicy`/`DeleteRole`/`TagRole`, scoped to
+`role/cdktn-bench-task/*`) already covers everything the agent's own
+credentials need to CREATE and manage both roles' definitions and inline
+policies, since — per §3 above — the agent's own credentials never need
+`ec2`/`ssm`/`kms`/`s3` grants directly (those are the DEPLOYER role's own
+policy content, not the agent's operating credential; the deployer role's
+policy is created BY the agent's `iam:PutRolePolicy` call, not exercised
+BY the agent's own identity). **The one missing grant**: `sts:AssumeRole`
+scoped to `arn:aws:iam::<account>:role/cdktn-bench-task/*` — needed for
+`harness/validate.sh` (run under the agent's own credentials) to assume
+the deployer role at all. `iam:PassRole` is NOT needed (no EC2 instance is
+ever launched with the workload role attached in this reduced module, so
+nothing ever calls an API that requires passing it).
+
+**Not added to `qa_roles_stack.ts` this round.** Per
+`docs/adding-scenarios.md` §4's own procedure ("operator authorization,
+explicitly, in writing... quote the operator's own words, as
+[Amendment 16] does"), this run's own authorization (the four numbered
+directives quoted above) does not contain an exact quote naming this
+specific `sts:AssumeRole` grant — unlike Amendment 16's own authorization,
+which named its grants explicitly, action by action. Rather than
+interpret "build it" as blanket authorization to widen a shared,
+already-deployed IAM role, this amendment records the EXACT proposed diff
+(above) and defers the edit, following the same "code + docs only, no live
+wiring" pattern Amendment 16 itself used for its own two remaining gaps.
+**Until this one-statement extension is authorized and `aws-bench env
+setup` is re-run, this scenario is not trial-runnable** — same
+honestly-flagged state `apigw-redeploy` shipped in after Amendment 16.
+
+### 6. Anti-gaming design and an honest assessment of how it could still be gamed
+
+Per the operator's explicit requirement, the oracle asserts BOTH
+properties, neither alone sufficient (`oracles/iam-e2e-role/intent.md`
+states this explicitly): (i) LIVE, gating — the two roles actually work,
+checked by `harness/validate.sh` via `tests/live_check.py` (hand-authored,
+`gating: true` since three catches are `predicted_tier_caught: "live"` by
+construction); (ii) STATIC, tier 0/1 — the two roles are least-privilege,
+checked entirely from the delivered policy documents. A wildcard-admin
+policy passes (i) trivially but fails (ii)'s `no-full-service-wildcard-
+actions` tier-0 check (verified: `Action: "*"` on the deployer role scores
+reward 0.0, `oracles/rego/iam-e2e-role/policy.rego`'s `deny` fires nothing
+for it, but `tests/static_tiers.sh`'s own jq-compiled `not_regex` check
+catches it before Rego is even invoked).
+
+**How this could be unfair or gamed, stated plainly (not hidden):**
+
+1. **The `cfn-guard` bundle is strictly weaker than the `rego` bundle for
+   the ONE tier-1 check this scenario has** (`wildcard-matches-protected-
+   bucket`). Rego's `glob.match` catches ANY agent-authored S3 `Resource`
+   pattern that matches the decoy bucket's ARN — general, by construction.
+   `cfn-guard` 3 has no equivalent glob builtin, so the `.guard` bundle can
+   only deny a small, fixed denylist of known-bad literal strings. A
+   sufficiently creative overbroad pattern on the `awscdk` arm ALONE
+   (e.g., a prefix/suffix shape this denylist doesn't happen to name)
+   could evade this specific catch on that one arm while still correctly
+   failing on `hcl_raw`/`terraconstructs`. Documented in both policy
+   files' own headers, not just here.
+2. **Negative-fixture coverage is INCOMPLETE this round.** All 7 catches
+   have a `hcl_raw` `broken/` fixture (verified: the 4 static ones score
+   reward 0.0, the 3 live ones score reward 1.0 AND print
+   `CDKTN_BENCH_LIVE_ONLY_CONFIRMED_MARKER`, all via direct local
+   invocation reproducing `tests/static_tiers.sh`'s own logic — `make
+   falsifiability`'s actual docker-gated run was not executed this pass,
+   see §8 below). `awscdk` and `terraconstructs` have NO `broken/`
+   fixtures yet, for any catch — a real, tracked gap, not silently
+   accepted. Until they exist, `gates/oracle_falsifiability.py` will
+   report `MISSING` for those (arm, catch) pairs, which is a hard FAIL
+   per that gate's own documented contract (`solve.sh` IS authored on
+   those arms, so `NOT_AUTHORED`'s one non-gating exception does not
+   apply). The 4 static-tier catches' underlying assertions run
+   identically regardless of arm (same jq ops, same Rego bundle for the
+   two TF-shaped arms, real `cfn-guard` bundle for `awscdk` — verified
+   directly against the `awscdk` reference template, reward 1.0), so the
+   MECHANISM is proven arm-symmetric even though the fixture FILES
+   proving it per-arm are not yet all written.
+3. **The deployer role is not arm-discriminating, by design** (the
+   scenario's own central, pre-registerable hypothesis — see
+   `docs/scenario-proposal-iam-e2e-role.md` §4.3/§6 point 1). If most of
+   an agent's tokens-to-green are spent on the deployer loop, the arms
+   will show little separation on THAT half — expected, not a flaw, and
+   restated here before any trial runs so it cannot look like a post-hoc
+   excuse.
+4. **The v1 reference solution does NOT exercise the grantXxx-derivation
+   contrast on the workload role.** All three arms' reference solutions
+   author the workload role's permissions BY HAND (mirroring `hcl_raw`
+   exactly), not via `parameter.grantRead()`/`key.grantDecrypt()` on an
+   imported construct. This was a deliberate simplification under this
+   pass's time budget (`arms.terraconstructs.reason` in the spec records
+   the construct-arm coverage that WOULD support the grantXxx path —
+   `StringParameter.fromSecureStringParameterAttributes(...).grantRead()`
+   + `Key`/alias import + `.grantDecrypt()`, all verified present in the
+   pinned `terraconstructs@0.2.13` package). Consequence: THIS SPECIFIC
+   REVISION of the scenario does not yet produce the "construct arms win
+   on the workload role, tie-or-lose on the deployer role" contrast the
+   whole scenario exists to measure — the scaffolding (module, harness,
+   oracle, catches) supports it, but the reference solutions do not yet
+   demonstrate it. Flagged as the single most important open follow-up,
+   not glossed over: a future revision should redo the workload-role half
+   of the `awscdk`/`terraconstructs` reference solutions (and add a
+   `getparametersbypath-not-granted`/`missing-kms-for-securestring`
+   negative pair that actually goes THROUGH `grantRead()` rather than
+   hand-written statements) before this scenario's own results are cited
+   as evidence for or against the grantXxx-asymmetry hypothesis.
+5. **The action catalogue (`actions-are-real-iam-actions`) is an
+   ALLOWLIST an agent could theoretically special-case around** if it
+   somehow learned the catalogue's exact contents (e.g. from this very
+   file) rather than from correct IAM knowledge — an agent that reads
+   `specs/iam-e2e-role.yaml` and copies the catalogue's own action list
+   verbatim would trivially pass this check without understanding why
+   each action is needed. Structurally unavoidable for an allowlist-shaped
+   check (same limitation the toy spec's own analogous check has); not
+   unique to this scenario.
+6. **Trust-condition strictness is a weak, existence-only proxy at tier 0**
+   (`trust-has-external-id-condition` checks that AT LEAST ONE
+   `Condition.StringEquals` block exists SOMEWHERE across both roles
+   combined, not that EACH role's own account-root statement carries one)
+   — a consequence of `generator/jsonpath_jq.py`'s translator not
+   supporting bracket-quoted keys containing a colon (`['sts:ExternalId']`),
+   confirmed by hitting that exact `ValueError` while authoring this spec.
+   The stronger, per-role, key-specific version is written into
+   `oracle.rego_hints` as guidance for a future policy.rego revision but
+   is NOT currently enforced by any tier. An agent could therefore give
+   ONE role a real ExternalId condition and the OTHER role an unrelated,
+   different condition (or a condition on the wrong key) and still pass
+   this tier-0 check.
+
+### 7. `reset.sh` — not yet added, a real gap
+
+Per `docs/adding-scenarios.md` §3's own requirement ("give the scenario
+its own `scenarios/anchor/reset/reset.sh` sweep... do not rely solely on
+the framework's generic post-trial sweep"), this scenario's own sweep
+entry (fixed-name roles `iam-e2e-role-{deployer,workload}` under
+`/cdktn-bench-task/`, the module's own fixed-name instance profile, and
+tag-based sweep for the trial-suffixed SG/volume/bucket) is **NOT yet
+added** to `scenarios/anchor/reset/reset.sh` — an explicit, tracked
+follow-up, not silently skipped. Without it, a trial that dies mid-`apply`
+(or whose harness run never reaches its own `terraform destroy`) leaves
+orphaned resources for the framework's generic sweep to find, which (per
+that same doc's own warning) has no guaranteed delete handler for every
+resource type this scenario touches.
+
+### 8. What remains before this scenario is trial-runnable — stated plainly
+
+1. `QADeployApplicationRole` needs the one `sts:AssumeRole` statement
+   (§5 above) — proposed, not authorized, not wired.
+2. `aws-bench env setup` has not been re-run against the target account
+   (nothing in this pass touched live infrastructure at all).
+3. `scenarios/anchor/reset/reset.sh` needs this scenario's own sweep
+   entry (§7 above).
+4. `ops/fixtures/iam-e2e-role/provision.sh` has not been run — the CMK,
+   SSM parameters, and decoy bucket do not yet exist in the account. NO
+   trial can succeed without them (every reference solution's own S3/SSM/
+   KMS resource ARNs are built assuming they exist).
+5. `awscdk`/`terraconstructs` negative fixtures are not yet authored
+   (§6 point 2) — `make falsifiability`/`make grading-proof` for THIS
+   spec were not run this pass (both are Docker-image-gated;
+   `gates/oracle_falsifiability.py`'s own `_arm_mirror_provider_versions`
+   needs `cdktn-bench/<arm>:dev` images this pass did not build). The
+   underlying logic (`tests/static_tiers.sh`'s tier-0/tier-1 checks, the
+   Rego/cfn-guard bundles) was instead verified by direct, manual
+   invocation against real `terraform plan`/`cdk synth`/`cdktn synth`
+   output for all three arms' reference solutions (all score reward 1.0)
+   and all seven `hcl_raw` negative fixtures (the four static ones score
+   0.0, the three live ones score 1.0 and print the required marker) —
+   strong evidence, not a substitute for the real gate.
+6. The grantXxx-derivation contrast (§6 point 4) is not yet demonstrated
+   by any reference solution.
+7. No real `harness/validate.sh` run has ever happened against a real AWS
+   account — the entire "iterate against real denials" loop this scenario
+   exists to measure is, as of this amendment, unexercised end-to-end.
+
+**Verification performed this pass** (all offline, no AWS credentials
+used): `make validate-spec SPEC=specs/iam-e2e-role.yaml` — OK. `make gen
+SPEC=specs/iam-e2e-role.yaml` — OK, 3 arms + oracles generated. `make
+parity SPEC=specs/iam-e2e-role.yaml` — OK. `terraform validate`/`plan
+-refresh=false` against `module/main.tf` standalone, and against all three
+arms' reference solutions (with each arm's own offline fixture — dummy
+credentials for `hcl_raw`, `mock-sts.js` for `terraconstructs`, no
+credentials needed for `awscdk`'s CFN synth) — all succeed fully offline.
+`opa eval`/`cfn-guard validate` against the hand-authored `policy.rego`/
+`policy.guard` bundles, both directly and via a faithful reproduction of
+the generated `tests/static_tiers.sh`'s own logic (path-substituted since
+this pass has no writable `/app`/`/logs` and no Docker image built) — all
+three arms' reference solutions score reward 1.0 (`tier0_pass=1
+tier1_status=PASS`); all seven `hcl_raw` negative fixtures score exactly
+as their `predicted_tier_caught` requires. `make check` — see this
+amendment's own closing note below for the exact result.
+
+**Files added:** `specs/iam-e2e-role.yaml`, `tasks/anchor/
+iam-e2e-role-{awscdk,hcl-raw,terraconstructs}/` (generated + hand-authored
+`solution/`), `oracles/iam-e2e-role/intent.md`, `oracles/rego/
+iam-e2e-role/policy.rego`, `oracles/cfn-guard/iam-e2e-role/policy.guard`,
+`ops/fixtures/iam-e2e-role/{provision.sh,teardown.sh}`, this amendment.
+**Files NOT modified:** `scenarios/anchor/scenario/cdk_app/stacks/
+qa_roles_stack.ts` (the proposed `sts:AssumeRole` grant is documented, not
+applied — §5), `scenarios/anchor/reset/reset.sh` (§7), `specs/split.yaml`
+(no `generator/split.py --write` run this pass — a separate, deliberate,
+logged action per `docs/adding-scenarios.md` §7, not done here).
+
+### Split re-computation (same amendment, 2026-08-08)
+
+`uv run python generator/split.py --write` was run after the above (a
+separate, deliberate, logged action per `docs/adding-scenarios.md` §7 --
+adding a new `specs/*.yaml` makes `generator/tests/test_split.py::
+TestComputeSplit::test_matches_committed_split_yaml` fail otherwise, since
+`specs/split.yaml` has no entry for a scenario that didn't exist when it
+was last written). Result: `iam-e2e-role` assigned `train`, rank 2 of 6.
+**No existing scenario's `train`/`holdout` group changed** — every one of
+`apigw-openapi`, `apigw-redeploy`, `ecs-swappiness`,
+`s3-lambda-log-retention`, `sfn-jsonata` kept its prior group (only their
+numeric `rank` shifted to make room for the new 6th entry) — confirmed by
+diffing `specs/split.yaml` before/after. No equipping-tuning integrity
+concern per that doc's own "re-split procedure."
