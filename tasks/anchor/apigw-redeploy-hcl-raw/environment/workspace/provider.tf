@@ -48,13 +48,35 @@
 #     arms/awscdk's bin/app.ts already relies on), and the `endpoints.sfn`
 #     override is dropped (a `dynamic` block, confirmed to work inside a
 #     `provider` block against this same terraform/provider pin) so any
-#     real `aws_sfn_state_machine` calls go to real AWS, not loopback. The
-#     four `skip_*` flags are left on in BOTH modes -- confirmed directly
-#     that this is harmless for a real apply as long as credentials are
-#     resolved via env vars/shared config (skip_credentials_validation
-#     only skips an extra STS sanity call; skip_metadata_api_check only
-#     disables the LAST-resort IMDS fallback, never reached once env-var
-#     creds resolve first).
+#     real `aws_sfn_state_machine` calls go to real AWS, not loopback.
+#
+#     `skip_requesting_account_id` is LIVE-CONDITIONAL too (fix-round-3,
+#     2026-08-07 -- benchmark-integrity review finding B-hcl-1): the header
+#     above USED TO claim all four `skip_*` flags were "harmless for a real
+#     apply" -- THAT CLAIM WAS FALSE for this one flag and is corrected
+#     here. `skip_requesting_account_id = true` stops the provider from
+#     ever resolving the caller's real AWS account id, which every
+#     account-id-bearing COMPUTED ARN (`aws_api_gateway_rest_api.
+#     execution_arn` chief among them) then renders with an EMPTY account
+#     segment: `arn:aws:execute-api:us-east-1::<api-id>` instead of
+#     `arn:aws:execute-api:us-east-1:886312446417:<api-id>`. Any
+#     `aws_lambda_permission.source_arn` built from that broken
+#     `execution_arn` never matches the real invocation source ARN API
+#     Gateway presents when it calls the Lambda, so every route 500s with
+#     "Internal server error" and the Lambda is NEVER INVOKED (a permission
+#     denial, not a handler bug) -- reproduced live twice in account
+#     886312446417 (docs/apigw-redeploy-mechanics.md's own scenario is the
+#     first consumer of a real apply; see DECISIONS.md Slice G amendment
+#     for the full live-proof transcript). The other three `skip_*` flags
+#     (`skip_credentials_validation`, `skip_region_validation`,
+#     `skip_metadata_api_check`) remain unconditionally `true` in BOTH
+#     modes -- confirmed directly that leaving those three on is harmless
+#     for a real apply as long as credentials are resolved via env
+#     vars/shared config (skip_credentials_validation only skips an extra
+#     STS sanity call; skip_metadata_api_check only disables the
+#     LAST-resort IMDS fallback, never reached once env-var creds resolve
+#     first; skip_region_validation only skips a static partition-list
+#     lookup, unrelated to account-id resolution).
 #
 # `terraform plan` needs the four `skip_*` flags + static dummy
 # credentials to succeed fully offline for a brand-new resource with no
@@ -111,9 +133,17 @@ provider "aws" {
   secret_key = var.cdktn_bench_live ? null : "dummy-secret-key-not-real"
 
   skip_credentials_validation = true # don't call STS GetCallerIdentity to check creds are real
-  skip_requesting_account_id  = true # don't call STS to resolve the account id for ARNs
-  skip_region_validation      = true # don't validate region name against a partition list
-  skip_metadata_api_check     = true # don't probe the EC2 instance-metadata service
+  # LIVE-CONDITIONAL (see this file's own header comment, "the four skip_*
+  # flags" -- fix-round-3): leaving this `true` unconditionally corrupts
+  # every account-id-bearing computed ARN (aws_api_gateway_rest_api.
+  # execution_arn) on a real apply, breaking Lambda permission matching.
+  # false when cdktn_bench_live -- the provider resolves the real account
+  # id via STS (skip_credentials_validation above does NOT skip this; it's
+  # a separate call) exactly like a real, non-benchmark `terraform apply`
+  # would.
+  skip_requesting_account_id = var.cdktn_bench_live ? false : true
+  skip_region_validation     = true # don't validate region name against a partition list
+  skip_metadata_api_check    = true # don't probe the EC2 instance-metadata service
 
   # See this file's own header comment ("endpoints.sfn") for why this
   # exists, and the OFFLINE vs. LIVE switch comment above for why it's

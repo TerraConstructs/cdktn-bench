@@ -56,23 +56,48 @@ live loop can see this" mechanics this module exists to check, and
 DECISIONS.md "Slice G" for how this fits the rest of the schema/generator
 changes this fix pass made.
 
+  Fix-round-3 (2026-08-07, DECISIONS.md Slice G amendment) -- GATING:
+  the verifier-invoked shape below used to be purely observational
+  (SCHEMA.md §5's original non-gating invariant) -- but
+  triggers-incomplete-hash is a `predicted_tier_caught: "live"` catch BY
+  CONSTRUCTION (every static tier passes it identically to a correct
+  solution, see that catch's own description in specs/apigw-redeploy.yaml),
+  so a non-gating live check meant the one catch this whole scenario
+  exists to motivate could never cost a real trial any reward. This
+  scenario's task.toml now sets SPEC_LIVE_CHECK_GATING=true
+  (verifier.live_check.gating), which generator/gen.py's build_test_sh
+  reads to fold this module's own `outcome` field into
+  /logs/verifier/reward.txt. Cleanup ownership also moved in this same
+  amendment: the agent is no longer instructed to delete the resources it
+  created (specs/apigw-redeploy.yaml's instruction no longer has a
+  cleanup paragraph) -- this file (and the static tiers) now run while
+  the agent's real, live deployment is still standing, and the
+  benchmark's own post-trial mutating reset (ResourceManager.reset_scenarios,
+  outside this repo) tears it down afterward. See DECISIONS.md for the
+  full ordering rationale.
+
 Two call shapes:
 
-  Verifier-invoked (tests/test.sh, after the agent's own trial; SCHEMA.md
-  §5 -- observational/non-gating, exit code discarded by test.sh's own
-  `|| true`): `python3 live_check.py` with no args. Discovers the agent's
-  deployed API (from /logs/agent/agent-output.json's `api_url` field if
-  present, else by the fixed REST API name `apigw-redeploy-api` via
-  `aws apigateway get-rest-apis`/`get-stages`) and runs check_ok() against
-  it, writing a JSON report to stdout (redirected by test.sh to
-  /logs/verifier/live_check-result.json).
+  Verifier-invoked (tests/test.sh, after the agent's own trial, while its
+  live deployment is still standing -- cleanup ownership moved to the
+  post-trial reset, see above): `python3 live_check.py` with no args.
+  Discovers the agent's deployed API (from
+  /logs/agent/agent-output.json's `api_url` field if present, else by the
+  fixed REST API name `apigw-redeploy-api` via `aws apigateway
+  get-rest-apis`/`get-stages`) and runs check_ok() against it, writing a
+  JSON report (always including an `outcome` key -- "pass" / "fail_stale"
+  / "not_verifiable", see main()'s own inline comment) to stdout
+  (redirected by test.sh to /logs/verifier/live_check-result.json).
+  GATING for this scenario (see above) -- test.sh downgrades reward.txt to
+  0.0 whenever `outcome` is not "pass".
 
   Fixture-invoked (solution/solve.sh, solution/broken/*/solve.sh; LIVE=1
   only): `python3 live_check.py --api-url "$API_URL" --expect {ok,stale}
   [--deployment-id-before ID1 --deployment-id-after ID2]`. Exits 0 iff the
   EXPECTED outcome was observed (real deploy served the change / stale
   deployment genuinely never served it), non-zero otherwise -- a normal,
-  gating exit code for THIS use, unlike the verifier-invoked shape above.
+  gating exit code for THIS use (always was, independent of the
+  verifier-invoked shape's own gating status above).
 """
 
 from __future__ import annotations
@@ -106,8 +131,10 @@ STAGE_NAME = "prod"
 
 AGENT_OUTPUT_PATH = Path("/logs/agent/agent-output.json")
 LIVE_CHECK_RESULT_NOTE = (
-    "non-gating per SCHEMA.md sect 5 -- this file's exit code/JSON never "
-    "overrides /logs/verifier/reward.txt when invoked by tests/test.sh"
+    "GATING for this scenario (SPEC_LIVE_CHECK_GATING=true, DECISIONS.md "
+    "Slice G amendment fix-round-3) -- tests/test.sh reads this JSON's "
+    "own `outcome` field and downgrades /logs/verifier/reward.txt to 0.0 "
+    "whenever it is not \"pass\""
 )
 
 
@@ -298,16 +325,37 @@ def main() -> int:
         print(json.dumps(result, indent=2))
         return 0 if result["pass"] else 1
 
-    # Verifier-invoked shape -- tests/test.sh, no args, non-gating.
+    # Verifier-invoked shape -- tests/test.sh, no args. GATING (fix-round-3,
+    # DECISIONS.md Slice G amendment): this scenario's task.toml sets
+    # SPEC_LIVE_CHECK_GATING=true, so tests/test.sh folds this branch's own
+    # `outcome` field into /logs/verifier/reward.txt (AND semantics: final
+    # reward requires the static tiers AND outcome=="pass"). Three possible
+    # outcomes, always reported under the `outcome` key:
+    #   "pass"           -- a deployed API was found and check_ok() (the
+    #                        same behavioral contract the fixture-invoked
+    #                        --expect ok shape asserts) succeeded.
+    #   "fail_stale"     -- a deployed API was found but check_ok() did NOT
+    #                        succeed within the poll window (the stage is
+    #                        still serving stale content, or a regression
+    #                        broke /hello or /version) -- this is the one
+    #                        live-only signal that can ever catch
+    #                        triggers-incomplete-hash.
+    #   "not_verifiable" -- no deployed API could be discovered at all (no
+    #                        /logs/agent/agent-output.json api_url field,
+    #                        and no REST API named apigw-redeploy-api found
+    #                        via `aws apigateway get-rest-apis`). Fails
+    #                        closed, same as "fail_stale" below -- an
+    #                        unverifiable claim must never silently earn
+    #                        reward.
     api_url = _discover_api_url_from_agent_output() or _discover_api_url_from_aws_cli()
     if api_url is None:
         json.dump(
             {
-                "status": "not_verifiable",
+                "outcome": "not_verifiable",
+                "pass": False,
                 "note": "could not discover a deployed API (no /logs/agent/agent-output.json "
                 f"api_url field, and no REST API named {REST_API_NAME!r} found via "
                 "`aws apigateway get-rest-apis`)",
-                "gating": False,
                 "info": LIVE_CHECK_RESULT_NOTE,
             },
             sys.stdout,
@@ -315,7 +363,7 @@ def main() -> int:
         )
         return 0
     result = check_ok(api_url)
-    result["gating"] = False
+    result["outcome"] = "pass" if result["pass"] else "fail_stale"
     result["info"] = LIVE_CHECK_RESULT_NOTE
     json.dump(result, sys.stdout, indent=2)
     return 0

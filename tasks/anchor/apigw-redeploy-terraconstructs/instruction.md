@@ -33,11 +33,14 @@ Write `/logs/agent/agent-output.json` (see the JSON contract below)
 recording the deployed stage's real invoke URL, so it can be
 independently re-checked afterward.
 
-Finally, clean up every AWS resource you created (the REST API, both
-Lambda functions, their execution role, and any CloudWatch Logs log
-groups AWS auto-created for them) so the account is left exactly as
-you found it -- this is a real, billed AWS account shared with other
-tasks.
+Do NOT delete the REST API, the Lambda functions, their execution
+role, or any CloudWatch Logs log groups when you are done -- leave
+every resource you created running and deployed. This task's grading
+depends on re-checking your SECOND deployment against the live stage
+after your work ends, so tearing anything down yourself would erase
+the only evidence that the redeploy took effect. Cleanup of this
+account is handled automatically by the benchmark itself once grading
+is complete; it is not part of your task.
 
 Author this using terraconstructs (TypeScript) L2 constructs, synthesized via cdktn. Deploy for real with `terraform apply` against the synthesized stack.
 

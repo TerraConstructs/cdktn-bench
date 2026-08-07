@@ -38,7 +38,7 @@ export NPM_CONFIG_UPDATE_NOTIFIER=false
 
 WORKDIR="/app/project"
 STEP=0
-total_steps=5
+total_steps=6
 
 step() {
   STEP=$((STEP + 1))
@@ -49,6 +49,14 @@ step "node / npm versions"
 node --version
 npm --version
 ok "node $(node --version), npm $(npm --version)"
+
+step "python3 present (fix-round-3 G2: tests/test.sh runs python3 live_check.py for live-check scenarios)"
+if command -v python3 >/dev/null 2>&1; then
+  ok "python3 $(python3 --version 2>&1)"
+else
+  fail "python3 not found -- any scenario with verifier.live_check.enabled=true would silently score 0.0 on this arm (see DECISIONS.md 'Agent-container baseline contract')"
+  exit 1
+fi
 
 step "tsc --version"
 cd "$WORKDIR"

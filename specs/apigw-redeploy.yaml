@@ -84,11 +84,14 @@ instruction:
     recording the deployed stage's real invoke URL, so it can be
     independently re-checked afterward.
 
-    Finally, clean up every AWS resource you created (the REST API, both
-    Lambda functions, their execution role, and any CloudWatch Logs log
-    groups AWS auto-created for them) so the account is left exactly as
-    you found it -- this is a real, billed AWS account shared with other
-    tasks.
+    Do NOT delete the REST API, the Lambda functions, their execution
+    role, or any CloudWatch Logs log groups when you are done -- leave
+    every resource you created running and deployed. This task's grading
+    depends on re-checking your SECOND deployment against the live stage
+    after your work ends, so tearing anything down yourself would erase
+    the only evidence that the redeploy took effect. Cleanup of this
+    account is handled automatically by the benchmark itself once grading
+    is complete; it is not part of your task.
   placeholders: []
   per_arm:
     awscdk:
@@ -106,8 +109,26 @@ instruction:
       output_contract:
         entry_file: main.tf
         artifact_path: plan.json
+        # -refresh=false (B3 fix, DECISIONS.md Slice G amendment): this
+        # scenario's own working tree, unlike every other spec's, can
+        # legitimately have already been REAL-applied by the agent's own
+        # trial by the time this static tier runs offline against it
+        # (tests/test.sh runs static_tiers.sh, then live_check.py, both
+        # BEFORE the post-trial mutating reset tears anything down -- see
+        # verifier.live_check.concurrency_mode below and DECISIONS.md).
+        # The leftover terraform.tfstate names a real REST API/Lambda/IAM
+        # role; a default (refreshing) `terraform plan` re-contacts AWS to
+        # reconcile that state and 403s against this arm's own dummy
+        # provider credentials (provider.tf's default, unset
+        # cdktn_bench_live) -- a PERFECT solution would fail this offline
+        # tier for a reason that has nothing to do with its own
+        # correctness. `-refresh=false` makes the plan diff config against
+        # the LOCAL cached state only, with zero AWS calls -- exactly what
+        # an offline structural check needs, and a true no-op for every
+        # OTHER spec's tier (whose working tree never has prior state to
+        # begin with).
         plan_command: >-
-          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          terraform init && terraform validate && terraform plan -refresh=false -out=plan.tfplan
           && terraform show -json plan.tfplan > plan.json
         json_fields:
           - name: api_url
@@ -324,6 +345,29 @@ verifier:
     hand_authored: true
     agent_role_name: "QALocalInvocationApplicationAdmin"
     concurrency_mode: "mutating"
+    # GATING (fix-round-3, DECISIONS.md Slice G amendment): live is the
+    # ONLY signal that can ever catch triggers-incomplete-hash (a
+    # predicted_tier_caught: "live" catch by construction, see that
+    # catch's own description above) -- leaving live_check non-gating for
+    # THIS scenario would mean the catch this whole scenario exists to
+    # motivate can never actually cost a real trial any reward.
+    #
+    # COMPOSED CONSEQUENCE (fix-round-4, DECISIONS.md Amendment 15 finding
+    # 4 -- read that section for the full reasoning): gating: true is
+    # fail-closed on anything but a live_check.py outcome of "pass". This
+    # scenario's agent_role_name (above) is NOT the QADeployApplicationRole
+    # docs/slice-g-iam-proposal.md proposes -- that role is deliberately
+    # NOT created/deployed (Amendment 12's stance, still in force). Compose
+    # the two: as of this writing, NO agent credential set this scenario
+    # grants can perform the real deploy the gating check requires, so
+    # EVERY real apigw-redeploy trial on EVERY arm scores 0.0, including a
+    # perfect solution, until an operator approves and deploys that role.
+    # This is a deliberate, coherent choice (fail closed rather than
+    # silently score on statics alone while the scenario is genuinely
+    # unrunnable) -- not a bug -- but it means this scenario is NOT YET
+    # TRIAL-RUNNABLE and must not be folded into an aggregate reward
+    # computed from real trials before that role lands.
+    gating: true
 
 provenance:
   author: "Slice G (apigw-redeploy fix pass)"

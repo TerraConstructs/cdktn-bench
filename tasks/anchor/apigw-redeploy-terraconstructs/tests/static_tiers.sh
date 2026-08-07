@@ -49,7 +49,7 @@ if [ "$MOCK_STS_READY" != "1" ]; then
   exit 1
 fi
 terraform init -input=false \
-  && terraform plan -input=false -out=plan.tfplan \
+  && terraform plan -input=false -refresh=false -out=plan.tfplan \
   && terraform show -json plan.tfplan > plan.json
 TF_RC=$?
 kill "$MOCK_STS_PID" >/dev/null 2>&1 || true
@@ -85,7 +85,7 @@ if [ "$MOCK_STS_READY" != "1" ]; then
   exit 1
 fi
 terraform init -input=false \
-  && terraform plan -input=false -out=plan.tfplan \
+  && terraform plan -input=false -refresh=false -out=plan.tfplan \
   && terraform show -json plan.tfplan > plan.json
 TF_RC=$?
 kill "$MOCK_STS_PID" >/dev/null 2>&1 || true

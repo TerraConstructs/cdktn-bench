@@ -464,6 +464,22 @@ class LiveCheck(BaseModel):
     # somehow needs live_check without mutation.
     agent_role_name: str | None = None
     concurrency_mode: Literal["read-only", "mutating"] | None = None
+    # Slice G fix-round-3 addition (DECISIONS.md Slice G amendment,
+    # 2026-08-07): False (default) reproduces every pre-existing spec's
+    # behavior byte-for-byte -- live_check.py runs (if enabled) purely
+    # observationally, its result never affecting /logs/verifier/reward.txt
+    # (SCHEMA.md §5's original "non-gating" invariant). `apigw-redeploy` is
+    # the first spec to set this `true`: its `triggers-incomplete-hash`
+    # catch is a `predicted_tier_caught: "live"` catch BY CONSTRUCTION
+    # (docs/apigw-redeploy-mechanics.md §6(c)) -- no static tier can ever
+    # observe it, so leaving live_check non-gating for this scenario would
+    # mean the one catch that motivates this scenario's existence can never
+    # actually cost a real trial any reward. gen.py::build_test_sh reads
+    # this to fold live_check.py's own outcome into reward.txt (AND
+    # semantics: final reward is 1.0 iff the static tiers say 1.0 AND
+    # live_check.py's outcome is "pass" -- "not_verifiable" and
+    # "fail_stale" both downgrade to 0.0, fail-closed).
+    gating: bool = False
 
     @model_validator(mode="after")
     def _hand_authored_required_when_enabled(self) -> "LiveCheck":
@@ -472,6 +488,11 @@ class LiveCheck(BaseModel):
                 "verifier.live_check.enabled=true requires hand_authored=true "
                 "-- otherwise gen.py's generated not-implemented stub would "
                 "silently ship as this scenario's live check (SCHEMA.md §5)"
+            )
+        if self.gating and not self.enabled:
+            raise ValueError(
+                "verifier.live_check.gating=true requires enabled=true -- "
+                "a live check that never runs cannot gate reward"
             )
         return self
 

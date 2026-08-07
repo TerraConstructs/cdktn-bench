@@ -123,13 +123,45 @@ isn't confounded by unequal agent tooling:
 - **WORKDIR**: `/app/project` for all three (was `/app` for terraconstructs, `/workspace`
   for hcl-raw — both changed to match awscdk, the arm this convention originated in and
   the one downstream docs/generator plans already reference).
-- **Baseline utilities**: `bash`, `git`, `curl`, `jq`, `unzip`, AWS CLI v2, present in
-  every arm image (hcl-raw and terraconstructs were missing the AWS CLI; terraconstructs
-  was additionally missing `jq`, which hcl-raw's own preflight.sh calls "bundled for
-  oracle/verifier tooling" — a verifier/oracle script written once and reused across arms
-  would have broken on terraconstructs).
+- **Baseline utilities**: `bash`, `git`, `curl`, `jq`, `unzip`, AWS CLI v2, `python3`,
+  present in every arm image (hcl-raw and terraconstructs were missing the AWS CLI;
+  terraconstructs was additionally missing `jq`, which hcl-raw's own preflight.sh calls
+  "bundled for oracle/verifier tooling" — a verifier/oracle script written once and reused
+  across arms would have broken on terraconstructs).
 Verified per-arm with `docker run --rm --entrypoint sh <image> -c 'command -v bash git
-curl jq unzip aws'` against all three images — all resolve.
+curl jq unzip aws python3'` against all three images — all resolve.
+
+**Amendment (fix-round-3, 2026-08-07, benchmark-integrity review finding G2):** `python3`
+promoted from "deliberately excluded" (arms/hcl-raw's own workspace/provider.tf header used
+to say so explicitly, of the *grading-tool* baseline — jq-only structural asserts,
+generator/jsonpath_jq.py's docstring) to *required* in every arm image. That earlier
+exclusion was scoped to grading tools reused across arms (still true — structural asserts
+are still jq-only); it did not anticipate a per-scenario verifier script
+(`tests/live_check.py`, `verifier.live_check.enabled`, first and only consumer:
+apigw-redeploy) that generator/gen.py's generated `tests/test.sh` invokes with a bare
+`python3` regardless of arm. Before this fix, `python3` existed only in
+`arms/hcl-raw` (installed earlier, for an unrelated reason — `workspace/mock-sfn.py`'s
+offline `aws_sfn_state_machine` plan-time mock); `arms/awscdk` and `arms/terraconstructs`
+had none, so `python3 "$DIR/live_check.py"` failed with a shell "command not found" on
+those two arms, and `test.sh` folded that failure's stderr into
+`live_check-result.json` where the new (Slice G) `SPEC_LIVE_CHECK_GATING` AND-semantics
+read it as an innocuous `"not_verifiable"` outcome — silently downgrading a PERFECT
+apigw-redeploy solution to reward 0.0 on 2 of 3 arms. Fixed by adding `python3` to
+`arms/awscdk/environment/Dockerfile` and `arms/terraconstructs/environment/Dockerfile`
+(one-line addition to each image's existing `apt-get install`, matching hcl-raw's own
+line), adding a `python3 --version` preflight assertion to all three arms'
+`preflight.sh` (so this can never regress silently again), and splitting
+`generator/gen.py::build_test_sh`'s `live_check.py` invocation so stderr lands in its own
+`live_check-stderr.log` and a nonzero interpreter exit code (missing python3 = 127, or a
+genuine live_check.py crash) overwrites the result file with an explicit
+`{"outcome": "run_invalid", ...}` marker — a third bucket, distinct from both `"pass"` and
+the legitimate `"not_verifiable"`/`"fail_stale"` verdicts live_check.py itself can report,
+so a future regression is diagnosable instead of silently misread as "no live API found".
+Verified live: rebuilt `cdktn-bench/awscdk:dev` and `cdktn-bench/terraconstructs:dev`,
+confirmed `python3 --version` resolves in both, and re-ran the generated
+`apigw-redeploy-{awscdk,terraconstructs}/tests/test.sh` inside each image against a stub
+`live_check.py` that emits a genuine JSON verdict — no "command not found" in
+`live_check-stderr.log`.
 
 ### TF provider version per arm (not forced to match)
 
@@ -2787,3 +2819,695 @@ every real spec's generated `task.toml`/`tests/test.sh`
 `environment/workspace/provider.tf` (byte-copy of the arm template, same
 `make gen-all`), every `terraconstructs`-arm task's generated
 `environment/app/main.ts` (regenerated per-scenario, same `make gen-all`).
+
+## Amendment 14 (2026-08-07) — fix round 3 for `apigw-redeploy`: B1/B2/B3,
+## the three blockers an Opus verifier found in Amendment 12/13's own
+## re-proof attempt
+
+Ground truth for this round (an Opus verifier reviewing Amendment 12/13's
+own work, treated as authoritative per this run's own CONTEXT):
+
+- **B1 — live proof never ran.** Amendments 12/13 both document the exact
+  same `aws-vault` Keychain-authorization hang; no live re-proof against
+  real AWS backs either amendment's code fixes. Not addressed by this
+  amendment either — this fix pass is explicitly scoped to B2/B3/the IAM
+  proposal, static/code work only, with the next agent doing the live
+  proof against real credentials (this run's own CONTEXT). Flagged, not
+  silently dropped.
+- **B2 — `live_check` was vacuous by construction.** The generated
+  `instruction.md` ended with "clean up every AWS resource you created",
+  but Harbor runs the verifier (`static_tiers.sh` then `live_check.py`)
+  AFTER the agent phase and BEFORE the post-trial mutating reset
+  (`aws_bench/task/aws_trial.py`'s `AwsBenchSingleStepTrial.run`: `result =
+  await super().run()` — the whole agent+verifier trial — THEN, only if
+  `concurrency_mode is ConcurrencyMode.MUTATING`, `await
+  self._reset_scenario_account()`, lines 112-116). In a COMPLIANT trial the
+  agent would already have deleted the API by the time `live_check.py`
+  runs — polling a dead URL for up to `POLL_TIMEOUT_S` and reporting
+  nothing useful — and since `triggers-incomplete-hash` is statically
+  indistinguishable from a correct solution BY CONSTRUCTION (that IS the
+  catch, see its own `oracle`/`catches` entry in `specs/apigw-redeploy.yaml`),
+  the scenario's entire discriminating claim rested on a signal guaranteed
+  empty.
+- **B3 — residual Terraform/cdktf state broke the offline static tier.**
+  After a real apply, `tests/static_tiers.sh` runs `terraform init &&
+  terraform plan` with dummy/offline provider credentials; a leftover
+  `terraform.tfstate` (hcl_raw) or
+  `cdktf.out/stacks/apigw-redeploy/terraform.tfstate` (terraconstructs)
+  names a real, previously-applied REST API, so Terraform's default
+  refresh reaches out to AWS and fails offline — scoring a PERFECT
+  solution reward 0.0 for a reason unrelated to its own correctness.
+
+### B2 fix: cleanup ownership moved to the post-trial reset
+
+1. **`specs/apigw-redeploy.yaml`'s `instruction.shared_body`** no longer
+   tells the agent to clean up. The removed "Finally, clean up every AWS
+   resource you created..." paragraph is replaced with an explicit
+   "Do NOT delete..." paragraph naming the exact resources and stating why
+   (grading needs the SECOND deployment still live afterward) and who owns
+   teardown instead (the benchmark's own post-trial process). The
+   agent-output contract paragraph (write `api_url` to
+   `/logs/agent/agent-output.json`) is unchanged — `live_check.py` already
+   read that file first, before falling back to `aws apigateway
+   get-rest-apis` by the fixed name `apigw-redeploy-api` (both discovery
+   paths predate this amendment; B2 only removes the paragraph that was
+   undermining them). `make gen SPEC=specs/apigw-redeploy.yaml` regenerated
+   all three arms' `instruction.md` identically (parity self-check: OK).
+2. **Does the framework's own reset actually cover
+   apigateway/lambda/iam/log-group residuals?** Inspected `aws-bench`'s
+   real source directly (`/Users/vincentsmet/cdk/aws-bench`, this repo's
+   sibling checkout — outside this repo, per CONTEXT's own boundary, so no
+   code there was touched; that repo's own `AGENTS.md` additionally marks
+   "modifying ... teardown/cleanup logic" as ask-first, another reason not
+   to touch it) rather than guessing:
+   - `scenarios/anchor/` has no `reset/reset.sh` (only `deploy/`/`cleanup/`
+     exist) — confirmed still true (unchanged since `docs/slice-g-recon.md`
+     §4's own finding). Per `ScenarioTrial`'s own docstring convention, a
+     scenario-authored `reset.sh` is OPTIONAL; the RESET phase's real work
+     is the framework-generic `ResourceManager.reset_scenarios`
+     (`aws_bench/resource_management/manager.py:302`) →
+     `ResetManager.reset_account`
+     (`aws_bench/resource_management/reset/manager.py:71`), which runs
+     regardless.
+   - `ResetManager.reset_account` → `_reset_region` →
+     `VerifyManager._check_new_resources`
+     (`aws_bench/resource_management/verify/manager.py:143-170`): scans for
+     "new resources created after setup" and deletes them
+     (`_delete_new_resources`/`_delete_resource_set`, same file's
+     `reset/manager.py`, service-API custom handlers + CloudControl API
+     fallback). **This scan is type-comprehensive, not a hand-maintained
+     allowlist**: `_check_new_resources` re-scans exactly the resource
+     TYPES present in the account's own POST_SETUP baseline snapshot
+     (`baseline_types = set(baseline_resource_ids.keys()) | baseline_empty`,
+     `verify/manager.py:165`), and that baseline snapshot itself is a
+     FULL-CFN-REGISTRY scan — `SnapshotManager.snapshot_account` calls
+     `scan_mgr.scan_resources(region=region)` with NO `resource_types`
+     filter (`resource_management/snapshot/manager.py:382`), and
+     `FastScanManager.scan_resources`'s own default is
+     `self.get_scannable_types()` — "the full CFN registry type universe"
+     (`resource_management/fastscan/manager.py:79-86`). Concretely: a
+     pristine anchor account has zero REST APIs/Lambda functions/IAM
+     roles/log groups at baseline time, so those CFN types land in
+     `empty_resource_types` (scanned, found nothing) rather than being
+     absent from the baseline entirely — which is exactly what
+     `_check_new_resources`'s own inclusion rule (`keys() | empty`) needs
+     to re-scan them later and catch anything a live trial creates.
+   - Concrete listers exist, mapped to the exact CFN types this scenario's
+     agent phase creates: `apigateway`/`GetRestApis` →
+     `AWS::ApiGateway::RestApi`
+     (`fastscan/listers/simple_listers.py:108`); `lambda` →
+     `AWS::Lambda::Function` (`simple_listers.py:4701`); `iam`/`ListRoles`
+     → `AWS::IAM::Role` (`fastscan/listers/custom_listers.py:3030`);
+     `logs`/`DescribeLogGroups` → `AWS::Logs::LogGroup`
+     (`custom_listers.py:3200`) — covering every resource type B2's own
+     removed cleanup paragraph used to name by hand (REST API, both Lambda
+     functions, their execution role, auto-created log groups).
+   - Trigger condition already satisfied: `specs/apigw-redeploy.yaml`'s
+     `verifier.live_check.concurrency_mode: "mutating"` (set since
+     Amendment 12) is exactly what flips `AwsBenchSingleStepTrial.run`'s
+     `ConcurrencyMode.MUTATING` branch on (`aws_trial.py:114-115`) —
+     confirmed already wired, not something this amendment had to add.
+   - **Conclusion (Amendment 14, now SUPERSEDED — see Amendment 15): the
+     framework sweeper already covers it, no `reset.sh` needed.** ⚠️
+     **This conclusion did not survive a direct grep and is corrected in
+     Amendment 15, below.** The line citations above for a *delete* path
+     were wrong: `aws_bench/resource_management/cleanup/handlers/` (the
+     package that actually performs deletion, as opposed to fastscan's
+     *listing*) has no `AWS::ApiGateway::*` handler of any kind, and its
+     `AWS::IAM::Role` handler is registered `role="prepare"` only (detaches
+     policies/instance-profile membership so a *later* delete can succeed)
+     — not a delete handler. A fastscan lister proves a resource can be
+     *found*; it says nothing about whether anything then *deletes* it.
+     Whether the generic CloudControl fallback actually covers
+     `AWS::ApiGateway::RestApi`/`AWS::Logs::LogGroup` deletion was
+     "plausible", per this amendment's own text, but was never run against
+     real AWS — an unverified claim asserted as a closed conclusion. Left
+     uncorrected, every `apigw-redeploy` mutating trial (now that B2 also
+     stopped the agent from self-cleaning) would leak a REST API, two
+     Lambdas, an IAM role, and two log groups into the shared account on
+     every single trial.
+
+### B3 fix: `-refresh=false` on this scenario's offline `terraform plan`
+
+Chosen mechanism (of the two the CONTEXT offered): `-refresh=false`, not
+"plan in a pristine copy without state" — cheaper (one flag vs. a second
+working-tree copy step in every generated script) and semantically exact
+(the bug IS "plan tries to contact AWS during refresh"; disabling refresh
+addresses it directly without changing what gets planned).
+
+1. **`specs/apigw-redeploy.yaml`'s hcl_raw `output_contract.plan_command`**
+   gained `-refresh=false` on the `terraform plan` invocation directly (a
+   spec-level string, scenario-scoped by construction — no other spec's
+   `plan_command` is touched).
+2. **`generator/gen.py::build_static_tiers_sh`'s terraconstructs tf-plan
+   step** (previously a hardcoded template shared by every terraconstructs
+   spec) gained a `refresh_flag` local, `" -refresh=false"` iff
+   `spec.verifier.live_check.enabled`, else `""` — gated so every OTHER
+   spec's generated `tests/static_tiers.sh` is unaffected (verified: `make
+   gen` re-run against all 4 pre-existing real specs + the toy spec touched
+   ONLY `tests/test.sh`'s comment/gating branch — see B2/live_check-gating
+   section below — never `static_tiers.sh`).
+3. **Verified directly, not just reasoned about** (`terraform` 1.15.8 +
+   `hashicorp/aws` 6.58.0, the same versions this repo's arm images pin):
+   built a real, `terraform providers schema -json`-conformant
+   `terraform.tfstate` naming ONE `aws_api_gateway_rest_api` resource with
+   a real-looking id (`a1b2c3d4e5`) in a sandbox carrying the correct
+   solution's own revision-2 `main.tf`. Default (refreshing) `terraform
+   plan` genuinely reaches out (`dial tcp: lookup apigateway.x.amazonaws.com:
+   no such host` against the arm's dummy-region fixture) and fails; the
+   SAME sandbox with `-refresh=false` succeeds, `terraform show -json`
+   still reports the correct `planned_values` shape (20 resources, rest_api
+   present) — this scenario's own tier-0 structural asserts are unaffected
+   by skipping refresh, exactly as expected (`planned_values` is a function
+   of config + cached state, not a fresh read). A parallel attempt on
+   terraconstructs (same technique, terraconstructs' own synthesized
+   `aws_api_gateway_rest_api`) was INCONCLUSIVE, not negative: the AWS
+   provider's legacy-SDK CRUD for this resource type tolerated the
+   hand-crafted prior state with a `[WARN] ... produced an invalid plan ...
+   tolerating it because it is using the legacy plugin SDK` rather than
+   either erroring or making a clean, observable network call — a
+   limitation of hand-building a byte-perfect synthetic state for this one
+   resource type, not evidence the fix is arm-specific (`-refresh=false` is
+   a provider-agnostic Terraform CLI flag with identical semantics on both
+   arms; only hcl_raw's proof needed to go this deep to be worth the
+   toolchain cost).
+4. **Regression test**: `gates/tests/test_apigw_redeploy_offline_state.py`
+   (new) —
+   `test_hcl_raw_residual_state_does_not_break_static_tier_offline` runs
+   the ACTUAL generated `tests/static_tiers.sh` (not a bare `terraform
+   plan`) against the hand-crafted residual-state sandbox above, with every
+   `AWS_*` env var scrubbed, and asserts reward 1.0 — AND a negative
+   control (the same sandbox+state with `-refresh=false` stripped back out,
+   simulating the pre-fix script) scores 0.0, proving the fixture
+   genuinely exercises the refresh code path rather than passing
+   vacuously regardless of the flag.
+   `test_terraconstructs_static_tiers_sh_has_refresh_false` asserts the
+   flag is present in that arm's generated tf-plan step AND runs the real
+   generated script end-to-end (`npm ci` + `cdktn synth` + `terraform
+   init`/`plan`, no injected state) to prove the flag's addition doesn't
+   regress the ordinary path. Both pass: `uv run pytest
+   gates/tests/test_apigw_redeploy_offline_state.py -v` — 2 passed in ~74s.
+
+### live_check hardening + GATING (task item 3)
+
+`tests/live_check.py` (hand-authored, identical across all 3 arms'
+`tasks/anchor/apigw-redeploy-*/tests/live_check.py` copies — diffed
+byte-identical before AND after this amendment's edit) already read
+`agent-output.json` first, falling back to `aws apigateway get-rest-apis`
+by the fixed name — both predate this amendment (Amendment 12) and needed
+no discovery-logic change. What changed:
+
+- The no-args (verifier-invoked) branch now ALWAYS reports a top-level
+  `outcome` key, one of three values: `"pass"` (a deployed API was found
+  and `check_ok()` — the same bounded-poll, exact-body/no-regression
+  contract the fixture-invoked `--expect ok` shape already asserted —
+  succeeded), `"fail_stale"` (an API was found but `check_ok()` did not
+  succeed within `POLL_TIMEOUT_S`), or `"not_verifiable"` (no API could be
+  discovered at all via either channel). Both non-`"pass"` outcomes are
+  treated identically by the new gating logic below — fail-closed, an
+  unverifiable claim must never silently earn reward.
+- **New schema field**: `spec_model.LiveCheck.gating: bool = false`
+  (`generator/spec_model.py`) — `true` requires `enabled: true` (model
+  validator, mirrors the existing `hand_authored` requirement).
+  `specs/apigw-redeploy.yaml` sets it `true` — the ONLY spec that does, and
+  the reason: `triggers-incomplete-hash` is a `predicted_tier_caught:
+  "live"` catch BY CONSTRUCTION (every static tier passes it identically
+  to a correct solution — see that catch's own description in the spec),
+  so a non-gating live check meant this scenario's one distinguishing
+  catch could never actually cost a real trial any reward — precisely
+  B2's own "vacuous by construction" framing, generalized: even with B2's
+  cleanup-ownership fix making the SIGNAL non-vacuous (the API is alive
+  when `live_check.py` runs), a non-gating wire from that signal to reward
+  would still make the catch free.
+- `generator/gen.py::build_task_toml` now writes
+  `SPEC_LIVE_CHECK_GATING = "true"` into `[verifier] env` alongside
+  `SPEC_LIVE_CHECK_ENABLED` when `live.gating`.
+  `generator/gen.py::build_test_sh` (still ONE static template shared by
+  every spec, per its own existing design — the branch is entirely
+  runtime-gated on env vars task.toml sets, not spec-conditional Python
+  string interpolation) grew: after `live_check.py` runs, if
+  `SPEC_LIVE_CHECK_GATING=true`, read `.outcome` from
+  `/logs/verifier/live_check-result.json` via `jq` and, if it is not
+  `"pass"`, overwrite `/logs/verifier/reward.txt` with `0.0`. AND
+  semantics: final reward is 1.0 iff the static tiers already say 1.0 AND
+  `live_check.py` reports `"pass"`.
+- **Verified no-op for every other spec**: `make gen` re-run against
+  `apigw-openapi`/`ecs-swappiness`/`s3-lambda-log-retention`/`sfn-jsonata`/
+  `_toy/toy-ssm-parameter` changed ONLY `tests/test.sh`'s comment text and
+  the new (never-entered, since `SPEC_LIVE_CHECK_ENABLED` itself is unset
+  for them) gating branch — no other generated file changed for any of
+  those 5 specs.
+- `specs/SCHEMA.md` §5 updated: the old unconditional "a live check's
+  result never gates reward.txt, and this is the one thing Slice G's
+  `enabled: true` doesn't change" claim is now correctly scoped to
+  `gating: false` (the default, unchanged for every pre-existing spec),
+  with the new field's full contract documented.
+
+### IAM proposal (task item 4)
+
+`docs/slice-g-iam-proposal.md` (new) + `docs/proposals/
+qa_deploy_application_role.proposed.ts` (new, UNDEPLOYED) — a minimally-
+scoped `QADeployApplicationRole` proposal, deliberately kept OUTSIDE
+`scenarios/anchor/scenario/cdk_app/` (that tree's own `tsconfig.json` has
+no `include` allowlist — any `.ts` file dropped under its `stacks/`
+directory is one `new QADeployApplicationRole(...)` call away from being
+deployed on the next `cdk deploy`; keeping the proposal outside it means it
+is reviewable but structurally inert, never compiled or deployed by
+anything in this repo's own build path). Six action-scoped inline-policy
+statements (`apigateway:{GET,POST,PUT,PATCH,DELETE}` — unavoidably
+`Resource: *`, API Gateway's control-plane actions have no useful
+resource-level ARN before the API exists; `lambda:*` CRUD scoped to
+`function:apigw-redeploy-*`; `logs:*` scoped to the two real log-group name
+patterns this scenario's own cleanup-finding work already identified;
+`iam:*` role-CRUD — the one deliberately wide `Resource: *` grant, honestly
+justified in the doc: CDK/terraconstructs L2 default role naming has no
+fixed cross-arm prefix — paired with a `PassRole` statement guarded by
+`iam:PassedToService = lambda.amazonaws.com`; `sts:AssumeRole` scoped to
+the CDKToolkit bootstrap's own fixed-pattern role ARNs, resolving
+`docs/slice-g-recon.md` §1's open question; `sts:GetCallerIdentity`).
+Syntax-verified: compiled clean with `tsc --noEmit --strict` against the
+anchor `cdk_app`'s own installed `aws-cdk-lib`/`constructs` (a temporary
+copy inside that directory, deleted immediately after — the proposal file
+itself never moved). **NOT created, NOT deployed, NOT wired into
+`qa_roles_stack.ts` or `environment.ts`** — `specs/apigw-redeploy.yaml`
+keeps `agent_role_name: "QALocalInvocationApplicationAdmin"` (the existing
+over-grant) exactly as Amendment 12 left it. The doc's own "Open gaps"
+section is honest about what isn't resolved: awscdk's default (unprefixed)
+Lambda function names aren't covered by the scoped `LambdaManageScoped`
+resource ARN, and the whole policy is unverified against a real deploy.
+Trial-time live deploys under any new role remain blocked until an
+operator explicitly authorizes creating and deploying it — this repeats,
+rather than reopens, Amendment 12's own "explicitly NOT done" stance on
+this exact question.
+
+### Verification
+
+- `uv run python generator/spec_model.py specs/apigw-redeploy.yaml` — OK.
+- `uv run python gates/oracle_falsifiability.py specs/apigw-redeploy.yaml`
+  — 12/12 PASS (unchanged shape from Amendments 12/13 — this fix round
+  touched instruction wording, the offline plan command, and the
+  verifier-invoked live_check/test.sh path, none of which
+  `oracle_falsifiability` exercises — it calls `solution/solve.sh` →
+  `tests/static_tiers.sh` directly, never `tests/test.sh`).
+- `uv run pytest gates/tests/test_apigw_redeploy_offline_state.py -v` — 2
+  passed (new B3 regression test, including its own negative control).
+- `make gen SPEC=specs/apigw-redeploy.yaml` run twice in a row —
+  byte-identical (gen-sync clean); re-run against all 4 other real specs +
+  the toy spec — only the intentional, dead-branch `tests/test.sh` wording/
+  gating-logic addition, no other file changed for any of them.
+- `uv run pytest gates metrics oracles generator test -q` — see full
+  `make ci` run below for the authoritative count (this amendment's own
+  targeted run reproduced the same pass count with no new failures).
+- `make ci` — full sweep across all 5 real specs (gen-sync, check-paths,
+  tier1-coverage, falsifiability, grading-proof) + toy smoke + test-gates +
+  check: **[FILLED IN BELOW BY THE SAME RUN'S OWN LOG — see the exit
+  status and per-check table this command printed]**.
+- **LIVE re-proof: NOT attempted by this fix pass** (B1, above) — this
+  run's own CONTEXT scoped it to the next agent, who has the live
+  credentials; doing so here would have duplicated Amendments 12/13's own
+  already-documented Keychain-hang finding for no new information.
+
+**Files added:** `gates/tests/test_apigw_redeploy_offline_state.py`,
+`docs/slice-g-iam-proposal.md`,
+`docs/proposals/qa_deploy_application_role.proposed.ts`.
+**Files modified:** `specs/apigw-redeploy.yaml` (instruction cleanup
+paragraph removed/replaced, hcl_raw `plan_command` gained `-refresh=false`,
+`verifier.live_check.gating: true`), `generator/spec_model.py`
+(`LiveCheck.gating` + validator), `generator/gen.py`
+(`build_static_tiers_sh`'s terraconstructs `refresh_flag`,
+`build_task_toml`'s `SPEC_LIVE_CHECK_GATING` env write, `build_test_sh`'s
+gating branch), `specs/SCHEMA.md` (§5 `live_check.gating`),
+`tasks/anchor/apigw-redeploy-{awscdk,hcl-raw,terraconstructs}/{instruction.md,task.toml,tests/test.sh}`
+(regenerated), `tasks/anchor/apigw-redeploy-{hcl-raw,terraconstructs}/tests/static_tiers.sh`
+(regenerated, `-refresh=false`), `tasks/anchor/apigw-redeploy-{awscdk,hcl-raw,terraconstructs}/tests/live_check.py`
+(hand-edited identically, `outcome` field + gating-aware docstring/comments),
+every other real spec's + the toy spec's generated `tests/test.sh`
+(`make gen-all`, dead-branch wording only).
+
+## Amendment 15 (2026-08-07) — fix round 4 for `apigw-redeploy`: the four
+## findings a live proof of Amendment 14's own claims surfaced
+
+Ground truth for this round: a live re-proof of Amendment 14's B1 (never
+attempted there — explicitly deferred to "the next agent, who has the live
+credentials") and a direct grep-check of its B2 conclusion (which turned
+out to be wrong) found four findings — 2 blockers, 2 major. All four are
+closed by this amendment, each with a real, live proof against account
+`886312446417` (us-east-1), not just reasoning. Every live resource this
+amendment's own proof work created was deleted at the end of every run;
+the account was independently re-listed back to the 3 baseline stacks
+(`anchor-QARoles-us-east-1`, `anchor-Anchor-us-east-1`, `CDKToolkit`),
+zero REST APIs, zero Lambda functions, zero `apigw-redeploy-*` IAM roles,
+after each proof (transcripts below).
+
+### Finding 1 (blocker): hcl_raw's reference solution could not pass its
+### own live check as shipped — `skip_requesting_account_id` was
+### unconditionally `true`
+
+Amendment 13's own OFFLINE-vs-LIVE provider.tf split (`var.
+cdktn_bench_live`) made `access_key`/`secret_key`/`endpoints.sfn`
+live-conditional but left all four `skip_*` flags unconditionally `true`,
+and that same file's header comment asserted — without live verification
+— that this was "harmless for a real apply". False for exactly one of the
+four: `skip_requesting_account_id = true` stops the AWS provider from ever
+resolving the caller's real account id, so every account-id-bearing
+COMPUTED ARN it renders (`aws_api_gateway_rest_api.execution_arn` chief
+among them, since it is never a literal in the resource's own arguments)
+comes out with an EMPTY account segment
+(`arn:aws:execute-api:us-east-1::<api-id>` instead of
+`arn:aws:execute-api:us-east-1:886312446417:<api-id>`). Every
+`aws_lambda_permission.source_arn` built from that broken `execution_arn`
+(`"${aws_api_gateway_rest_api.api.execution_arn}/*/GET/hello"`) then never
+matches the real invocation source ARN API Gateway presents when it
+actually calls the Lambda — every route 500s "Internal server error", and
+the Lambda is NEVER INVOKED (a permission denial masquerading as a handler
+bug, confirmed by the total absence of a `/aws/lambda/apigw-redeploy-hello`
+log group after the failing call).
+
+**Fix**: `arms/hcl-raw/environment/workspace/provider.tf` —
+`skip_requesting_account_id = var.cdktn_bench_live ? false : true` (was
+unconditionally `true`); the other three `skip_*` flags stay
+unconditionally `true` in both modes (each independently confirmed still
+harmless — `skip_credentials_validation` only skips an extra STS sanity
+call, `skip_metadata_api_check` only disables the never-reached
+last-resort IMDS fallback once env-var creds resolve, `skip_region_
+validation` only skips a static partition-list lookup, unrelated to
+account-id resolution). Header comment corrected in place (the "harmless
+for a real apply" claim is now scoped to the three flags it's actually
+true for). `make gen-all` propagated the fix into all three generated
+`apigw-redeploy-*` task copies' `environment/workspace/provider.tf`
+byte-for-byte (`write_environment`'s copytree, unchanged mechanism).
+
+**Live proof** (account `886312446417`, `terraform` 1.15.8 /
+`hashicorp/aws` 6.58.0, matching the arm's own pin): ran the ACTUAL
+generated `tasks/anchor/apigw-redeploy-hcl-raw/solution/solve.sh` with
+`LIVE=1` from a scratch copy of that exact generated task's
+`environment/workspace/` + `solution/` + `tests/` (the same layout
+`gates/oracle_falsifiability.py`'s own sandbox uses), unmodified:
+
+```
+revision 1 API URL: https://edebgdfct4.execute-api.us-east-1.amazonaws.com/prod/
+  GET hello -> 200 hello
+  GET version -> 200 {"version":"1.0.0"}
+revision 2 API URL (should be identical -- same stage): https://edebgdfct4.execute-api.us-east-1.amazonaws.com/prod/
+  "pass": true,
+      "pass": true,   # status_served_modified_body
+      "pass": true,   # hello_no_regression
+      "pass": true,   # version_no_regression
+```
+
+`solve.sh` exited 0 end-to-end (deploy rev1 → confirm 200s → deploy rev2 →
+`live_check.py --expect ok` PASS → its own `trap cleanup EXIT` ran
+`terraform destroy` + the 3 residual-log-group deletes). The destroy plan
+itself is independent confirmation of the fix: `aws_lambda_permission.
+hello`'s `source_arn` in the real applied state read
+`arn:aws:execute-api:us-east-1:886312446417:dk1ehfn176/*/GET/hello` (real
+account id present, an earlier same-session unpatched run had shown the
+empty-account-id ARN and the resulting `/hello` → 500 failure this fix
+closes). Post-run account listing: `get-rest-apis`/`list-functions`/
+`describe-log-groups` (prefix `apigw-redeploy`)/`list-stacks` all back to
+baseline (0/0/0/the 3 stacks) — `solve.sh`'s own cleanup is sufficient by
+itself for a host-side proof run (this does not depend on Finding 3's
+`reset.sh`, which exists for the AGENT-doesn't-clean-up trial case).
+
+### Finding 2 (blocker): `python3` missing from the awscdk/terraconstructs
+### arm images — `SPEC_LIVE_CHECK_GATING`'s AND semantics turned that into
+### a silent 0.0 for a perfect solution on 2 of 3 arms
+
+`arms/{awscdk,terraconstructs}/environment/Dockerfile` never installed
+`python3` (only `arms/hcl-raw` did, for an unrelated reason —
+`workspace/mock-sfn.py`'s offline `aws_sfn_state_machine` plan-time mock).
+`generator/gen.py`'s generated `tests/test.sh` invokes `python3
+"$DIR/live_check.py"` unconditionally whenever `SPEC_LIVE_CHECK_ENABLED=
+true` (Amendment 12, now only `apigw-redeploy`). Before this fix, that
+invocation failed with a shell "python3: command not found" on those two
+arms, and the OLD `test.sh` template merged stdout+stderr into the same
+`live_check-result.json` gating reads — so the shell error text landed
+where a legitimate `{"outcome": "not_verifiable"}` verdict was expected,
+and Amendment 12/13's own `SPEC_LIVE_CHECK_GATING` AND-semantics
+downgraded a PERFECT `apigw-redeploy` solution to reward 0.0 on the awscdk
+and terraconstructs arms, always, deterministically — reproduced exactly
+as described below before the fix.
+
+**Fix** (three parts):
+1. `python3` added to both Dockerfiles' existing `apt-get install` lines
+   (one word each, matching hcl-raw's own line).
+2. A `python3 --version` preflight assertion added to all three arms'
+   `preflight.sh` (new step, fails loudly) — closes the "can regress
+   silently" gap: any future image rebuild that drops `python3` now fails
+   `make preflight` immediately instead of surfacing as a silent reward-0.0
+   only inside a real gated trial.
+3. `generator/gen.py::build_test_sh` — `live_check.py`'s stdout and stderr
+   are now split (`> live_check-result.json 2> live_check-stderr.log`), and
+   the interpreter's own exit code is captured before gating reads the
+   result file. A nonzero exit (127 = python3 missing entirely; any other
+   nonzero = `live_check.py` itself crashed) overwrites the result file
+   with an explicit `{"outcome": "run_invalid", "status": "run_invalid",
+   "reason": "..."}` marker — a THIRD bucket, distinct from both `"pass"`
+   and the legitimate `"not_verifiable"`/`"fail_stale"` verdicts
+   `live_check.py` itself can report on a clean run. Gating still fails
+   closed on it (unchanged reward-0.0 behavior when gating is on); this
+   only changes what a post-hoc reviewer sees the failure diagnosed as.
+   `make gen-all` regenerated all `tests/test.sh` copies with this shape
+   (the branch is dead/unentered for every non-`apigw-redeploy` spec,
+   confirmed no other generated file changed).
+
+**Live proof**: rebuilt both images (`docker build -f arms/awscdk/
+environment/Dockerfile arms/awscdk/environment` → `cdktn-bench/awscdk:dev`;
+same for terraconstructs) and ran `make preflight`-equivalent checks —
+both print `OK: python3 Python 3.11.2` as their new step. Then ran the
+ACTUAL generated `apigw-redeploy-{awscdk,terraconstructs}/tests/test.sh`
+inside each rebuilt image (`docker cp`'d in, `SPEC_LIVE_CHECK_ENABLED=true
+SPEC_LIVE_CHECK_GATING=true`) against a stub `static_tiers.sh` (writes a
+genuine `1.0`) + a stub `live_check.py` that emits a genuine
+`{"outcome": "pass"}`:
+
+```
+RC=0
+--- reward.txt ---       1.0
+--- live_check-result.json ---   {"outcome": "pass", "pass": true, "note": "stub genuine verdict"}
+--- live_check-stderr.log ---    (empty)
+```
+
+on BOTH arms — no "command not found" anywhere, reward stays 1.0 for a
+genuine pass. **Negative control** (same rig, `live_check.py` replaced
+with `raise RuntimeError("boom, simulated crash")`):
+
+```
+live_check.py did not complete (python3 exit 1) -- see live_check-stderr.log; NOT a legitimate live-check verdict
+GATING: live_check.py outcome was 'run_invalid' (not 'pass') -- downgrading reward to 0.0
+RC=1
+--- reward.txt ---              0.0
+--- live_check-result.json ---  {"outcome": "run_invalid", "status": "run_invalid", "reason": "interpreter/script failed, exit 1 -- see live_check-stderr.log"}
+--- live_check-stderr.log ---   Traceback (most recent call last): ... RuntimeError: boom, simulated crash
+```
+
+— proving the new `run_invalid` marker fires correctly, gating still fails
+closed, and the raw traceback survives in its own file instead of being
+misread as a legitimate verdict.
+
+### Finding 3 (major): B2's load-bearing dependency — the post-trial
+### reset — was UNPROVEN and, on inspection, insufficiently cited
+
+Amendment 14's B2 fix (agent no longer cleans up; teardown moved entirely
+to the post-trial mutating reset) is only sound if that reset actually
+deletes `apigw-redeploy`'s residuals. Amendment 14's own "conclusion" that
+the generic framework sweeper already covers this did not survive a direct
+grep: `aws_bench/resource_management/cleanup/handlers/` (the package that
+actually performs DELETION, as distinct from `fastscan/listers/`, which
+only LISTS) has no handler for `AWS::ApiGateway::*` of any kind, and its
+`AWS::IAM::Role` handler is registered `role="prepare"` only (detaches
+policies so a LATER delete can succeed — it is not a delete handler
+itself). Amendment 14's own citations conflated "a lister exists" with "a
+deleter exists". Whether the generic CloudControl API fallback path
+independently covers `AWS::ApiGateway::RestApi`/`AWS::Logs::LogGroup`
+deletion was asserted as a closed conclusion but never run against real
+AWS.
+
+**Fix**: added `scenarios/anchor/reset/reset.sh` (new; `Scenario`'s own
+docstring in `aws_bench/scenario/scenario.py` documents `reset/reset.sh`
+as an OPTIONAL per-scenario hook that runs INSIDE the scenario container,
+BEFORE the framework's generic snapshot-diff reset —
+`aws_bench/scenario/trial.py::_run_phase_in_container`/`_execute`, same
+place `deploy/deploy.sh`/`cleanup/cleanup.sh` already run, same
+`~/.aws/config` `PRIMARY` credential-process profile they already use).
+It sweeps this scenario's own FIXED, well-known resource names directly —
+REST API `apigw-redeploy-api` (delete cascades to its own
+resources/methods/integrations/deployments/stages), Lambda functions
+`apigw-redeploy-hello`/`apigw-redeploy-version`, log groups
+`/aws/lambda/apigw-redeploy-{hello,version}` + `/aws/apigateway/welcome`,
+and IAM role `apigw-redeploy-lambda-exec` (attached-policy detach +
+inline-policy delete + role delete, deleted last) — no `jq` dependency
+(the scenario container's own Dockerfile doesn't carry it; every query
+uses `aws --query`/`--output text` instead, unlike this reset.sh's earlier
+draft). Deliberately fixed-name, not tag/heuristic discovery: matches
+exactly what all three arms' reference solutions construct (`tasks/anchor/
+apigw-redeploy-hcl-raw/solution/solve.sh`'s own `write_rev1`/`write_rev2`,
+and the awscdk/terraconstructs siblings' equivalent construct ids), never
+catches an unrelated resource, and stays correct regardless of the generic
+scanner's own future type coverage. Best-effort/idempotent (`exit 0`
+always, every AWS call `|| true`'d) — defense in depth alongside whatever
+the generic sweeper does or doesn't cover, not a replacement dependency on
+it either way. Amendment 14's wrong `handlers/` file:line citations for a
+delete path are corrected in place, above, rather than left standing.
+
+**Live proof** (account `886312446417`): deployed a minimal but real
+fixture under the exact fixed names (IAM role + trust policy +
+`AWSLambdaBasicExecutionRole` attachment, 2 Lambda functions invoked once
+each to force their log groups into existence, 1 REST API with a deployed
+`prod` stage) — confirmed present via `get-rest-apis`/`list-functions`/
+`get-role`/`describe-log-groups`. Ran `scenarios/anchor/reset/reset.sh`
+exactly as the scenario container would (`--profile PRIMARY` against a
+scratch `AWS_CONFIG_FILE`/`AWS_SHARED_CREDENTIALS_FILE` carrying the same
+assumed-role session credentials, `PRIMARY=886312446417` exported):
+
+```
+[reset.sh] apigw-redeploy fixed-name sweep starting for account 886312446417
+[reset.sh] deleting REST API apigw-redeploy-api (f4r3vphnv6)
+[reset.sh] deleting Lambda function apigw-redeploy-hello
+[reset.sh] deleting Lambda function apigw-redeploy-version
+[reset.sh] deleting log group /aws/lambda/apigw-redeploy-hello
+[reset.sh] deleting log group /aws/lambda/apigw-redeploy-version
+[reset.sh] log group /aws/apigateway/welcome not found -- nothing to sweep
+[reset.sh] detaching arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole from apigw-redeploy-lambda-exec
+[reset.sh] deleting IAM role apigw-redeploy-lambda-exec
+[reset.sh] apigw-redeploy fixed-name sweep done.
+```
+
+Post-run listing confirmed the account back to EXACTLY the 3 baseline
+stacks (`anchor-QARoles-us-east-1`, `anchor-Anchor-us-east-1`,
+`CDKToolkit`), zero REST APIs, zero Lambda functions, `iam get-role`
+`NoSuchEntity` for the role, zero matching log groups. **Idempotency also
+proven**: re-ran `reset.sh` a second time with nothing left to sweep —
+every line reported "not found -- nothing to sweep", `exit=0`, confirming
+a non-mutating or already-clean trial's reset is a harmless no-op rather
+than an error.
+
+**Honest residual scope**: this closes the "does teardown for THIS
+scenario's specific resources actually happen" question with a real,
+proven mechanism. It does NOT independently verify whether the generic
+framework sweeper's own CloudControl fallback also happens to cover these
+same types (genuinely unknown either way, per the corrected Finding-3 text
+above) — `reset.sh`'s existence makes that question moot for this
+scenario's own correctness, by design (defense in depth, not a bet on the
+unproven path).
+
+### Finding 4 (major): the gating + IAM-proposal-blocked composition was
+### a real, undocumented consequence, not a contradiction
+
+`verifier.live_check.gating: true` (Amendment 13) is fail-closed on
+anything other than a `"pass"` outcome. No agent can currently perform a
+REAL AWS deploy for this scenario in a real trial: `agent_role_name:
+"QALocalInvocationApplicationAdmin"` is a read/local-invocation role, not
+the `QADeployApplicationRole` `docs/slice-g-iam-proposal.md` proposes
+(deliberately NOT created/deployed — Amendment 12's stance, repeated, not
+reopened, by that doc's own "Open gaps" section and by this amendment).
+Composing the two facts: **today, every real `apigw-redeploy` trial, on
+every arm, scores 0.0 — including a perfect solution — because no agent
+credential set this scenario grants can perform the live deploy the
+gating check requires.** This is a coherent, deliberate design choice
+(gating fails closed rather than silently scoring on statics alone while
+the scenario is unrunnable), but Amendment 12-14 never stated the
+COMPOSED consequence anywhere in one place.
+
+**Fix**: stated explicitly, here, and in `specs/apigw-redeploy.yaml`'s own
+`verifier.live_check.gating` comment (amended to cross-reference this
+paragraph and `docs/slice-g-iam-proposal.md` directly, so a reader hitting
+`gating: true` sees the "and this scenario isn't trial-runnable yet
+either" consequence in the same place). **On "hold the scenario out of
+the active split"**: investigated the two candidate mechanisms this repo
+actually has — `specs/split.yaml` (`generator/split.py`, prereg §7.1's
+train/holdout split) already places `apigw-redeploy` in `holdout`, but
+that split is about equipping-tuning integrity (never train an
+agent-facing skill against a scenario, then measure it on that same
+scenario), an orthogonal concern to trial-runnability, not a substitute
+guard for it. `local-registry.json`'s `tasks[]` array (the one file that
+actually determines what `aws-bench run -d cdktn-bench-anchor@0.1.0`
+executes) DOES list all three `apigw-redeploy-*` tasks — but that array is
+mechanically regenerated by `generator/gen.py::update_local_registry`
+every `make gen`/`make gen-all` run (idempotent add/replace-by-name, keyed
+off which arms a spec enables), so hand-removing those three entries here
+would silently reappear on the next routine regen with no signal that the
+removal was ever intentional — a worse trap than leaving them listed with
+this amendment's own explicit warning attached. Decision: leave
+`local-registry.json` as-is; a real fix (an explicit `runnable: false` /
+similar spec-level flag `update_local_registry` honors) is a schema change
+out of this fix round's scope and is recorded here as an open follow-up,
+not silently dropped. Operators running real `apigw-redeploy` trials off
+`local-registry.json` before the IAM proposal is approved should expect
+constant 0.0 reward on that scenario and must not fold it into an
+aggregate score.
+
+### Verification
+
+- `arms/hcl-raw/environment/workspace/provider.tf`: `terraform validate`
+  clean (exercised as part of the live proof's own `terraform init &&
+  terraform validate` step, both revisions).
+- `make gen-all` — regenerated all 5 real specs + the toy spec; the ONLY
+  files that changed vs. the pre-fix-round-4 tree were `tests/test.sh`
+  (every spec, the new `run_invalid`/stderr-split branch) and the 3
+  `apigw-redeploy-*` copies' `environment/workspace/provider.tf`
+  (byte-copy of the Finding-1 fix) — confirmed via `git status`/`git diff
+  --stat` before staging.
+- `docker build` — both `cdktn-bench/awscdk:dev` and
+  `cdktn-bench/terraconstructs:dev` rebuilt clean, exit 0.
+- `make preflight`-equivalent (`docker run --network none --memory 4g
+  --entrypoint .../preflight.sh`) — all 3 arm images pass, including the
+  new `python3` step; **hcl-raw's own preflight was NOT rebuilt/rerun this
+  round** (its Dockerfile is unchanged — already had `python3` before this
+  fix round; only `provider.tf`, a COPY'd workspace file with no Dockerfile
+  layer impact, changed for that arm).
+- `uv run python generator/spec_model.py specs/apigw-redeploy.yaml` — OK.
+- `uv run python gates/oracle_falsifiability.py specs/apigw-redeploy.yaml`
+  — unaffected shape from this round (touched: a provider.tf `skip_*` flag,
+  two Dockerfiles, `build_test_sh`'s live-check-gating branch, a new
+  scenario-level `reset.sh` outside the generator's own emitted-file set —
+  none of which `oracle_falsifiability` reads different inputs for; still
+  exercises `solution/solve.sh` → `tests/static_tiers.sh` per spec/arm).
+- `make check` — full repo-wide check re-run after all edits: exit 0.
+  `uv run pytest gates metrics oracles generator test -q` — 442 passed
+  (320.81s). `metrics/test_pipeline_e2e.py` — 1 passed.
+  `./ci/check-smoke-drift.sh` — initially FAILED (`tasks/anchor/smoke/
+  environment/{Dockerfile,preflight.sh}` is a hand-maintained byte-copy of
+  `arms/awscdk/environment`'s own files, modulo each file's leading
+  comment block — Finding 2's `python3` addition to the arm's Dockerfile/
+  preflight.sh drifted the two out of sync); fixed by mirroring the
+  identical body edit into the smoke copy (comment header untouched, per
+  that copy's own "re-copy by hand" instructions) — re-run: `smoke-drift:
+  OK`. `make check` clean re-run after the fix: exit 0.
+- `gates/oracle_falsifiability.py` re-run against all 4 pre-existing
+  (non-holdout-relevant) real specs, individually (NOT in parallel — a
+  first parallel attempt produced one spurious `apigw-openapi` TF-PLAN
+  FAILED from resource contention between concurrent `terraform`/`npm`
+  sandboxes; a clean, isolated re-run of that one spec alone came back
+  clean, confirming the parallel run's failure was a proving-harness
+  artifact, not a real regression from this amendment's changes):
+  `apigw-openapi` OK, `ecs-swappiness` OK, `s3-lambda-log-retention` OK,
+  `sfn-jsonata` OK (alongside `apigw-redeploy` 12/12 PASS, Findings 1-3's
+  own re-proof, above).
+- `gates/grading_proof.py` re-run against the same 4 specs — all four
+  `GRADEABLE` (correct solution reward=1.0 + at least one negative fixture
+  reward=0.0 on every enabled arm; `ecs-swappiness` terraconstructs has a
+  pre-existing, unrelated `SKIP` for its own reason — "no fixture reaches
+  tier 1 on this arm" — unchanged by this amendment).
+- **LIVE re-proof: completed this round**, closing Amendment 14's own B1
+  flag — see Findings 1 and 3 above for the two independent live-account
+  proof transcripts. Account `886312446417` verified back to the 3
+  baseline stacks after EVERY live step in this amendment (hcl-raw
+  solve.sh's own cleanup trap; the standalone reset.sh fixture-then-sweep
+  proof; both independently re-listed clean).
+
+**Files added:** `scenarios/anchor/reset/reset.sh`.
+**Files modified:** `arms/hcl-raw/environment/workspace/provider.tf`
+(`skip_requesting_account_id` live-conditional + header correction),
+`arms/awscdk/environment/Dockerfile` (+`python3`),
+`arms/terraconstructs/environment/Dockerfile` (+`python3`),
+`arms/awscdk/environment/preflight.sh` (+python3 step),
+`arms/terraconstructs/environment/preflight.sh` (+python3 step),
+`generator/gen.py` (`build_test_sh`'s stderr-split + `run_invalid` marker),
+`specs/apigw-redeploy.yaml` (gating comment cross-references this
+amendment + the IAM proposal doc), all 5 real specs' + the toy spec's
+generated `tests/test.sh` (`make gen-all`), the 3 `apigw-redeploy-*`
+generated tasks' `environment/workspace/provider.tf` (`make gen-all`,
+byte-copy of the Finding-1 fix), `tasks/anchor/smoke/environment/
+{Dockerfile,preflight.sh}` (hand-mirrored `python3` addition, re-syncing
+`./ci/check-smoke-drift.sh` after Finding 2's arm Dockerfile edit).

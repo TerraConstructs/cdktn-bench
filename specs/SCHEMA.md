@@ -758,6 +758,7 @@ verifier:
     hand_authored: false
     agent_role_name: null
     concurrency_mode: null
+    gating: false
 ```
 
 - `budget.max_iters`: the `MAX_ITERS` feedback-cycle cap (prereg §4). `8` is
@@ -805,16 +806,37 @@ verifier:
   existing `QALocalInvocationApplicationAdmin` role (a real, logged
   over-grant — no minimally-scoped deploy role exists yet, see
   `docs/slice-g-recon.md` §1 and `DECISIONS.md` "Amendment 12").
-- Regardless of `enabled`, a live check's result **never gates
-  `/logs/verifier/reward.txt`** (§8's Phase-2 forward-compat note, point 4
-  below) — written instead to a separate
-  `/logs/verifier/live_check-result.json` for out-of-band analysis, even
-  once genuinely exercised. This is the one thing Slice G's `enabled: true`
-  spec does NOT change: `apigw-redeploy`'s `tests/live_check.py` is real
-  and runs for real, but is still observational only when invoked by the
-  generated `tests/test.sh` (its `--expect {ok,stale}` CLI, used directly
-  by `solution/solve.sh`/`solution/broken/*/solve.sh`, is a SEPARATE,
-  genuinely gating call shape — see that module's own docstring).
+- `gating` (bool, default `false`): **by default, a live check's result
+  never gates `/logs/verifier/reward.txt`** (§8's Phase-2 forward-compat
+  note, point 4 below) — written instead to a separate
+  `/logs/verifier/live_check-result.json` for out-of-band analysis. This
+  was originally an unconditional invariant ("this is the one thing
+  Slice G's `enabled: true` spec does NOT change") until a fix-round-3
+  review (`DECISIONS.md` Slice G amendment, 2026-08-07) pointed out that
+  `apigw-redeploy`'s `triggers-incomplete-hash` catch is a
+  `predicted_tier_caught: "live"` catch BY CONSTRUCTION — every static tier
+  passes it identically to a correct solution — so leaving live_check
+  non-gating meant the one catch this whole scenario exists to motivate
+  could never cost a real trial any reward. `gating: true` requires
+  `enabled: true` (`spec_model.LiveCheck`'s own model validator rejects the
+  alternative — a live check that never runs cannot gate reward) and is
+  read by `generator/gen.py::build_task_toml` to also write
+  `SPEC_LIVE_CHECK_GATING = "true"` into `[verifier] env` (alongside
+  `SPEC_LIVE_CHECK_ENABLED`); the generated `tests/test.sh` reads that var
+  and folds `live_check.py`'s own JSON `.outcome` field (`"pass"` /
+  `"fail_stale"` / `"not_verifiable"` — hand-authored `live_check.py`'s own
+  contract, not schema-enforced) into `reward.txt` with AND semantics: the
+  final reward is 1.0 iff the static tiers already say 1.0 AND `.outcome`
+  is `"pass"` — both `"fail_stale"` and `"not_verifiable"` downgrade to 0.0,
+  fail-closed (an unverifiable claim must never silently earn reward).
+  `apigw-redeploy` is, as of this writing, the only spec with `gating:
+  true`; every other spec's generated `tests/test.sh` gains the same
+  runtime branch as dead code (never entered, since `SPEC_LIVE_CHECK_GATING`
+  is never set for them) — a strict no-op, same convention as `enabled`
+  itself. The fixture-invoked shape (`--expect {ok,stale}`, called directly
+  by `solution/solve.sh`/`solution/broken/*/solve.sh`) was, and remains, a
+  SEPARATE, always-gating call shape independent of this flag — see that
+  module's own docstring.
 
 ---
 

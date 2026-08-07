@@ -54,7 +54,7 @@ timeout_sec = 900.0
 # self.environment.exec(command=command, env=env) -- this genuinely
 # reaches tests/test.sh's own process environment in a real trial,
 # not a documented no-op.
-env = { SPEC_LIVE_CHECK_ENABLED = "true" }
+env = { SPEC_LIVE_CHECK_ENABLED = "true", SPEC_LIVE_CHECK_GATING = "true" }
 
 # --- Harbor standard ---
 [environment]

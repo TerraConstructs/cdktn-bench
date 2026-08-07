@@ -39,7 +39,7 @@ if [ "$MOCK_SFN_READY" != "1" ]; then
   wait "$MOCK_SFN_PID" 2>/dev/null
   exit 1
 fi
-terraform init && terraform validate && terraform plan -out=plan.tfplan && terraform show -json plan.tfplan > plan.json
+terraform init && terraform validate && terraform plan -refresh=false -out=plan.tfplan && terraform show -json plan.tfplan > plan.json
 TF_RC=$?
 kill "$MOCK_SFN_PID" >/dev/null 2>&1 || true
 wait "$MOCK_SFN_PID" 2>/dev/null
@@ -70,7 +70,7 @@ if [ "$MOCK_SFN_READY" != "1" ]; then
   wait "$MOCK_SFN_PID" 2>/dev/null
   exit 1
 fi
-terraform init && terraform validate && terraform plan -out=plan.tfplan && terraform show -json plan.tfplan > plan.json
+terraform init && terraform validate && terraform plan -refresh=false -out=plan.tfplan && terraform show -json plan.tfplan > plan.json
 TF_RC=$?
 kill "$MOCK_SFN_PID" >/dev/null 2>&1 || true
 wait "$MOCK_SFN_PID" 2>/dev/null
