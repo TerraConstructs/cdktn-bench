@@ -1,0 +1,333 @@
+# specs/apigw-redeploy.yaml
+#
+# Slice G (2026-08-06). Design source: docs/apigw-redeploy-mechanics.md
+# (verified mechanics), docs/slice-g-recon.md (generator/schema gap
+# inventory), the apigw-openapi static sibling (specs/apigw-openapi.yaml).
+# DECISIONS.md "Slice G" amendment records the schema/generator extensions
+# this spec is the first (and, as of this writing, only) consumer of:
+# verifier.live_check.enabled may now be true (spec_model.LiveCheck), a
+# catch may restrict which arms need a broken/ fixture
+# (spec_model.Catch.applies_to), and predicted_tier_caught may be "live"
+# (a catch invisible to every static tier by construction, gated instead
+# by gates/oracle_falsifiability.py's LIVE_ONLY_CONFIRMED_MARKER check --
+# see that module's "live" branch).
+#
+# UNLIKE every other v1 scenario, this one tests a DAY-2 iteration inside
+# one trial: the agent must author, LIVE-deploy, confirm, MODIFY, and
+# LIVE-redeploy a real API Gateway REST API in ONE trial, against the
+# dedicated benchmark account (886312446417, us-east-1 only -- see
+# DECISIONS.md "Slice G" / CONTEXT). The static tiers below grade the
+# FINAL delivered file's structural shape (the only artifact a real
+# trial's verifier ever sees) exactly like every other scenario; the live
+# behavioral fact -- did the SECOND deploy actually serve the modification,
+# or does the stage keep serving stale content -- is graded by
+# tests/live_check.py (hand-authored, non-gating per SCHEMA.md §5, but
+# genuinely exercised here for the first time; see verifier.live_check
+# below).
+
+id: apigw-redeploy
+title: "API Gateway REST API: deploy, confirm, modify, re-deploy (day-2 iteration)"
+difficulty: 3
+services: [apigateway, lambda, iam, logs]
+
+arms:
+  awscdk: true
+  hcl_raw: true
+  terraconstructs:
+    enabled: true
+    reason: >
+      Same terraconstructs 0.2.13 compute.RestApi/Deployment mechanics
+      apigw-openapi's own arms.terraconstructs.reason already verified
+      (src/aws/compute/{restapi.ts,deployment.ts,method.ts} -- a
+      line-for-line port of aws-cdk-lib's own automatic dependency +
+      logical-id-salting wiring, docs/apigw-redeploy-mechanics.md §1/§2).
+      compute.MockIntegration exists too (verified directly against the
+      installed package at spec-authoring time,
+      node_modules/terraconstructs/lib/aws/compute/integrations/mock.js),
+      so the day-2 modification (add a MOCK /status route) is expressible
+      the same way as on awscdk.
+
+instruction:
+  shared_body: |
+    Build a REST API on Amazon API Gateway, deploy it for REAL to this AWS
+    account, confirm it serves, apply a prescribed configuration change,
+    and re-deploy it -- all inside this one task.
+
+    Step 1 -- author and deploy revision 1: a REST API named EXACTLY
+    `apigw-redeploy-api`, with two routes: `GET /hello` and `GET /version`,
+    each backed by its own Lambda function via a Lambda proxy integration
+    (any inline/trivial handler body is fine -- its exact response content
+    is not graded, only that it returns HTTP 200). Deploy the API to a
+    stage named `prod`. Actually run your toolchain's real deploy command
+    against this account (not just synth/plan) and confirm, by making a
+    real HTTP request to the deployed stage, that both `GET /hello` and
+    `GET /version` return HTTP 200.
+
+    Step 2 -- apply the prescribed modification and re-deploy: add ONE
+    more route, `GET /status`, using a MOCK integration (no Lambda) whose
+    response is the fixed JSON body `{"status": "ok", "routes": 3}` for
+    every request. Re-run your toolchain's real deploy command so the
+    SAME stage (`prod`, same REST API) now serves this new route too. Then
+    confirm, by making real HTTP requests to the same deployed stage, that
+    (a) `GET /status` now returns HTTP 200 with exactly that JSON body,
+    AND (b) `GET /hello` and `GET /version` still return HTTP 200 (the
+    modification must not regress the routes that already worked).
+
+    A second deploy that does not actually create a new, live-serving
+    deployment behind the stage -- so the stage keeps serving stale
+    content despite your deploy command exiting successfully -- is exactly
+    the mistake this task exists to test for; make sure your redeploy
+    genuinely takes effect, not just that the command you ran returned
+    success.
+
+    Write `/logs/agent/agent-output.json` (see the JSON contract below)
+    recording the deployed stage's real invoke URL, so it can be
+    independently re-checked afterward.
+
+    Finally, clean up every AWS resource you created (the REST API, both
+    Lambda functions, their execution role, and any CloudWatch Logs log
+    groups AWS auto-created for them) so the account is left exactly as
+    you found it -- this is a real, billed AWS account shared with other
+    tasks.
+  placeholders: []
+  per_arm:
+    awscdk:
+      language_line: "Author this as an AWS CDK (TypeScript) app using aws-cdk-lib L2 constructs (apigateway.RestApi, LambdaIntegration, MockIntegration). Deploy for real with `npx cdk deploy`."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdk.out/ScenarioStack.template.json
+        build_command: "npm run build"
+        synth_command: "npx cdk synth --no-lookups --quiet -o cdk.out"
+        json_fields:
+          - name: api_url
+            description: "the deployed stage's real invoke URL, e.g. https://abc123.execute-api.us-east-1.amazonaws.com/prod/ (trailing slash)"
+    hcl_raw:
+      language_line: "Author this as hand-written Terraform HCL (no modules). Deploy for real with `terraform apply`."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields:
+          - name: api_url
+            description: "the deployed stage's real invoke URL, e.g. https://abc123.execute-api.us-east-1.amazonaws.com/prod/ (trailing slash)"
+    terraconstructs:
+      language_line: "Author this using terraconstructs (TypeScript) L2 constructs, synthesized via cdktn. Deploy for real with `terraform apply` against the synthesized stack."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdktf.out/stacks/apigw-redeploy/plan.json
+        synth_command: "npx cdktn synth"
+        json_fields:
+          - name: api_url
+            description: "the deployed stage's real invoke URL, e.g. https://abc123.execute-api.us-east-1.amazonaws.com/prod/ (trailing slash)"
+
+seeded_files: []
+
+catches:
+  - name: deployment-missing-integration-dependency
+    taxonomy: graph-dependency
+    description: >
+      The classic API Gateway deployment race (same catch family as
+      apigw-openapi's own catch of this name, prereg §5): an
+      AWS::ApiGateway::Deployment / aws_api_gateway_deployment resource
+      created without an explicit dependency edge covering every route's
+      method (CFN DependsOn / TF depends_on+triggers) can be provisioned
+      before, or without ever picking up, some of the routes it is meant
+      to deploy. Idiomatic L2 usage (RestApi.addResource/addMethod on
+      awscdk/terraconstructs, or `depends_on`/`triggers` referencing every
+      integration on hand-written HCL) makes this structurally impossible
+      by construction -- reproduced here, like apigw-openapi's own fixture,
+      by dropping to a manual escape hatch (a hand-constructed
+      CfnDeployment/L1 Deployment resource that bypasses the L2's automatic
+      wiring) on awscdk/terraconstructs, and by a hand-omitted `depends_on`
+      entry on hcl_raw. Caught STRUCTURALLY (the dependency edge itself),
+      never a live invoke/behavioral check.
+    predicted_tier_caught:
+      awscdk: "1"
+      hcl: "1"
+      terraconstructs_override: null
+
+  - name: stale-deployment-no-triggers
+    taxonomy: graph-dependency
+    description: >
+      hcl_raw only (no meaningful equivalent on awscdk/terraconstructs --
+      both L2 arms always compute SOME hash-salted trigger/logical-id
+      automatically; there is no direct way to omit it short of the
+      escape-hatch mistake `deployment-missing-integration-dependency`
+      above already covers). The `aws_api_gateway_deployment` resource has
+      NO `triggers` block at all -- `depends_on` is left CORRECT and
+      complete, isolating this fixture to ONLY this catch (the existing
+      `deployment-missing-integration-dependency` tier-1 depends_on-
+      coverage check still finds every integration correctly listed and
+      passes). Statically, single-artifact-catchable: the FINAL delivered
+      main.tf's `aws_api_gateway_deployment.this` resource has no
+      `triggers.redeployment` value at all (tier "0" existence check).
+      LIVE consequence (docs/apigw-redeploy-mechanics.md §3/§6(c), not what
+      this catch's own tier-0 check exercises, but the real-world failure
+      this static fact predicts): Terraform only replaces a resource when
+      one of ITS OWN arguments changes; with `triggers` gone, the only
+      argument left (`rest_api_id`) never changes between revisions, so a
+      real second `terraform apply` shows "0 to change" for the deployment
+      and the stage keeps serving the OLD deployment -- `GET /status`
+      404s/403s live despite `terraform apply` exiting 0.
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "0"
+      terraconstructs_override: null
+    applies_to: [hcl_raw]
+
+  - name: triggers-incomplete-hash
+    taxonomy: graph-dependency
+    description: >
+      hcl_raw only. The subtle sibling of stale-deployment-no-triggers:
+      the `triggers.redeployment` block EXISTS, `depends_on` is complete
+      and correct, but the hash's own input list is left FROZEN at
+      revision 1's fields (hello/version only) when `/status` is added --
+      "the operator forgot to extend the hash when adding a route", the
+      single most realistic version of this footgun (the block still
+      exists, still resolves to a real hex value, and a reviewer skimming
+      the diff sees a `triggers = { redeployment = sha1(...) }` block was
+      already there and assumes it is covered). Every static tier that
+      grades only the FINAL delivered file passes IDENTICALLY to a correct
+      solution (triggers exists, depends_on is complete, route count is
+      3, MOCK integration is wired) -- catching this requires comparing
+      the triggers hash ACROSS TWO REVISIONS, which no single-artifact
+      static tier (this benchmark's v1 grading unit) can express by
+      construction. This is the "live"-tier catch: only a live
+      apply -> modify -> re-apply -> curl loop discriminates it
+      (docs/apigw-redeploy-mechanics.md §6(c)) -- see
+      gates/oracle_falsifiability.py's "live" branch and this catch's own
+      broken/ fixture, which mechanically confirms (via two independent
+      `terraform plan`s, no apply/AWS credentials needed) that the hash is
+      identical across revisions, printing the shared
+      LIVE_ONLY_CONFIRMED_MARKER, rather than merely asserting it.
+    predicted_tier_caught:
+      awscdk: "live"
+      hcl: "live"
+      terraconstructs_override: null
+    applies_to: [hcl_raw]
+
+oracle:
+  intent: >
+    Exactly one API Gateway REST API exists (named `apigw-redeploy-api`),
+    implementing three routes in its FINAL delivered state: `GET /hello`
+    and `GET /version`, each with an AWS_PROXY Lambda integration to a
+    real Lambda function, and `GET /status`, with a MOCK integration
+    (no Lambda) returning the fixed JSON body `{"status": "ok", "routes":
+    3}`. The API's deployment resource depends on every route's method
+    (CFN DependsOn / TF depends_on+triggers) -- it must not be constructed
+    in a way that could provision before, or without ever picking up, any
+    route. On hcl_raw and terraconstructs, the deployment resource also
+    carries a non-null `triggers.redeployment` value -- TF's own
+    redeploy-on-change mechanism (docs/apigw-redeploy-mechanics.md §1) --
+    without which a second, real `terraform apply` is not guaranteed to
+    create a new deployment when the route set changes (awscdk has no
+    equivalent static fact to check: CDK's own logical-ID salting is
+    unconditional and cannot be omitted by idiomatic L2 usage, only
+    bypassed via the same escape hatch `deployment-missing-integration-
+    dependency` already covers). The API is deployed to a stage named
+    `prod`.
+
+    Known v1 scope limitation, matching apigw-openapi's own documented
+    limitation for a structurally identical reason: this oracle grades the
+    FINAL delivered file only (the only artifact a real trial's verifier
+    ever has). Whether the SECOND live deploy actually took effect --
+    genuinely the entire point of this scenario -- is not a fact any
+    single-artifact static tier can express; it is checked instead by
+    tests/live_check.py (hand-authored, SCHEMA.md §5 verifier.live_check,
+    non-gating but genuinely exercised for the first time in this
+    benchmark) against the REAL resources the agent's own trial deployed.
+
+  structural_asserts:
+    - name: rest-api-exists
+      description: "An API Gateway REST API resource exists."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGateway::RestApi')]"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_api_gateway_rest_api')]"
+      op: exists
+
+    - name: deployment-exists
+      description: "An API Gateway deployment resource exists."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGateway::Deployment')]"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_api_gateway_deployment')]"
+      op: exists
+
+    - name: lambda-function-exists
+      description: "At least one Lambda function exists to back /hello or /version."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Lambda::Function')]"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_function')]"
+      op: exists
+
+    - name: proxy-integration-wired
+      description: >
+        At least one API Gateway method has an AWS_PROXY-type integration
+        (backing /hello or /version).
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGateway::Method')].Properties.Integration.Type"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_api_gateway_integration')].values.type"
+      op: contains
+      expected: "AWS_PROXY"
+
+    - name: mock-integration-wired
+      description: >
+        At least one API Gateway method has a MOCK-type integration
+        (backing the day-2 /status route) -- proves the prescribed
+        modification is present in the FINAL delivered file.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGateway::Method')].Properties.Integration.Type"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_api_gateway_integration')].values.type"
+      op: contains
+      expected: "MOCK"
+
+    - name: deployment-triggers-present
+      description: >
+        On the TF-shaped arms, the deployment resource's `triggers` map
+        has a non-null `redeployment` value -- without this, a second real
+        `terraform apply` is not guaranteed to create a new deployment
+        when the route set changes (docs/apigw-redeploy-mechanics.md §1/§3;
+        THE stale-deployment-no-triggers catch, above). Not applicable to
+        awscdk: CFN has no `triggers` concept, and CDK's own logical-ID
+        salting (the equivalent mechanism) is unconditional in idiomatic
+        L2 usage -- see this assert's own applies_to.
+      tier: "0"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_api_gateway_deployment')].values.triggers.redeployment"
+      op: exists
+
+    - name: deployment-depends-on-all-methods
+      description: >
+        THE PLANTED CATCH (deployment-missing-integration-dependency).
+        Same shape as apigw-openapi's own assert of this name: a
+        cardinality proxy on awscdk (cfn-guard: DependsOn length >= method
+        count), full per-resource SET identity on the TF-shaped arms
+        (Rego).
+      tier: "1"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGateway::Deployment')].DependsOn"
+      tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_api_gateway_deployment')].depends_on"
+      op: exists
+
+verifier:
+  budget:
+    max_iters: 8
+  live_check:
+    enabled: true
+    module: "tests/live_check.py"
+    hand_authored: true
+    agent_role_name: "QALocalInvocationApplicationAdmin"
+    concurrency_mode: "mutating"
+
+provenance:
+  author: "Slice G (apigw-redeploy fix pass)"
+  date: "2026-08-06"
+  prereg_section_refs:
+    - "§5 (graph-dependency catch taxonomy)"
+    - "§11 (Phase 2 mutation track -- this scenario is the first to exercise it)"

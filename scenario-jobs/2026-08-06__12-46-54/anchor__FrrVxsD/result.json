@@ -1,0 +1,30 @@
+{
+  "id": "830e352f-a4a6-49ab-9698-4ac1e36277b7",
+  "scenario_name": "anchor",
+  "trial_name": "anchor__FrrVxsD",
+  "phase": "deploy",
+  "started_at": "2026-08-06T12:46:57.565129Z",
+  "finished_at": "2026-08-06T12:49:22.149774Z",
+  "environment_setup": {
+    "started_at": "2026-08-06T12:46:57.565985Z",
+    "finished_at": "2026-08-06T12:46:58.834507Z"
+  },
+  "execute": {
+    "started_at": "2026-08-06T12:47:12.097234Z",
+    "finished_at": "2026-08-06T12:49:11.853109Z"
+  },
+  "exit_code": 1,
+  "exception_info": {
+    "exception_type": "NonZeroExitCodeError",
+    "exception_message": "deploy phase exited 1\nstdout tail:\n> @cdktn-bench/scenario-anchor@1.0.0 build\n> tsc\n\nKilled\nnpx ts-node lib/app.ts: Subprocess exited with error 137",
+    "exception_traceback": "Traceback (most recent call last):\n  File \"/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/trial.py\", line 242, in run\n    raise script_error\n  File \"/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/trial.py\", line 232, in run\n    await self._run_phase_in_container(phase)\n  File \"/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/trial.py\", line 363, in _run_phase_in_container\n    await self._execute(phase)\n  File \"/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/trial.py\", line 401, in _execute\n    raise NonZeroExitCodeError(\n    ...<3 lines>...\n    )\naws_bench.scenario.exceptions.NonZeroExitCodeError: deploy phase exited 1\nstdout tail:\n> @cdktn-bench/scenario-anchor@1.0.0 build\n> tsc\n\nKilled\nnpx ts-node lib/app.ts: Subprocess exited with error 137\n",
+    "occurred_at": "2026-08-06T19:49:11.854288"
+  },
+  "account_mapping": {
+    "PRIMARY": "694710432912"
+  },
+  "regions": [
+    "us-east-1"
+  ],
+  "resource_results": null
+}

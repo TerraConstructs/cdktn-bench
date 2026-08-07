@@ -23,7 +23,13 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 TierStr = Literal["0", "0.5", "1"]
-CatchTierStr = Literal["0", "0.5", "1"]
+# "live" added by Slice G (apigw-redeploy, 2026-08-06): a catch whose
+# mistake is invisible to EVERY static tier by construction (the only
+# discriminating signal is a live apply -> modify -> re-apply -> curl loop,
+# docs/apigw-redeploy-mechanics.md §6(c)) -- distinct from "0.5"
+# (tier05_jsonata, which IS a static/offline check, just host-side and
+# non-gating). Backward compatible: no pre-Slice-G spec uses it.
+CatchTierStr = Literal["0", "0.5", "1", "live"]
 Arm = Literal["awscdk", "hcl_raw", "terraconstructs"]
 
 ID_RE = re.compile(r"^[a-z][a-z0-9-]*$")
@@ -246,6 +252,22 @@ class Catch(BaseModel):
     ]
     description: str
     predicted_tier_caught: PredictedTierCaught
+    # Slice G addition (apigw-redeploy, 2026-08-06): which enabled arms this
+    # catch's mistake is even POSSIBLE on. Defaults to all three (matching
+    # every pre-Slice-G spec's implicit assumption -- apigw-openapi's own
+    # catches never set this and every one of its declared mistakes reproduces
+    # identically on all 3 arms) so this is 100% backward compatible: no
+    # existing spec's generated output or gate verdict changes.
+    # gates/oracle_falsifiability.py::check_arm only requires a
+    # `solution/broken/<name>/solve.sh` fixture for arms listed here -- some
+    # mistakes are structurally IMPOSSIBLE to reproduce on an L2 arm without
+    # dropping to a manual escape hatch (e.g. hand-omitting a TF `triggers`
+    # block has no direct CDK/terraconstructs L2 equivalent; the L2 always
+    # computes one), and requiring a fixture nothing can meaningfully author
+    # for that arm was previously not even expressible.
+    applies_to: list[Arm] = Field(
+        default_factory=lambda: ["awscdk", "hcl_raw", "terraconstructs"]
+    )
 
 
 # --------------------------------------------------------------------------
@@ -418,8 +440,40 @@ class VerifierBudget(BaseModel):
 
 @_strict
 class LiveCheck(BaseModel):
-    enabled: Literal[False]
+    # Relaxed from `Literal[False]` by Slice G (apigw-redeploy, 2026-08-06;
+    # docs/slice-g-recon.md gap 1, DECISIONS.md "Slice G" amendment). Every
+    # v1 spec still sets this false (unchanged behavior); `true` is now a
+    # legal, gen.py-honored value.
+    enabled: bool
     module: str = "tests/live_check.py"
+    # When true, `module` (tests/live_check.py) is HAND-AUTHORED, not
+    # generated -- gen.py's write_tests step becomes destructive-safe for
+    # this one file, the same "never touch existing hand-authored content"
+    # convention solution/solve.sh already has (SCHEMA.md §8.2 point 8).
+    # Must be true whenever enabled is true: a spec that turns live_check on
+    # but leaves the generated not-implemented stub in place would silently
+    # ship a scenario whose live behavioral facts are never actually
+    # checked (docs/slice-g-recon.md gap 5).
+    hand_authored: bool = False
+    # Spec-driven override of the previously hardcoded
+    # `agent_role_name = "QALocalInvocationApplicationRole"` /
+    # `[concurrency] mode = "read-only"` (generator/gen.py:655,662 before
+    # this fix; docs/slice-g-recon.md gap 2). None (the default) preserves
+    # the old hardcoded values byte-for-byte -- required for every
+    # live_check.enabled=false spec, and legal (though unusual) for one that
+    # somehow needs live_check without mutation.
+    agent_role_name: str | None = None
+    concurrency_mode: Literal["read-only", "mutating"] | None = None
+
+    @model_validator(mode="after")
+    def _hand_authored_required_when_enabled(self) -> "LiveCheck":
+        if self.enabled and not self.hand_authored:
+            raise ValueError(
+                "verifier.live_check.enabled=true requires hand_authored=true "
+                "-- otherwise gen.py's generated not-implemented stub would "
+                "silently ship as this scenario's live check (SCHEMA.md §5)"
+            )
+        return self
 
 
 @_strict

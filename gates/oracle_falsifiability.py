@@ -67,6 +67,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 SOLVE_STUB_MARKER = "is not yet authored (Slice D)"
 
+# Slice G addition (apigw-redeploy, 2026-08-06): the fixed marker string a
+# `predicted_tier_caught: "live"` broken/ fixture's OFFLINE (LIVE unset/0)
+# run must print, after mechanically confirming (not just claiming) the
+# static-indistinguishability property that is this catch's whole point --
+# see check_arm()'s "live" branch below and
+# docs/apigw-redeploy-mechanics.md §6(c). Shared here (not duplicated in
+# each fixture) so the gate and every fixture agree on the exact string.
+LIVE_ONLY_CONFIRMED_MARKER = "CDKTN_BENCH_LIVE_ONLY_CONFIRMED"
+
 _MIRROR_CACHE: dict[str, dict[str, set[str]] | None] = {}
 
 
@@ -436,13 +445,53 @@ def check_arm(spec: Spec, arm: Arm) -> list[RunResult]:
 
     catch_names = {catch.name for catch in spec.catches}
     for catch in spec.catches:
+        # Slice G addition (apigw-redeploy, 2026-08-06): a catch whose
+        # `applies_to` (spec_model.Catch, default all 3 arms -- 100%
+        # backward compatible) excludes THIS arm names a mistake that is
+        # structurally impossible to reproduce here (e.g. a hand-omitted TF
+        # `triggers` block has no direct L2 equivalent -- the L2 always
+        # computes one). No broken/ fixture is required or expected; this is
+        # reported N/A (non-gating), not MISSING.
+        if arm not in catch.applies_to:
+            results.append(RunResult(
+                f"{arm}/solution/broken/{catch.name}/solve.sh", None, True,
+                f"N/A -- catch {catch.name!r} does not apply to arm {arm!r} "
+                "(spec_model.Catch.applies_to)",
+            ))
+            continue
         broken_solve = task / "solution" / "broken" / catch.name / "solve.sh"
         label = f"{arm}/solution/broken/{catch.name}/solve.sh"
         if not broken_solve.exists():
             results.append(RunResult(label, None, False, "MISSING -- every catch needs a broken/ fixture once solve.sh is authored"))
             continue
         tier = predicted_tier(catch, arm)
-        if tier == "0.5":
+        if tier == "live":
+            # Slice G addition: a catch whose mistake is invisible to EVERY
+            # static tier by construction (docs/apigw-redeploy-mechanics.md
+            # §6(c) -- only a live apply->modify->re-apply->curl loop
+            # discriminates it). Mirrors the "0.5" branch immediately below
+            # in SHAPE (reward is EXPECTED to stay 1.0 -- that invisibility
+            # IS the catch), but the falsifying evidence is a fixed marker
+            # string this fixture's own OFFLINE run prints after
+            # mechanically confirming the static-indistinguishability
+            # property itself (e.g. two-plan triggers-hash diff showing no
+            # change) -- LIVE_ONLY_CONFIRMED_MARKER, not a second static-
+            # tool invocation (there is no static tool for this tier by
+            # definition). This keeps `make ci`/`make falsifiability` fully
+            # offline -- no AWS credentials or network needed -- while still
+            # requiring the fixture to MECHANICALLY demonstrate (not just
+            # claim in a comment) that it reproduces the documented gap.
+            bad = _run_solve(task, arm, broken_solve, label, artifact_rel=artifact_rel)
+            bad.ok = bad.ok and bad.reward == 1.0 and LIVE_ONLY_CONFIRMED_MARKER in bad.detail
+            if bad.reward == 1.0 and LIVE_ONLY_CONFIRMED_MARKER not in bad.detail:
+                bad.detail = (
+                    f"predicted_tier_caught={tier!r} (live-only) but this fixture's "
+                    f"stdout never printed {LIVE_ONLY_CONFIRMED_MARKER!r} -- a "
+                    "live-only catch's offline run must mechanically confirm the "
+                    "static-indistinguishability property it claims, not just "
+                    "assert it in a comment\n" + bad.detail
+                )
+        elif tier == "0.5":
             bad = _run_solve(
                 task, arm, broken_solve, label,
                 tier05_spec=tier05_spec, artifact_rel=artifact_rel,

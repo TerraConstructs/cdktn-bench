@@ -2249,3 +2249,541 @@ rationale for each lives inline as a dated comment at its own fix site
 `metrics/emit_fixture_rows.py`, `gates/emit_result.py`,
 `gates/tests/test_emit_result.py`, `metrics/tokens_to_green.py`,
 `metrics/test_tokens_to_green.py`, `test/test_run_bench_wrapper.py`.
+
+---
+
+## Amendment 12 (2026-08-06/07) — Slice G (`apigw-redeploy`): schema/generator
+## plumbing to actually land the scenario, plus fixes for a live-discriminator
+## review's 7 findings (4 blockers, 3 major)
+
+`apigw-redeploy` (docs/apigw-redeploy-mechanics.md, docs/slice-g-recon.md)
+did not exist as a registered scenario before this amendment — only five
+hand-authored `solve.sh` files sat under `tasks/anchor/apigw-redeploy-*`,
+disconnected from `specs/`, the generator, and every gate. A live-
+discriminator review of those five scripts found the redeploy machinery
+itself sound but the *scaffolding around it* broken on every axis: the
+reference solutions failed their own LIVE checks ~100% of the time
+(propagation-latency race, no polling), the negative fixtures didn't
+actually discriminate at the instant they sampled, the proposed
+`live_check` contract was empirically false, the scenario had no
+generator/schema plumbing at all, two of three reference solutions
+weren't runnable without hand-building missing `environment/` trees, and
+LIVE proof runs left CloudWatch log-group residue in the shared account.
+This amendment closes all seven findings and, in doing so, lands the
+missing plumbing docs/slice-g-recon.md's closing list called out as
+required first.
+
+### Schema/generator extensions (the "does the scenario exist" blocker)
+
+1. **`spec_model.LiveCheck.enabled`** relaxed from `Literal[False]` to
+   `bool` (recon gap 1). Every pre-Slice-G spec still sets it `false`
+   (unchanged behavior, unchanged generated output — verified below).
+   Gained `hand_authored: bool` (must be `true` whenever `enabled` is
+   `true` — a model validator rejects the alternative, so a spec can never
+   silently ship the generated not-implemented stub as its real live
+   check) and optional `agent_role_name`/`concurrency_mode` overrides.
+2. **`generator/gen.py::build_task_toml`** now reads `agent_role_name`/
+   `[concurrency] mode` from the spec (via the two new `LiveCheck` fields)
+   instead of the two hardcoded literals at the old line 655/662 (recon
+   gap 2) — `None` (every existing spec) reproduces the old hardcoded
+   values byte-for-byte. Also writes `[verifier] env = {
+   SPEC_LIVE_CHECK_ENABLED = "true" }` when `live_check.enabled` (recon
+   gap 4) — explicitly commented as a **best-effort, unverified**
+   placement against aws-bench's own task.toml schema (that source lives
+   outside this repo; the comment says so and DECISIONS tracks it as an
+   open integration point rather than claiming false certainty).
+3. **`generate_arm`'s write-tests step is now destructive-safe for
+   `tests/live_check.py`** whenever `spec.verifier.live_check.hand_authored`
+   is true (recon gap 5) — the same "never overwrite hand-authored
+   content" convention `solution/solve.sh` already had (SCHEMA.md §8.2
+   point 8). Verified directly: re-running `make gen
+   SPEC=specs/apigw-redeploy.yaml` after hand-authoring
+   `tests/live_check.py` left it byte-identical; every pre-Slice-G spec
+   (`hand_authored=False`, the only legal value when `enabled=False`)
+   keeps the old always-overwrite-the-stub behavior.
+4. **`spec_model.Catch.applies_to`** (new field, defaults to all 3 arms —
+   100% backward compatible) — a catch's mistake can be structurally
+   impossible on some arm (a hand-omitted TF `triggers` block has no
+   direct L2 equivalent; the L2 always computes one) without forcing a
+   contrived escape-hatch fixture there just to satisfy
+   `gates/oracle_falsifiability.py`'s "every catch needs a broken/ fixture
+   on every enabled arm" rule. `check_arm` now reports `N/A` (non-gating)
+   for a catch/arm pair the catch itself declares out of scope, instead of
+   `MISSING` (a hard fail).
+5. **`CatchTierStr` gained `"live"`** — a catch whose mistake is invisible
+   to *every* static tier by construction (docs/apigw-redeploy-mechanics.md
+   §6(c): only a live apply→modify→re-apply→curl loop discriminates it).
+   `gates/oracle_falsifiability.py::check_arm` grew a `"live"` branch,
+   shaped like the existing `"0.5"` branch (reward is *expected* to stay
+   1.0 — that invisibility IS the catch) but falsified by a fixed marker
+   string (`LIVE_ONLY_CONFIRMED_MARKER =
+   "CDKTN_BENCH_LIVE_ONLY_CONFIRMED"`) the fixture's own **offline** run
+   must mechanically print, earned by a real two-plan `triggers.redeployment`
+   diff — not merely asserted in a comment. This keeps `make
+   ci`/`make falsifiability` fully offline (no AWS credentials/network) while
+   still requiring the fixture to prove what it claims. Directly closes
+   finding 5's ask ("record live-only catches instead of reporting them as
+   uncaught").
+6. **`specs/apigw-redeploy.yaml`** (new): 3 arms, 3 catches
+   (`deployment-missing-integration-dependency` — tier "1", all arms, the
+   same catch family/oracle-equivalence pattern as `apigw-openapi`, with
+   real broken/ fixtures on all three arms so `grading-proof`'s hard
+   "at least one arm reaches a real tier-1 catch" requirement is met;
+   `stale-deployment-no-triggers` — tier "0", `applies_to: [hcl_raw]`,
+   genuinely single-artifact-catchable (a `deployment-triggers-present`
+   tier-0 assert against the FINAL delivered file); `triggers-incomplete-
+   hash` — tier "live", `applies_to: [hcl_raw]`, the one catch that
+   genuinely needs a cross-revision diff, which no single-artifact static
+   tier can express), and `verifier.live_check.enabled: true`. `make gen`
+   against it produces every generated artifact (`environment/`,
+   `task.toml`, `instruction.md`, `tests/{_assert_lib,static_tiers,test}.sh`)
+   through the SAME pipeline every other scenario uses — this alone closes
+   most of finding 4 and all of finding 6 (see below).
+7. **`oracles/rego/apigw-redeploy/policy.rego` +
+   `oracles/cfn-guard/apigw-redeploy/policy.guard`** (new, hand-authored):
+   the `deployment-missing-integration-dependency` tier-1 identity/
+   cardinality checks, adapted directly from `apigw-openapi`'s own proven
+   rules (same catch family, same rationale, same documented cardinality-
+   proxy residual gap on awscdk).
+
+**Explicitly NOT done** (docs/slice-g-recon.md's remaining gaps, honestly
+left open rather than half-built): a new, minimally-scoped
+`QADeployApplicationRole` in `qa_roles_stack.ts` was NOT created or
+deployed — that is a change to shared, persistent account infrastructure
+(not a per-task resource this fix pass's live re-proof is scoped to touch),
+and the recon's own open question about the CDKToolkit assume-role grant it
+would need is unresolved. `specs/apigw-redeploy.yaml` instead sets
+`agent_role_name: "QALocalInvocationApplicationAdmin"` (the existing,
+already-provisioned admin role) — a real over-grant, logged here rather
+than hidden, and a natural next step once the scoped role is built.
+Whether aws-bench's own trial runner actually reads `[verifier].env` the
+way point 2 above assumes, whether `ResourceManager.reset_scenarios`
+covers apigateway/lambda/logs, and `scenarios/anchor/reset/reset.sh` were
+NOT verified/built — all three require reading or modifying the aws-bench
+runner itself, outside this repo, and remain open per recon's own
+"not implemented by this recon" framing. This scenario's own solve.sh/
+live_check.py-level cleanup (finding 7, below) is deliberately NOT
+contingent on any of these three landing.
+
+### Live-discriminator review findings (fixed 1:1)
+
+1. **(blocker) Correct solutions failed their own LIVE check ~100% of the
+   time** — every one of the five `solve.sh` LIVE paths curled the
+   modified route exactly once, immediately after the second
+   apply/deploy; API Gateway stage-propagation latency (measured: hcl-raw
+   200 at t=30s, awscdk/terraconstructs 200 at t=60s, 403 at every earlier
+   sample) meant this failed almost always. Fixed by centralizing the
+   check in a new, hand-authored `tests/live_check.py` (destructive-safe
+   per point 3 above, copied identically into all 3 arms' task
+   directories): `check_ok()` polls up to `POLL_TIMEOUT_S = 180` (5s
+   interval — 60s was not enough margin per the review's own measurement),
+   succeeding on the first `200` whose body matches the exact fixed
+   modification. All three `solution/solve.sh` LIVE paths now end with
+   `python3 tests/live_check.py --api-url "$API_URL" --expect ok` instead
+   of a single immediate curl.
+2. **(blocker) The two hcl_raw negatives didn't discriminate at the point
+   they sampled** — `STATUS_CODE != 200` measured once, immediately after
+   the second apply, is exactly what a CORRECT solution also produces
+   during the same propagation window finding 1 documents. Fixed:
+   `tests/live_check.py::check_stale()` polls the FULL `POLL_TIMEOUT_S`
+   window (never early-exits on one sample) AND requires the deployment id
+   observed after apply #1 to equal the one observed after apply #2 (a new
+   `output "deployment_id"` on both broken fixtures' `main.tf`, captured
+   via `terraform output -raw deployment_id` around each apply). Both
+   `solution/broken/{stale-deployment-no-triggers,triggers-incomplete-hash}/
+   solve.sh` LIVE paths now call `--expect stale
+   --deployment-id-before ... --deployment-id-after ...` instead of a
+   single ad hoc curl+comment.
+3. **(blocker) The proposed "≥2 deployments, stage on latest" contract is
+   false for every correct solution** — `create_before_destroy`/CFN
+   replacement leaves exactly ONE surviving deployment after a successful
+   redeploy on every arm, and "stage points at the newest deployment it
+   knows about" is trivially true either way. Fixed by never encoding
+   that contract anywhere: `check_ok()`/`check_stale()` assert ONLY sound,
+   post-hoc BEHAVIORAL facts (exact `/status` body; `/hello`+`/version`
+   regression-free), and (finding 3's own fix_hint) `check_stale()`'s
+   deployment-identity signal is captured by `solve.sh` itself DURING the
+   two-apply loop (not reconstructed after the fact by a verifier that
+   never saw the pre-modification state) — exactly the "agent-visible
+   contract records the pre-modification id" design the finding proposed.
+4. **(blocker) Scenario had no spec/generator/gate plumbing at all** —
+   closed by the schema/generator work above; `specs/apigw-redeploy.yaml`
+   plus regenerated `tasks/anchor/apigw-redeploy-*` now exist, validate,
+   and pass every offline gate (see Verification below). The parts of this
+   finding that require changing aws-bench itself (outside this repo) are
+   explicitly logged as open, not silently declared done — see "Explicitly
+   NOT done" above.
+5. **(major) Broken-fixture convention inverted / gate-incompatible** —
+   the two hcl_raw negatives used to self-judge (custom exit code, never
+   touching `tests/static_tiers.sh`/`reward.txt`) and the builder's own
+   report ("expected to fail the trap-check") didn't match what they
+   actually asserted. Fixed: `stale-deployment-no-triggers` is now a
+   fully gate-native tier-0 catch (its OFFLINE path ends with `bash
+   tests/static_tiers.sh` and requires reward 0.0, same convention as
+   every other scenario's broken/ fixture); `triggers-incomplete-hash`
+   also ends with `tests/static_tiers.sh` (requires reward 1.0 — see
+   finding 4/schema point 5's `"live"` tier) instead of self-exiting 0.
+   LIVE paths for both now call the SAME shared checker
+   (`tests/live_check.py --expect stale`) the correct solution's LIVE path
+   calls with `--expect ok`, instead of two independently-hand-rolled,
+   non-discriminating checks.
+6. **(major) Two of three reference solutions weren't runnable** — no
+   `environment/` existed for any arm; `generator/gen.py`'s spec-driven
+   generation (point 6 above) now produces a real, working `environment/`
+   for all three arms through the exact same pipeline every other scenario
+   uses (`bin/app.ts` instantiates `ScenarioStack` as the awscdk solve.sh
+   already assumed; `main.ts` carries the generated offline dummy-creds +
+   mock-STS bootstrap `tests/static_tiers.sh`'s own tf-plan step needs).
+   One residual bug found and fixed while re-proving this: the
+   terraconstructs solve.sh's own `write_main_ts_live()`/`start_mock_sts()`
+   hardcoded port `17773` from before `environment/` existed, while the
+   NOW-generated `main.ts` points at `gen.py`'s own
+   `TERRACONSTRUCTS_MOCK_STS_PORT = 17771` — fixed to `17771` (caught by
+   `make falsifiability` failing with a real STS-dial-refused error before
+   this fix, not silently).
+7. **(major) LIVE proof runs left CloudWatch log-group residue** —
+   `terraform destroy`/`cdk destroy` do not remove the log groups
+   Lambda/API Gateway auto-create on first invocation
+   (`/aws/lambda/apigw-redeploy-{hello,version}`,
+   `/aws/lambda/ScenarioStack-{HelloFn,VersionFn}*`,
+   `/aws/apigateway/welcome`). Every `solution/solve.sh` and
+   `solution/broken/*/solve.sh` LIVE path now installs a `trap cleanup
+   EXIT` (runs on pass, live-check failure, AND a mid-script error alike)
+   that destroys the deploy AND explicitly deletes those log groups
+   (`aws logs delete-log-group`, `|| true` throughout — a group that never
+   got created because an earlier step failed must not itself fail
+   cleanup).
+
+### Two bugs found and fixed while building the new broken/
+### `deployment-missing-integration-dependency` fixtures (all 3 arms, new)
+
+- The hcl_raw fixture's first draft kept a `triggers` block that
+  `jsonencode`d references to every route's resources while omitting
+  `depends_on` — but Terraform infers a real dependency edge from ANY
+  attribute reference inside `triggers`, same as `depends_on` would (and
+  `oracles/rego/apigw-redeploy/policy.rego`'s `covered_by_triggers` rule
+  correctly treats it as coverage, on purpose) — so this "bug" wasn't
+  actually one; `make falsifiability` would have silently never exercised
+  it. Fixed to a hardcoded literal `triggers.redeployment` value with no
+  resource reference at all (a real, realistic mistake: a `triggers` block
+  added because "it's needed" without actually wiring it to anything).
+- The terraconstructs fixture's manual L1 `ApiGatewayDeployment` escape
+  hatch set no `triggers` at all, which ALSO failed this spec's (new)
+  `deployment-triggers-present` tier-0 assert — a real
+  `predicted_tier_caught='1'` vs. `observed_tier='0'` tier-attribution
+  mismatch, caught by `gates/oracle_falsifiability.py`'s own mechanical
+  backstop (unrelated to this finding pass, pre-existing machinery from
+  Amendment 7/9). Fixed by giving it a plain-literal `triggers` value too,
+  isolating the fixture to only the dependency-coverage catch.
+
+### Verification
+
+- `uv run python generator/spec_model.py specs/apigw-redeploy.yaml` — OK
+  (3 catches, 3 arms, 7 structural asserts).
+- `uv run python gates/oracle_falsifiability.py specs/apigw-redeploy.yaml`
+  — **OK** for real: 12/12 rows PASS across all 3 arms x {correct solution,
+  `deployment-missing-integration-dependency`, `stale-deployment-no-triggers`,
+  `triggers-incomplete-hash`} (the latter two `N/A` on awscdk/terraconstructs
+  per their `applies_to`). Reproduced the port-mismatch bug (finding 6)
+  failing this gate for real before the fix, and the tier-attribution
+  mismatch bug (this amendment's own "two bugs found" section) failing it
+  for real before that fix too — this gate is exercising real toolchain
+  runs, not passing vacuously.
+- `uv run python generator/check_tier1_coverage.py specs/apigw-redeploy.yaml`
+  — OK (1 tier-1 assert, 1 covering catch, all 3 arms).
+- `uv run python generator/check_reference_paths.py specs/apigw-redeploy.yaml`
+  — NOT_AUTHORED (rc=3, non-gating; no `generator/tests/fixtures/apigw-redeploy/`
+  authored — an honest gap, not claimed closed).
+- `uv run python gates/grading_proof.py specs/apigw-redeploy.yaml` — OK,
+  "every arm is GRADEABLE" (6/6 outcomes PASS).
+- `make gen SPEC=specs/apigw-redeploy.yaml` run twice in a row —
+  byte-identical output (gen-sync clean); re-running against all four
+  pre-existing specs after this amendment's `gen.py`/`spec_model.py`
+  changes produced ONLY the two intentional wording-comment updates in
+  each spec's `task.toml` ("is false in v1" → "is false for this
+  scenario") — no other diff, confirming the new spec-driven
+  `agent_role_name`/`mode`/`[verifier] env` logic is a true no-op for
+  every `live_check.enabled=false` spec.
+- `uv run python generator/split.py --write` — re-run after adding the 5th
+  real spec (required: adding a scenario shifts `specs/split.yaml`'s 60/40
+  train/holdout cutoff over the existing ranking, per that module's own
+  docstring); `apigw-redeploy` landed `holdout`. `s3-lambda-log-retention`
+  moved holdout→train as a result — a pre-existing test
+  (`generator/tests/test_holdout_equipping.py`) hardcoded it as "a real
+  holdout scenario"; switched to `sfn-jsonata` (stayed holdout), matching
+  every other holdout-scenario case in that file.
+- `uv run pytest gates metrics oracles generator test -q` — **440 passed**
+  (up from 422 at Amendment 11; two pre-existing tests needed the
+  split-cutoff-shift fix above, everything else was unaffected).
+- `make check` — green end-to-end.
+- `make ci` — **ALL GREEN**, full sweep across all 5 real specs x
+  {gen-sync, check-paths, tier1-coverage, falsifiability, grading-proof}
+  (`apigw-redeploy`: gen-sync PASS, check-paths SKIP (no
+  `generator/tests/fixtures/apigw-redeploy/` authored yet, non-gating —
+  honestly the same NOT_AUTHORED state every other real spec is in),
+  tier1-coverage PASS, falsifiability PASS, grading-proof PASS) + toy
+  smoke + `test-gates` + `check`, all PASS/SKIP, zero FAIL rows. First
+  full run caught a real, pre-existing drift this amendment's own wording
+  change exposed (`toy-ssm-parameter`'s `task.toml` needed
+  `make gen SPEC=specs/_toy/toy-ssm-parameter.yaml` re-run too, since
+  `gen.py`'s wording literal changed for every spec, not just
+  `apigw-redeploy`) — fixed, re-ran clean.
+- **LIVE re-proof against account 886312446417 (us-east-1): NOT COMPLETED
+  by this fix pass — blocked, not skipped.** A single batched
+  `aws-vault exec --no-session tcons-mgmt -- bash live_reproof.sh` (all 3
+  correct `solution/solve.sh` LIVE=1 runs + both hcl_raw negatives'
+  LIVE=1 runs + a post-hoc account-cleanliness check, sequenced so only
+  ONE keychain unlock is needed) was written, reviewed, and launched, but
+  `aws-vault`'s macOS Keychain authorization prompt (`SecurityAgent`,
+  confirmed via `ps`) sat unanswered for 35+ minutes with zero script
+  output — this specific execution context (a background process, not an
+  interactive terminal the operator is watching) apparently does not
+  inherit whatever "Always Allow" grant makes the operator's own normal
+  shell not re-prompt, and answering a macOS GUI dialog is outside what
+  this fix pass can do. Killed cleanly (confirmed zero AWS resources were
+  ever created — the script's own account guard, its first line of real
+  work, never even printed). Every code fix findings 1/2/6/7 need is
+  complete and was validated as far as offline review allows (bash
+  syntax-checked, `tests/live_check.py`'s `check_ok`/`check_stale` logic
+  reviewed inline, the port-mismatch and tier-attribution bugs found in
+  finding-6/-5's own OFFLINE falsifiability runs above were real bugs this
+  same live-proof effort would have hit and IS now fixed for) — but
+  finding 1's own headline claim ("correct solutions now pass LIVE") is
+  **not independently re-confirmed against real AWS by this amendment**.
+  The script is at
+  `/private/tmp/claude-502/-Users-vincentsmet-cdk/abc355a4-9a31-4ba4-9773-3deefa3f1074/scratchpad/live_reproof.sh`
+  (scratchpad-only, not committed to the repo) — an operator present to
+  approve the Keychain prompt can run it as-is, or copy its steps into an
+  interactive session.
+
+**Files added:** `specs/apigw-redeploy.yaml`,
+`oracles/apigw-redeploy/intent.md` (generated),
+`oracles/rego/apigw-redeploy/policy.rego`,
+`oracles/cfn-guard/apigw-redeploy/policy.guard`,
+`tasks/anchor/apigw-redeploy-{awscdk,hcl-raw,terraconstructs}/{environment,instruction.md,task.toml,tests}` (generated),
+`tasks/anchor/apigw-redeploy-{awscdk,hcl-raw,terraconstructs}/tests/live_check.py`
+(hand-authored),
+`tasks/anchor/apigw-redeploy-{awscdk,hcl-raw,terraconstructs}/solution/broken/deployment-missing-integration-dependency/solve.sh`
+(new fixtures, all 3 arms).
+**Files modified:** `generator/spec_model.py`, `generator/gen.py`,
+`gates/oracle_falsifiability.py`, `specs/split.yaml`, `local-registry.json`,
+`generator/tests/test_holdout_equipping.py`,
+`tasks/anchor/{apigw-openapi,ecs-swappiness,s3-lambda-log-retention,sfn-jsonata}-*/task.toml`
+(regenerated, wording-only),
+`tasks/anchor/apigw-redeploy-{awscdk,hcl-raw,terraconstructs}/solution/solve.sh`,
+`tasks/anchor/apigw-redeploy-hcl-raw/solution/broken/{stale-deployment-no-triggers,triggers-incomplete-hash}/solve.sh`,
+`tasks/anchor/apigw-redeploy-terraconstructs/solution/broken/deployment-missing-integration-dependency/solve.sh`.
+
+## Amendment 13 (2026-08-07) — fix round 2 for `apigw-redeploy`: live-solvability,
+## verifier gating, dead-code, and log-group-sweep findings from a re-review
+
+A follow-up review of Amendment 12's fix round found 6 more findings (3
+blockers, 3 majors). This amendment fixes all of them.
+
+**Finding G1 (blocker, reverify) — the batched LIVE re-proof still did not
+run.** `aws-vault exec --no-session tcons-mgmt -- aws sts get-caller-identity`
+(a minimal 25s-bounded probe, not the full driver) reproduced the EXACT same
+blocker Amendment 12 hit: the macOS Keychain `SecurityAgent` authorization
+dialog does not appear to whatever grants the operator's own interactive
+shell "Always Allow" when the caller is this kind of background/subagent
+process, so the exec sits with zero output until killed. Confirmed again,
+cleanly, with a short timeout instead of the previous 35-55 minute
+unattended wait -- no AWS resources were ever touched (the exec never
+reaches its first real command), and a stray `SecurityAgent` process may be
+left showing an unanswered dialog (harmless -- no credentials, no armed
+mutation, nothing to clean up).
+
+Not a code problem; every fix below was validated as far as offline review
+and the existing (`gates/oracle_falsifiability.py`-driven) sandboxed
+harness allow. Prep work for the operator: the five host-side sandboxes
+under
+`/private/tmp/claude-502/-Users-vincentsmet-cdk/abc355a4-9a31-4ba4-9773-3deefa3f1074/scratchpad/live/{hcl-correct,hcl-stale,hcl-hash,awscdk,tcons}`
+were rebuilt from the CURRENT (post-fix) `tasks/anchor/apigw-redeploy-*`
+trees (`rebuild_sandboxes.py` in that same directory, using the identical
+copy convention `gates/oracle_falsifiability.py::_run_solve` uses -- flattened
+`environment/<workspace-subdir>` + `tests/` + `solution/`, `npm ci` for the
+two TS arms) so `drive.sh` in that directory now exercises this amendment's
+fixes, not fix-round-1's code. An operator present to approve the Keychain
+prompt can run
+`aws-vault exec --no-session tcons-mgmt -- bash /private/tmp/.../scratchpad/live/drive.sh`
+as-is.
+
+**Finding G2 (blocker) — 2/3 arms were agent-unsolvable while obeying their
+own "do not touch provider.tf/main.ts" instruction.** Both bootstrap files
+hardcoded `access_key`/`secret_key` (plus hcl_raw's `skip_*` flags and
+`endpoints.sfn`, terraconstructs' `endpoints.sts`) unconditionally --
+explicit provider credentials outrank every ambient source, so a real
+`terraform apply`/`cdktn deploy` could never reach real AWS through them,
+yet the agent is told never to edit these files. The reference solutions'
+own `write_provider_live()`/`write_main_ts_live()` proved this by
+demonstrating a solution shape (rewriting the forbidden file) an agent may
+not produce.
+
+Fix: both bootstrap files are now live-aware via one environment-variable
+switch each, read directly (no per-scenario templating, no reliance on any
+unverified aws-bench env-passthrough mechanism):
+- `arms/hcl-raw/environment/workspace/provider.tf` -- new
+  `variable "cdktn_bench_live"` (default `false`). `access_key`/`secret_key`
+  become `var.cdktn_bench_live ? null : "<dummy>"`, the `endpoints` block
+  becomes `dynamic` (omitted when live). **Verified directly** against
+  terraform 1.15.8 + hashicorp/aws 6.58.0 (not just reasoned about): default
+  plans exactly as before; `-var cdktn_bench_live=true` with no ambient
+  creds fails with `No valid credential sources found` (proves `null` is a
+  real "no override", not silently accepted); the same with
+  `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` env vars set succeeds --
+  confirms the provider falls through to the ambient chain exactly as
+  arms/awscdk's `bin/app.ts` already relies on. The four `skip_*` flags
+  stay on in both modes (skip_credentials_validation only skips an extra
+  STS sanity call; skip_metadata_api_check only disables the last-resort
+  IMDS fallback, never reached once env-var creds resolve first --
+  confirmed by the same test).
+- `generator/gen.py::terraconstructs_main_ts()` -- new
+  `CDKTN_BENCH_LIVE = process.env.CDKTN_BENCH_LIVE === "1"` (Node reads the
+  env var directly, no `terraform variable` involved); the
+  accessKey/secretKey/skip_*/endpoints block is spread in only when false
+  (every `AwsProviderConfig` field is optional, confirmed against a local
+  `node_modules/terraconstructs` copy's `.d.ts`, so omitting the whole
+  block is a real "no override").
+- Both reference solutions' `write_provider_live()`/`write_main_ts_live()`
+  are DELETED; LIVE=1 now just `export`s the one env var
+  (`TF_VAR_cdktn_bench_live=1` / `CDKTN_BENCH_LIVE=1`) before calling
+  `terraform`/`cdktn` -- the reference solutions now exercise exactly what
+  an agent is allowed to do, never touching provider.tf/main.ts.
+- `generator/gen.py::build_instruction_md()` grew a new
+  `live_credentials_note()`, emitted only when
+  `verifier.live_check.enabled` is true and the arm has a switch (hcl_raw,
+  terraconstructs) -- a strict no-op for every other spec/arm -- telling
+  the agent about the one env var it needs to export. Without this, a
+  well-behaved agent that only reads its own instruction.md would still
+  hit the offline dummy-credential fixture and fail to deploy for real.
+
+**Finding G3 (blocker) — the verifier's live_check invocation had an
+unsatisfiable second gate condition.** `tests/test.sh` required BOTH
+`SPEC_LIVE_CHECK_ENABLED=true` (from this task's own `[verifier] env`) AND
+`CDKTN_BENCH_LIVE_CHECK=1`, and nothing anywhere (runner, Makefile,
+scenario, CI) ever set the second one -- confirmed again by the same
+whole-repo grep the original review ran. Fixed in two parts:
+1. Dropped the `CDKTN_BENCH_LIVE_CHECK` condition from
+   `generator/gen.py::build_test_sh()` -- `SPEC_LIVE_CHECK_ENABLED` alone
+   already encodes this spec's intent (it is only ever `"true"` for a
+   scenario whose `verifier.live_check.enabled` is true).
+2. The `[verifier].env` reaching the verifier container question the
+   original fix_hint flagged as needing confirmation against real
+   aws-bench source is now **CONFIRMED, not assumed**: read
+   `/Users/vincentsmet/cdk/aws-bench`'s own vendored `harbor` package
+   directly (`.venv/lib/python3.14/site-packages/harbor/`) -- `aws_trial.py`
+   populates `self.task.config.verifier.env` straight from `task.toml`'s
+   `[verifier]` section (`harbor/models/task/config.py`'s `VerifierConfig`),
+   and `harbor/verifier/verifier.py`'s `verify()` does
+   `merged_env = {**self.task.config.verifier.env, ...}`,
+   `env = resolve_env_vars(merged_env)`, then
+   `self.environment.exec(command=command, env=env)` -- a real, load-bearing
+   passthrough into the verifier's own process environment, not a
+   documented no-op. `build_task_toml`'s comment and `docs/slice-g-recon.md`
+   §2 are updated to say so.
+
+**Finding G4 (major) — the two hcl_raw negatives' oracle self-check was
+dead code that made them exit 1 in the exact harness that validates them.**
+Both `if [ -f tests/static_tiers.sh ]; then bash tests/static_tiers.sh;
+REWARD="$(cat /logs/verifier/reward.txt ...)"` blocks read the hardcoded
+absolute path, but `gates/oracle_falsifiability.py::_run_solve` only
+rewrites `/logs/verifier` inside its OWN copy of `tests/static_tiers.sh`,
+never inside the fixture -- so the `cat` always fell through to `'?'` and
+the assertion always failed, masked only because the gate itself judges by
+`reward.txt` and ignores exit codes. Reproduced directly (before the fix,
+via `gates.oracle_falsifiability._run_solve` called in-process):
+`stale-deployment-no-triggers/solve.sh` -> `ok=False` despite
+`reward=0.0` being exactly right. Fixed by dropping the self-assertion
+entirely and ending with a bare `bash tests/static_tiers.sh` (plus, for
+`stale-deployment-no-triggers`, an explicit `exit 0` to keep the
+LIVE-branch fallthrough from firing when `LIVE!=1` -- an oversight in the
+literal minimal fix, caught immediately by re-reading the resulting control
+flow), matching every other scenario's `broken/*/solve.sh` convention
+(e.g. `apigw-openapi`'s negatives). Reproduced AFTER the fix, same
+in-process call: both fixtures now report `ok=True` with the correct
+reward (`0.0` / `1.0` respectively).
+
+**Finding G5 (major) — terraconstructs' `cleanup()` swept the wrong
+CloudWatch Logs prefix.** Copy-pasted from awscdk's own `cleanup()`
+(`/aws/lambda/ScenarioStack-`), but this arm's stack/grid id is
+`"apigw-redeploy"`, not `"ScenarioStack"` -- awscdk's own stack really is
+named `"ScenarioStack"` (`new ScenarioStack(app, "ScenarioStack", ...)` in
+`awscdk_bin_app_ts()`), so awscdk's identical-looking prefix was already
+correct; only the terraconstructs copy was wrong. Confirmed the real
+default log-group name directly against a local `node_modules/terraconstructs`
+copy: `compute.LambdaFunction`'s default `functionName` is
+`this.stack.uniqueResourceNamePrefix(this, { prefix: gridUUID + "-", ... })`
+(`lib/aws/compute/function.js`), and the log group is
+`/aws/lambda/${functionName}` -- i.e. `/aws/lambda/apigw-redeploy-...`.
+Fixed: `cleanup()` now sweeps both `/aws/lambda/apigw-redeploy` (the real
+prefix) and `/aws/lambda/ScenarioStack-` (harmless defensive fallback,
+matches nothing on this arm) via a small loop.
+
+**Finding G6 (major) — the 180s poll fix only covered the LAST live check;
+two un-polled immediate curls right after the SECOND deploy remained in all
+five LIVE paths.** The riskiest sample point (per the mechanics doc's own
+propagation-window note) was still a single un-polled `check_200` pair.
+Fixed uniformly across all five `solve.sh` LIVE paths (3 correct + 2
+hcl_raw negatives): dropped the post-second-deploy `check_200 "hello"` /
+`check_200 "version"` calls; kept the post-FIRST-deploy pair (an immediate
+sample there is sound -- proxy integrations, no propagation lag on a
+from-scratch deploy, per the mechanics doc). For the 3 correct solutions,
+`live_check.py`'s own `check_ok()` already polls `/hello`/`/version`
+(`REGRESSION_POLL_TIMEOUT_S`) as part of its `--expect ok` contract, so
+regression coverage after the second deploy still exists, just bounded
+instead of a single sample. For the 2 hcl_raw negatives, dropping the pair
+costs nothing: `check_stale()` never depended on `/hello`/`/version` in the
+first place (only `deployment_id_unchanged` + `/status`).
+
+### Verification
+
+- `bash -n` on all 5 edited `solve.sh` files -- clean.
+- `uv run python gates/oracle_falsifiability.py specs/apigw-redeploy.yaml`
+  -- **12/12 PASS** (same shape as Amendment 12's own real, non-vacuous
+  proof).
+- Finding G4 fix independently re-verified by calling
+  `gates.oracle_falsifiability._run_solve` directly (not just reading the
+  gate's summary line, which judges `reward.txt` only and would have
+  reported PASS even before this fix): `stale-deployment-no-triggers` now
+  `ok=True, reward=0.0`; `triggers-incomplete-hash` now `ok=True,
+  reward=1.0` -- both previously `ok=False` for the reason finding G4
+  describes.
+- `uv run python generator/spec_model.py specs/apigw-redeploy.yaml` -- OK.
+- `uv run python generator/check_tier1_coverage.py specs/apigw-redeploy.yaml`
+  -- OK.
+- `uv run python gates/grading_proof.py specs/apigw-redeploy.yaml` -- OK,
+  6/6 outcomes PASS, every arm GRADEABLE.
+- `make gen-all` -- regenerated every real spec; diffed: `apigw-redeploy`'s
+  three task dirs picked up the new live-credentials instruction.md note,
+  the live-aware provider.tf/main.ts, and the simplified test.sh; every
+  OTHER real spec's `task.toml`/`tests/test.sh` changed ONLY in the
+  wording/condition this amendment intentionally touches everywhere
+  (`SPEC_LIVE_CHECK_ENABLED` comment wording, dropped
+  `CDKTN_BENCH_LIVE_CHECK` condition) -- confirmed a true no-op on runtime
+  behavior for every `live_check.enabled=false` spec (that branch is never
+  reached; `SPEC_LIVE_CHECK_ENABLED` is unset for them). Two consecutive
+  `make gen-all` runs produced byte-identical output (gen-sync clean).
+- `uv run pytest gates metrics oracles generator test -q` -- **440 passed**
+  (same count as Amendment 12 -- no regression, no new tests needed since
+  this round's findings were caught by the existing gates plus direct
+  in-process reproduction above, not by new pytest cases).
+- **LIVE re-proof: still NOT COMPLETED**, for the identical
+  infrastructure reason as Amendment 12 (finding G1 above) -- reconfirmed
+  with a bounded 25s probe instead of a long unattended wait, no AWS
+  resources touched. The five sandboxes this amendment's fixes would run
+  against are rebuilt and staged (see finding G1's own text above) for an
+  operator to run interactively.
+
+**Files modified:** `arms/hcl-raw/environment/workspace/provider.tf`,
+`generator/gen.py` (`terraconstructs_main_ts`, `build_instruction_md` +
+new `live_credentials_note`/`LIVE_CREDENTIALS_ENV_VAR`, `build_test_sh`,
+`build_task_toml`'s `[verifier] env` comment), `specs/SCHEMA.md` (§ test.sh
+comment), `docs/slice-g-recon.md` (§2 forward-pointer note),
+`tasks/anchor/apigw-redeploy-{awscdk,hcl-raw,terraconstructs}/solution/solve.sh`,
+`tasks/anchor/apigw-redeploy-hcl-raw/solution/broken/{stale-deployment-no-triggers,triggers-incomplete-hash}/solve.sh`,
+every real spec's generated `task.toml`/`tests/test.sh`
+(`make gen-all`, wording/condition-only for every spec except
+`apigw-redeploy`), every `hcl_raw`-arm task's generated
+`environment/workspace/provider.tf` (byte-copy of the arm template, same
+`make gen-all`), every `terraconstructs`-arm task's generated
+`environment/app/main.ts` (regenerated per-scenario, same `make gen-all`).

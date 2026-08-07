@@ -1,4 +1,4 @@
-# cdktn-bench hcl-raw arm — offline provider bootstrap.
+# cdktn-bench hcl-raw arm — offline/live provider bootstrap.
 #
 # NOT agent-owned. This file is byte-copied unmodified into every generated
 # task's workspace (generator/gen.py::write_environment() copytree's the
@@ -19,7 +19,44 @@
 # solution 0.0. Keeping this block in a separate, non-entry file means a
 # full main.tf rewrite can never touch it.
 #
-# `terraform plan` needs these four `skip_*` flags + static dummy
+# --- OFFLINE vs. LIVE switch (benchmark-integrity review finding 2,
+# 2026-08-07) -----------------------------------------------------------
+# This file used to hardcode `access_key`/`secret_key` unconditionally,
+# which OUTRANKS every ambient credential source (env vars, shared config,
+# IMDS role) in the AWS provider's own resolution order — making a REAL
+# `terraform apply` against this account impossible for any scenario that
+# needs one (apigw-redeploy, verifier.live_check.enabled=true), even
+# though the agent is instructed not to touch this file. The
+# `var.cdktn_bench_live` switch below (default false — BYTE-IDENTICAL
+# offline behavior to before this fix for every scenario that never sets
+# it) fixes this without any per-scenario templating:
+#   - default (false, i.e. every `terraform` invocation that doesn't
+#     explicitly export `TF_VAR_cdktn_bench_live=1`): `access_key`/
+#     `secret_key` stay the dummy literals below, the four `skip_*` flags
+#     stay on, and `endpoints.sfn` stays pointed at the loopback mock --
+#     exactly today's offline-plan fixture, unchanged.
+#   - `TF_VAR_cdktn_bench_live=1` (set by whoever is about to run a REAL
+#     `terraform apply` against account 886312446417 -- the reference
+#     solution's own solve.sh LIVE=1 path does this, and a real agent
+#     solving apigw-redeploy needs to do the same, see that scenario's
+#     instruction.md): `access_key`/`secret_key` become `null` (omitted,
+#     not empty-string -- verified directly against terraform 1.15.8 +
+#     hashicorp/aws 6.58.0 that `null` here correctly falls through to the
+#     provider's own default credential chain, i.e. real
+#     `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN` env
+#     vars staged by the trial -- the same ambient-credential mechanism
+#     arms/awscdk's bin/app.ts already relies on), and the `endpoints.sfn`
+#     override is dropped (a `dynamic` block, confirmed to work inside a
+#     `provider` block against this same terraform/provider pin) so any
+#     real `aws_sfn_state_machine` calls go to real AWS, not loopback. The
+#     four `skip_*` flags are left on in BOTH modes -- confirmed directly
+#     that this is harmless for a real apply as long as credentials are
+#     resolved via env vars/shared config (skip_credentials_validation
+#     only skips an extra STS sanity call; skip_metadata_api_check only
+#     disables the LAST-resort IMDS fallback, never reached once env-var
+#     creds resolve first).
+#
+# `terraform plan` needs the four `skip_*` flags + static dummy
 # credentials to succeed fully offline for a brand-new resource with no
 # prior state and no data sources — see ../../README.md "What `terraform
 # plan` needs" for the full breakdown of which flag suppresses which
@@ -56,13 +93,22 @@ terraform {
   }
 }
 
+variable "cdktn_bench_live" {
+  description = "false (default): offline dummy-credential/mock-endpoint fixture, used by tests/static_tiers.sh's `terraform plan` and any other offline invocation. true (set via TF_VAR_cdktn_bench_live=1): real ambient AWS credentials, no mock endpoints -- for a genuine `terraform apply` against account 886312446417."
+  type        = bool
+  default     = false
+}
+
 provider "aws" {
   region = "us-east-1"
 
-  # Dummy, non-functional credentials — never used to sign a real API call;
-  # plan only works because of the skip_* flags below.
-  access_key = "AKIAIOSFODNN7EXAMPLE"
-  secret_key = "dummy-secret-key-not-real"
+  # Dummy, non-functional credentials when offline — never used to sign a
+  # real API call; plan only works because of the skip_* flags below. When
+  # `cdktn_bench_live` is true, `null` here means "no explicit override" --
+  # the provider falls through to its normal ambient credential chain (see
+  # this file's own header comment above).
+  access_key = var.cdktn_bench_live ? null : "AKIAIOSFODNN7EXAMPLE"
+  secret_key = var.cdktn_bench_live ? null : "dummy-secret-key-not-real"
 
   skip_credentials_validation = true # don't call STS GetCallerIdentity to check creds are real
   skip_requesting_account_id  = true # don't call STS to resolve the account id for ARNs
@@ -70,16 +116,14 @@ provider "aws" {
   skip_metadata_api_check     = true # don't probe the EC2 instance-metadata service
 
   # See this file's own header comment ("endpoints.sfn") for why this
-  # exists. Verified: `sfn` (not `states`/`stepfunctions`) is the correct
-  # endpoints{} block key for this provider version — confirmed empirically
-  # (a real `terraform plan` against a hand-built aws_sfn_state_machine
-  # config, pointed at a real mock-sfn.py responder on this port, produced
-  # "Plan: 2 to add, 0 to change, 0 to destroy" with zero network
-  # reachability beyond loopback), matching names/data/names_data.hcl's own
-  # `service "sfn" { ... provider_package_correct = "sfn" }` entry in the
-  # hashicorp/terraform-provider-aws source.
-  endpoints {
-    sfn = "http://127.0.0.1:17772"
+  # exists, and the OFFLINE vs. LIVE switch comment above for why it's
+  # `dynamic` -- a real `terraform apply` (`cdktn_bench_live = true`) must
+  # never be pointed at this loopback-only mock responder.
+  dynamic "endpoints" {
+    for_each = var.cdktn_bench_live ? [] : [1]
+    content {
+      sfn = "http://127.0.0.1:17772"
+    }
   }
 
   default_tags {

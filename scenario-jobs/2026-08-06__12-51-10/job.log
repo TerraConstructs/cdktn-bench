@@ -1,0 +1,81 @@
+2026-08-06 19:51:11,475 INFO     aws_bench.cli.preflight:74 — Using AWS account 489592802338 (arn:aws:iam::489592802338:user/vincent-tyme-org), OU 'cdktn-anchor'
+2026-08-06 19:51:13,723 INFO     aws_bench.scenario.job:333 — Deploying... 1 scenario(s) for job 2026-08-06__12-51-10
+2026-08-06 19:51:13,728 INFO     aws_bench.scenario.trial:197 — [anchor__QzjB8ZR] Deploying... trial anchor__QzjB8ZR
+2026-08-06 19:51:13,729 INFO     aws_bench.scenario.container.awsbench-anchor__qzjb8zr:211 — [anchor__QzjB8ZR] Building image awsbench-anchor ...
+2026-08-06 19:51:13,989 INFO     aws_bench.scenario.container.awsbench-anchor__qzjb8zr:217 — [anchor__QzjB8ZR] Built image awsbench-anchor.
+2026-08-06 19:51:14,002 DEBUG    aws_bench.scenario.container.awsbench-anchor__qzjb8zr:337 — [anchor__QzjB8ZR] Removed stale container awsbench-anchor__qzjb8zr.
+2026-08-06 19:51:14,925 DEBUG    aws_bench.scenario.container.awsbench-anchor__qzjb8zr:266 — [anchor__QzjB8ZR] Started container awsbench-anchor__qzjb8zr.
+2026-08-06 19:51:15,725 DEBUG    aws_bench.resource_management.snapshot.manager:85 — [anchor__QzjB8ZR] Initializing S3 storage backend (lazy)
+2026-08-06 19:51:16,497 DEBUG    aws_bench.resource_management.storage.s3_backend:91 — [anchor__QzjB8ZR] Initializing S3 backend: bucket=awsbench-state-489592802338, region=us-east-1
+2026-08-06 19:51:17,280 DEBUG    aws_bench.resource_management.storage.s3_backend:113 — [anchor__QzjB8ZR] S3 bucket exists: awsbench-state-489592802338
+2026-08-06 19:51:17,281 DEBUG    aws_bench.resource_management.storage.s3_backend:209 — [anchor__QzjB8ZR] Applying configuration to S3 bucket: awsbench-state-489592802338
+2026-08-06 19:51:18,970 DEBUG    aws_bench.resource_management.storage.s3_backend:255 — [anchor__QzjB8ZR] Applied configuration to 'awsbench-state-489592802338': versioning, encryption, public access block, and lifecycle policy
+2026-08-06 19:51:18,972 DEBUG    aws_bench.resource_management.storage.s3_backend:385 — [anchor__QzjB8ZR] Checking existence of snapshots/anchor/pre-setup/694710432912/baseline.json
+2026-08-06 19:51:19,240 DEBUG    aws_bench.resource_management.storage.s3_backend:389 — [anchor__QzjB8ZR] Key exists: snapshots/anchor/pre-setup/694710432912/baseline.json
+2026-08-06 19:51:20,718 DEBUG    aws_bench.account_management.organizations:332 — [anchor__QzjB8ZR] SERVICE_CONTROL_POLICY already enabled on org root
+2026-08-06 19:51:21,717 DEBUG    aws_bench.account_management.organizations:355 — [anchor__QzjB8ZR] SERVICE_CONTROL_POLICY is ENABLED on org root
+2026-08-06 19:51:22,167 DEBUG    aws_bench.account_management.organizations:453 — [anchor__QzjB8ZR] SCP 'awsbench-region-restrict-anchor' already exists (p-spoezqd7)
+2026-08-06 19:51:22,874 DEBUG    aws_bench.account_management.organizations:461 — [anchor__QzjB8ZR] SCP already attached to account 694710432912
+2026-08-06 19:51:24,754 DEBUG    aws_bench.scenario.trial:705 — [anchor__QzjB8ZR] Deleted stale cdk-deploy-change-set from AgentCore-ghbroker-default in us-east-1
+2026-08-06 19:51:25,029 DEBUG    aws_bench.scenario.trial:705 — [anchor__QzjB8ZR] Deleted stale cdk-deploy-change-set from CDKToolkit in us-east-1
+2026-08-06 19:51:25,300 DEBUG    aws_bench.scenario.trial:705 — [anchor__QzjB8ZR] Deleted stale cdk-deploy-change-set from StackSet-AWS-QuickSetup-JITNA-LA-kfhqq-f68db75e-8d4e-48c8-a661-b1102a8aa9c1 in us-east-1
+2026-08-06 19:51:25,570 DEBUG    aws_bench.scenario.trial:705 — [anchor__QzjB8ZR] Deleted stale cdk-deploy-change-set from AWS-QuickSetup-JITNA-LocalDeploymentRolesStack in us-east-1
+2026-08-06 19:51:25,842 DEBUG    aws_bench.scenario.trial:705 — [anchor__QzjB8ZR] Deleted stale cdk-deploy-change-set from StackSet-AWS-QuickSetup-SSM-LA-4sf9y-6ca4d321-3072-4e35-86cc-51124bd9efa6 in us-east-1
+2026-08-06 19:51:26,113 DEBUG    aws_bench.scenario.trial:705 — [anchor__QzjB8ZR] Deleted stale cdk-deploy-change-set from AWS-QuickSetup-SSM-LocalDeploymentRolesStack in us-east-1
+2026-08-06 19:51:27,693 DEBUG    aws_bench.scenario.trial:390 — [anchor__QzjB8ZR] Running deploy script in container (timeout 900s)
+2026-08-06 19:55:28,740 DEBUG    aws_bench.scenario.trial:399 — [anchor__QzjB8ZR] deploy script finished (exit=0)
+2026-08-06 19:55:28,743 DEBUG    aws_bench.scenario.hashing:47 — [anchor__QzjB8ZR] Computed hash 4320e25a... for /Users/vincentsmet/cdk/cdktn-bench/scenarios/anchor
+2026-08-06 19:55:28,747 DEBUG    aws_bench.resource_management.snapshot.manager:452 — [anchor__QzjB8ZR][694710432912][us-east-1] Starting snapshot capture for region us-east-1
+2026-08-06 19:55:28,748 DEBUG    aws_bench.resource_management.snapshot.manager:369 — [anchor__QzjB8ZR][694710432912][us-east-1] Capturing snapshot for account 694710432912 in region us-east-1
+2026-08-06 19:55:28,785 DEBUG    aws_bench.resource_management.scanner:83 — [anchor__QzjB8ZR][694710432912][us-east-1] Scan backend: fastscan-lambda (account 694710432912, region us-east-1)
+2026-08-06 19:55:28,786 DEBUG    aws_bench.resource_management.snapshot.manager:248 — [anchor__QzjB8ZR][694710432912][us-east-1] Listing CloudFormation stacks
+2026-08-06 19:55:30,400 DEBUG    aws_bench.resource_management.snapshot.manager:376 — [anchor__QzjB8ZR][694710432912][us-east-1] Found 8 active stack(s) in us-east-1
+2026-08-06 19:55:30,400 DEBUG    aws_bench.resource_management.snapshot.manager:266 — [anchor__QzjB8ZR][694710432912][us-east-1] Detecting drift for 8 stack(s)
+2026-08-06 19:55:30,400 DEBUG    aws_bench.resource_management.snapshot.drift:317 — [anchor__QzjB8ZR][694710432912][us-east-1] Starting drift detection for 8 stack(s) in waves of 12
+2026-08-06 19:55:30,400 DEBUG    aws_bench.resource_management.snapshot.drift:163 — [anchor__QzjB8ZR][694710432912][us-east-1] Submitting drift detection for stack anchor-QARoles-us-east-1 in state CREATE_COMPLETE
+2026-08-06 19:55:30,700 DEBUG    aws_bench.resource_management.snapshot.drift:163 — [anchor__QzjB8ZR][694710432912][us-east-1] Submitting drift detection for stack anchor-Anchor-us-east-1 in state CREATE_COMPLETE
+2026-08-06 19:55:31,002 DEBUG    aws_bench.resource_management.snapshot.drift:163 — [anchor__QzjB8ZR][694710432912][us-east-1] Submitting drift detection for stack AgentCore-ghbroker-default in state UPDATE_COMPLETE
+2026-08-06 19:55:31,301 DEBUG    aws_bench.resource_management.snapshot.drift:163 — [anchor__QzjB8ZR][694710432912][us-east-1] Submitting drift detection for stack CDKToolkit in state CREATE_COMPLETE
+2026-08-06 19:55:31,590 DEBUG    aws_bench.resource_management.snapshot.drift:163 — [anchor__QzjB8ZR][694710432912][us-east-1] Submitting drift detection for stack StackSet-AWS-QuickSetup-JITNA-LA-kfhqq-f68db75e-8d4e-48c8-a661-b1102a8aa9c1 in state CREATE_COMPLETE
+2026-08-06 19:55:31,882 DEBUG    aws_bench.resource_management.snapshot.drift:163 — [anchor__QzjB8ZR][694710432912][us-east-1] Submitting drift detection for stack AWS-QuickSetup-JITNA-LocalDeploymentRolesStack in state CREATE_COMPLETE
+2026-08-06 19:55:32,197 DEBUG    aws_bench.resource_management.snapshot.drift:163 — [anchor__QzjB8ZR][694710432912][us-east-1] Submitting drift detection for stack StackSet-AWS-QuickSetup-SSM-LA-4sf9y-6ca4d321-3072-4e35-86cc-51124bd9efa6 in state CREATE_COMPLETE
+2026-08-06 19:55:32,486 DEBUG    aws_bench.resource_management.snapshot.drift:163 — [anchor__QzjB8ZR][694710432912][us-east-1] Submitting drift detection for stack AWS-QuickSetup-SSM-LocalDeploymentRolesStack in state CREATE_COMPLETE
+2026-08-06 19:55:32,784 DEBUG    aws_bench.resource_management.snapshot.drift:177 — [anchor__QzjB8ZR][694710432912][us-east-1] Submitted 8 drift detection(s); 0 skipped or failed to submit
+2026-08-06 19:55:32,785 DEBUG    aws_bench.resource_management.snapshot.drift:198 — [anchor__QzjB8ZR][694710432912][us-east-1] Polling 8 drift detection(s) to completion
+2026-08-06 19:55:34,859 DEBUG    aws_bench.resource_management.snapshot.drift:224 — [anchor__QzjB8ZR][694710432912][us-east-1] 3 drift detection(s) still in progress, re-poll in 5s: ['AgentCore-ghbroker-default', 'CDKToolkit', 'StackSet-AWS-QuickSetup-SSM-LA-4sf9y-6ca4d321-3072-4e35-86cc-51124bd9efa6']
+2026-08-06 19:55:40,973 DEBUG    aws_bench.resource_management.snapshot.drift:254 — [anchor__QzjB8ZR][694710432912][us-east-1] Collected 4 resource drift(s) for stack anchor-QARoles-us-east-1
+2026-08-06 19:55:41,300 DEBUG    aws_bench.resource_management.snapshot.drift:254 — [anchor__QzjB8ZR][694710432912][us-east-1] Collected 1 resource drift(s) for stack anchor-Anchor-us-east-1
+2026-08-06 19:55:41,635 DEBUG    aws_bench.resource_management.snapshot.drift:254 — [anchor__QzjB8ZR][694710432912][us-east-1] Collected 2 resource drift(s) for stack StackSet-AWS-QuickSetup-JITNA-LA-kfhqq-f68db75e-8d4e-48c8-a661-b1102a8aa9c1
+2026-08-06 19:55:41,928 DEBUG    aws_bench.resource_management.snapshot.drift:254 — [anchor__QzjB8ZR][694710432912][us-east-1] Collected 2 resource drift(s) for stack AWS-QuickSetup-JITNA-LocalDeploymentRolesStack
+2026-08-06 19:55:42,223 DEBUG    aws_bench.resource_management.snapshot.drift:254 — [anchor__QzjB8ZR][694710432912][us-east-1] Collected 2 resource drift(s) for stack AWS-QuickSetup-SSM-LocalDeploymentRolesStack
+2026-08-06 19:55:42,576 DEBUG    aws_bench.resource_management.snapshot.drift:254 — [anchor__QzjB8ZR][694710432912][us-east-1] Collected 5 resource drift(s) for stack AgentCore-ghbroker-default
+2026-08-06 19:55:42,984 DEBUG    aws_bench.resource_management.snapshot.drift:254 — [anchor__QzjB8ZR][694710432912][us-east-1] Collected 9 resource drift(s) for stack CDKToolkit
+2026-08-06 19:55:43,359 DEBUG    aws_bench.resource_management.snapshot.drift:254 — [anchor__QzjB8ZR][694710432912][us-east-1] Collected 12 resource drift(s) for stack StackSet-AWS-QuickSetup-SSM-LA-4sf9y-6ca4d321-3072-4e35-86cc-51124bd9efa6
+2026-08-06 19:55:43,360 DEBUG    aws_bench.resource_management.snapshot.drift:352 — [anchor__QzjB8ZR][694710432912][us-east-1] Drift detection finished: 8 completed, 0 skipped, 0 failed (8 detection(s) submitted)
+2026-08-06 19:55:43,360 DEBUG    aws_bench.resource_management.snapshot.manager:286 — [anchor__QzjB8ZR][694710432912][us-east-1] Drift detection: 8 detected, 0 skipped
+2026-08-06 19:55:43,360 DEBUG    aws_bench.resource_management.snapshot.manager:296 — [anchor__QzjB8ZR][694710432912][us-east-1] Capturing metadata for 8 stack(s)
+2026-08-06 19:55:44,176 DEBUG    aws_bench.resource_management.snapshot.manager:334 — [anchor__QzjB8ZR][694710432912][us-east-1] Captured: anchor-QARoles-us-east-1
+2026-08-06 19:55:44,782 DEBUG    aws_bench.resource_management.snapshot.manager:334 — [anchor__QzjB8ZR][694710432912][us-east-1] Captured: anchor-Anchor-us-east-1
+2026-08-06 19:55:45,323 DEBUG    aws_bench.resource_management.snapshot.manager:334 — [anchor__QzjB8ZR][694710432912][us-east-1] Captured: AgentCore-ghbroker-default
+2026-08-06 19:55:45,918 DEBUG    aws_bench.resource_management.snapshot.manager:334 — [anchor__QzjB8ZR][694710432912][us-east-1] Captured: CDKToolkit
+2026-08-06 19:55:46,457 DEBUG    aws_bench.resource_management.snapshot.manager:334 — [anchor__QzjB8ZR][694710432912][us-east-1] Captured: StackSet-AWS-QuickSetup-JITNA-LA-kfhqq-f68db75e-8d4e-48c8-a661-b1102a8aa9c1
+2026-08-06 19:55:46,995 DEBUG    aws_bench.resource_management.snapshot.manager:334 — [anchor__QzjB8ZR][694710432912][us-east-1] Captured: AWS-QuickSetup-JITNA-LocalDeploymentRolesStack
+2026-08-06 19:55:47,539 DEBUG    aws_bench.resource_management.snapshot.manager:334 — [anchor__QzjB8ZR][694710432912][us-east-1] Captured: StackSet-AWS-QuickSetup-SSM-LA-4sf9y-6ca4d321-3072-4e35-86cc-51124bd9efa6
+2026-08-06 19:55:48,078 DEBUG    aws_bench.resource_management.snapshot.manager:334 — [anchor__QzjB8ZR][694710432912][us-east-1] Captured: AWS-QuickSetup-SSM-LocalDeploymentRolesStack
+2026-08-06 19:55:48,079 DEBUG    aws_bench.resource_management.snapshot.manager:346 — [anchor__QzjB8ZR][694710432912][us-east-1] Metadata capture complete
+2026-08-06 19:55:48,079 DEBUG    aws_bench.resource_management.snapshot.manager:381 — [anchor__QzjB8ZR][694710432912][us-east-1] Scanning resources via fastscan-lambda backend
+2026-08-06 19:55:56,155 DEBUG    aws_bench.resource_management.ccapi.type_registry:78 — [anchor__QzjB8ZR][694710432912][us-east-1] Total resource types: 1716
+2026-08-06 19:59:15,840 DEBUG    aws_bench.resource_management.fastscan.lambda_scanner:107 — [anchor__QzjB8ZR][694710432912][us-east-1] Fast-scan for us-east-1 via lambda
+2026-08-06 19:59:15,871 DEBUG    aws_bench.resource_management.fastscan.manager:105 — [anchor__QzjB8ZR][694710432912][us-east-1] Fast-scan: 111 type(s) detected, 186 lister(s) failed
+2026-08-06 19:59:15,871 DEBUG    aws_bench.resource_management.snapshot.manager:384 — [anchor__QzjB8ZR][694710432912][us-east-1] Fast-scan found 1550 resources
+2026-08-06 19:59:15,871 DEBUG    aws_bench.resource_management.snapshot.manager:415 — [anchor__QzjB8ZR][694710432912][us-east-1] Snapshot captured: 8 stacks, 1550 resources
+2026-08-06 19:59:15,872 DEBUG    aws_bench.resource_management.snapshot.manager:456 — [anchor__QzjB8ZR][694710432912][us-east-1] Completed snapshot capture for region us-east-1
+2026-08-06 19:59:15,872 DEBUG    aws_bench.resource_management.snapshot.manager:501 — [anchor__QzjB8ZR][694710432912] Merged multi-region snapshot for account 694710432912: regions=['us-east-1'], 8 stack(s)
+2026-08-06 19:59:15,872 DEBUG    aws_bench.resource_management.snapshot.manager:130 — [anchor__QzjB8ZR][694710432912] Saving snapshot for environment 'anchor', account 694710432912
+2026-08-06 19:59:15,873 DEBUG    aws_bench.resource_management.snapshot.manager:135 — [anchor__QzjB8ZR][694710432912] Snapshot contains 8 stacks, 1550 resources
+2026-08-06 19:59:15,873 DEBUG    aws_bench.resource_management.snapshot.manager:85 — [anchor__QzjB8ZR][694710432912] Initializing S3 storage backend (lazy)
+2026-08-06 19:59:16,630 DEBUG    aws_bench.resource_management.storage.s3_backend:91 — [anchor__QzjB8ZR][694710432912] Initializing S3 backend: bucket=awsbench-state-489592802338, region=us-east-1
+2026-08-06 19:59:16,632 DEBUG    aws_bench.resource_management.storage.s3_backend:284 — [anchor__QzjB8ZR][694710432912] Saving to snapshots/anchor/post-setup/694710432912/baseline.json (expected_etag=None)
+2026-08-06 19:59:18,692 DEBUG    aws_bench.resource_management.storage.s3_backend:303 — [anchor__QzjB8ZR][694710432912] Saved snapshots/anchor/post-setup/694710432912/baseline.json with ETag 0903d15a410f82a853fd4a7d26afac84
+2026-08-06 19:59:18,692 DEBUG    aws_bench.resource_management.snapshot.manager:151 — [anchor__QzjB8ZR][694710432912] Saved snapshot for account 694710432912 (etag=0903d15a...)
+2026-08-06 19:59:18,692 DEBUG    aws_bench.resource_management.snapshot.manager:598 — [anchor__QzjB8ZR][694710432912] Saved post-setup snapshot for anchor/694710432912

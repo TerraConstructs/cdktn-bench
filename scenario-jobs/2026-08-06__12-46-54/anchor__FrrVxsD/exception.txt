@@ -1,0 +1,18 @@
+Traceback (most recent call last):
+  File "/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/trial.py", line 242, in run
+    raise script_error
+  File "/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/trial.py", line 232, in run
+    await self._run_phase_in_container(phase)
+  File "/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/trial.py", line 363, in _run_phase_in_container
+    await self._execute(phase)
+  File "/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/trial.py", line 401, in _execute
+    raise NonZeroExitCodeError(
+    ...<3 lines>...
+    )
+aws_bench.scenario.exceptions.NonZeroExitCodeError: deploy phase exited 1
+stdout tail:
+> @cdktn-bench/scenario-anchor@1.0.0 build
+> tsc
+
+Killed
+npx ts-node lib/app.ts: Subprocess exited with error 137

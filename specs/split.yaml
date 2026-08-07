@@ -26,20 +26,24 @@ seed: 'cdktn-bench-split-v1'
 train_fraction: 0.6
 generated_at: '2026-08-06'
 counts:
-  total: 4
-  train: 2
+  total: 5
+  train: 3
   holdout: 2
 assignments:
   apigw-openapi:
     group: train
     score: '3377d78a52b0edd8'
     rank: 1
+  apigw-redeploy:
+    group: holdout
+    score: 'e1c40a27324d48a8'
+    rank: 4
   ecs-swappiness:
     group: train
     score: '1afb4343b90f4a49'
     rank: 0
   s3-lambda-log-retention:
-    group: holdout
+    group: train
     score: '667898ba190928a0'
     rank: 2
   sfn-jsonata:

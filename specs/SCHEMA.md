@@ -298,9 +298,10 @@ catches:
     taxonomy: typed-value-trap | graph-dependency | nested-attribute | anti-L2
     description: <string — the natural-language catch, no thresholds pasted into instruction.shared_body>
     predicted_tier_caught:
-      awscdk: "0" | "0.5" | "1"
-      hcl: "0" | "0.5" | "1"
-      terraconstructs_override: "0" | "0.5" | "1" | null   # optional, default null
+      awscdk: "0" | "0.5" | "1" | "live"
+      hcl: "0" | "0.5" | "1" | "live"
+      terraconstructs_override: "0" | "0.5" | "1" | "live" | null   # optional, default null
+    applies_to: [awscdk, hcl_raw, terraconstructs]   # optional, default: all 3 (every enabled arm)
 ```
 
 At least one entry required; real benchmark scenarios (Slice D) should carry
@@ -336,6 +337,32 @@ spec is exempt (its header says so) and does not need taxonomy diversity.
   catch is falsified by the pinned provider" entry is the standing lesson
   that predicted tiers must be evidence-checked, never assumed, before a
   scenario spec freezes.
+- **`"live"`** (Slice G addition, `DECISIONS.md` "Amendment 12"): a catch
+  whose mistake is invisible to *every* static tier by construction — the
+  only discriminating signal is a real
+  apply→modify→re-apply→curl loop (only meaningful alongside
+  `verifier.live_check.enabled: true`, §5). Distinct from `"0.5"`
+  (`tier05_jsonata` is itself a static/offline check, just host-side and
+  non-gating): a `"live"` catch has no static evaluator to run against the
+  artifact at all. `gates/oracle_falsifiability.py::check_arm`'s `"live"`
+  branch requires the fixture's reward to stay `1.0` (the same static
+  tiers a correct solution passes) AND its **offline** run to print the
+  fixed marker `LIVE_ONLY_CONFIRMED_MARKER =
+  "CDKTN_BENCH_LIVE_ONLY_CONFIRMED"`, mechanically earned (e.g. a two-plan
+  diff proving a hash stayed frozen across revisions), not merely claimed
+  in a comment — this keeps `make ci`/`make falsifiability` fully offline
+  even for a scenario that declares a live-only catch.
+- `applies_to` (optional, default: all three enabled arms — 100% backward
+  compatible with every pre-Slice-G spec): restricts which arms
+  `gates/oracle_falsifiability.py` requires a
+  `solution/broken/<name>/solve.sh` fixture for. Exists because a catch's
+  mistake can be structurally IMPOSSIBLE on some arm without a contrived
+  escape hatch — e.g. a hand-omitted Terraform `triggers` block has no
+  direct CDK/terraconstructs L2 equivalent (the L2 always computes one); an
+  arm not listed here is reported `N/A` (non-gating), not `MISSING`. Most
+  catches should leave this at its default; reach for it only when a
+  mistake is genuinely arm-specific, the same bar `terraconstructs_override`
+  above applies to tier divergence.
 
 ---
 
@@ -728,24 +755,66 @@ verifier:
   live_check:
     enabled: false
     module: tests/live_check.py
+    hand_authored: false
+    agent_role_name: null
+    concurrency_mode: null
 ```
 
 - `budget.max_iters`: the `MAX_ITERS` feedback-cycle cap (prereg §4). `8` is
   the pre-registered default; a spec may lower it (never raise it without a
   logged amendment — this is a pre-registered budget, not a per-scenario
   knob to tune away a hard scenario).
-- `live_check`: `enabled` **must be `false`** for every v1 spec — this
-  benchmark's v1 oracle is synth/plan-only per the CONTEXT constraint ("v1
-  verifier is the STATIC tier stack ... NOT live-AWS check.py"). `module` is
-  a **path**, relative to the generated task's own `tests/` directory,
-  naming the hook the generator scaffolds as an inert stub (§8) — never
-  invoked by the generated `tests/test.sh` while `enabled: false`, and never
-  contributing to `/logs/verifier/reward.txt` even in a future run where it's
-  flipped on (its result, if ever executed, is written to a separate
-  `/logs/verifier/live_check-result.json` for out-of-band analysis, per the
-  Phase 2 forward-compat note in §8). Flipping this to `true` for a real
-  scenario is a Phase 2 decision (prereg §11), not something the generator
-  or a spec author does unilaterally in v1.
+- `live_check.enabled`: **`false` for every v1-shaped (synth/plan-only)
+  spec** — the CONTEXT constraint this schema was originally written
+  against ("v1 verifier is the STATIC tier stack ... NOT live-AWS
+  check.py") still holds for the vast majority of scenarios. Relaxed from a
+  hard-pinned `Literal[False]` to `bool` by the Slice G amendment
+  (`DECISIONS.md` "Amendment 12", `apigw-redeploy` — the first, and as of
+  this writing only, spec to set it `true`): a scenario whose entire point
+  is a day-2 apply→modify→re-apply→verify loop *inside one trial* cannot be
+  meaningfully graded synth/plan-only, since the fact being tested (did the
+  second deploy actually take effect) only exists at runtime. Setting this
+  `true` is a real design decision, not a default — see `apigw-redeploy`'s
+  own `[concurrency] mode = "mutating"` consequence below.
+- `module`: a **path**, relative to the generated task's own `tests/`
+  directory, naming the live-check hook. While `enabled: false`, the
+  generator always scaffolds this as an inert not-implemented stub (§8),
+  regenerated every `make gen` run — never invoked by the generated
+  `tests/test.sh`.
+- `hand_authored` (bool, default `false`): **must be `true` whenever
+  `enabled` is `true`** (`spec_model.LiveCheck`'s own model validator
+  rejects the alternative) — a spec cannot flip live checking on and leave
+  the generator's inert stub as its real implementation. When `true`, the
+  generator's write-tests step becomes destructive-safe for `module`
+  (mirrors `solution/solve.sh`'s own "never overwrite hand-authored
+  content" convention, §8.2 point 8) — write the real file into the
+  generated task directory once, by hand, and `make gen` will never
+  clobber it again.
+- `agent_role_name` / `concurrency_mode` (both optional, default `null`):
+  spec-driven overrides for what used to be two hardcoded literals in
+  `generator/gen.py::build_task_toml` (`agent_role_name =
+  "QALocalInvocationApplicationRole"`, `[concurrency] mode = "read-only"`).
+  `null` (every pre-Slice-G spec) reproduces those old hardcoded values
+  byte-for-byte. `concurrency_mode: "mutating"` is what actually triggers
+  aws-bench's own post-trial scenario-account reset
+  (`aws_bench/task/aws_trial.py`'s `ConcurrencyMode.MUTATING` handling,
+  outside this repo) — required for any scenario whose agent phase performs
+  real AWS mutations, or the deployed/modified resources are never reset
+  between trials. `agent_role_name` must name a role capable of the
+  mutations the scenario's instruction asks for; `apigw-redeploy` uses the
+  existing `QALocalInvocationApplicationAdmin` role (a real, logged
+  over-grant — no minimally-scoped deploy role exists yet, see
+  `docs/slice-g-recon.md` §1 and `DECISIONS.md` "Amendment 12").
+- Regardless of `enabled`, a live check's result **never gates
+  `/logs/verifier/reward.txt`** (§8's Phase-2 forward-compat note, point 4
+  below) — written instead to a separate
+  `/logs/verifier/live_check-result.json` for out-of-band analysis, even
+  once genuinely exercised. This is the one thing Slice G's `enabled: true`
+  spec does NOT change: `apigw-redeploy`'s `tests/live_check.py` is real
+  and runs for real, but is still observational only when invoked by the
+  generated `tests/test.sh` (its `--expect {ok,stale}` CLI, used directly
+  by `solution/solve.sh`/`solution/broken/*/solve.sh`, is a SEPARATE,
+  genuinely gating call shape — see that module's own docstring).
 
 ---
 
@@ -800,8 +869,10 @@ tasks/<scenario-id>/
                 ...                # unmodified except lib/scenario-stack.ts (added/overwritten)
                                     # and bin/app.ts (import + instantiation rewritten once)
         tests/
-            test.sh                # thin wrapper: exec static_tiers.sh; if $CDKTN_BENCH_LIVE_CHECK=1
-                                    # and live_check.py exists, also run it (informational only, §5)
+            test.sh                # thin wrapper: exec static_tiers.sh; if $SPEC_LIVE_CHECK_ENABLED=true
+                                    # (from this task's own [verifier] env, i.e. verifier.live_check.enabled
+                                    # is true for this spec) and live_check.py exists, also run it
+                                    # (informational only, §5)
             static_tiers.sh        # generated per arm: build_command -> synth_command ->
                                     # structural_asserts (tier "0") -> cfn-lint -> cfn-guard
                                     # (tier "1") -> writes /logs/verifier/reward.txt
@@ -884,12 +955,17 @@ if the flat grouping was actually intended.
    scenario (e.g. after an instruction wording fix) must not spuriously
    change the task's identity.
 5. `task.toml [scenario].scenario_id = "anchor"` for every v1 generated task
-   (the only scenario that exists); `agent_role_name = "QALocalInvocationApplicationRole"`
-   (read-only — no generated v1 task ever calls a mutating AWS API, since
-   `verifier.live_check.enabled` is always `false` in v1, see §5);
-   `[concurrency] mode = "read-only"` for the same reason, which is what lets
-   generated tasks run concurrently against the shared `anchor` scenario
-   without a reset cycle.
+   (the only scenario that exists); `agent_role_name` defaults to
+   `"QALocalInvocationApplicationRole"` (read-only) and `[concurrency] mode`
+   defaults to `"read-only"` — correct for every scenario whose
+   `verifier.live_check.enabled` is `false` (no generated task calls a
+   mutating AWS API, which is what lets generated tasks run concurrently
+   against the shared `anchor` scenario without a reset cycle). A spec may
+   override both via `verifier.live_check.agent_role_name`/
+   `.concurrency_mode` (§5, Slice G addition) — required for any scenario
+   whose agent phase performs real AWS mutations (`apigw-redeploy` is the
+   first: `agent_role_name = "QALocalInvocationApplicationAdmin"`,
+   `mode = "mutating"`).
 6. `pre_invoke/` is generated **iff** `instruction.placeholders` contains a
    `source: pre_invoke_random` entry — never for any other reason, in
    particular never to seed starter files into the agent's workspace (that
@@ -948,10 +1024,17 @@ a reviewer can find and override any of them in one place.
    validate it beyond syntax (it can't, per §2.2). Confirm this is
    acceptable scope now, rather than deferring the whole placeholder
    mechanism until it's actually needed.
-4. **`live_check` never gates v1 reward, even if `enabled: true` is set on
-   some future spec (§5).** This schema treats flipping `live_check.enabled`
-   as strictly additive/observational until a Phase 2 decision explicitly
-   changes the reward contract — worth confirming that's the intended
-   meaning of "leaves an optional live_check.py hook (disabled by default)
-   for later AWS-enabled runs" versus a stronger reading where enabling it
-   was meant to replace the static tiers as the reward source outright.
+4. **`live_check` never gates v1 reward, even where `enabled: true` (§5,
+   now real as of `apigw-redeploy` / `DECISIONS.md` "Amendment 12", not
+   just "some future spec").** This schema treats flipping
+   `live_check.enabled` as strictly additive/observational — confirmed,
+   not just proposed: `apigw-redeploy`'s `tests/test.sh`-invoked
+   `live_check.py` run still never writes `/logs/verifier/reward.txt`
+   (only `/logs/verifier/live_check-result.json`). The genuinely GATING use
+   of the same module is a separate call shape entirely
+   (`live_check.py --expect {ok,stale}`, invoked directly by
+   `solution/solve.sh`/`solution/broken/*/solve.sh`, never by the generated
+   `tests/test.sh`) — worth reviewing if a future spec wants the
+   verifier-invoked path itself to gate reward, since that would be the
+   "replace the static tiers as the reward source" reading this point
+   originally flagged as unconfirmed, and still is.

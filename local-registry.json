@@ -27,6 +27,18 @@
         "path": "tasks/anchor/apigw-openapi-terraconstructs"
       },
       {
+        "name": "apigw-redeploy-awscdk",
+        "path": "tasks/anchor/apigw-redeploy-awscdk"
+      },
+      {
+        "name": "apigw-redeploy-hcl-raw",
+        "path": "tasks/anchor/apigw-redeploy-hcl-raw"
+      },
+      {
+        "name": "apigw-redeploy-terraconstructs",
+        "path": "tasks/anchor/apigw-redeploy-terraconstructs"
+      },
+      {
         "name": "ecs-swappiness-awscdk",
         "path": "tasks/anchor/ecs-swappiness-awscdk"
       },
