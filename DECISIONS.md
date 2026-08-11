@@ -2249,3 +2249,34 @@ rationale for each lives inline as a dated comment at its own fix site
 `metrics/emit_fixture_rows.py`, `gates/emit_result.py`,
 `gates/tests/test_emit_result.py`, `metrics/tokens_to_green.py`,
 `metrics/test_tokens_to_green.py`, `test/test_run_bench_wrapper.py`.
+
+---
+
+## Amendment 11 (2026-08-11) — CDK comprehensive-validation scenario backlog
+
+**Decision:** do not add CDK comprehensive validation as an enabled v1 scenario
+or task solely because AWS CDK supplies a validator. The benchmark's question is
+whether authoring abstractions improve agent performance under equivalent
+intent and oracle conditions; enabling an AWS-CDK-only validator would instead
+compare unequal toolchains.
+
+The bundled post-synthesis CloudFormation validator is worth characterizing in
+the exact pinned AWS CDK arm. However, a current `aws-cdk-lib` pin does not by
+itself prove the behavior of the separately pinned CLI, the severity/fail
+semantics of the report, or the offline/credentialless operation a v1 gate
+requires. No global CDK context flags or `cdk validate` invocation are added
+by this amendment.
+
+**Online pre-deployment validation remains out of scope for v1.** AWS documents
+that layer as CloudFormation CreateStack, UpdateStack, or CreateChangeSet work
+requiring IAM permissions, target-region access, and for several checks,
+account-state read permissions. That violates the existing deployment-free,
+offline benchmark boundary even though the operation does not execute a change
+set.
+
+`docs/cdk-comprehensive-validation-backlog.md` records the required
+characterization tasks, fairness/promotion gates, and candidate common
+scenarios. A future implementation must prove exact pinned-toolchain behavior
+in every enabled arm, equivalent cfn-guard/Rego intent policies, and green plus
+isolated broken fixtures before it changes `specs/`, generated `tasks/`, or the
+train/holdout split.
