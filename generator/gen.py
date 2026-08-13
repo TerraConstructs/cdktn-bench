@@ -309,6 +309,16 @@ def awscdk_bin_app_ts(spec: Spec) -> str:
          * No `env: {{ account, region }}` on purpose -- synth-only oracle
          * tiers never need AWS credentials or environment lookups
          * (`cdk synth --no-lookups`).
+         *
+         * Standard `new cdk.App()` (default synthesizer): live `cdk deploy`
+         * uses the CDKToolkit bootstrap roles (`cdk-hnb659fds-*`, created by
+         * deploy.sh's `cdk bootstrap`). The mutation agent runs as
+         * `QALocalInvocationApplicationAdmin` (AdministratorAccess, DECISIONS.md
+         * Amendment 24), which can assume those roles -- so this is the normal,
+         * representative awscdk deploy path, deploying with the same broad
+         * authority the hcl-raw arm's terraform gets (arm parity). CloudFormation
+         * runs as the bootstrap cfn-exec-role, itself AdministratorAccess, so no
+         * arm gets more authority than the other.
          */
         const app = new cdk.App();
 

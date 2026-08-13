@@ -96,35 +96,32 @@ Every generated task's `task.toml [scenario] agent_role_name` names an IAM
 role the agent's own AWS credentials are staged from
 (`docs/slice-g-recon.md` §1 traces the exact mechanism through
 `aws_bench/task/aws_trial.py` if you need the plumbing detail — not required
-reading for this decision). Three roles exist today, all defined in
-`scenarios/anchor/scenario/cdk_app/stacks/qa_roles_stack.ts`:
+reading for this decision). Two roles exist today, both defined in
+`scenarios/anchor/scenario/cdk_app/stacks/qa_roles_stack.ts` — the same
+two-tier model aws-bench itself uses (DECISIONS.md Amendment 24):
 
 | Role | Grants | Use when |
 |---|---|---|
 | `QALocalInvocationApplicationRole` | `ReadOnlyAccess` + a handful of read-only managed policies (S3Tables, Redshift, Athena, Bedrock, a custom S3-Vectors-read policy) | The scenario's agent phase never mutates AWS — synth/plan-only, which is every scenario except `apigw-redeploy` as of this writing. This is the **default**: a spec that leaves `verifier.live_check.agent_role_name` unset (`null`) gets this role automatically (`generator/gen.py::build_task_toml`). |
-| `QADeployApplicationRole` | Full `apigateway:*`, full `lambda:*`, IAM role-lifecycle actions (`CreateRole`/`GetRole`/`Put`&`GetRolePolicy`/`Attach`&`DetachRolePolicy`/`DeleteRolePolicy`/`DeleteRole`/`TagRole`/`PassRole`) path-scoped to `arn:aws:iam::<account>:role/cdktn-bench-task/*`, plus scoped `logs:*` and `sts:GetCallerIdentity`. | The scenario's agent phase performs real, but narrow, AWS mutations — a day-2 deploy/modify/redeploy loop against a specific, small set of services. This is the **minimally-scoped middle option**, added by explicit operator authorization for `apigw-redeploy` (see `DECISIONS.md` "Adding a QADeployApplicationRole" for the authorization on record and the exact policy). |
-| `QALocalInvocationApplicationAdmin` | `AdministratorAccess` + `AmazonBedrockFullAccess` | Last resort only — a scenario whose mutations genuinely span services `QADeployApplicationRole` doesn't cover, AND extending that role (§4 below) isn't done yet or isn't warranted for a one-off. Using this role means the agent trial runs with full account admin — a real, logged over-grant every time it's chosen. |
+| `QALocalInvocationApplicationAdmin` | `AdministratorAccess` + `AmazonBedrockFullAccess` | The scenario's agent phase performs **any** real AWS mutation (a live deploy/apply loop). Broad by design — this is deliberate, not a fallback. |
 
-**The rule: pick the least-privileged role that lets the scenario run.**
-Concretely:
+**The rule: read-only scenarios get the read-only role; mutating scenarios
+get the admin role.** There is intentionally **no** per-scenario least-privilege
+deploy role — that was tried (`QADeployApplicationRole`) and retired in
+Amendment 24, because a too-tight deploy role (a) turns *harness* permission
+gaps into fake *agent* failures and (b) breaks arm parity (one arm's deploy
+mechanism silently getting more authority than another's). Concretely:
 
 1. Does the scenario's agent phase ever call a mutating AWS API? If no,
    leave `agent_role_name` unset (`null`) — you get
    `QALocalInvocationApplicationRole` for free and don't need to read
    further.
-2. If yes, does `QADeployApplicationRole`'s current grant (apigateway,
-   lambda, path-scoped IAM role CRUD, scoped logs, `sts:GetCallerIdentity`)
-   cover every mutating call the scenario's reference solutions actually
-   make? If yes, set `agent_role_name: "QADeployApplicationRole"`.
-3. If the scenario needs a service or action `QADeployApplicationRole`
-   doesn't grant, do **not** fall back to
-   `QALocalInvocationApplicationAdmin` by default — go to §4
-   ("extending the roles") first. Only use
-   `QALocalInvocationApplicationAdmin` if extending is genuinely not
-   warranted (e.g. a true one-off exploratory scenario never intended to
-   stay in the benchmark long-term) and say so explicitly in the spec's own
-   `provenance` notes or a `DECISIONS.md` entry — this is a real,
-   deliberate over-grant, not a shortcut to take silently.
+2. If yes, set `agent_role_name: "QALocalInvocationApplicationAdmin"`. Both
+   arms then deploy with identical (admin) authority, so a deploy failure is
+   unambiguously the agent's. Safety comes from the disposable, reset,
+   SCP-guarded account (region-restriction + role-protection SCPs), **not**
+   from narrowing this role. Do **not** reintroduce a bespoke scoped deploy
+   role per scenario.
 
 ---
 

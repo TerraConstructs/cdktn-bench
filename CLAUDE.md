@@ -37,9 +37,14 @@ for the append-only amendment log (the pre-registration discipline), and
   removed as redundant.
 - After changing anything under `scenarios/anchor/**`, re-run `env setup` or
   resets fail with a scenario-source-hash mismatch.
-- The `awscdk` arm's live `cdk deploy` needs `sts:AssumeRole` on the CDKToolkit
-  bootstrap roles (`cdk-hnb659fds-*`), which is **not** granted — only the task
-  path is (Amendment 19). awscdk live deploys stay blocked pending that sign-off.
+- Mutating scenarios run the agent as **`QALocalInvocationApplicationAdmin`**
+  (`AdministratorAccess`) — aws-bench's own mutation-task model (Amendment 24).
+  Both arms deploy with equal (admin) authority: hcl-raw via terraform, awscdk
+  via the standard `cdk deploy` bootstrap path (admin can assume `cdk-hnb659fds-*`).
+  Safety is the disposable account + region/role-protection SCPs + reset, not
+  narrow IAM. The old bespoke `QADeployApplicationRole` is retired; do **not**
+  reintroduce a per-scenario scoped deploy role (it causes fake agent failures
+  and breaks arm parity — see Amendment 24).
 
 ## Never
 

@@ -9,7 +9,7 @@ keywords = []
 # --- aws-bench extension --- which scenario this task uses
 [scenario]
 scenario_id = "anchor"
-agent_role_name = "QADeployApplicationRole"
+agent_role_name = "QALocalInvocationApplicationAdmin"
 
 [concurrency]
 # MUTATING: this scenario's agent phase performs real AWS deploys

@@ -4799,3 +4799,112 @@ remains the intended censoring budget; `--max-turns` is a runaway backstop.
 **Pre-registration status:** this refines the operationalization of §4's budget
 cap (turns ≠ cycles), it does not change the *metric*. The censoring discipline
 (never drop a capped run; pair with success-rate) is unchanged.
+
+---
+
+## Amendment 23 (2026-08-13) — first live green + tokens-to-green denominator = output tokens
+
+**Result (first uncensored live trial).** `apigw-redeploy-hcl-raw`, claude-code /
+claude-sonnet-5, 100-turn backstop, no `MAX_TOKENS` (pilot = deliberately
+token-uncensored to discover where trajectories land). **reward 1.0**,
+`subtype=success`, `num_turns=49`, agent wall 841s, output 45,535 tok, cache-read
+3.62M, fresh input 98, billed $2.28. `live_check` behavioral & passing: the
+modified stage served `{"routes":3,"status":"ok"}` and `/hello`+`/version` showed
+no regression; account reset to baseline cleanly afterward. The full
+apply→modify→re-apply→verify loop works end-to-end on a real agent trajectory.
+This supersedes the earlier 8-turn censored run (Amdt 22) — that was a config
+bug, not a measurement.
+
+**Operator decision (2026-08-13).** The headline **tokens-to-green denominator is
+OUTPUT TOKENS** — the agent's authoring effort, which is what the abstraction
+thesis is about (how much infra code must be written/rewritten to reach green).
+Billed `cost_usd` is reported alongside as the cost-of-ownership figure.
+`MAX_TOKENS` (the real censoring budget) censors on **output tokens**.
+
+**Why not total/cache-read.** Cache-read (3.62M here, ~80x output) is dominated
+by system-prompt + growing-context replay each turn — it scales with *turn count*
+(interaction length), not authoring skill, and would flatter whichever arm gets a
+shorter harness prompt. Counting it would conflate "verbose loop" with
+"inefficient authoring" and corrupt the cross-arm comparison.
+
+**Turn-budget evidence.** `num_turns=49` — the 100 cap did not bind; the agent
+converged on its own. 49 sits too close to a 50 cap to trim safely on one sample;
+keep 100 for live scenarios until several runs show the spread (per CLAUDE.md
+monitor-and-trim). `MAX_TOKENS` still to be pilot-set from output-token
+distributions once we have them for both arms.
+
+**Pre-registration status:** fixes the operationalization of §3's tokens-to-green
+metric (which token count) — a clarification the pre-reg left open. Success-rate
+pairing and censoring discipline unchanged.
+
+---
+
+## Amendment 24 (2026-08-13) — adopt aws-bench's IAM model; retire QADeployApplicationRole
+
+**Operator decision (2026-08-13).** After reading how aws-bench itself handles
+deploy permissions, adopt its model verbatim: mutating scenarios run the agent
+as **`QALocalInvocationApplicationAdmin` (AdministratorAccess)** — broad power in
+a disposable, SCP-guarded account — instead of a bespoke, minimally-scoped
+deploy role. The operator's framing: "throwaway account that gets reset and has
+a region-restricted SCP … building multiple scenarios will churn IAM policies
+rather than focus on benchmarking."
+
+**Evidence (Sonnet exploration of `../aws-bench` + `../aws-bench-datasets`).**
+aws-bench's model is unambiguously **broad-power-in-disposable-account**:
+- Deploy/reset/cleanup always run as `OrganizationAccountAccessRole` (org-admin);
+  a dedicated `cfn-service-execution` role is given `AdministratorAccess` outright
+  (`provisioning.py:589-626`).
+- The agent's own identity for **mutation tasks is `QALocalInvocationApplicationAdmin`
+  = `AdministratorAccess`** (35 tasks); read/introspection tasks get a
+  ReadOnly-ish role (99 tasks). No task in 134 defines a hand-scoped per-resource
+  policy. No `PermissionsBoundary` anywhere.
+- Safety is **disposable one-account-per-scenario + a region-restriction SCP + a
+  role-protection SCP (guards the framework's own admin roles) + reset/
+  contamination gating** — not least-privilege IAM.
+
+**Why this is correct here, not just convenient.** Two hazards a scoped deploy
+role creates, both removed by a shared admin role:
+1. **Measurement validity.** A too-tight deploy role turns *harness* permission
+   gaps into fake *agent* failures (`AccessDenied` looks identical to the agent
+   failing). Broad power makes a deploy failure genuinely the agent's.
+2. **Arm parity.** With the scoped role, hcl-raw's terraform deployed under the
+   scoped role while awscdk's default synthesizer routed CloudFormation through
+   the `AdministratorAccess` bootstrap `cfn-exec-role` — the awscdk arm silently
+   had *more* deploy authority. A shared admin role gives both arms identical
+   authority; a deploy failure means the same thing in both. (This retired an
+   in-progress `CliCredentialsStackSynthesizer` workaround — see below.)
+
+**Safety gate verified before adoption (2026-08-13).** Both SCPs confirmed
+present and genuine on the OU/account via org-admin read:
+- `awsbench-region-restrict-anchor` (p-jupkf61a) on account `886312446417`.
+- `awsbench-protect-org-access-role` (p-qyvay65z) on OU `cdktn-anchor`
+  (ou-4rnb-at85dguq) — `Deny` on `iam:DeleteRole/UpdateRole/PutRolePolicy/
+  AttachRolePolicy/DetachRolePolicy/DeleteRolePolicy/UpdateAssumeRolePolicy`
+  against `OrganizationAccountAccessRole` and `cfn-service-execution`, for every
+  principal except `OrganizationAccountAccessRole` itself. So even as admin the
+  agent cannot break the reset path.
+
+**Changes.**
+- `scenarios/anchor/scenario/cdk_app/stacks/qa_roles_stack.ts`: removed
+  `QADeployApplicationRole` + `QADeployApplicationPolicy` (and with them
+  Amendment 19's scoped `sts:AssumeRole` — subsumed by admin). Kept
+  `QALocalInvocationApplicationRole` (read) and `QALocalInvocationApplicationAdmin`
+  (admin). Synth verified: exactly those two roles, `QADeploy*` gone.
+- `specs/apigw-redeploy.yaml`: `agent_role_name` → `QALocalInvocationApplicationAdmin`;
+  rationale block rewritten; the stale "NOT YET TRIAL-RUNNABLE" caveat removed
+  (first live green already on record, Amdt 23).
+- `generator/gen.py`: **reverted** the Amendment-23-turn `CliCredentialsStackSynthesizer`
+  edit — awscdk `bin/app.ts` is back to the standard `new cdk.App()` bootstrap
+  path, which under admin is both simpler and how real awscdk users deploy.
+- Regenerated all tasks. apigw-redeploy (all 3 arms) now assume the admin role;
+  read-only scenarios unchanged. awscdk offline static proof still passes
+  (salted Deployment id changes; static tier intact).
+
+**Supersedes.** Amendment 19 (scoped `sts:AssumeRole`) — subsumed. The
+apigw-redeploy CliCredentials note recorded mid-Amdt-23 — reverted. `QADeployApplicationRole`
+is retired everywhere except stale *comments* in hand-authored reference
+`solve.sh` files (answer-key only, never agent-visible; cosmetic sweep pending).
+
+**Pre-registration status:** operationalization of the live-sandbox permission
+model. The equipping-hash and integrity gates are unchanged; the deploy identity
+is harness plumbing, not part of what is measured.

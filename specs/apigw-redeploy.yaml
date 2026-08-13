@@ -350,7 +350,7 @@ verifier:
     enabled: true
     module: "tests/live_check.py"
     hand_authored: true
-    agent_role_name: "QADeployApplicationRole"
+    agent_role_name: "QALocalInvocationApplicationAdmin"
     concurrency_mode: "mutating"
     # GATING (fix-round-3, DECISIONS.md Slice G amendment): live is the
     # ONLY signal that can ever catch triggers-incomplete-hash (a
@@ -359,54 +359,33 @@ verifier:
     # THIS scenario would mean the catch this whole scenario exists to
     # motivate can never actually cost a real trial any reward.
     #
-    # ROLE UPDATE (DECISIONS.md "Adding a QADeployApplicationRole"
-    # amendment): agent_role_name (above) was
-    # "QALocalInvocationApplicationAdmin" (full AdministratorAccess, a
-    # logged over-grant) through Amendments 12-15. The operator has now
-    # explicitly authorized and this repo has created a minimally-scoped
-    # QADeployApplicationRole (scenarios/anchor/scenario/cdk_app/stacks/
-    # qa_roles_stack.ts) -- full apigateway:*/lambda:*, IAM role-lifecycle
-    # path-scoped to /cdktn-bench-task/, scoped logs -- and this field now
-    # names it. This closed the composed-consequence gap the paragraph
-    # below originally described for the role side.
+    # DEPLOY IDENTITY (DECISIONS.md Amendment 24, 2026-08-13). This is a
+    # mutating scenario, so the agent runs as
+    # `QALocalInvocationApplicationAdmin` (AdministratorAccess) -- exactly
+    # how aws-bench runs its own mutation tasks. Reading aws-bench's IAM
+    # story confirmed its model is BROAD power in a DISPOSABLE, SCP-guarded
+    # account, not per-scenario least-privilege. The earlier bespoke,
+    # minimally-scoped `QADeployApplicationRole` (apigateway/lambda/
+    # path-scoped-iam/logs, + Amendment 19's scoped sts:AssumeRole) is
+    # RETIRED: it deviated from the platform and created two hazards -- (1)
+    # a too-tight deploy role turns harness permission gaps into fake AGENT
+    # failures, and (2) it broke arm parity (Terraform on the scoped role
+    # vs CDK's default synthesizer routing CloudFormation through the
+    # AdministratorAccess bootstrap cfn-exec-role). Admin on a shared role
+    # gives BOTH arms identical deploy authority, so a deploy failure means
+    # the same thing in both. Safety is the disposable account + the
+    # region-restriction and role-protection SCPs (both verified present
+    # 2026-08-13) + reset, not narrow IAM. The path-/cdktn-bench-task/
+    # pinning the reference solutions carry is now moot (admin needs no
+    # path scope) but harmless, so it is left in place.
     #
-    # IAM PATH-PREFIX GAP: CLOSED (2026-08-13). All three arms' reference
-    # solutions (solution/solve.sh) and hcl_raw's two LIVE-capable negative
-    # fixtures (solution/broken/{stale-deployment-no-triggers,
-    # triggers-incomplete-hash}/solve.sh) now create their Lambda execution
-    # role(s) under path /cdktn-bench-task/ -- an explicit iam.Role (with
-    # role: passed to each lambda.Function/compute.LambdaFunction) on
-    # awscdk/terraconstructs, an explicit `path` attribute on hcl_raw's
-    # aws_iam_role.lambda_exec -- matching QADeployApplicationRole's
-    # IamRoleLifecycleScoped/IamPassRoleScoped scope. instruction.shared_body
-    # above now also tells the agent this path constraint explicitly (a
-    # neutral environment fact, not a hint about the redeploy catch), so
-    # this is consistent across arms. The OFFLINE-only
-    # deployment-missing-integration-dependency fixtures on awscdk/
-    # terraconstructs were left as-is (never LIVE-deployed, per their own
-    # header comments, so the default-path role they still auto-create via
-    # plain lambda.Function/LambdaFunction usage can never AccessDeny in
-    # practice). qa_roles_stack.ts's own "KNOWN GAP" comment on
-    # IamRoleLifecycleScoped updated to match.
-    #
-    # Still open: `aws-bench env setup` must be re-run against the target
-    # account to actually deploy QADeployApplicationRole live before any
-    # trial can assume it for real -- not done this round (code only, no
-    # AWS calls, per this round's own boundary; see DECISIONS.md).
-    #
-    # COMPOSED CONSEQUENCE (fix-round-4, DECISIONS.md Amendment 15 finding
-    # 4 -- read that section for the full original reasoning, now partially
-    # superseded by the two paragraphs above): gating: true is fail-closed
-    # on anything but a live_check.py outcome of "pass". Until the role
-    # exists in the live account (env setup re-run -- the IAM-path gap
-    # above is now closed), NO agent credential set this scenario grants
-    # can perform the real deploy the gating check requires, so EVERY real
-    # apigw-redeploy trial on EVERY arm scores 0.0, including a perfect
-    # solution. This is a deliberate, coherent choice (fail closed rather
-    # than silently score on statics alone while the scenario is genuinely
-    # unrunnable) -- not a bug -- but it means this scenario is NOT YET
-    # TRIAL-RUNNABLE and must not be folded into an aggregate reward
-    # computed from real trials before the remaining gap closes.
+    # gating: true is fail-closed on anything but a live_check.py outcome
+    # of "pass". The deploy identity (QALocalInvocationApplicationAdmin)
+    # already exists in the live account, so this scenario IS trial-runnable
+    # -- the first live green (hcl-raw, reward 1.0) is on record (Amdt 23).
+    # After changing qa_roles_stack.ts (retiring QADeployApplicationRole),
+    # re-run `aws-bench env setup` before the next trial so the role set in
+    # the account matches this source.
     gating: true
 
 provenance:
