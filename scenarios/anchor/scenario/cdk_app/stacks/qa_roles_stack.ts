@@ -217,18 +217,33 @@ export class QARolesStack extends Stack {
                     actions: ['sts:GetCallerIdentity'],
                     resources: ['*'],
                 }),
+                new PolicyStatement({
+                    // Operator-authorized 2026-08-13 (DECISIONS.md Amendment
+                    // 19): assume task-created roles under /cdktn-bench-task/
+                    // so a trial's deployer role can be assumed in-trial
+                    // (e.g. apigw-redeploy's live apply). Scoped to the same
+                    // task path as CreateRole/PassRole above -- it can never
+                    // assume the bootstrap or QA roles (those live at other
+                    // paths). Without this the deployer role is unusable and
+                    // the first live apigw-redeploy run stays blocked.
+                    sid: 'StsAssumeTaskRolesScoped',
+                    effect: Effect.ALLOW,
+                    actions: ['sts:AssumeRole'],
+                    resources: [`arn:aws:iam::${accountId}:role/cdktn-bench-task/*`],
+                }),
             ],
         });
 
-        // NOT GRANTED, deliberately: `sts:AssumeRole` on the CDKToolkit
+        // STILL NOT GRANTED, deliberately: `sts:AssumeRole` on the CDKToolkit
         // bootstrap's `cdk-hnb659fds-{cfn-exec,deploy}-role-*` (needed for
         // the awscdk arm's `cdk deploy` to actually execute against the
         // bootstrapped account -- docs/slice-g-recon.md §1's open question,
-        // repeated by the superseded proposal's own table). The operator's
-        // authorization on record (DECISIONS.md) does not name this action;
-        // adding it needs its own explicit sign-off, same as this role
-        // itself did -- follow docs/adding-scenarios.md's role-extension
-        // procedure rather than silently widening this policy.
+        // repeated by the superseded proposal's own table). Amendment 19
+        // authorized AssumeRole ONLY on the /cdktn-bench-task/* path (added
+        // above); the bootstrap roles live at path `/` and remain out of
+        // scope. Widening to them needs its own explicit sign-off -- follow
+        // docs/adding-scenarios.md's role-extension procedure rather than
+        // silently widening this policy.
         this.deployRole = new Role(this, 'QADeployApplicationRole', {
             roleName: 'QADeployApplicationRole',
             assumedBy: new AccountPrincipal(accountId),

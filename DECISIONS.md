@@ -4720,3 +4720,26 @@ scenario-stack.ts` (see above). **Files NOT modified:** everything under
 unchanged from Amendment 19), `oracles/cfn-guard/iam-e2e-role/policy.guard`,
 `oracles/iam-e2e-role/intent.md`, `tasks/anchor/iam-e2e-role-hcl-raw/
 solution/*` (the floor arm, deliberately untouched).
+
+---
+
+## Amendment 19 (2026-08-13) — QADeployApplicationRole: sts:AssumeRole on the task path
+
+**Operator authorization (verbatim, 2026-08-13):** "I authorize sts:AssumeRole
+addition to QADeployApplicationRole. One statement: sts:AssumeRole scoped to
+role/cdktn-bench-task/*. Without it the deployer role can't be assumed in-trial,
+so the first live apigw-redeploy run stays blocked."
+
+**Implemented:** one `PolicyStatement` (sid `StsAssumeTaskRolesScoped`) added to
+`QADeployApplicationPolicy` in `scenarios/anchor/scenario/cdk_app/stacks/qa_roles_stack.ts`
+— `Allow sts:AssumeRole` on `arn:aws:iam::<account>:role/cdktn-bench-task/*` only,
+the same path CreateRole/PassRole are scoped to.
+
+**Still out of scope (unchanged):** `sts:AssumeRole` on the CDKToolkit bootstrap
+roles (`cdk-hnb659fds-*`, path `/`) — needed for the awscdk arm's `cdk deploy`
+to execute — is NOT covered by this authorization and remains withheld pending
+its own sign-off.
+
+**Consequence:** requires `aws-bench env setup` to redeploy `QARolesStack` before
+the change takes effect in the account (also mandatory anyway after the reset.sh
+removal + role changes changed the scenario source hash — see Amendment 18).
