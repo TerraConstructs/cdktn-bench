@@ -1,61 +1,21 @@
 #!/usr/bin/env bash
-# Reference solution -- HAND-AUTHORED (SCHEMA.md §8.2 point 8). Writes an
-# oracle-CORRECT lib/scenario-stack.ts, then runs the same
-# tests/static_tiers.sh a real trial's verifier runs. Regenerating this
-# scenario will NOT overwrite this file (destructive-safe rule).
+# Deliberately-BAD reference solution -- HAND-AUTHORED (SCHEMA.md §8.2
+# point 8), negative fixture for the missing-tag-on-create catch.
+# Identical to solution/solve.sh's own reference lib/scenario-stack.ts
+# EXCEPT for the one change described below -- isolates this fixture to
+# ONLY this catch. The WORKLOAD role (and its genuinely grantXxx()-
+# derived KMS decrypt permission) is entirely UNCHANGED from the
+# reference -- this is a DEPLOYER-side defect, and the deployer role is
+# 100% hand-authored on every arm regardless of this rework.
 #
-# v2 REWORK (this revision) -- makes the grantXxx-derivation contrast this
-# scenario exists to measure real, not aspirational, ON THIS ARM TOO, with
-# ONE genuine, VERIFIED per-arm limit kept honest rather than papered over
-# (full record in DECISIONS.md's iam-e2e-role grantXxx-rework amendment):
-#
-#   - The DEPLOYER role is UNCHANGED from v1 -- 100% hand-authored, same as
-#     awscdk/hcl_raw, for the same reason (no library derives a deployment
-#     role's permissions).
-#   - The WORKLOAD role's KMS decrypt permission IS genuinely grantXxx()-
-#     derived here: `encryption.Key.fromKeyArn(...).grantDecrypt(role)`.
-#     Verified directly (real `cdktn synth` + real `terraform plan` against
-#     this exact construct, offline, this pass): importing a Key by ARN
-#     touches NO Terraform resource or data source at all -- pure
-#     client-side ARN-string handling -- so this is fully offline-plan-safe.
-#   - UNLIKE awscdk, the WORKLOAD role's SSM read actions for the
-#     SecureString parameter are NOT derived here via
-#     `storage.StringParameter.fromSecureStringParameterAttributes(...)
-#     .grantRead()`, even though that call exists and is API-identical to
-#     aws-cdk-lib's (verified in terraconstructs@0.2.13
-#     lib/aws/storage/parameter.js:66-80). REASON, VERIFIED DIRECTLY (real
-#     `cdktn synth` + real `terraform plan`, this pass): EVERY
-#     `storage.StringParameter.from*()` factory in terraconstructs@0.2.13
-#     unconditionally constructs a REAL Terraform `data "aws_ssm_parameter"`
-#     data source (parameter.js's fromStringParameterAttributes /
-#     fromStringParameterArn / fromSecureStringParameterAttributes all do
-#     this, even though nothing here ever reads the resulting `.stringValue`
-#     -- only `.grantRead()`). Terraform evaluates data sources during
-#     `plan` itself, not just `apply` -- unlike CloudFormation's lazy
-#     CfnDynamicReference/template-Parameter equivalents that aws-cdk-lib's
-#     own factories use, which resolve only at real deploy time. Concretely:
-#     `terraform plan` against exactly this construct fails OFFLINE with
-#     `UnrecognizedClientException: The security token included in the
-#     request is invalid` on the resulting data source, because this
-#     scenario's offline static tier mocks only STS (mock-sts.js), never
-#     SSM. So on THIS arm, the SecureString parameter's own SSM read
-#     actions stay hand-authored (grouped with the plain "config"
-#     parameter's, below) even though the KMS decrypt half of that same
-#     permission genuinely is library-derived. This is a real, asymmetric
-#     per-arm constraint on which HALF of one workload permission
-#     construct-arms can derive for real -- not an oversight, and not tuned
-#     to make either arm look better than the evidence supports.
-#
-# Verified directly at authoring time: `npx cdktn synth` succeeds, and a
-# real `terraform init && terraform plan` against the synthesized stack
-# (with this arm's own mock-sts.js started around it, exactly as
-# tests/static_tiers.sh does) succeeds fully offline; tests/static_tiers.sh
-# against the resulting plan.json reports tier0_pass=1, tier1_status=PASS
-# (rego), reward=1.0.
-#
-# Like the hcl_raw reference's own header note: this only proves the
-# STATIC half of this scenario's oracle. The LIVE half is unproven by this
-# script -- see DECISIONS.md's iam-e2e-role amendment.
+# THE MISTAKE: the deployer's InstanceProfileLifecycle statement grants
+# iam:CreateInstanceProfile but not iam:TagInstanceProfile -- and
+# module/main.tf's own provider default_tags block means the module's
+# CreateInstanceProfile call carries tags, which silently ALSO requires
+# iam:TagInstanceProfile. This pairing never appears as two separate
+# CloudTrail events; it has to be reasoned about, not observed. Every
+# static tier PASSES this policy identically to the reference. Confirmed
+# via an inline offline IAM evaluator reproducing this exact gap.
 set -euo pipefail
 
 cat > lib/scenario-stack.ts <<'TS'
@@ -138,7 +98,6 @@ export class ScenarioStack extends AwsStack {
               "iam:GetInstanceProfile",
               "iam:AddRoleToInstanceProfile",
               "iam:RemoveRoleFromInstanceProfile",
-              "iam:TagInstanceProfile",
               "iam:UntagInstanceProfile",
               "iam:ListInstanceProfilesForRole",
               "iam:GetRole",
@@ -284,5 +243,63 @@ export class ScenarioStack extends AwsStack {
   }
 }
 TS
+
+python3 - <<'PYCHECK'
+import fnmatch, json
+
+def as_list(x):
+    return x if isinstance(x, list) else [x]
+
+def action_matches(granted, requested):
+    return fnmatch.fnmatchcase(requested.lower(), granted.lower())
+
+def resource_matches(granted, requested):
+    return granted == "*" or fnmatch.fnmatchcase(requested, granted)
+
+def condition_matches(condition, context):
+    if not condition:
+        return True
+    for op, kv in condition.items():
+        for key, expected in kv.items():
+            actual = context.get(key)
+            expected_list = as_list(expected)
+            if op == "StringEquals":
+                if actual not in expected_list:
+                    return False
+            else:
+                return False
+    return True
+
+def evaluate(statements, action, resource, context=None):
+    context = context or {}
+    decision = False
+    for stmt in statements:
+        if not any(action_matches(a, action) for a in as_list(stmt["Action"])):
+            continue
+        if not any(resource_matches(r, resource) for r in as_list(stmt["Resource"])):
+            continue
+        if not condition_matches(stmt.get("Condition"), context):
+            continue
+        if stmt["Effect"] == "Deny":
+            return False
+        if stmt["Effect"] == "Allow":
+            decision = True
+    return decision
+
+STATEMENTS = [{'Action': ['iam:CreateInstanceProfile', 'iam:DeleteInstanceProfile', 'iam:GetInstanceProfile', 'iam:AddRoleToInstanceProfile', 'iam:RemoveRoleFromInstanceProfile', 'iam:UntagInstanceProfile', 'iam:ListInstanceProfilesForRole', 'iam:GetRole', 'iam:ListRoleTags'], 'Effect': 'Allow', 'Resource': ['arn:aws:iam::123456789012:instance-profile/cdktn-bench-iam-e2e-role-workload-profile', 'arn:aws:iam::123456789012:role/cdktn-bench-task/iam-e2e-role-workload']}]
+CHECKS = [['iam:CreateInstanceProfile', 'arn:aws:iam::123456789012:instance-profile/cdktn-bench-iam-e2e-role-workload-profile', {}, True, 'the create call itself is still granted'], ['iam:TagInstanceProfile', 'arn:aws:iam::123456789012:instance-profile/cdktn-bench-iam-e2e-role-workload-profile', {}, False, 'THE GAP: default_tags makes CreateInstanceProfile ALSO require this, silently']]
+all_ok = True
+for action, resource, context, expect_allowed, label in CHECKS:
+    got = evaluate(STATEMENTS, action, resource, context)
+    status = "ALLOW" if got else "DENY"
+    print(f"  mini-iam-sim: {action} on {resource} (ctx={context}) -> {status}  [{label}]")
+    if got != expect_allowed:
+        all_ok = False
+        print(f"    UNEXPECTED: wanted {'ALLOW' if expect_allowed else 'DENY'}")
+
+if not all_ok:
+    raise SystemExit("mini-iam-sim: the fixture's policy did not reproduce the expected gap -- see output above")
+print("CDKTN_BENCH_LIVE_ONLY_CONFIRMED: offline policy-evaluator run above mechanically confirms the exact gap this fixture demonstrates -- every static tier passes this policy identically to the reference, only real IAM evaluation (or this scoped-down offline reimplementation of it, see oracles/lib/mini_iam_sim.py's design) tells them apart.")
+PYCHECK
 
 bash tests/static_tiers.sh

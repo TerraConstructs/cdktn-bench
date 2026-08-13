@@ -1,61 +1,16 @@
 #!/usr/bin/env bash
-# Reference solution -- HAND-AUTHORED (SCHEMA.md §8.2 point 8). Writes an
-# oracle-CORRECT lib/scenario-stack.ts, then runs the same
-# tests/static_tiers.sh a real trial's verifier runs. Regenerating this
-# scenario will NOT overwrite this file (destructive-safe rule).
+# Deliberately-BAD reference solution -- HAND-AUTHORED (SCHEMA.md §8.2
+# point 8), negative fixture for the trust-policy-unconditional catch.
+# Identical to solution/solve.sh's own reference lib/scenario-stack.ts
+# EXCEPT for the one change described below -- isolates this fixture to
+# ONLY this catch.
 #
-# v2 REWORK (this revision) -- makes the grantXxx-derivation contrast this
-# scenario exists to measure real, not aspirational, ON THIS ARM TOO, with
-# ONE genuine, VERIFIED per-arm limit kept honest rather than papered over
-# (full record in DECISIONS.md's iam-e2e-role grantXxx-rework amendment):
-#
-#   - The DEPLOYER role is UNCHANGED from v1 -- 100% hand-authored, same as
-#     awscdk/hcl_raw, for the same reason (no library derives a deployment
-#     role's permissions).
-#   - The WORKLOAD role's KMS decrypt permission IS genuinely grantXxx()-
-#     derived here: `encryption.Key.fromKeyArn(...).grantDecrypt(role)`.
-#     Verified directly (real `cdktn synth` + real `terraform plan` against
-#     this exact construct, offline, this pass): importing a Key by ARN
-#     touches NO Terraform resource or data source at all -- pure
-#     client-side ARN-string handling -- so this is fully offline-plan-safe.
-#   - UNLIKE awscdk, the WORKLOAD role's SSM read actions for the
-#     SecureString parameter are NOT derived here via
-#     `storage.StringParameter.fromSecureStringParameterAttributes(...)
-#     .grantRead()`, even though that call exists and is API-identical to
-#     aws-cdk-lib's (verified in terraconstructs@0.2.13
-#     lib/aws/storage/parameter.js:66-80). REASON, VERIFIED DIRECTLY (real
-#     `cdktn synth` + real `terraform plan`, this pass): EVERY
-#     `storage.StringParameter.from*()` factory in terraconstructs@0.2.13
-#     unconditionally constructs a REAL Terraform `data "aws_ssm_parameter"`
-#     data source (parameter.js's fromStringParameterAttributes /
-#     fromStringParameterArn / fromSecureStringParameterAttributes all do
-#     this, even though nothing here ever reads the resulting `.stringValue`
-#     -- only `.grantRead()`). Terraform evaluates data sources during
-#     `plan` itself, not just `apply` -- unlike CloudFormation's lazy
-#     CfnDynamicReference/template-Parameter equivalents that aws-cdk-lib's
-#     own factories use, which resolve only at real deploy time. Concretely:
-#     `terraform plan` against exactly this construct fails OFFLINE with
-#     `UnrecognizedClientException: The security token included in the
-#     request is invalid` on the resulting data source, because this
-#     scenario's offline static tier mocks only STS (mock-sts.js), never
-#     SSM. So on THIS arm, the SecureString parameter's own SSM read
-#     actions stay hand-authored (grouped with the plain "config"
-#     parameter's, below) even though the KMS decrypt half of that same
-#     permission genuinely is library-derived. This is a real, asymmetric
-#     per-arm constraint on which HALF of one workload permission
-#     construct-arms can derive for real -- not an oversight, and not tuned
-#     to make either arm look better than the evidence supports.
-#
-# Verified directly at authoring time: `npx cdktn synth` succeeds, and a
-# real `terraform init && terraform plan` against the synthesized stack
-# (with this arm's own mock-sts.js started around it, exactly as
-# tests/static_tiers.sh does) succeeds fully offline; tests/static_tiers.sh
-# against the resulting plan.json reports tier0_pass=1, tier1_status=PASS
-# (rego), reward=1.0.
-#
-# Like the hcl_raw reference's own header note: this only proves the
-# STATIC half of this scenario's oracle. The LIVE half is unproven by this
-# script -- see DECISIONS.md's iam-e2e-role amendment.
+# THE MISTAKE: both roles' account-root-trusting principal drops
+# .withConditions(...) entirely -- any principal in this AWS account
+# (not just the intended test harness) could assume either role, with
+# no shared secret required. Must FAIL the tier-0
+# trust-has-external-id-condition check (which, across BOTH roles
+# combined, now finds zero Condition.StringEquals blocks at all).
 set -euo pipefail
 
 cat > lib/scenario-stack.ts <<'TS'
@@ -92,7 +47,6 @@ export class ScenarioStack extends AwsStack {
     super(scope, id, props);
 
     const accountId = this.account;
-    const externalId = "iam-e2e-role-trial-2026";
     const rolePath = "/cdktn-bench-task/";
     const instanceProfileArn = `arn:aws:iam::${accountId}:instance-profile/cdktn-bench-iam-e2e-role-workload-profile`;
     const ssmAppParamArnGlob = `arn:aws:ssm:us-east-1:${accountId}:parameter/cdktn-bench-iam-e2e-role/app/*`;
@@ -104,11 +58,7 @@ export class ScenarioStack extends AwsStack {
     const deployerRole = new iam.Role(this, "DeployerRole", {
       roleName: "iam-e2e-role-deployer",
       path: rolePath,
-      assumedBy: new iam.AccountPrincipal(accountId).withConditions({
-        test: "StringEquals",
-        variable: "sts:ExternalId",
-        values: [externalId],
-      }),
+      assumedBy: new iam.AccountPrincipal(accountId),
     });
 
     deployerRole.attachInlinePolicy(
@@ -205,11 +155,7 @@ export class ScenarioStack extends AwsStack {
       path: rolePath,
       assumedBy: new iam.CompositePrincipal(
         new iam.ServicePrincipal("ec2.amazonaws.com"),
-        new iam.AccountPrincipal(accountId).withConditions({
-          test: "StringEquals",
-          variable: "sts:ExternalId",
-          values: [externalId],
-        }),
+        new iam.AccountPrincipal(accountId),
       ),
     });
 

@@ -26,13 +26,49 @@ arms:
       load-bearing for whether the arm is eligible -- only its IAM surface is.
       storage/parameter.d.ts confirms StringParameter.fromSecureStringParameterAttributes
       (with an encryptionKey option) and IParameter.grantRead() exist, and
-      encryption/key-lookup.d.ts confirms an existing CMK can be imported by
-      alias -- both cited by docs/scenario-proposal-iam-e2e-role.md §5.9 as the
-      mechanism a future extension of this scenario's workload-role reference
-      solution could use to exercise the grantXxx-derivation contrast directly
-      in terraconstructs' own substrate, though the v1 reference solution below
-      authors the workload policy by hand on all three arms for symmetry with
-      hcl_raw (see the spec's own "arms" provenance note below for why).
+      encryption/key.d.ts confirms Key.fromKeyArn(...).grantDecrypt() exists.
+      The v2 reference solution (this revision) uses Key.fromKeyArn(...)
+      .grantDecrypt() DIRECTLY on this arm to derive the workload role's KMS
+      decrypt permission for real, not by hand -- but deliberately does NOT
+      route it through StringParameter.fromSecureStringParameterAttributes()
+      .grantRead() the way the awscdk reference does, for a real, verified
+      reason (see the next paragraph): doing so breaks this scenario's own
+      offline static tier on this arm specifically.
+      encryption/key-lookup.d.ts's alias-import path (Key.fromLookup) was
+      considered and REJECTED for this scenario specifically: it requires a
+      live AWS context-provider lookup at synth time, which this scenario's
+      offline static tier cannot satisfy (mirrors why the awscdk arm's
+      synth_command runs `--no-lookups`) -- Key.fromKeyArn() against a
+      deploy-time-supplied ARN (a TerraformVariable, offline-plan-safe; see
+      lib/scenario-stack.ts's own kms_key_arn comment) is used instead.
+
+      ONE genuine, VERIFIED (not assumed) per-arm coverage gap found while
+      building the v2 reference solution, kept honest rather than papered
+      over (also recorded in DECISIONS.md): unlike aws-cdk-lib, EVERY
+      `storage.StringParameter.from*()` factory in terraconstructs@0.2.13
+      (fromStringParameterName/fromStringParameterArn/
+      fromSecureStringParameterAttributes -- confirmed in
+      lib/aws/storage/parameter.js) unconditionally constructs a REAL
+      Terraform `data "aws_ssm_parameter"` data source, evaluated during
+      `terraform plan` itself (not deferred to apply, unlike CloudFormation's
+      lazy CfnDynamicReference/template-Parameter equivalents that
+      aws-cdk-lib's own StringParameter.from*() factories use). Verified
+      directly: a real `cdktn synth` + `terraform plan` against a
+      StringParameter-derived grantRead() call on the pre-provisioned
+      SecureString parameter fails OFFLINE with `UnrecognizedClientException:
+      The security token included in the request is invalid` on the
+      resulting data source, because this scenario's offline static tier
+      mocks only STS (mock-sts.js), never SSM. Consequence for the v2
+      reference solution: on terraconstructs, ONLY the KMS decrypt half of
+      the workload role's permissions is grantXxx()-derived
+      (`encryption.Key.fromKeyArn(...).grantDecrypt(role)`, which touches no
+      data source and is genuinely offline-plan-safe); the SSM single- and
+      path-based read actions stay hand-authored on this arm, unlike awscdk
+      where BOTH the KMS decrypt AND the SecureString parameter's own SSM
+      read actions are grantRead()-derived together from one call. This is a
+      real, asymmetric per-arm constraint on which HALF of one workload
+      permission construct-arms can derive for real -- not an oversight, and
+      not tuned to make either arm win.
 instruction:
   shared_body: |-
     Author two IAM roles for a real, live Terraform deployment in this AWS
@@ -652,18 +688,31 @@ catches:
   description: |-
     The workload role's policy can read the plain SSM parameter under the
     fixed fixture path but cannot decrypt the SecureString parameter under the
-    same path, because it never grants `kms:Decrypt` (scoped by a
-    `kms:ViaService` condition on the SSM service) on the pre-provisioned
-    customer-managed key. Every static tier -- including the tier-1 checks
-    above -- passes this policy identically to a fully correct one: nothing
-    about a missing KMS grant is visible from the policy's own shape, only
-    from actually trying to read the encrypted value.
+    same path, because it never grants `kms:Decrypt` on the pre-provisioned
+    customer-managed key -- either scoped by a `kms:ViaService` condition on
+    the SSM service (the hcl_raw reference's own shape, since it has no way
+    to look up the real key ARN) or scoped directly to the key's own real ARN
+    (the awscdk/terraconstructs reference shape, via
+    `Key.fromKeyArn(...).grantDecrypt()`) -- either is a correct grant; this
+    catch is about the grant being ABSENT, not about which of the two
+    correct shapes was used. Reachable on every arm, by a mechanism specific
+    to how each arm's reference derives the grant in the first place: on
+    hcl_raw by simply never writing the KMS statement; on awscdk by
+    importing the SecureString parameter WITHOUT setting `encryptionKey` (so
+    `parameter.grantRead()`'s own `if (this.encryptionKey) { ...grantDecrypt
+    }` cascade never fires -- see aws-cdk-lib@2.263.0
+    aws-ssm/lib/parameter.ts:203-206); on terraconstructs by never calling
+    `Key.fromKeyArn(...).grantDecrypt()` at all (this arm's reference derives
+    KMS decrypt directly, not via a SecureString parameter import -- see this
+    spec's own `arms.terraconstructs.reason` for why). Every static tier --
+    including the tier-1 checks above -- passes this policy identically to a
+    fully correct one: nothing about a missing KMS grant is visible from the
+    policy's own shape, only from actually trying to read the encrypted
+    value.
   predicted_tier_caught:
     awscdk: live
     hcl: live
     terraconstructs_override: null
-  applies_to:
-  - hcl_raw
 - name: getparametersbypath-not-granted
   taxonomy: anti-L2
   description: |-
@@ -851,6 +900,7 @@ oracle:
     - ssm:GetParameter
     - ssm:GetParameters
     - ssm:GetParametersByPath
+    - ssm:GetParameterHistory
     - ssm:DescribeParameters
     - kms:DescribeKey
     - kms:Decrypt

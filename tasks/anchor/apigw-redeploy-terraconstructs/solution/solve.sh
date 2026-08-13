@@ -46,7 +46,7 @@ write_rev1() {
 import { Construct } from "constructs";
 import { TerraformOutput } from "cdktn";
 import { AwsStack, AwsStackProps } from "terraconstructs/lib/aws";
-import { compute } from "terraconstructs/lib/aws";
+import { compute, iam } from "terraconstructs/lib/aws";
 
 export class ScenarioStack extends AwsStack {
   constructor(scope: Construct, id: string, props: AwsStackProps) {
@@ -57,9 +57,34 @@ export class ScenarioStack extends AwsStack {
       deployOptions: { stageName: "prod" },
     });
 
+    // Explicit, path-scoped execution role (Amendment 16's flagged gap):
+    // QADeployApplicationRole's IamRoleLifecycleScoped/IamPassRoleScoped
+    // statements only permit iam:CreateRole/PassRole under
+    // arn:aws:iam::<account>:role/cdktn-bench-task/* -- letting
+    // LambdaFunction's default L2 behavior auto-create an unnamed role at
+    // IAM's default path (`/`) would AccessDeny under that role. Shared by
+    // both functions, matching the other arms' single `lambda_exec` role.
+    // `iam.Role` supports `path` here identically to aws-cdk-lib (verified
+    // against terraconstructs@0.2.13's own role.d.ts). NOTE:
+    // `ManagedPolicy.fromAwsManagedPolicyName` takes (scope, id, name) here,
+    // NOT aws-cdk-lib's single-arg (name) shape -- verified against
+    // terraconstructs@0.2.13's own managed-policy.d.ts.
+    const execRole = new iam.Role(this, "LambdaExecRole", {
+      path: "/cdktn-bench-task/",
+      assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName(
+          this,
+          "LambdaBasicExecutionPolicy",
+          "service-role/AWSLambdaBasicExecutionRole",
+        ),
+      ],
+    });
+
     const helloFn = new compute.LambdaFunction(this, "HelloFn", {
       runtime: compute.Runtime.NODEJS_20_X,
       handler: "index.handler",
+      role: execRole,
       code: compute.Code.fromInline(
         "exports.handler = async () => ({ statusCode: 200, body: 'hello' });",
       ),
@@ -67,6 +92,7 @@ export class ScenarioStack extends AwsStack {
     const versionFn = new compute.LambdaFunction(this, "VersionFn", {
       runtime: compute.Runtime.NODEJS_20_X,
       handler: "index.handler",
+      role: execRole,
       code: compute.Code.fromInline(
         "exports.handler = async () => ({ statusCode: 200, body: JSON.stringify({ version: '1.0.0' }) });",
       ),
@@ -90,7 +116,7 @@ write_rev2() {
 import { Construct } from "constructs";
 import { TerraformOutput } from "cdktn";
 import { AwsStack, AwsStackProps } from "terraconstructs/lib/aws";
-import { compute } from "terraconstructs/lib/aws";
+import { compute, iam } from "terraconstructs/lib/aws";
 
 export class ScenarioStack extends AwsStack {
   constructor(scope: Construct, id: string, props: AwsStackProps) {
@@ -101,9 +127,34 @@ export class ScenarioStack extends AwsStack {
       deployOptions: { stageName: "prod" },
     });
 
+    // Explicit, path-scoped execution role (Amendment 16's flagged gap):
+    // QADeployApplicationRole's IamRoleLifecycleScoped/IamPassRoleScoped
+    // statements only permit iam:CreateRole/PassRole under
+    // arn:aws:iam::<account>:role/cdktn-bench-task/* -- letting
+    // LambdaFunction's default L2 behavior auto-create an unnamed role at
+    // IAM's default path (`/`) would AccessDeny under that role. Shared by
+    // both functions, matching the other arms' single `lambda_exec` role.
+    // `iam.Role` supports `path` here identically to aws-cdk-lib (verified
+    // against terraconstructs@0.2.13's own role.d.ts). NOTE:
+    // `ManagedPolicy.fromAwsManagedPolicyName` takes (scope, id, name) here,
+    // NOT aws-cdk-lib's single-arg (name) shape -- verified against
+    // terraconstructs@0.2.13's own managed-policy.d.ts.
+    const execRole = new iam.Role(this, "LambdaExecRole", {
+      path: "/cdktn-bench-task/",
+      assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+      managedPolicies: [
+        iam.ManagedPolicy.fromAwsManagedPolicyName(
+          this,
+          "LambdaBasicExecutionPolicy",
+          "service-role/AWSLambdaBasicExecutionRole",
+        ),
+      ],
+    });
+
     const helloFn = new compute.LambdaFunction(this, "HelloFn", {
       runtime: compute.Runtime.NODEJS_20_X,
       handler: "index.handler",
+      role: execRole,
       code: compute.Code.fromInline(
         "exports.handler = async () => ({ statusCode: 200, body: 'hello' });",
       ),
@@ -111,6 +162,7 @@ export class ScenarioStack extends AwsStack {
     const versionFn = new compute.LambdaFunction(this, "VersionFn", {
       runtime: compute.Runtime.NODEJS_20_X,
       handler: "index.handler",
+      role: execRole,
       code: compute.Code.fromInline(
         "exports.handler = async () => ({ statusCode: 200, body: JSON.stringify({ version: '1.0.0' }) });",
       ),

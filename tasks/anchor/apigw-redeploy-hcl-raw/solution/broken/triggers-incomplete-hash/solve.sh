@@ -64,6 +64,8 @@ write_rev1() {
   cat > main.tf <<'TF'
 resource "aws_iam_role" "lambda_exec" {
   name = "apigw-redeploy-lambda-exec"
+  # Amendment 16's flagged gap -- see solution/solve.sh's identical comment.
+  path = "/cdktn-bench-task/"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -209,6 +211,8 @@ write_rev2() {
   cat > main.tf <<'TF'
 resource "aws_iam_role" "lambda_exec" {
   name = "apigw-redeploy-lambda-exec"
+  # Amendment 16's flagged gap -- see solution/solve.sh's identical comment.
+  path = "/cdktn-bench-task/"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{

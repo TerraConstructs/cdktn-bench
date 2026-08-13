@@ -178,22 +178,23 @@ export class QARolesStack extends Stack {
                     // role created with `path: "/cdktn-bench-task/"` is the
                     // only shape this Resource pattern matches.
                     //
-                    // KNOWN GAP, flagged not hidden (matches this repo's
-                    // own convention, e.g. the superseded proposal's "Open
-                    // gaps" section): the CURRENT apigw-redeploy reference
-                    // solutions create their Lambda execution role named
+                    // GAP CLOSED (2026-08-13, see DECISIONS.md): the
+                    // apigw-redeploy reference solutions used to create
+                    // their Lambda execution role named
                     // `apigw-redeploy-lambda-exec` at the DEFAULT path
-                    // (`/`), not under `/cdktn-bench-task/` -- so as
-                    // authored today, this scoped grant does NOT yet let
-                    // those reference solutions actually deploy under this
-                    // role. Closing that gap (pinning an explicit
-                    // `path: "/cdktn-bench-task/"` on the role construct in
-                    // all three arms' reference solutions/instruction, then
-                    // a fresh live proof) is a follow-up, out of scope for
-                    // this change per its own task boundary (code + docs
-                    // only, no live deploy this round) -- see
-                    // docs/adding-scenarios.md's role-extension procedure
-                    // and DECISIONS.md.
+                    // (`/`), not under `/cdktn-bench-task/`, so this scoped
+                    // grant would not have let those reference solutions
+                    // actually deploy under this role. All three arms'
+                    // solution/solve.sh (and hcl_raw's two LIVE-capable
+                    // negative fixtures) now pin an explicit
+                    // `path: "/cdktn-bench-task/"` on the role construct,
+                    // and specs/apigw-redeploy.yaml's shared instruction
+                    // body now tells the agent about this path constraint
+                    // too. Still open: `aws-bench env setup` must be
+                    // re-run against the target account so this role
+                    // actually exists live before a real trial can assume
+                    // it -- see docs/adding-scenarios.md's role-extension
+                    // procedure and DECISIONS.md.
                     resources: [`arn:aws:iam::${accountId}:role/cdktn-bench-task/*`],
                 }),
                 new PolicyStatement({

@@ -163,15 +163,33 @@ rule.
     folds `live_check.py`'s own `.outcome` field into `reward.txt` with AND
     semantics (fail-closed: `"fail_stale"`/`"not_verifiable"`/`"run_invalid"`
     all force reward to `0.0`) — see `SCHEMA.md` §5 for the exact contract.
-  - An explicit cleanup story: give the scenario its own
-    `scenarios/anchor/reset/reset.sh` that sweeps the scenario's own
-    fixed, well-known resource names (see that file for the pattern
-    `apigw-redeploy` uses) — do not rely solely on the framework's generic
-    post-trial sweep, which has no delete handler for every resource type
-    (confirmed by grep against `aws_bench/resource_management/cleanup/
-    handlers/` for `apigw-redeploy`'s own resource types — check the
-    equivalent for whatever services your scenario touches before assuming
-    coverage).
+  - Cleanup story: **you do not need a scenario-specific `reset/reset.sh`.**
+    Two independent live proofs (`DECISIONS.md` Amendments 17/18,
+    `docs/teardown-experiment-results.md`) confirmed the framework's
+    generic post-trial reset (`ResourceManager.reset_scenarios` →
+    `ResetManager.reset_account`, `ccapi_fallback=True`) is
+    type-comprehensive and stack-membership-agnostic — it diffs the
+    account against the POST_SETUP baseline across the full CFN
+    resource-type registry and deletes anything new, including resources
+    with CFN-random physical names a fixed-name sweep could never
+    predict. `apigw-redeploy` originally shipped its own `reset.sh`
+    fixed-name sweep on the (disproven) assumption that the framework had
+    no delete handler for its resource types (Amendments 14/15) — that
+    assumption did not hold up and the script was removed as dead code
+    (Amendment 18, executed 2026-08-13). Budget the generic reset's real
+    per-trial wall-clock cost (~8.5–9 minutes, dominated by two full
+    account-wide fastscans, not deletion — see
+    `docs/teardown-experiment-results.md` "Runtime cost") into any
+    `mode = "mutating"` scenario's throughput/cost estimates. A scenario
+    `reset/reset.sh` remains a supported, optional escape hatch
+    (`aws_bench/scenario/scenario.py`'s own layout docstring; absence is
+    valid — `has_phase_script` just returns `False` and the generic reset
+    still runs unconditionally) if some future resource type is ever
+    proven uncovered by the generic sweep — but treat that as the
+    exception, not the default, and prove the gap first (grep
+    `aws_bench/resource_management/cleanup/handlers/` AND confirm the
+    CloudControl/CCAPI fallback genuinely can't reach the type) before
+    adding one.
   - The matching agent role from §2 above, and, if it needs to be a new or
     extended role, the procedure in §4.
 
@@ -367,9 +385,15 @@ concentrated in one scenario:
   `QALocalInvocationApplicationAdmin` was a real logged over-grant, and the
   operator-authorized middle role closes that gap. See `DECISIONS.md`
   "Adding a QADeployApplicationRole" for the authorization on record.
-- Reset/cleanup: `scenarios/anchor/reset/reset.sh`, added specifically
-  because the generic framework sweep had no delete handler for
-  `AWS::ApiGateway::*`.
+- Reset/cleanup: `apigw-redeploy` originally added its own
+  `scenarios/anchor/reset/reset.sh` fixed-name sweep, on the (later
+  disproven) assumption that the generic framework sweep had no delete
+  handler for `AWS::ApiGateway::*`. Two live teardown experiments
+  (`DECISIONS.md` Amendments 17/18) showed the framework's generic reset
+  covers it — including CFN-random physical names, the exact case the
+  sweep couldn't handle — so the script was removed as dead code
+  (Amendment 18, executed 2026-08-13); the scenario now relies solely on
+  the framework's generic post-trial reset.
 - Holdout: `specs/split.yaml` places `apigw-redeploy` in `holdout` — an
   orthogonal fact from its current NOT-YET-trial-runnable status (§4's IAM
   path-prefix gap, `specs/apigw-redeploy.yaml`'s own `gating` comment) —

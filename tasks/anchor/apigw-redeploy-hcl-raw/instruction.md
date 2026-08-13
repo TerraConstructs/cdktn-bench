@@ -33,6 +33,13 @@ Write `/logs/agent/agent-output.json` (see the JSON contract below)
 recording the deployed stage's real invoke URL, so it can be
 independently re-checked afterward.
 
+Environment constraint: any IAM role your solution creates (for
+example, the Lambda functions' execution role) must be created under
+the path `/cdktn-bench-task/` (e.g. `path = "/cdktn-bench-task/"` on a
+Terraform `aws_iam_role`, or `path: "/cdktn-bench-task/"` on a CDK/
+terraconstructs `iam.Role`) -- this account's deploy credentials only
+permit creating and passing roles under that path.
+
 Do NOT delete the REST API, the Lambda functions, their execution
 role, or any CloudWatch Logs log groups when you are done -- leave
 every resource you created running and deployed. This task's grading

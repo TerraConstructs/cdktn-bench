@@ -11,9 +11,13 @@
 #
 # This does NOT sweep any per-trial resource (the deployer/workload roles,
 # module/'s own security group/EBS volume/S3 bucket/instance profile) --
-# those are swept by scenarios/anchor/reset/reset.sh's own per-trial
-# convention (see this scenario's own DECISIONS.md amendment for the
-# reset.sh entry still needed there, not yet added by this pass).
+# those are swept by the framework's own generic post-trial reset
+# (ResourceManager.reset_scenarios -> ResetManager.reset_account,
+# ccapi_fallback=True), proven type-comprehensive and stack-membership-
+# agnostic by two live teardown experiments (DECISIONS.md Amendments 17/18,
+# docs/teardown-experiment-results.md). No scenario-specific reset.sh sweep
+# is needed or planned for this scenario's per-trial resources -- see
+# docs/adding-scenarios.md's cleanup-story guidance.
 set -euo pipefail
 
 REGION="us-east-1"

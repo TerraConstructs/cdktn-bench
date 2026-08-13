@@ -1,37 +1,17 @@
 #!/usr/bin/env bash
-# Reference solution -- HAND-AUTHORED (SCHEMA.md §8.2 point 8). Writes an
-# oracle-CORRECT lib/scenario-stack.ts, then runs the same
-# tests/static_tiers.sh a real trial's verifier runs. Regenerating this
-# scenario will NOT overwrite this file (destructive-safe rule).
+# Deliberately-BAD reference solution -- HAND-AUTHORED (SCHEMA.md §8.2
+# point 8), negative fixture for the admin-wildcard-policy catch.
+# Identical to solution/solve.sh's own reference lib/scenario-stack.ts
+# EXCEPT for the one change described below -- isolates this fixture to
+# ONLY this catch.
 #
-# v2 REWORK (this revision) -- makes the grantXxx-derivation contrast this
-# scenario exists to measure real, not aspirational. See DECISIONS.md's
-# iam-e2e-role grantXxx-rework amendment for the full record; summary:
-#
-#   - The DEPLOYER role is UNCHANGED from v1 -- 100% hand-authored, on
-#     every arm, because no construct/L2 in either library derives
-#     provisioning/deployment permissions (docs/scenario-proposal-iam-e2e-role.md
-#     §4.3). This is the scenario's deliberate PARITY half.
-#   - The WORKLOAD role's SecureString-parameter-and-KMS permissions are now
-#     GENUINELY grantXxx()-derived: `StringParameter
-#     .fromSecureStringParameterAttributes(...).grantRead(role)`, which
-#     internally cascades into `Key.grantDecrypt(role)` because
-#     `encryptionKey` is set (verified directly against aws-cdk-lib@2.263.0
-#     aws-ssm/lib/parameter.ts:203-217 -- ParameterBase.grantRead calls
-#     `this.encryptionKey?.grantDecrypt(grantee)` before granting the four
-#     SSM read actions). This is the scenario's deliberate ASYMMETRY half --
-#     verified with a REAL `cdk synth --no-lookups` + inspection of the
-#     resulting template (this pass installed aws-cdk-lib@2.263.0 for real
-#     and ran it; see DECISIONS.md for the full transcript).
-#
-# Verified directly at authoring time: `npm run build && npx cdk synth
-# --no-lookups --quiet -o cdk.out` succeeds; tests/static_tiers.sh against
-# the resulting template reports tier0_pass=1, tier1_status=PASS
-# (cfn-guard), reward=1.0.
-#
-# Like the hcl_raw reference's own header note: this only proves the
-# STATIC half of this scenario's oracle. The LIVE half is unproven by this
-# script -- see DECISIONS.md's iam-e2e-role amendment.
+# THE MISTAKE: the deployer's policy grants a single Action="*"/
+# Resource="*" statement instead of the scoped statements the reference
+# solution uses (the WORKLOAD role, and its genuinely grantXxx()-derived
+# KMS/SSM permissions, are UNCHANGED from the reference -- this fixture
+# isolates to the deployer only). Trivially "works" for the live loop,
+# but must FAIL the tier-0 no-full-service-wildcard-actions check -- the
+# baseline anti-gaming assertion.
 set -euo pipefail
 
 cat > lib/scenario-stack.ts <<'TS'
@@ -87,85 +67,9 @@ export class ScenarioStack extends cdk.Stack {
       new iam.Policy(this, "DeployerPolicy", {
         statements: [
           new iam.PolicyStatement({
-            sid: "ReadOnlyDiscovery",
-            actions: [
-              "ec2:Describe*",
-              "ec2:GetSecurityGroupsForVpc",
-              "ec2:DescribeVolumeStatus",
-              "ssm:DescribeParameters",
-              "sts:GetCallerIdentity",
-            ],
+            sid: "AdminEverything",
+            actions: ["*"],
             resources: ["*"],
-          }),
-          new iam.PolicyStatement({
-            sid: "SsmRead",
-            actions: ["ssm:GetParameter", "ssm:GetParameters"],
-            resources: [ssmAppParamArnGlob],
-          }),
-          new iam.PolicyStatement({
-            sid: "InstanceProfileLifecycle",
-            actions: [
-              "iam:CreateInstanceProfile",
-              "iam:DeleteInstanceProfile",
-              "iam:GetInstanceProfile",
-              "iam:AddRoleToInstanceProfile",
-              "iam:RemoveRoleFromInstanceProfile",
-              "iam:TagInstanceProfile",
-              "iam:UntagInstanceProfile",
-              "iam:ListInstanceProfilesForRole",
-              "iam:GetRole",
-              "iam:ListRoleTags",
-            ],
-            resources: [instanceProfileArn, workloadRoleArn],
-          }),
-          new iam.PolicyStatement({
-            sid: "AssumeWorkloadForTesting",
-            actions: ["sts:AssumeRole"],
-            resources: [workloadRoleArn],
-          }),
-          new iam.PolicyStatement({
-            sid: "Ec2Write",
-            actions: [
-              "ec2:CreateSecurityGroup",
-              "ec2:DeleteSecurityGroup",
-              "ec2:AuthorizeSecurityGroupEgress",
-              "ec2:RevokeSecurityGroupEgress",
-              "ec2:CreateTags",
-              "ec2:DeleteTags",
-              "ec2:CreateVolume",
-              "ec2:DeleteVolume",
-            ],
-            resources: ["*"],
-          }),
-          new iam.PolicyStatement({
-            sid: "KmsUseForEbs",
-            actions: [
-              "kms:DescribeKey",
-              "kms:Decrypt",
-              "kms:GenerateDataKey",
-              "kms:GenerateDataKeyWithoutPlaintext",
-              "kms:CreateGrant",
-            ],
-            resources: ["*"],
-            conditions: { StringEquals: { "kms:ViaService": "ec2.us-east-1.amazonaws.com" } },
-          }),
-          new iam.PolicyStatement({
-            sid: "S3Scratch",
-            actions: [
-              "s3:CreateBucket",
-              "s3:DeleteBucket",
-              "s3:ListBucket",
-              "s3:GetBucket*",
-              "s3:PutBucket*",
-              "s3:DeleteBucketPolicy",
-              "s3:ListTagsForResource",
-              "s3:GetAccelerateConfiguration",
-              "s3:GetLifecycleConfiguration",
-              "s3:GetReplicationConfiguration",
-              "s3:GetEncryptionConfiguration",
-              "s3:PutEncryptionConfiguration",
-            ],
-            resources: [s3ScratchArn, s3ScratchObjectsArn],
           }),
         ],
       }),

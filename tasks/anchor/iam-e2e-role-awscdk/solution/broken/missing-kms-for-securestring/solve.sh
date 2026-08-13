@@ -1,37 +1,28 @@
 #!/usr/bin/env bash
-# Reference solution -- HAND-AUTHORED (SCHEMA.md §8.2 point 8). Writes an
-# oracle-CORRECT lib/scenario-stack.ts, then runs the same
-# tests/static_tiers.sh a real trial's verifier runs. Regenerating this
-# scenario will NOT overwrite this file (destructive-safe rule).
+# Deliberately-BAD reference solution -- HAND-AUTHORED (SCHEMA.md §8.2
+# point 8), negative fixture for the missing-kms-for-securestring catch.
+# Identical to solution/solve.sh's own reference lib/scenario-stack.ts
+# EXCEPT for the one change described below -- isolates this fixture to
+# ONLY this catch.
 #
-# v2 REWORK (this revision) -- makes the grantXxx-derivation contrast this
-# scenario exists to measure real, not aspirational. See DECISIONS.md's
-# iam-e2e-role grantXxx-rework amendment for the full record; summary:
-#
-#   - The DEPLOYER role is UNCHANGED from v1 -- 100% hand-authored, on
-#     every arm, because no construct/L2 in either library derives
-#     provisioning/deployment permissions (docs/scenario-proposal-iam-e2e-role.md
-#     §4.3). This is the scenario's deliberate PARITY half.
-#   - The WORKLOAD role's SecureString-parameter-and-KMS permissions are now
-#     GENUINELY grantXxx()-derived: `StringParameter
-#     .fromSecureStringParameterAttributes(...).grantRead(role)`, which
-#     internally cascades into `Key.grantDecrypt(role)` because
-#     `encryptionKey` is set (verified directly against aws-cdk-lib@2.263.0
-#     aws-ssm/lib/parameter.ts:203-217 -- ParameterBase.grantRead calls
-#     `this.encryptionKey?.grantDecrypt(grantee)` before granting the four
-#     SSM read actions). This is the scenario's deliberate ASYMMETRY half --
-#     verified with a REAL `cdk synth --no-lookups` + inspection of the
-#     resulting template (this pass installed aws-cdk-lib@2.263.0 for real
-#     and ran it; see DECISIONS.md for the full transcript).
-#
-# Verified directly at authoring time: `npm run build && npx cdk synth
-# --no-lookups --quiet -o cdk.out` succeeds; tests/static_tiers.sh against
-# the resulting template reports tier0_pass=1, tier1_status=PASS
-# (cfn-guard), reward=1.0.
-#
-# Like the hcl_raw reference's own header note: this only proves the
-# STATIC half of this scenario's oracle. The LIVE half is unproven by this
-# script -- see DECISIONS.md's iam-e2e-role amendment.
+# THE MISTAKE (now reachable on this construct arm -- the whole point of
+# this scenario's v2 rework): the SecureString "db-password" parameter
+# is still imported via StringParameter.fromSecureStringParameterAttributes()
+# and its grantRead() is still called (so the workload role CAN still
+# read the plain SSM parameter, and can still fetch db-password's own
+# metadata via single-parameter reads) -- but `encryptionKey` was never
+# set on the import. `ParameterBase.grantRead()`'s own cascade
+# (`if (this.encryptionKey) { this.encryptionKey.grantDecrypt(grantee) }`,
+# aws-cdk-lib@2.263.0 aws-ssm/lib/parameter.ts:203-206) therefore never
+# fires, and the CfnParameter/Key.fromKeyArn machinery the reference uses
+# to derive kms:Decrypt is dropped entirely. Every static tier PASSES
+# this policy identically to the reference (a role with fewer granted
+# actions is not a wildcard, an invalid action, an overbroad S3 scope,
+# or an unconditioned trust policy) -- this is THE live-only catch.
+# Confirmed here by a small, self-contained, OFFLINE IAM policy
+# evaluator that mechanically proves this EXACT policy denies
+# kms:Decrypt on the real CMK's ARN while still allowing
+# ssm:GetParametersByPath.
 set -euo pipefail
 
 cat > lib/scenario-stack.ts <<'TS'
@@ -201,13 +192,6 @@ export class ScenarioStack extends cdk.Stack {
     // `kms.Key.fromLookup()` (a real AWS context-provider lookup at synth
     // time) was considered and rejected: this arm's own synth_command runs
     // `--no-lookups`, which would make that call fail hard.
-    const kmsKeyArnParam = new cdk.CfnParameter(this, "KmsKeyArn", {
-      type: "String",
-      default: "arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-000000000000",
-      description:
-        "Real ARN of the pre-provisioned CMK behind alias/cdktn-bench-iam-e2e-role. Placeholder default is for offline synth only -- pass the real value at deploy time.",
-    });
-    const cmk = kms.Key.fromKeyArn(this, "CdktnBenchKey", kmsKeyArnParam.valueAsString);
 
     // The SecureString "db-password" parameter. `grantRead()` derives
     // {ssm:DescribeParameters, ssm:GetParameters, ssm:GetParameter,
@@ -224,7 +208,6 @@ export class ScenarioStack extends cdk.Stack {
     // equivalent of an imported-construct ARN reference).
     const dbPasswordParam = ssm.StringParameter.fromSecureStringParameterAttributes(this, "DbPasswordParam", {
       parameterName: "/cdktn-bench-iam-e2e-role/app/db-password",
-      encryptionKey: cmk,
     });
     dbPasswordParam.grantRead(workloadRole);
 
@@ -287,5 +270,63 @@ export class ScenarioStack extends cdk.Stack {
   }
 }
 TS
+
+python3 - <<'PYCHECK'
+import fnmatch, json
+
+def as_list(x):
+    return x if isinstance(x, list) else [x]
+
+def action_matches(granted, requested):
+    return fnmatch.fnmatchcase(requested.lower(), granted.lower())
+
+def resource_matches(granted, requested):
+    return granted == "*" or fnmatch.fnmatchcase(requested, granted)
+
+def condition_matches(condition, context):
+    if not condition:
+        return True
+    for op, kv in condition.items():
+        for key, expected in kv.items():
+            actual = context.get(key)
+            expected_list = as_list(expected)
+            if op == "StringEquals":
+                if actual not in expected_list:
+                    return False
+            else:
+                return False
+    return True
+
+def evaluate(statements, action, resource, context=None):
+    context = context or {}
+    decision = False
+    for stmt in statements:
+        if not any(action_matches(a, action) for a in as_list(stmt["Action"])):
+            continue
+        if not any(resource_matches(r, resource) for r in as_list(stmt["Resource"])):
+            continue
+        if not condition_matches(stmt.get("Condition"), context):
+            continue
+        if stmt["Effect"] == "Deny":
+            return False
+        if stmt["Effect"] == "Allow":
+            decision = True
+    return decision
+
+STATEMENTS = [{'Action': ['ssm:DescribeParameters', 'ssm:GetParameter', 'ssm:GetParameterHistory', 'ssm:GetParameters'], 'Effect': 'Allow', 'Resource': 'arn:aws:ssm:us-east-1:123456789012:parameter/cdktn-bench-iam-e2e-role/app/db-password'}, {'Action': ['ssm:DescribeParameters', 'ssm:GetParameter', 'ssm:GetParameters'], 'Effect': 'Allow', 'Resource': 'arn:aws:ssm:us-east-1:123456789012:parameter/cdktn-bench-iam-e2e-role/app/config'}, {'Action': 'ssm:GetParametersByPath', 'Effect': 'Allow', 'Resource': 'arn:aws:ssm:us-east-1:123456789012:parameter/cdktn-bench-iam-e2e-role/app/*'}, {'Action': ['ec2:DescribeInstances', 'ec2:DescribeVolumes'], 'Effect': 'Allow', 'Resource': '*'}]
+CHECKS = [['ssm:GetParametersByPath', 'arn:aws:ssm:us-east-1:123456789012:parameter/cdktn-bench-iam-e2e-role/app/db-password', {}, True, 'the path-based SSM read is still granted (hand-authored, unaffected by this fixture)'], ['kms:Decrypt', 'arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-000000000000', {}, False, "THE GAP: no statement grants kms:Decrypt on the real CMK at all -- get-parameters-by-path --with-decryption would return the SecureString parameter's Value empty/undecrypted"]]
+all_ok = True
+for action, resource, context, expect_allowed, label in CHECKS:
+    got = evaluate(STATEMENTS, action, resource, context)
+    status = "ALLOW" if got else "DENY"
+    print(f"  mini-iam-sim: {action} on {resource} (ctx={context}) -> {status}  [{label}]")
+    if got != expect_allowed:
+        all_ok = False
+        print(f"    UNEXPECTED: wanted {'ALLOW' if expect_allowed else 'DENY'}")
+
+if not all_ok:
+    raise SystemExit("mini-iam-sim: the fixture's policy did not reproduce the expected gap -- see output above")
+print("CDKTN_BENCH_LIVE_ONLY_CONFIRMED: offline policy-evaluator run above mechanically confirms the exact gap this fixture demonstrates -- every static tier passes this policy identically to the reference, only real IAM evaluation (or this scoped-down offline reimplementation of it, see oracles/lib/mini_iam_sim.py's design) tells them apart.")
+PYCHECK
 
 bash tests/static_tiers.sh

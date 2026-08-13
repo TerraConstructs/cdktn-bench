@@ -1,37 +1,22 @@
 #!/usr/bin/env bash
-# Reference solution -- HAND-AUTHORED (SCHEMA.md §8.2 point 8). Writes an
-# oracle-CORRECT lib/scenario-stack.ts, then runs the same
-# tests/static_tiers.sh a real trial's verifier runs. Regenerating this
-# scenario will NOT overwrite this file (destructive-safe rule).
+# Deliberately-BAD reference solution -- HAND-AUTHORED (SCHEMA.md §8.2
+# point 8), negative fixture for the wildcard-matches-protected-bucket
+# catch. Identical to solution/solve.sh's own reference
+# lib/scenario-stack.ts EXCEPT for the one change described below --
+# isolates this fixture to ONLY this catch.
 #
-# v2 REWORK (this revision) -- makes the grantXxx-derivation contrast this
-# scenario exists to measure real, not aspirational. See DECISIONS.md's
-# iam-e2e-role grantXxx-rework amendment for the full record; summary:
-#
-#   - The DEPLOYER role is UNCHANGED from v1 -- 100% hand-authored, on
-#     every arm, because no construct/L2 in either library derives
-#     provisioning/deployment permissions (docs/scenario-proposal-iam-e2e-role.md
-#     §4.3). This is the scenario's deliberate PARITY half.
-#   - The WORKLOAD role's SecureString-parameter-and-KMS permissions are now
-#     GENUINELY grantXxx()-derived: `StringParameter
-#     .fromSecureStringParameterAttributes(...).grantRead(role)`, which
-#     internally cascades into `Key.grantDecrypt(role)` because
-#     `encryptionKey` is set (verified directly against aws-cdk-lib@2.263.0
-#     aws-ssm/lib/parameter.ts:203-217 -- ParameterBase.grantRead calls
-#     `this.encryptionKey?.grantDecrypt(grantee)` before granting the four
-#     SSM read actions). This is the scenario's deliberate ASYMMETRY half --
-#     verified with a REAL `cdk synth --no-lookups` + inspection of the
-#     resulting template (this pass installed aws-cdk-lib@2.263.0 for real
-#     and ran it; see DECISIONS.md for the full transcript).
-#
-# Verified directly at authoring time: `npm run build && npx cdk synth
-# --no-lookups --quiet -o cdk.out` succeeds; tests/static_tiers.sh against
-# the resulting template reports tier0_pass=1, tier1_status=PASS
-# (cfn-guard), reward=1.0.
-#
-# Like the hcl_raw reference's own header note: this only proves the
-# STATIC half of this scenario's oracle. The LIVE half is unproven by this
-# script -- see DECISIONS.md's iam-e2e-role amendment.
+# THE MISTAKE: the S3 resource scope drops the "-scratch" suffix the
+# module's own bucket naming convention has -- "arn:aws:s3:::cdktn-
+# bench-iam-e2e-*" is derived correctly from the module's prefix but
+# ALSO matches the pre-provisioned decoy bucket
+# (cdktn-bench-iam-e2e-tfstate-<account>-us-east-1), a real bucket this
+# task's own module never creates or references. Every static tier-0
+# check still PASSES (no admin wildcard, no invalid action, valid
+# trust) -- only the tier-1 cfn-guard glob-match check catches this,
+# exactly like the real episode's own A11 defect: no failing run would
+# ever surface it on its own. Verified directly: `cfn-guard validate`
+# against this exact template reports policy_s3_resource_not_overbroad
+# NON-COMPLIANT.
 set -euo pipefail
 
 cat > lib/scenario-stack.ts <<'TS'
@@ -70,8 +55,8 @@ export class ScenarioStack extends cdk.Stack {
     const instanceProfileArn = `arn:aws:iam::${accountId}:instance-profile/cdktn-bench-iam-e2e-role-workload-profile`;
     const ssmAppParamArnGlob = `arn:aws:ssm:us-east-1:${accountId}:parameter/cdktn-bench-iam-e2e-role/app/*`;
     const ssmAppConfigParamArn = `arn:aws:ssm:us-east-1:${accountId}:parameter/cdktn-bench-iam-e2e-role/app/config`;
-    const s3ScratchArn = "arn:aws:s3:::cdktn-bench-iam-e2e-*-scratch";
-    const s3ScratchObjectsArn = "arn:aws:s3:::cdktn-bench-iam-e2e-*-scratch/*";
+    const s3ScratchArn = "arn:aws:s3:::cdktn-bench-iam-e2e-*";
+    const s3ScratchObjectsArn = "arn:aws:s3:::cdktn-bench-iam-e2e-*/*";
     const workloadRoleArn = `arn:aws:iam::${accountId}:role${rolePath}iam-e2e-role-workload`;
 
     // --- DEPLOYER role (hand-authored, unchanged from v1) -----------------

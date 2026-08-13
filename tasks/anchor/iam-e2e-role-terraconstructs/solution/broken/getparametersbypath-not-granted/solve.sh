@@ -1,61 +1,23 @@
 #!/usr/bin/env bash
-# Reference solution -- HAND-AUTHORED (SCHEMA.md §8.2 point 8). Writes an
-# oracle-CORRECT lib/scenario-stack.ts, then runs the same
-# tests/static_tiers.sh a real trial's verifier runs. Regenerating this
-# scenario will NOT overwrite this file (destructive-safe rule).
+# Deliberately-BAD reference solution -- HAND-AUTHORED (SCHEMA.md §8.2
+# point 8), negative fixture for the getparametersbypath-not-granted
+# catch. Identical to solution/solve.sh's own reference
+# lib/scenario-stack.ts EXCEPT for the one change described below --
+# isolates this fixture to ONLY this catch.
 #
-# v2 REWORK (this revision) -- makes the grantXxx-derivation contrast this
-# scenario exists to measure real, not aspirational, ON THIS ARM TOO, with
-# ONE genuine, VERIFIED per-arm limit kept honest rather than papered over
-# (full record in DECISIONS.md's iam-e2e-role grantXxx-rework amendment):
-#
-#   - The DEPLOYER role is UNCHANGED from v1 -- 100% hand-authored, same as
-#     awscdk/hcl_raw, for the same reason (no library derives a deployment
-#     role's permissions).
-#   - The WORKLOAD role's KMS decrypt permission IS genuinely grantXxx()-
-#     derived here: `encryption.Key.fromKeyArn(...).grantDecrypt(role)`.
-#     Verified directly (real `cdktn synth` + real `terraform plan` against
-#     this exact construct, offline, this pass): importing a Key by ARN
-#     touches NO Terraform resource or data source at all -- pure
-#     client-side ARN-string handling -- so this is fully offline-plan-safe.
-#   - UNLIKE awscdk, the WORKLOAD role's SSM read actions for the
-#     SecureString parameter are NOT derived here via
-#     `storage.StringParameter.fromSecureStringParameterAttributes(...)
-#     .grantRead()`, even though that call exists and is API-identical to
-#     aws-cdk-lib's (verified in terraconstructs@0.2.13
-#     lib/aws/storage/parameter.js:66-80). REASON, VERIFIED DIRECTLY (real
-#     `cdktn synth` + real `terraform plan`, this pass): EVERY
-#     `storage.StringParameter.from*()` factory in terraconstructs@0.2.13
-#     unconditionally constructs a REAL Terraform `data "aws_ssm_parameter"`
-#     data source (parameter.js's fromStringParameterAttributes /
-#     fromStringParameterArn / fromSecureStringParameterAttributes all do
-#     this, even though nothing here ever reads the resulting `.stringValue`
-#     -- only `.grantRead()`). Terraform evaluates data sources during
-#     `plan` itself, not just `apply` -- unlike CloudFormation's lazy
-#     CfnDynamicReference/template-Parameter equivalents that aws-cdk-lib's
-#     own factories use, which resolve only at real deploy time. Concretely:
-#     `terraform plan` against exactly this construct fails OFFLINE with
-#     `UnrecognizedClientException: The security token included in the
-#     request is invalid` on the resulting data source, because this
-#     scenario's offline static tier mocks only STS (mock-sts.js), never
-#     SSM. So on THIS arm, the SecureString parameter's own SSM read
-#     actions stay hand-authored (grouped with the plain "config"
-#     parameter's, below) even though the KMS decrypt half of that same
-#     permission genuinely is library-derived. This is a real, asymmetric
-#     per-arm constraint on which HALF of one workload permission
-#     construct-arms can derive for real -- not an oversight, and not tuned
-#     to make either arm look better than the evidence supports.
-#
-# Verified directly at authoring time: `npx cdktn synth` succeeds, and a
-# real `terraform init && terraform plan` against the synthesized stack
-# (with this arm's own mock-sts.js started around it, exactly as
-# tests/static_tiers.sh does) succeeds fully offline; tests/static_tiers.sh
-# against the resulting plan.json reports tier0_pass=1, tier1_status=PASS
-# (rego), reward=1.0.
-#
-# Like the hcl_raw reference's own header note: this only proves the
-# STATIC half of this scenario's oracle. The LIVE half is unproven by this
-# script -- see DECISIONS.md's iam-e2e-role amendment.
+# THE MISTAKE (the scenario's anti-overclaim catch): drops
+# ssm:GetParametersByPath from the hand-authored ReadAppParameters
+# statement, leaving the workload role with single-parameter reads only
+# (ssm:GetParameter/ssm:GetParameters) and no hierarchical path-based
+# read anywhere -- even though the library-derived kms:Decrypt grant
+# above is completely correct and unaffected. This is the same class of
+# mistake as the awscdk arm's own fixture for this catch, reached by a
+# different mechanism here (a hand-authored statement losing one action,
+# rather than a hand-authored statement being dropped entirely) since
+# this arm never routes the SSM read actions through grantRead() at all
+# (see this scenario's own solve.sh header for why). Every static tier
+# PASSES identically to the reference. Confirmed via an inline offline
+# IAM evaluator reproducing this exact gap.
 set -euo pipefail
 
 cat > lib/scenario-stack.ts <<'TS'
@@ -270,7 +232,7 @@ export class ScenarioStack extends AwsStack {
         statements: [
           new iam.PolicyStatement({
             sid: "ReadAppParameters",
-            actions: ["ssm:GetParameter", "ssm:GetParameters", "ssm:GetParametersByPath", "ssm:DescribeParameters"],
+            actions: ["ssm:GetParameter", "ssm:GetParameters", "ssm:DescribeParameters"],
             resources: [ssmAppParamArnGlob],
           }),
           new iam.PolicyStatement({
@@ -284,5 +246,63 @@ export class ScenarioStack extends AwsStack {
   }
 }
 TS
+
+python3 - <<'PYCHECK'
+import fnmatch, json
+
+def as_list(x):
+    return x if isinstance(x, list) else [x]
+
+def action_matches(granted, requested):
+    return fnmatch.fnmatchcase(requested.lower(), granted.lower())
+
+def resource_matches(granted, requested):
+    return granted == "*" or fnmatch.fnmatchcase(requested, granted)
+
+def condition_matches(condition, context):
+    if not condition:
+        return True
+    for op, kv in condition.items():
+        for key, expected in kv.items():
+            actual = context.get(key)
+            expected_list = as_list(expected)
+            if op == "StringEquals":
+                if actual not in expected_list:
+                    return False
+            else:
+                return False
+    return True
+
+def evaluate(statements, action, resource, context=None):
+    context = context or {}
+    decision = False
+    for stmt in statements:
+        if not any(action_matches(a, action) for a in as_list(stmt["Action"])):
+            continue
+        if not any(resource_matches(r, resource) for r in as_list(stmt["Resource"])):
+            continue
+        if not condition_matches(stmt.get("Condition"), context):
+            continue
+        if stmt["Effect"] == "Deny":
+            return False
+        if stmt["Effect"] == "Allow":
+            decision = True
+    return decision
+
+STATEMENTS = [{'Action': ['ssm:GetParameter', 'ssm:GetParameters', 'ssm:DescribeParameters'], 'Effect': 'Allow', 'Resource': 'arn:aws:ssm:us-east-1:123456789012:parameter/cdktn-bench-iam-e2e-role/app/*'}, {'Action': ['ec2:DescribeInstances', 'ec2:DescribeVolumes'], 'Effect': 'Allow', 'Resource': '*'}, {'Action': 'kms:Decrypt', 'Effect': 'Allow', 'Resource': 'arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-000000000000'}]
+CHECKS = [['ssm:GetParameter', 'arn:aws:ssm:us-east-1:123456789012:parameter/cdktn-bench-iam-e2e-role/app/config', {}, True, 'single-parameter reads are still granted (hand-authored, unaffected by this fixture)'], ['kms:Decrypt', 'arn:aws:kms:us-east-1:123456789012:key/00000000-0000-0000-0000-000000000000', {}, True, 'the library-derived KMS decrypt is still granted (unaffected by this fixture)'], ['ssm:GetParametersByPath', 'arn:aws:ssm:us-east-1:123456789012:parameter/cdktn-bench-iam-e2e-role/app/config', {}, False, 'THE GAP: the hierarchical path read the harness actually uses is denied -- the hand-written ReadAppParameters statement no longer includes it']]
+all_ok = True
+for action, resource, context, expect_allowed, label in CHECKS:
+    got = evaluate(STATEMENTS, action, resource, context)
+    status = "ALLOW" if got else "DENY"
+    print(f"  mini-iam-sim: {action} on {resource} (ctx={context}) -> {status}  [{label}]")
+    if got != expect_allowed:
+        all_ok = False
+        print(f"    UNEXPECTED: wanted {'ALLOW' if expect_allowed else 'DENY'}")
+
+if not all_ok:
+    raise SystemExit("mini-iam-sim: the fixture's policy did not reproduce the expected gap -- see output above")
+print("CDKTN_BENCH_LIVE_ONLY_CONFIRMED: offline policy-evaluator run above mechanically confirms the exact gap this fixture demonstrates -- every static tier passes this policy identically to the reference, only real IAM evaluation (or this scoped-down offline reimplementation of it, see oracles/lib/mini_iam_sim.py's design) tells them apart.")
+PYCHECK
 
 bash tests/static_tiers.sh

@@ -1,37 +1,21 @@
 #!/usr/bin/env bash
-# Reference solution -- HAND-AUTHORED (SCHEMA.md §8.2 point 8). Writes an
-# oracle-CORRECT lib/scenario-stack.ts, then runs the same
-# tests/static_tiers.sh a real trial's verifier runs. Regenerating this
-# scenario will NOT overwrite this file (destructive-safe rule).
+# Deliberately-BAD reference solution -- HAND-AUTHORED (SCHEMA.md §8.2
+# point 8), negative fixture for the missing-tag-on-create catch.
+# Identical to solution/solve.sh's own reference lib/scenario-stack.ts
+# EXCEPT for the one change described below -- isolates this fixture to
+# ONLY this catch. The WORKLOAD role (and its genuinely grantXxx()-
+# derived KMS/SSM permissions) is entirely UNCHANGED from the reference
+# -- this is a DEPLOYER-side defect, and the deployer role is 100%
+# hand-authored on every arm regardless of this rework.
 #
-# v2 REWORK (this revision) -- makes the grantXxx-derivation contrast this
-# scenario exists to measure real, not aspirational. See DECISIONS.md's
-# iam-e2e-role grantXxx-rework amendment for the full record; summary:
-#
-#   - The DEPLOYER role is UNCHANGED from v1 -- 100% hand-authored, on
-#     every arm, because no construct/L2 in either library derives
-#     provisioning/deployment permissions (docs/scenario-proposal-iam-e2e-role.md
-#     §4.3). This is the scenario's deliberate PARITY half.
-#   - The WORKLOAD role's SecureString-parameter-and-KMS permissions are now
-#     GENUINELY grantXxx()-derived: `StringParameter
-#     .fromSecureStringParameterAttributes(...).grantRead(role)`, which
-#     internally cascades into `Key.grantDecrypt(role)` because
-#     `encryptionKey` is set (verified directly against aws-cdk-lib@2.263.0
-#     aws-ssm/lib/parameter.ts:203-217 -- ParameterBase.grantRead calls
-#     `this.encryptionKey?.grantDecrypt(grantee)` before granting the four
-#     SSM read actions). This is the scenario's deliberate ASYMMETRY half --
-#     verified with a REAL `cdk synth --no-lookups` + inspection of the
-#     resulting template (this pass installed aws-cdk-lib@2.263.0 for real
-#     and ran it; see DECISIONS.md for the full transcript).
-#
-# Verified directly at authoring time: `npm run build && npx cdk synth
-# --no-lookups --quiet -o cdk.out` succeeds; tests/static_tiers.sh against
-# the resulting template reports tier0_pass=1, tier1_status=PASS
-# (cfn-guard), reward=1.0.
-#
-# Like the hcl_raw reference's own header note: this only proves the
-# STATIC half of this scenario's oracle. The LIVE half is unproven by this
-# script -- see DECISIONS.md's iam-e2e-role amendment.
+# THE MISTAKE: the deployer's InstanceProfileLifecycle statement grants
+# iam:CreateInstanceProfile but not iam:TagInstanceProfile -- and
+# module/main.tf's own provider default_tags block means the module's
+# CreateInstanceProfile call carries tags, which silently ALSO requires
+# iam:TagInstanceProfile. This pairing never appears as two separate
+# CloudTrail events; it has to be reasoned about, not observed. Every
+# static tier PASSES this policy identically to the reference. Confirmed
+# via an inline offline IAM evaluator reproducing this exact gap.
 set -euo pipefail
 
 cat > lib/scenario-stack.ts <<'TS'
@@ -110,7 +94,6 @@ export class ScenarioStack extends cdk.Stack {
               "iam:GetInstanceProfile",
               "iam:AddRoleToInstanceProfile",
               "iam:RemoveRoleFromInstanceProfile",
-              "iam:TagInstanceProfile",
               "iam:UntagInstanceProfile",
               "iam:ListInstanceProfilesForRole",
               "iam:GetRole",
@@ -287,5 +270,63 @@ export class ScenarioStack extends cdk.Stack {
   }
 }
 TS
+
+python3 - <<'PYCHECK'
+import fnmatch, json
+
+def as_list(x):
+    return x if isinstance(x, list) else [x]
+
+def action_matches(granted, requested):
+    return fnmatch.fnmatchcase(requested.lower(), granted.lower())
+
+def resource_matches(granted, requested):
+    return granted == "*" or fnmatch.fnmatchcase(requested, granted)
+
+def condition_matches(condition, context):
+    if not condition:
+        return True
+    for op, kv in condition.items():
+        for key, expected in kv.items():
+            actual = context.get(key)
+            expected_list = as_list(expected)
+            if op == "StringEquals":
+                if actual not in expected_list:
+                    return False
+            else:
+                return False
+    return True
+
+def evaluate(statements, action, resource, context=None):
+    context = context or {}
+    decision = False
+    for stmt in statements:
+        if not any(action_matches(a, action) for a in as_list(stmt["Action"])):
+            continue
+        if not any(resource_matches(r, resource) for r in as_list(stmt["Resource"])):
+            continue
+        if not condition_matches(stmt.get("Condition"), context):
+            continue
+        if stmt["Effect"] == "Deny":
+            return False
+        if stmt["Effect"] == "Allow":
+            decision = True
+    return decision
+
+STATEMENTS = [{'Action': ['iam:AddRoleToInstanceProfile', 'iam:CreateInstanceProfile', 'iam:DeleteInstanceProfile', 'iam:GetInstanceProfile', 'iam:GetRole', 'iam:ListInstanceProfilesForRole', 'iam:ListRoleTags', 'iam:RemoveRoleFromInstanceProfile', 'iam:UntagInstanceProfile'], 'Effect': 'Allow', 'Resource': ['arn:aws:iam::123456789012:instance-profile/cdktn-bench-iam-e2e-role-workload-profile', 'arn:aws:iam::123456789012:role/cdktn-bench-task/iam-e2e-role-workload']}]
+CHECKS = [['iam:CreateInstanceProfile', 'arn:aws:iam::123456789012:instance-profile/cdktn-bench-iam-e2e-role-workload-profile', {}, True, 'the create call itself is still granted'], ['iam:TagInstanceProfile', 'arn:aws:iam::123456789012:instance-profile/cdktn-bench-iam-e2e-role-workload-profile', {}, False, 'THE GAP: default_tags makes CreateInstanceProfile ALSO require this, silently']]
+all_ok = True
+for action, resource, context, expect_allowed, label in CHECKS:
+    got = evaluate(STATEMENTS, action, resource, context)
+    status = "ALLOW" if got else "DENY"
+    print(f"  mini-iam-sim: {action} on {resource} (ctx={context}) -> {status}  [{label}]")
+    if got != expect_allowed:
+        all_ok = False
+        print(f"    UNEXPECTED: wanted {'ALLOW' if expect_allowed else 'DENY'}")
+
+if not all_ok:
+    raise SystemExit("mini-iam-sim: the fixture's policy did not reproduce the expected gap -- see output above")
+print("CDKTN_BENCH_LIVE_ONLY_CONFIRMED: offline policy-evaluator run above mechanically confirms the exact gap this fixture demonstrates -- every static tier passes this policy identically to the reference, only real IAM evaluation (or this scoped-down offline reimplementation of it, see oracles/lib/mini_iam_sim.py's design) tells them apart.")
+PYCHECK
 
 bash tests/static_tiers.sh

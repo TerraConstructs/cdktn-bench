@@ -3992,6 +3992,8 @@ was read-write touched (read-only, to trace the exact call chain). No git
 commit was made by this round — the operator instructed not to; these are
 working-tree changes for review.
 
+**Executed 2026-08-13:** decision 1 above carried out — `scenarios/anchor/reset/reset.sh` deleted and every repo reference to it updated (`docs/adding-scenarios.md`'s cleanup-story guidance and worked example, `ops/fixtures/iam-e2e-role/teardown.sh`'s comment); confirmed absence is valid via `aws_bench/scenario/scenario.py`'s own optional `reset/` layout docstring, `ScenarioTrial.run` (`aws_bench/scenario/trial.py:224-238`, which checks `has_phase_script` — a plain file-existence test — and skips straight to the framework-generic `_run_reset()`/`ResourceManager.reset_scenarios` when false, no special-casing), and the upstream `ec2-multiregion` scenario (`aws-bench-datasets/scenarios/ec2-multiregion`), which precedents both a missing `reset/` directory and a missing `[reset]` `scenario.toml` section entirely.
+
 ## Amendment 19 (2026-08-08) — Adding `iam-e2e-role`: IAM derivation
 ## scenario, Route53 drop, two-roles-one-task, no-terratest, and an honest
 ## gaming assessment
@@ -4370,3 +4372,351 @@ was last written). Result: `iam-e2e-role` assigned `train`, rank 2 of 6.
 numeric `rank` shifted to make room for the new 6th entry) — confirmed by
 diffing `specs/split.yaml` before/after. No equipping-tuning integrity
 concern per that doc's own "re-split procedure."
+
+## Amendment 20 (2026-08-13) — `iam-e2e-role`: the grantXxx-derivation
+## rework that makes the scenario actually measure its own contrast
+
+Directed by the operator (Vincent, repo owner), quoting Amendment 19's own
+§6 point 4 back to this run as the assignment: "this specific revision of
+the scenario does not yet produce the 'construct arms win on the workload
+role, tie-or-lose on the deployer role' contrast the whole scenario exists
+to measure... a future revision should redo the workload-role half of the
+`awscdk`/`terraconstructs` reference solutions... before this scenario's
+own results are cited as evidence for or against the grantXxx-asymmetry
+hypothesis." This amendment is that future revision. Scope: `iam-e2e-role`
+files only — a concurrent agent was working on `apigw-redeploy` in the same
+tree; nothing under that scenario's own paths, `scenarios/anchor/reset/
+reset.sh`, `qa_roles_stack.ts`, or `specs/apigw-redeploy.yaml` was touched
+by this amendment, and `specs/split.yaml`/train-holdout assignments were
+left untouched (no `generator/split.py --write` run this pass). **No AWS
+call was made, mutating or read-only, at any point in this run.**
+
+### 0. A methodology upgrade over Amendment 19: real toolchain execution
+
+Amendment 19 verified its offline claims by *manually reproducing*
+`tests/static_tiers.sh`'s jq/opa/cfn-guard logic against real `terraform
+plan`/`cdk synth`/`cdktn synth` output, because Node.js was not available
+in that authoring environment. **This run installed Node.js v26 (via
+`brew install node`) specifically to close that gap** — every claim below
+about `cdk synth`, `cdktn synth`, `npm run build`, and the resulting
+`tests/static_tiers.sh` reward is a REAL execution of the REAL generated
+task tree (a scratch copy of `tasks/anchor/iam-e2e-role-{awscdk,
+terraconstructs}/environment/{workspace,app}/` plus each arm's own
+generated `tests/`), not a hand-simulation of the same logic. `terraform`,
+`opa`, and `cfn-guard` were already present; `npm install` reached the real
+npm registry (confirmed reachable) and installed the exact pinned
+`aws-cdk-lib@2.263.0` / `aws-cdk@2.1135.0` / `terraconstructs@0.2.13` /
+`cdktn@0.23.0` versions the specs/arms pin. This is the first time this
+scenario's own claims about these two arms' synth/plan behavior have been
+checked against the real packages rather than their `.d.ts`/`.js` source
+read by eye.
+
+### 1. What changed, per arm
+
+**hcl_raw: untouched.** Both roles remain 100% hand-authored, exactly as
+Amendment 19 shipped — this is the deliberate floor arm; there is nothing
+for it to derive.
+
+**awscdk workload role, reworked.** The SecureString `db-password`
+parameter is now imported via `ssm.StringParameter
+.fromSecureStringParameterAttributes(scope, id, {parameterName,
+encryptionKey})` and its `.grantRead(workloadRole)` is called for real —
+this derives `{ssm:DescribeParameters, ssm:GetParameters, ssm:GetParameter,
+ssm:GetParameterHistory}` scoped to that one parameter's ARN, and —
+because `encryptionKey` is set — internally cascades into
+`cmk.grantDecrypt(workloadRole)` (verified directly in the real installed
+package: `aws-cdk-lib@2.263.0` `aws-ssm/lib/parameter.js`'s
+`ParameterBase.grantRead` reads `this.encryptionKey&&this.encryptionKey
+.grantDecrypt(grantee)` before granting the four SSM actions — byte-for-
+byte what `docs/scenario-proposal-iam-e2e-role.md` §4.1 quoted from the
+same file at a different revision). The CMK itself is imported via
+`kms.Key.fromKeyArn(scope, id, kmsKeyArnParam.valueAsString)`. The plain
+"config" parameter, `ssm:GetParametersByPath` (the anti-overclaim gap — see
+§3), and the EC2 self-discovery actions remain hand-authored, in a
+separate, explicitly-commented `WorkloadHandAuthoredPolicy`. Deployer role:
+byte-for-byte unchanged from Amendment 19.
+
+**terraconstructs workload role, reworked — but ONLY HALF as far as
+awscdk, for a real, verified reason (§2).** `encryption.Key.fromKeyArn(this,
+id, kmsKeyArnVar.stringValue).grantDecrypt(workloadRole)` is genuinely
+library-derived and offline-plan-safe. The SSM read actions for BOTH
+parameters (config and db-password alike) stay hand-authored in a single
+`ReadAppParameters` statement — `storage.StringParameter
+.fromSecureStringParameterAttributes()` was NOT used here, deliberately,
+because doing so breaks this scenario's own offline static tier (§2).
+Deployer role: byte-for-byte unchanged from Amendment 19.
+
+### 2. A real, verified per-arm coverage/plan-safety finding (not assumed)
+
+Attempting the awscdk-symmetric design on terraconstructs first (import
+`db-password` via `storage.StringParameter
+.fromSecureStringParameterAttributes().grantRead()`, exactly like awscdk)
+was tried, for real, this pass, and it FAILS this scenario's own offline
+static tier. Root cause, confirmed by reading the real installed
+`terraconstructs@0.2.13` source (`lib/aws/storage/parameter.js`):
+`fromStringParameterName`/`fromStringParameterArn`/
+`fromSecureStringParameterAttributes` ALL unconditionally construct a real
+`data "aws_ssm_parameter"` Terraform data source (`new
+provider_aws_1.dataAwsSsmParameter.DataAwsSsmParameter(...)`), even when
+the caller never reads the resulting `.stringValue` — unlike
+`aws-cdk-lib`'s own equivalents, which produce CloudFormation-side
+artifacts (a `CfnDynamicReference` for SecureString, an `AWS::SSM::
+Parameter::Value<String>` template Parameter for plain strings) that
+resolve only at real DEPLOY time, never at synth. Terraform reads data
+sources during `plan` itself, not just `apply`, and `-refresh=false` does
+not exempt them. Reproduced directly: a real `terraform init && terraform
+plan` against exactly this construct fails OFFLINE with
+`UnrecognizedClientException: The security token included in the request
+is invalid` on the resulting data source — this scenario's own
+`mock-sts.js` mocks only STS, by design (its own header comment), never
+SSM. Consequence: on terraconstructs, ONLY the KMS half of the
+`db-password` permission bundle is genuinely library-derived; the SSM half
+is not, for a structural reason specific to how CDKTF-style constructs
+model "import an existing resource" versus how CloudFormation does. This
+is recorded in `specs/iam-e2e-role.yaml`'s own `arms.terraconstructs.reason`
+field (not just here) and in both arms' `solution/solve.sh` header
+comments, per the operator's own instruction to treat this as "an OBSERVED
+per-arm coverage finding... rather than papering over it."
+
+A second, smaller finding on the awscdk side (also verified by real `cdk
+synth`, not assumed): `ssm.StringParameter.fromStringParameterAttributes()`
+/`.fromStringParameterArn()` — even for a PLAIN (non-secure) parameter —
+unconditionally create an `AWS::SSM::Parameter::Value<String>` CloudFormation
+template Parameter as a side effect of that class's `stringValue` field
+initializer, which appears in the synthesized template even when nothing
+ever reads `.stringValue` (confirmed: it appeared, unused, and `cdk synth`
+printed `WARNING ... is not referenced anywhere in the template`, when this
+pass first tried importing the plain "config" parameter the same way as
+"db-password"). CloudFormation resolves that parameter TYPE using the
+DEPLOYING PRINCIPAL's own `ssm:GetParameters` permission at stack-update
+time — a coupling onto whoever calls `cdk deploy` (this benchmark's
+`QADeployApplicationRole`) that was never authorized and is not needed.
+The reference avoids this entirely by not importing "config" via the SSM
+L2 at all — it stays hand-authored, exactly like the plain parameter
+already was in Amendment 19.
+
+### 3. The KMS key ARN cannot be known offline, on any arm — same shape as
+### hcl_raw's own `account_id` workaround
+
+`Key.fromKeyArn()` (both libraries) requires a real KEY ARN, not an alias.
+Confirmed against AWS's own KMS developer guide (`cmks-in-iam-policies.html`,
+fetched this pass): "You must use its key ARN to specify a KMS key in an
+IAM policy statement; you cannot use a key id, alias name, or alias ARN."
+The pre-provisioned CMK's key ID is an opaque, randomly-assigned GUID with
+no relationship to its alias name (`alias/cdktn-bench-iam-e2e-role`), so —
+unlike the account id, which the account-root ARN needs and which CDK/CDKTF
+can resolve via a pseudo-parameter/mocked data source — it cannot be
+computed or looked up offline (`kms.Key.fromLookup()`/`encryption.Key
+.fromLookup()` both require a real, live AWS lookup at synth/plan time,
+which `--no-lookups` and this scenario's own offline static tier both rule
+out, for the same reason `hcl_raw`'s reference avoids `data
+"aws_caller_identity"`). Both reworked reference solutions use a
+deploy-time-supplied value instead — a `cdk.CfnParameter` (awscdk) / a
+`cdktn.TerraformVariable` (terraconstructs) — with a syntactically-valid
+placeholder default for offline synth/plan, exactly mirroring the pattern
+`hcl_raw`'s own `account_id` variable already established in Amendment 19.
+A real deploy passes the true value, resolved the same way `hcl_raw`'s own
+README documents for `account_id`: `aws kms describe-key --key-id
+alias/cdktn-bench-iam-e2e-role --query KeyMetadata.Arn --output text`.
+
+### 4. Oracle changes
+
+- **Action catalogue** (`actions-are-real-iam-actions`, shared across all
+  three arms): added `ssm:GetParameterHistory`. `grantRead()` on BOTH
+  libraries grants this action unconditionally (it is one of the fixed
+  four), and it was simply missing from the catalogue Amendment 19 built
+  from the v1 (fully hand-authored) reference solutions, which never
+  needed it. A real IAM action, verified present in both libraries' source;
+  adding it to an allowlist does not weaken the `invalid-action-name` catch
+  (an agent still cannot pass by inventing an action not on the list).
+- **`missing-kms-for-securestring` catch**: `applies_to: [hcl_raw]` REMOVED
+  (now defaults to all three enabled arms, per `spec_model.Catch`'s own
+  default). Amendment 19 restricted this catch to `hcl_raw` because the v1
+  reference authored the workload role by hand everywhere, making a missing
+  KMS grant "unreachable by construction" on the construct arms. That
+  reasoning no longer holds: on awscdk, omitting `encryptionKey` from the
+  `fromSecureStringParameterAttributes` call reproduces the gap exactly
+  (`grantRead()`'s own `if (this.encryptionKey)` cascade simply never
+  fires); on terraconstructs, dropping the whole `Key.fromKeyArn()`
+  /`.grantDecrypt()` block reproduces it. Both are now real, authored
+  `solution/broken/missing-kms-for-securestring/` fixtures (§5), verified
+  to score reward 1.0 on every static tier (identical to the reference) and
+  to mechanically fail an offline IAM-evaluator's `kms:Decrypt` check —
+  exactly the `predicted_tier_caught: live` contract already declared.
+  The catch's own description was reworded to stop asserting the KMS grant
+  must be "scoped by a `kms:ViaService` condition" (`hcl_raw`'s own shape,
+  since it has no way to reference the real key ARN) — the construct-arm
+  shape (`Resource` scoped directly to the real key ARN, no condition) is
+  equally correct; the catch is about the grant being ABSENT, not about
+  which of the two correct shapes was used.
+- **`oracles/rego/iam-e2e-role/policy.rego`**: the `not_verifiable` block's
+  comment was corrected — it previously claimed both roles' policies are
+  "fully static... with no reference to a provider-computed output," which
+  is no longer true of the workload role's KMS statement on the two
+  construct arms (`{"Ref":"KmsKeyArn"}` / `${var.kms_key_arn}`, per §3).
+  Verified this is NOT a correctness gap: this policy's only rule
+  (`s3-resource-not-overbroad`) never inspects KMS statements, so the
+  plan-time-unknown KMS `Resource` is irrelevant to anything this file
+  actually evaluates — confirmed by a real `opa eval` against a
+  reworked-reference plan.json returning an empty `deny` set. Comment
+  reworded to state this precisely rather than the now-inaccurate blanket
+  claim. `oracles/cfn-guard/iam-e2e-role/policy.guard` made no such claim
+  and needed no change.
+- **`oracles/iam-e2e-role/intent.md`**: unchanged (generated verbatim from
+  `oracle.intent`, which this amendment did not edit — the two-property
+  "static shape + live check" design is untouched by this rework).
+- **`specs/iam-e2e-role.yaml` `arms.terraconstructs.reason`**: rewritten to
+  record the real per-arm finding in §2/§3 above in place, replacing the v1
+  text's forward-looking "a future revision could redo this" framing (now
+  moot — this IS that revision).
+
+### 5. Fourteen new negative fixtures — the actual gap this amendment closes
+
+`tasks/anchor/iam-e2e-role-{awscdk,terraconstructs}/solution/broken/` now
+each have all 7 catches' fixtures, mirroring `hcl_raw`'s own 7 (which are
+unchanged). Every one of the 14 new fixtures was generated by taking the
+new reference `lib/scenario-stack.ts` and applying exactly ONE targeted
+change (mechanical diff, same discipline `hcl_raw`'s own fixtures use), then
+RUN for real end-to-end (`npm run build`/`npx cdk synth --no-lookups`, or
+`npx cdktn synth` + real `terraform init`/`plan` under this arm's own
+`mock-sts.js`, then the arm's real, generated `tests/static_tiers.sh`) —
+not hand-predicted:
+
+| Catch | awscdk mechanism | terraconstructs mechanism | Verified result (both arms) |
+|---|---|---|---|
+| `admin-wildcard-policy` | deployer's 7 statements replaced by one `Action:"*"`/`Resource:"*"` | same | tier0 FAIL, reward 0.0 |
+| `invalid-action-name` | `s3:DeleteBucketOwnershipControls` appended to `S3Scratch` | same | tier0 FAIL, reward 0.0 |
+| `trust-policy-unconditional` | `.withConditions(...)` dropped from both roles' account-root principal | same | tier0 FAIL, reward 0.0 |
+| `wildcard-matches-protected-bucket` | `s3ScratchArn`/`s3ScratchObjectsArn` drop the `-scratch` suffix | same | tier1 FAIL (cfn-guard/rego both fired), reward 0.0 |
+| `missing-tag-on-create` | `iam:TagInstanceProfile` dropped from deployer's `InstanceProfileLifecycle` | same | static PASS (reward 1.0), offline IAM-evaluator confirms `iam:CreateInstanceProfile` ALLOW / `iam:TagInstanceProfile` DENY, prints `CDKTN_BENCH_LIVE_ONLY_CONFIRMED` |
+| `missing-kms-for-securestring` | `encryptionKey` dropped from the SecureString import (whole `Key`/`CfnParameter` block removed as dead code) | whole `Key.fromKeyArn()`/`.grantDecrypt()` block removed | static PASS (reward 1.0), evaluator confirms `ssm:GetParametersByPath` ALLOW / `kms:Decrypt` on the real CMK ARN DENY, prints the marker |
+| `getparametersbypath-not-granted` | hand-authored `GetParametersByPathGapFiller` statement removed | `ssm:GetParametersByPath` dropped from the hand-authored `ReadAppParameters` action list | static PASS (reward 1.0), evaluator confirms `ssm:GetParameter`/`kms:Decrypt` ALLOW / `ssm:GetParametersByPath` DENY, prints the marker |
+
+All 4 static-tier catches score exactly 0.0 and all 3 live-tier catches
+score exactly 1.0-plus-marker, on BOTH arms, matching
+`predicted_tier_caught` exactly. The corrected references themselves
+(`solution/solve.sh`) score reward 1.0 on all three arms, including
+`hcl_raw` (re-verified unaffected by the action-catalogue addition). This
+closes Amendment 19 §6 point 2's tracked gap ("`awscdk`/`terraconstructs`
+have NO `broken/` fixtures yet, for any catch") for `iam-e2e-role`
+specifically — `gates/oracle_falsifiability.py` (not run this pass, still
+Docker-gated, see §7) should now report a real PASS/FAIL per (arm, catch)
+pair instead of `MISSING` for these two arms.
+
+### 6. The honest result this scenario now measures — stated plainly
+
+**The WORKLOAD role now shows real, evidenced asymmetry, not aspiration:**
+awscdk derives BOTH the SecureString parameter's SSM read actions AND its
+KMS decrypt permission from one `grantRead()` call; terraconstructs derives
+ONLY the KMS decrypt half (a real per-arm coverage difference, §2, not a
+tuning choice); `hcl_raw` derives neither and must hand-write both,
+correctly, using the real episode's own `kms:ViaService`-conditioned shape.
+All three arms still hand-write the same three things regardless: the
+plain "config" parameter's reads, the `ssm:GetParametersByPath` gap-filler
+(no library on either arm grants it — this is deliberately unaffected by
+this rework, still the scenario's anti-overclaim catch), and EC2
+self-discovery.
+
+**The DEPLOYER role shows parity, unchanged and by design:** 100%
+hand-authored, byte-for-byte identical in content across all three arms,
+before and after this rework. No amendment to this scenario should expect
+that to change without a corresponding change to the libraries themselves
+— `docs/scenario-proposal-iam-e2e-role.md` §4.3's finding ("no feature,
+helper, or concept anywhere in the library for deriving the deploying
+principal's policy") was independently re-confirmed by this pass finding
+no such helper while authoring the reworked reference solutions either.
+
+This is exactly the two-sided result Amendment 19 §6 point 1 pre-registered
+before any trial: construct arms win where a library genuinely derives
+something (workload role, partially on terraconstructs, more fully on
+awscdk), and are at parity where no library does (deployer role). Nothing
+in this pass was tuned to make either arm look better than the verified
+evidence supports — the terraconstructs-only SSM limitation (§2) and the
+awscdk-only hidden-CfnParameter wrinkle (§2) are both real constraints this
+pass discovered while trying to make the SYMMETRIC design work, not
+choices.
+
+### 7. What remains unproven — stated plainly, most of it unchanged from
+### Amendment 19
+
+1. **`make falsifiability`/`make grading-proof` (Docker-gated) were not
+   run** — no `cdktn-bench/<arm>:dev` images were built this pass. Every
+   claim above about reward/tier status was instead verified by REAL
+   `npm`/`cdk`/`cdktn`/`terraform`/`opa`/`cfn-guard` execution against the
+   real generated task trees, copied to a scratch directory outside the
+   repo, with `/app/project`/`/logs/verifier` path-substituted (same
+   technique Amendment 19 used, but this time driving the REAL toolchain
+   instead of hand-simulating its logic) — strong evidence, still not a
+   substitute for the real gate.
+2. **No real `harness/validate.sh` run has ever happened against a real
+   AWS account** — unchanged from Amendment 19; the live half of this
+   scenario's oracle remains entirely unexercised end-to-end. In
+   particular, whether `AWS::SSM::Parameter::Value<String>`-type
+   CloudFormation parameters truly resolve using the DEPLOYING PRINCIPAL's
+   own credentials (the reasoning in §2 for avoiding that construct) is
+   asserted from AWS's own documented behavior, not confirmed against a
+   real `cdk deploy` in this account — mitigated, not eliminated, by simply
+   not shipping a reference solution that depends on the answer either way.
+3. **`QADeployApplicationRole` still needs its one `sts:AssumeRole`
+   statement** (Amendment 19 §5) — still proposed, not authorized, not
+   wired. Unaffected by this rework (the deployer role's own
+   permissions, and the agent's own operating credential, are both
+   unchanged from Amendment 19).
+4. **`ops/fixtures/iam-e2e-role/provision.sh` still has not been run** —
+   the CMK, SSM parameters (including the "db-password" SecureString this
+   rework now depends on more directly for the workload role's own live
+   correctness), and decoy bucket do not yet exist in the account.
+5. **`scenarios/anchor/reset/reset.sh` still has no `iam-e2e-role` sweep
+   entry** — unchanged gap from Amendment 19 §7.
+6. **The cfn-guard-vs-rego strictness asymmetry for
+   `wildcard-matches-protected-bucket`** (Amendment 19 §6 point 1) is
+   unchanged and unaffected by this rework — still a known, documented gap
+   specific to the tier-1 S3 check, orthogonal to the workload role's own
+   KMS/SSM permissions.
+
+**Verification performed this pass** (all offline, no AWS credentials
+used, Node.js v26 installed via `brew` specifically to make real execution
+possible): `make validate-spec SPEC=specs/iam-e2e-role.yaml` — OK, 7
+catches, 7 structural_asserts. `make gen SPEC=specs/iam-e2e-role.yaml` — OK,
+regenerated `tests/static_tiers.sh` (action-catalogue addition only) and
+`environment/workspace/lib/scenario-stack.ts` for the awscdk arm (this
+regeneration also fixed a real pre-existing leak — that file had somehow
+been left containing the FULL reference-solution content instead of the
+generator's own empty agent-facing skeleton; regenerating restored the
+correct empty skeleton, which this amendment treats as a welcome
+side-effect, not something it caused). `make parity SPEC=specs/
+iam-e2e-role.yaml` — OK. All three arms' `solution/solve.sh` verified via
+real `npm run build && npx cdk synth --no-lookups`, real `npx cdktn synth`
++ real `terraform init && terraform plan` (under real `mock-sts.js`), and
+real `terraform init && terraform validate && terraform plan -refresh=false`
+(hcl_raw, unchanged) respectively, each followed by that arm's own real,
+generated `tests/static_tiers.sh` — all three report `tier0_pass=1`,
+tier-1 `PASS`, `reward=1.0`. All 14 new negative fixtures (§5) plus
+`hcl_raw`'s pre-existing 7 (spot-checked: reference still 1.0 after the
+catalogue change) verified the same way, each scoring exactly what
+`predicted_tier_caught` requires. `opa eval`/`cfn-guard validate` against
+the hand-authored `policy.rego`/`policy.guard` bundles (the latter
+unedited; the former's comment corrected, §4) — both still evaluate
+correctly against real plan/template output from the reworked references
+and fixtures.
+
+**Files added:** `tasks/anchor/iam-e2e-role-{awscdk,terraconstructs}/
+solution/broken/{admin-wildcard-policy,invalid-action-name,
+trust-policy-unconditional,wildcard-matches-protected-bucket,
+missing-tag-on-create,missing-kms-for-securestring,
+getparametersbypath-not-granted}/solve.sh` (14 files), this amendment.
+**Files modified:** `specs/iam-e2e-role.yaml` (`arms.terraconstructs.reason`,
+the action catalogue, the `missing-kms-for-securestring` catch),
+`tasks/anchor/iam-e2e-role-{awscdk,terraconstructs}/solution/solve.sh`
+(workload-role half reworked; deployer role untouched),
+`oracles/rego/iam-e2e-role/policy.rego` (comment only),
+regenerated-but-generator-owned files under `tasks/anchor/
+iam-e2e-role-{awscdk,hcl-raw,terraconstructs}/tests/static_tiers.sh` and
+`tasks/anchor/iam-e2e-role-awscdk/environment/workspace/lib/
+scenario-stack.ts` (see above). **Files NOT modified:** everything under
+`apigw-redeploy`'s own paths, `scenarios/anchor/reset/reset.sh`,
+`scenarios/anchor/scenario/cdk_app/stacks/qa_roles_stack.ts`,
+`specs/split.yaml`, `ops/fixtures/iam-e2e-role/*` (still written-not-run,
+unchanged from Amendment 19), `oracles/cfn-guard/iam-e2e-role/policy.guard`,
+`oracles/iam-e2e-role/intent.md`, `tasks/anchor/iam-e2e-role-hcl-raw/
+solution/*` (the floor arm, deliberately untouched).

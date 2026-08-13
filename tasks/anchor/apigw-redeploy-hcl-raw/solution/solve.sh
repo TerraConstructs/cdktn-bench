@@ -82,6 +82,12 @@ write_rev1() {
   cat > main.tf <<'TF'
 resource "aws_iam_role" "lambda_exec" {
   name = "apigw-redeploy-lambda-exec"
+  # Amendment 16's flagged gap: QADeployApplicationRole's
+  # IamRoleLifecycleScoped/IamPassRoleScoped statements only permit
+  # iam:CreateRole/PassRole under arn:aws:iam::<account>:role/cdktn-bench-task/*
+  # -- IAM's DEFAULT path (`/`, this resource's default without an explicit
+  # `path`) would AccessDeny under that role.
+  path = "/cdktn-bench-task/"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -223,6 +229,12 @@ write_rev2() {
   cat > main.tf <<'TF'
 resource "aws_iam_role" "lambda_exec" {
   name = "apigw-redeploy-lambda-exec"
+  # Amendment 16's flagged gap: QADeployApplicationRole's
+  # IamRoleLifecycleScoped/IamPassRoleScoped statements only permit
+  # iam:CreateRole/PassRole under arn:aws:iam::<account>:role/cdktn-bench-task/*
+  # -- IAM's DEFAULT path (`/`, this resource's default without an explicit
+  # `path`) would AccessDeny under that role.
+  path = "/cdktn-bench-task/"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{

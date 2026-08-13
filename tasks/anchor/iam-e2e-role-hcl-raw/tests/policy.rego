@@ -113,12 +113,19 @@ allow if {
 	count(deny) == 0
 }
 
-# not_verifiable: no assert in this scenario's spec targets a plan-time-
-# unknown attribute (unlike specs/_toy/toy-ssm-parameter.yaml's own IAM
-# ARN-reference example) -- both roles' policies are fully static, agent-
-# authored literal JSON with no reference to a provider-computed output.
-# Left empty deliberately (SCHEMA.md §4.2.1: optional, and correct to omit
-# when there is genuinely no such gap).
+# not_verifiable: no assert in THIS policy targets a plan-time-unknown
+# attribute (unlike specs/_toy/toy-ssm-parameter.yaml's own IAM
+# ARN-reference example). NOTE (grantXxx-derivation rework, see
+# DECISIONS.md): the workload role's KMS decrypt statement, on the
+# awscdk/terraconstructs reference solutions, DOES reference a
+# provider/deploy-time-supplied value (a CfnParameter Ref / Terraform
+# variable interpolation for the real CMK ARN -- Key.fromKeyArn() can't
+# know it offline) -- but this policy's own only rule
+# (s3-resource-not-overbroad) never inspects KMS statements at all, so
+# that plan-time-unknown value is genuinely irrelevant to anything this
+# file evaluates. Left empty deliberately (SCHEMA.md §4.2.1: optional, and
+# correct to omit when there is genuinely no such gap FOR THIS POLICY'S
+# OWN RULES).
 not_verifiable contains msg if {
 	false
 	msg := ""
