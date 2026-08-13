@@ -1,0 +1,30 @@
+{
+  "scenario": {
+    "name": "anchor",
+    "path": "scenarios/anchor",
+    "git_url": null,
+    "git_commit_id": null,
+    "overwrite": false,
+    "download_dir": null,
+    "source": "cdktn-bench-anchor"
+  },
+  "trial_name": "anchor__Ve9v77z",
+  "output_dir": "scenario-jobs/2026-08-13__07-17-31",
+  "environment": {
+    "force_build": false,
+    "delete": true,
+    "override_build_timeout_sec": null,
+    "override_cpus": null,
+    "override_memory_mb": null,
+    "mounts_json": null
+  },
+  "account_mapping": {
+    "PRIMARY": "886312446417"
+  },
+  "timeout_multiplier": 1.0,
+  "ou_name": "cdktn-anchor",
+  "verify_region": null,
+  "reset_max_concurrent": 10,
+  "cleanup_max_concurrent": 10,
+  "cleanup_all_regions": false
+}

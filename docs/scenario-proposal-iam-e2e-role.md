@@ -1,5 +1,10 @@
 # Scenario proposal: `iam-deploy-role` — author and validate a least-privilege deployment role
 
+> **NOT PURSUED (2026-08-13).** The `iam-e2e-role` scenario was dropped — spec, tasks, oracles, and fixtures removed — per operator decision. Reason: it centered on the *deployer/CI* principal's policy, which the evidence below shows **no construct library derives** (grantXxx only derives the *workload* principal). The scenario therefore measured the one place abstractions don't help. This document is retained as research record: the ordered defect list and the workload-vs-deployer finding feed the replacement direction — a **cross-service workload-grant** scenario (e.g. `bucket.grantRead(fn)` deriving the exact IAM identity policy + resource policy, vs hand-written `aws_iam_role_policy` + bucket policy in HCL), where the L2 advantage genuinely holds. See DECISIONS.md Amendment 21.
+
+---
+
+
 Status: **proposal**. Nothing here is generated, deployed, or wired in. No spec file, task dir, oracle, or `QARolesStack` change accompanies it. Adoption requires the full `docs/adding-scenarios.md` procedure (spec → `make gen` → oracles → reference solution + negative fixtures → `make falsifiability` / `make grading-proof`) plus a `DECISIONS.md` authorization for the account fixtures in §5.3.
 
 §1–§4 are **evidence** mined from real Claude Code transcripts of the TerraConstructs/atlantis episode; §5–§7 are the design derived from it. Citations are `ATL L<jsonl-line>` into

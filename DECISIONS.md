@@ -4743,3 +4743,59 @@ its own sign-off.
 **Consequence:** requires `aws-bench env setup` to redeploy `QARolesStack` before
 the change takes effect in the account (also mandatory anyway after the reset.sh
 removal + role changes changed the scenario source hash — see Amendment 18).
+
+---
+
+## Amendment 21 (2026-08-13) — drop the iam-e2e-role scenario
+
+**Operator decision (verbatim, 2026-08-13):** "drop iam-e2e-role (Slice H) (spec
+only) - reason: the real intent should be writing cross service infra which
+requires carefully crafted IAM Policies (which are encoded in the cross services
+L2 patterns in AWSCDK), the e2e example was just a personal experience.. but it
+doesn't hold."
+
+**Removed:** `specs/iam-e2e-role.yaml`, `tasks/anchor/iam-e2e-role-*` (3 arms),
+`oracles/{rego,cfn-guard}/iam-e2e-role`, `oracles/iam-e2e-role`,
+`ops/fixtures/iam-e2e-role`. `specs/split.yaml` and `local-registry.json`
+regenerated/pruned. The harness capability the scenario exercised (live deploy,
+mutating tasks, the QADeployApplicationRole path) is unaffected and still used by
+`apigw-redeploy`.
+
+**Why it didn't hold (confirmed by our own evidence, docs/scenario-proposal-iam-e2e-role.md
+§4):** the scenario's core was the *deployer/CI* IAM role, and **no construct
+library derives the deployer principal's policy** — `grantXxx()` only ever derives
+the *workload* principal. So the scenario measured the one boundary where the
+abstraction gives no advantage; of the 12 evidenced defects, constructs eliminated
+exactly one (the KMS family) and introduced two of their own.
+
+**Salvaged direction (future scenario, not yet specced):** the *workload*-grant
+asymmetry is real and does hold. A **cross-service workload-grant** scenario —
+e.g. a Lambda that must read an S3 bucket and decrypt with a KMS key — is where
+`aws-cdk-lib`'s cross-service L2 patterns (`bucket.grantRead(fn)` deriving the
+exact identity policy, resource policy, and KMS grant in one call) legitimately
+beat hand-written `aws_iam_role_policy` + bucket policy + key policy in HCL. This
+is the correct home for the IAM-derivation question. `docs/scenario-proposal-iam-e2e-role.md`
+is kept as the evidence record; the ordered defect list remains reusable.
+
+---
+
+## Amendment 22 (2026-08-13) — raise the turn budget 8 → 100
+
+**Operator decision (verbatim, 2026-08-13):** "set max-turns to 100 (if not 50 at
+a minimum - but start large and add claude.md note to monitor and trim where
+required)."
+
+**Change:** `scripts/run-bench.sh` `MAX_ITERS` default 8 → 100. `CLAUDE.md`
+"Turn budget" section added (monitor `num_turns`; trim toward 50 with evidence).
+
+**Why (a correction, not just a knob):** the pre-registration's `MAX_ITERS = 8`
+means 8 *feedback cycles*, but the code maps `MAX_ITERS` → Claude Code's
+`--max-turns`, which counts *agent steps*. One cycle is many steps, and a live
+scenario's steps include minutes-long `terraform apply` / `cdk deploy`. The first
+live trial (`apigw-redeploy-hcl-raw`, 2026-08-13) hit `error_max_turns` at 8 —
+right-censored purely by an under-budget, not by the agent's ability. `MAX_TOKENS`
+remains the intended censoring budget; `--max-turns` is a runaway backstop.
+
+**Pre-registration status:** this refines the operationalization of §4's budget
+cap (turns ≠ cycles), it does not change the *metric*. The censoring discipline
+(never drop a capped run; pair with success-rate) is unchanged.

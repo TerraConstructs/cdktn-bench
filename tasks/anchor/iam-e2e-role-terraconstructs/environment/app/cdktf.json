@@ -1,5 +1,0 @@
-{
-  "language": "typescript",
-  "app": "npx ts-node main.ts",
-  "sendCrashReports": "false"
-}

@@ -1,0 +1,49 @@
+{
+  "id": "246f5d0b-379c-467e-8cce-a961419b70ce",
+  "job_name": "2026-08-13__07-17-31",
+  "job_dir": "/Users/vincentsmet/cdk/cdktn-bench/scenario-jobs/2026-08-13__07-17-31",
+  "started_at": "2026-08-13T07:17:37.642140Z",
+  "finished_at": "2026-08-13T07:26:32.220532Z",
+  "n_total": 1,
+  "n_succeeded": 1,
+  "n_failed": 0,
+  "trial_results": [
+    {
+      "id": "6ddce678-447c-4049-8031-cc77535ced3e",
+      "scenario_name": "anchor",
+      "trial_name": "anchor__Ve9v77z",
+      "phase": "deploy",
+      "started_at": "2026-08-13T07:17:37.645710Z",
+      "finished_at": "2026-08-13T07:26:32.217068Z",
+      "environment_setup": {
+        "started_at": "2026-08-13T07:17:37.646635Z",
+        "finished_at": "2026-08-13T07:18:07.175626Z"
+      },
+      "execute": {
+        "started_at": "2026-08-13T07:18:20.205647Z",
+        "finished_at": "2026-08-13T07:22:38.360642Z"
+      },
+      "exit_code": 0,
+      "exception_info": null,
+      "account_mapping": {
+        "PRIMARY": "886312446417"
+      },
+      "regions": [
+        "us-east-1"
+      ],
+      "resource_results": {
+        "snapshot": [
+          {
+            "account_id": "886312446417",
+            "success": true,
+            "regions_captured": [
+              "us-east-1"
+            ],
+            "error_message": null,
+            "output_path": null
+          }
+        ]
+      }
+    }
+  ]
+}
