@@ -1,0 +1,19 @@
+Traceback (most recent call last):
+  File "/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/trial.py", line 242, in run
+    raise script_error
+  File "/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/trial.py", line 232, in run
+    await self._run_phase_in_container(phase)
+  File "/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/trial.py", line 348, in _run_phase_in_container
+    await self._build_and_start()
+  File "/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/trial.py", line 375, in _build_and_start
+    await self._container.start()
+  File "/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/container.py", line 260, in start
+    await self._run_docker(args)
+  File "/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/container.py", line 620, in _run_docker
+    raise DockerCLIError(cmd, rc, stderr)
+aws_bench.scenario.container.DockerCLIError: docker command failed (exit 125): docker run --detach --name awsbench-anchor__ut3cilh --cpus 1 --memory 2048m --mount type=bind,source=/Users/vincentsmet/cdk/cdktn-bench/scenario-jobs/2026-08-06__12-44-17/anchor__ut3CiLH,target=/logs --mount type=bind,source=/var/folders/sb/l6ks_dt16qb1k30sdwjn1r140000gp/T/awsbench-creds-awsbench-anchor__ut3cilh-231y159u,target=/awsbench-creds,readonly awsbench-anchor sleep infinity
+stderr:
+docker: Error response from daemon: invalid mount config for type "bind": bind source path does not exist: /var/folders/sb/l6ks_dt16qb1k30sdwjn1r140000gp/T/awsbench-creds-awsbench-anchor__ut3cilh-231y159u
+
+Run 'docker run --help' for more information
+

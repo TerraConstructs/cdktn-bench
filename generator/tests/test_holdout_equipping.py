@@ -46,7 +46,15 @@ class TestHoldoutBlocksEquipping:
         skill_dir = arm_dir / "skills" / "iac-helper"
         skill_dir.mkdir(parents=True)
         (skill_dir / "SKILL.md").write_text("# iac-helper\n")
-        spec = _FakeSpec(id="s3-lambda-log-retention")  # real holdout scenario
+        # Slice G (2026-08-06): specs/apigw-redeploy.yaml's addition shifted
+        # the 60/40 train/holdout cutoff (specs/split.yaml) -- s3-lambda-
+        # log-retention moved train->holdout to holdout->train under the
+        # new 5-scenario ranking (ordinary scenario additions shift the
+        # cutoff over the existing ranking; see generator/split.py's own
+        # docstring). Switched to sfn-jsonata, which stayed holdout across
+        # that re-split, matching every other holdout-scenario test in this
+        # file (see e.g. line 38 above).
+        spec = _FakeSpec(id="sfn-jsonata")  # real holdout scenario, specs/split.yaml
         with pytest.raises(HoldoutEquippingViolation) as exc:
             enforce_no_holdout_equipping(spec, {"hcl_raw": arm_dir})
         assert "skills/iac-helper/SKILL.md" in str(exc.value)

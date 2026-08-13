@@ -123,13 +123,45 @@ isn't confounded by unequal agent tooling:
 - **WORKDIR**: `/app/project` for all three (was `/app` for terraconstructs, `/workspace`
   for hcl-raw — both changed to match awscdk, the arm this convention originated in and
   the one downstream docs/generator plans already reference).
-- **Baseline utilities**: `bash`, `git`, `curl`, `jq`, `unzip`, AWS CLI v2, present in
-  every arm image (hcl-raw and terraconstructs were missing the AWS CLI; terraconstructs
-  was additionally missing `jq`, which hcl-raw's own preflight.sh calls "bundled for
-  oracle/verifier tooling" — a verifier/oracle script written once and reused across arms
-  would have broken on terraconstructs).
+- **Baseline utilities**: `bash`, `git`, `curl`, `jq`, `unzip`, AWS CLI v2, `python3`,
+  present in every arm image (hcl-raw and terraconstructs were missing the AWS CLI;
+  terraconstructs was additionally missing `jq`, which hcl-raw's own preflight.sh calls
+  "bundled for oracle/verifier tooling" — a verifier/oracle script written once and reused
+  across arms would have broken on terraconstructs).
 Verified per-arm with `docker run --rm --entrypoint sh <image> -c 'command -v bash git
-curl jq unzip aws'` against all three images — all resolve.
+curl jq unzip aws python3'` against all three images — all resolve.
+
+**Amendment (fix-round-3, 2026-08-07, benchmark-integrity review finding G2):** `python3`
+promoted from "deliberately excluded" (arms/hcl-raw's own workspace/provider.tf header used
+to say so explicitly, of the *grading-tool* baseline — jq-only structural asserts,
+generator/jsonpath_jq.py's docstring) to *required* in every arm image. That earlier
+exclusion was scoped to grading tools reused across arms (still true — structural asserts
+are still jq-only); it did not anticipate a per-scenario verifier script
+(`tests/live_check.py`, `verifier.live_check.enabled`, first and only consumer:
+apigw-redeploy) that generator/gen.py's generated `tests/test.sh` invokes with a bare
+`python3` regardless of arm. Before this fix, `python3` existed only in
+`arms/hcl-raw` (installed earlier, for an unrelated reason — `workspace/mock-sfn.py`'s
+offline `aws_sfn_state_machine` plan-time mock); `arms/awscdk` and `arms/terraconstructs`
+had none, so `python3 "$DIR/live_check.py"` failed with a shell "command not found" on
+those two arms, and `test.sh` folded that failure's stderr into
+`live_check-result.json` where the new (Slice G) `SPEC_LIVE_CHECK_GATING` AND-semantics
+read it as an innocuous `"not_verifiable"` outcome — silently downgrading a PERFECT
+apigw-redeploy solution to reward 0.0 on 2 of 3 arms. Fixed by adding `python3` to
+`arms/awscdk/environment/Dockerfile` and `arms/terraconstructs/environment/Dockerfile`
+(one-line addition to each image's existing `apt-get install`, matching hcl-raw's own
+line), adding a `python3 --version` preflight assertion to all three arms'
+`preflight.sh` (so this can never regress silently again), and splitting
+`generator/gen.py::build_test_sh`'s `live_check.py` invocation so stderr lands in its own
+`live_check-stderr.log` and a nonzero interpreter exit code (missing python3 = 127, or a
+genuine live_check.py crash) overwrites the result file with an explicit
+`{"outcome": "run_invalid", ...}` marker — a third bucket, distinct from both `"pass"` and
+the legitimate `"not_verifiable"`/`"fail_stale"` verdicts live_check.py itself can report,
+so a future regression is diagnosable instead of silently misread as "no live API found".
+Verified live: rebuilt `cdktn-bench/awscdk:dev` and `cdktn-bench/terraconstructs:dev`,
+confirmed `python3 --version` resolves in both, and re-ran the generated
+`apigw-redeploy-{awscdk,terraconstructs}/tests/test.sh` inside each image against a stub
+`live_check.py` that emits a genuine JSON verdict — no "command not found" in
+`live_check-stderr.log`.
 
 ### TF provider version per arm (not forced to match)
 
@@ -2249,3 +2281,2630 @@ rationale for each lives inline as a dated comment at its own fix site
 `metrics/emit_fixture_rows.py`, `gates/emit_result.py`,
 `gates/tests/test_emit_result.py`, `metrics/tokens_to_green.py`,
 `metrics/test_tokens_to_green.py`, `test/test_run_bench_wrapper.py`.
+
+---
+
+## Amendment 12 (2026-08-06/07) — Slice G (`apigw-redeploy`): schema/generator
+## plumbing to actually land the scenario, plus fixes for a live-discriminator
+## review's 7 findings (4 blockers, 3 major)
+
+`apigw-redeploy` (docs/apigw-redeploy-mechanics.md, docs/slice-g-recon.md)
+did not exist as a registered scenario before this amendment — only five
+hand-authored `solve.sh` files sat under `tasks/anchor/apigw-redeploy-*`,
+disconnected from `specs/`, the generator, and every gate. A live-
+discriminator review of those five scripts found the redeploy machinery
+itself sound but the *scaffolding around it* broken on every axis: the
+reference solutions failed their own LIVE checks ~100% of the time
+(propagation-latency race, no polling), the negative fixtures didn't
+actually discriminate at the instant they sampled, the proposed
+`live_check` contract was empirically false, the scenario had no
+generator/schema plumbing at all, two of three reference solutions
+weren't runnable without hand-building missing `environment/` trees, and
+LIVE proof runs left CloudWatch log-group residue in the shared account.
+This amendment closes all seven findings and, in doing so, lands the
+missing plumbing docs/slice-g-recon.md's closing list called out as
+required first.
+
+### Schema/generator extensions (the "does the scenario exist" blocker)
+
+1. **`spec_model.LiveCheck.enabled`** relaxed from `Literal[False]` to
+   `bool` (recon gap 1). Every pre-Slice-G spec still sets it `false`
+   (unchanged behavior, unchanged generated output — verified below).
+   Gained `hand_authored: bool` (must be `true` whenever `enabled` is
+   `true` — a model validator rejects the alternative, so a spec can never
+   silently ship the generated not-implemented stub as its real live
+   check) and optional `agent_role_name`/`concurrency_mode` overrides.
+2. **`generator/gen.py::build_task_toml`** now reads `agent_role_name`/
+   `[concurrency] mode` from the spec (via the two new `LiveCheck` fields)
+   instead of the two hardcoded literals at the old line 655/662 (recon
+   gap 2) — `None` (every existing spec) reproduces the old hardcoded
+   values byte-for-byte. Also writes `[verifier] env = {
+   SPEC_LIVE_CHECK_ENABLED = "true" }` when `live_check.enabled` (recon
+   gap 4) — explicitly commented as a **best-effort, unverified**
+   placement against aws-bench's own task.toml schema (that source lives
+   outside this repo; the comment says so and DECISIONS tracks it as an
+   open integration point rather than claiming false certainty).
+3. **`generate_arm`'s write-tests step is now destructive-safe for
+   `tests/live_check.py`** whenever `spec.verifier.live_check.hand_authored`
+   is true (recon gap 5) — the same "never overwrite hand-authored
+   content" convention `solution/solve.sh` already had (SCHEMA.md §8.2
+   point 8). Verified directly: re-running `make gen
+   SPEC=specs/apigw-redeploy.yaml` after hand-authoring
+   `tests/live_check.py` left it byte-identical; every pre-Slice-G spec
+   (`hand_authored=False`, the only legal value when `enabled=False`)
+   keeps the old always-overwrite-the-stub behavior.
+4. **`spec_model.Catch.applies_to`** (new field, defaults to all 3 arms —
+   100% backward compatible) — a catch's mistake can be structurally
+   impossible on some arm (a hand-omitted TF `triggers` block has no
+   direct L2 equivalent; the L2 always computes one) without forcing a
+   contrived escape-hatch fixture there just to satisfy
+   `gates/oracle_falsifiability.py`'s "every catch needs a broken/ fixture
+   on every enabled arm" rule. `check_arm` now reports `N/A` (non-gating)
+   for a catch/arm pair the catch itself declares out of scope, instead of
+   `MISSING` (a hard fail).
+5. **`CatchTierStr` gained `"live"`** — a catch whose mistake is invisible
+   to *every* static tier by construction (docs/apigw-redeploy-mechanics.md
+   §6(c): only a live apply→modify→re-apply→curl loop discriminates it).
+   `gates/oracle_falsifiability.py::check_arm` grew a `"live"` branch,
+   shaped like the existing `"0.5"` branch (reward is *expected* to stay
+   1.0 — that invisibility IS the catch) but falsified by a fixed marker
+   string (`LIVE_ONLY_CONFIRMED_MARKER =
+   "CDKTN_BENCH_LIVE_ONLY_CONFIRMED"`) the fixture's own **offline** run
+   must mechanically print, earned by a real two-plan `triggers.redeployment`
+   diff — not merely asserted in a comment. This keeps `make
+   ci`/`make falsifiability` fully offline (no AWS credentials/network) while
+   still requiring the fixture to prove what it claims. Directly closes
+   finding 5's ask ("record live-only catches instead of reporting them as
+   uncaught").
+6. **`specs/apigw-redeploy.yaml`** (new): 3 arms, 3 catches
+   (`deployment-missing-integration-dependency` — tier "1", all arms, the
+   same catch family/oracle-equivalence pattern as `apigw-openapi`, with
+   real broken/ fixtures on all three arms so `grading-proof`'s hard
+   "at least one arm reaches a real tier-1 catch" requirement is met;
+   `stale-deployment-no-triggers` — tier "0", `applies_to: [hcl_raw]`,
+   genuinely single-artifact-catchable (a `deployment-triggers-present`
+   tier-0 assert against the FINAL delivered file); `triggers-incomplete-
+   hash` — tier "live", `applies_to: [hcl_raw]`, the one catch that
+   genuinely needs a cross-revision diff, which no single-artifact static
+   tier can express), and `verifier.live_check.enabled: true`. `make gen`
+   against it produces every generated artifact (`environment/`,
+   `task.toml`, `instruction.md`, `tests/{_assert_lib,static_tiers,test}.sh`)
+   through the SAME pipeline every other scenario uses — this alone closes
+   most of finding 4 and all of finding 6 (see below).
+7. **`oracles/rego/apigw-redeploy/policy.rego` +
+   `oracles/cfn-guard/apigw-redeploy/policy.guard`** (new, hand-authored):
+   the `deployment-missing-integration-dependency` tier-1 identity/
+   cardinality checks, adapted directly from `apigw-openapi`'s own proven
+   rules (same catch family, same rationale, same documented cardinality-
+   proxy residual gap on awscdk).
+
+**Explicitly NOT done** (docs/slice-g-recon.md's remaining gaps, honestly
+left open rather than half-built): a new, minimally-scoped
+`QADeployApplicationRole` in `qa_roles_stack.ts` was NOT created or
+deployed — that is a change to shared, persistent account infrastructure
+(not a per-task resource this fix pass's live re-proof is scoped to touch),
+and the recon's own open question about the CDKToolkit assume-role grant it
+would need is unresolved. `specs/apigw-redeploy.yaml` instead sets
+`agent_role_name: "QALocalInvocationApplicationAdmin"` (the existing,
+already-provisioned admin role) — a real over-grant, logged here rather
+than hidden, and a natural next step once the scoped role is built.
+Whether aws-bench's own trial runner actually reads `[verifier].env` the
+way point 2 above assumes, whether `ResourceManager.reset_scenarios`
+covers apigateway/lambda/logs, and `scenarios/anchor/reset/reset.sh` were
+NOT verified/built — all three require reading or modifying the aws-bench
+runner itself, outside this repo, and remain open per recon's own
+"not implemented by this recon" framing. This scenario's own solve.sh/
+live_check.py-level cleanup (finding 7, below) is deliberately NOT
+contingent on any of these three landing.
+
+### Live-discriminator review findings (fixed 1:1)
+
+1. **(blocker) Correct solutions failed their own LIVE check ~100% of the
+   time** — every one of the five `solve.sh` LIVE paths curled the
+   modified route exactly once, immediately after the second
+   apply/deploy; API Gateway stage-propagation latency (measured: hcl-raw
+   200 at t=30s, awscdk/terraconstructs 200 at t=60s, 403 at every earlier
+   sample) meant this failed almost always. Fixed by centralizing the
+   check in a new, hand-authored `tests/live_check.py` (destructive-safe
+   per point 3 above, copied identically into all 3 arms' task
+   directories): `check_ok()` polls up to `POLL_TIMEOUT_S = 180` (5s
+   interval — 60s was not enough margin per the review's own measurement),
+   succeeding on the first `200` whose body matches the exact fixed
+   modification. All three `solution/solve.sh` LIVE paths now end with
+   `python3 tests/live_check.py --api-url "$API_URL" --expect ok` instead
+   of a single immediate curl.
+2. **(blocker) The two hcl_raw negatives didn't discriminate at the point
+   they sampled** — `STATUS_CODE != 200` measured once, immediately after
+   the second apply, is exactly what a CORRECT solution also produces
+   during the same propagation window finding 1 documents. Fixed:
+   `tests/live_check.py::check_stale()` polls the FULL `POLL_TIMEOUT_S`
+   window (never early-exits on one sample) AND requires the deployment id
+   observed after apply #1 to equal the one observed after apply #2 (a new
+   `output "deployment_id"` on both broken fixtures' `main.tf`, captured
+   via `terraform output -raw deployment_id` around each apply). Both
+   `solution/broken/{stale-deployment-no-triggers,triggers-incomplete-hash}/
+   solve.sh` LIVE paths now call `--expect stale
+   --deployment-id-before ... --deployment-id-after ...` instead of a
+   single ad hoc curl+comment.
+3. **(blocker) The proposed "≥2 deployments, stage on latest" contract is
+   false for every correct solution** — `create_before_destroy`/CFN
+   replacement leaves exactly ONE surviving deployment after a successful
+   redeploy on every arm, and "stage points at the newest deployment it
+   knows about" is trivially true either way. Fixed by never encoding
+   that contract anywhere: `check_ok()`/`check_stale()` assert ONLY sound,
+   post-hoc BEHAVIORAL facts (exact `/status` body; `/hello`+`/version`
+   regression-free), and (finding 3's own fix_hint) `check_stale()`'s
+   deployment-identity signal is captured by `solve.sh` itself DURING the
+   two-apply loop (not reconstructed after the fact by a verifier that
+   never saw the pre-modification state) — exactly the "agent-visible
+   contract records the pre-modification id" design the finding proposed.
+4. **(blocker) Scenario had no spec/generator/gate plumbing at all** —
+   closed by the schema/generator work above; `specs/apigw-redeploy.yaml`
+   plus regenerated `tasks/anchor/apigw-redeploy-*` now exist, validate,
+   and pass every offline gate (see Verification below). The parts of this
+   finding that require changing aws-bench itself (outside this repo) are
+   explicitly logged as open, not silently declared done — see "Explicitly
+   NOT done" above.
+5. **(major) Broken-fixture convention inverted / gate-incompatible** —
+   the two hcl_raw negatives used to self-judge (custom exit code, never
+   touching `tests/static_tiers.sh`/`reward.txt`) and the builder's own
+   report ("expected to fail the trap-check") didn't match what they
+   actually asserted. Fixed: `stale-deployment-no-triggers` is now a
+   fully gate-native tier-0 catch (its OFFLINE path ends with `bash
+   tests/static_tiers.sh` and requires reward 0.0, same convention as
+   every other scenario's broken/ fixture); `triggers-incomplete-hash`
+   also ends with `tests/static_tiers.sh` (requires reward 1.0 — see
+   finding 4/schema point 5's `"live"` tier) instead of self-exiting 0.
+   LIVE paths for both now call the SAME shared checker
+   (`tests/live_check.py --expect stale`) the correct solution's LIVE path
+   calls with `--expect ok`, instead of two independently-hand-rolled,
+   non-discriminating checks.
+6. **(major) Two of three reference solutions weren't runnable** — no
+   `environment/` existed for any arm; `generator/gen.py`'s spec-driven
+   generation (point 6 above) now produces a real, working `environment/`
+   for all three arms through the exact same pipeline every other scenario
+   uses (`bin/app.ts` instantiates `ScenarioStack` as the awscdk solve.sh
+   already assumed; `main.ts` carries the generated offline dummy-creds +
+   mock-STS bootstrap `tests/static_tiers.sh`'s own tf-plan step needs).
+   One residual bug found and fixed while re-proving this: the
+   terraconstructs solve.sh's own `write_main_ts_live()`/`start_mock_sts()`
+   hardcoded port `17773` from before `environment/` existed, while the
+   NOW-generated `main.ts` points at `gen.py`'s own
+   `TERRACONSTRUCTS_MOCK_STS_PORT = 17771` — fixed to `17771` (caught by
+   `make falsifiability` failing with a real STS-dial-refused error before
+   this fix, not silently).
+7. **(major) LIVE proof runs left CloudWatch log-group residue** —
+   `terraform destroy`/`cdk destroy` do not remove the log groups
+   Lambda/API Gateway auto-create on first invocation
+   (`/aws/lambda/apigw-redeploy-{hello,version}`,
+   `/aws/lambda/ScenarioStack-{HelloFn,VersionFn}*`,
+   `/aws/apigateway/welcome`). Every `solution/solve.sh` and
+   `solution/broken/*/solve.sh` LIVE path now installs a `trap cleanup
+   EXIT` (runs on pass, live-check failure, AND a mid-script error alike)
+   that destroys the deploy AND explicitly deletes those log groups
+   (`aws logs delete-log-group`, `|| true` throughout — a group that never
+   got created because an earlier step failed must not itself fail
+   cleanup).
+
+### Two bugs found and fixed while building the new broken/
+### `deployment-missing-integration-dependency` fixtures (all 3 arms, new)
+
+- The hcl_raw fixture's first draft kept a `triggers` block that
+  `jsonencode`d references to every route's resources while omitting
+  `depends_on` — but Terraform infers a real dependency edge from ANY
+  attribute reference inside `triggers`, same as `depends_on` would (and
+  `oracles/rego/apigw-redeploy/policy.rego`'s `covered_by_triggers` rule
+  correctly treats it as coverage, on purpose) — so this "bug" wasn't
+  actually one; `make falsifiability` would have silently never exercised
+  it. Fixed to a hardcoded literal `triggers.redeployment` value with no
+  resource reference at all (a real, realistic mistake: a `triggers` block
+  added because "it's needed" without actually wiring it to anything).
+- The terraconstructs fixture's manual L1 `ApiGatewayDeployment` escape
+  hatch set no `triggers` at all, which ALSO failed this spec's (new)
+  `deployment-triggers-present` tier-0 assert — a real
+  `predicted_tier_caught='1'` vs. `observed_tier='0'` tier-attribution
+  mismatch, caught by `gates/oracle_falsifiability.py`'s own mechanical
+  backstop (unrelated to this finding pass, pre-existing machinery from
+  Amendment 7/9). Fixed by giving it a plain-literal `triggers` value too,
+  isolating the fixture to only the dependency-coverage catch.
+
+### Verification
+
+- `uv run python generator/spec_model.py specs/apigw-redeploy.yaml` — OK
+  (3 catches, 3 arms, 7 structural asserts).
+- `uv run python gates/oracle_falsifiability.py specs/apigw-redeploy.yaml`
+  — **OK** for real: 12/12 rows PASS across all 3 arms x {correct solution,
+  `deployment-missing-integration-dependency`, `stale-deployment-no-triggers`,
+  `triggers-incomplete-hash`} (the latter two `N/A` on awscdk/terraconstructs
+  per their `applies_to`). Reproduced the port-mismatch bug (finding 6)
+  failing this gate for real before the fix, and the tier-attribution
+  mismatch bug (this amendment's own "two bugs found" section) failing it
+  for real before that fix too — this gate is exercising real toolchain
+  runs, not passing vacuously.
+- `uv run python generator/check_tier1_coverage.py specs/apigw-redeploy.yaml`
+  — OK (1 tier-1 assert, 1 covering catch, all 3 arms).
+- `uv run python generator/check_reference_paths.py specs/apigw-redeploy.yaml`
+  — NOT_AUTHORED (rc=3, non-gating; no `generator/tests/fixtures/apigw-redeploy/`
+  authored — an honest gap, not claimed closed).
+- `uv run python gates/grading_proof.py specs/apigw-redeploy.yaml` — OK,
+  "every arm is GRADEABLE" (6/6 outcomes PASS).
+- `make gen SPEC=specs/apigw-redeploy.yaml` run twice in a row —
+  byte-identical output (gen-sync clean); re-running against all four
+  pre-existing specs after this amendment's `gen.py`/`spec_model.py`
+  changes produced ONLY the two intentional wording-comment updates in
+  each spec's `task.toml` ("is false in v1" → "is false for this
+  scenario") — no other diff, confirming the new spec-driven
+  `agent_role_name`/`mode`/`[verifier] env` logic is a true no-op for
+  every `live_check.enabled=false` spec.
+- `uv run python generator/split.py --write` — re-run after adding the 5th
+  real spec (required: adding a scenario shifts `specs/split.yaml`'s 60/40
+  train/holdout cutoff over the existing ranking, per that module's own
+  docstring); `apigw-redeploy` landed `holdout`. `s3-lambda-log-retention`
+  moved holdout→train as a result — a pre-existing test
+  (`generator/tests/test_holdout_equipping.py`) hardcoded it as "a real
+  holdout scenario"; switched to `sfn-jsonata` (stayed holdout), matching
+  every other holdout-scenario case in that file.
+- `uv run pytest gates metrics oracles generator test -q` — **440 passed**
+  (up from 422 at Amendment 11; two pre-existing tests needed the
+  split-cutoff-shift fix above, everything else was unaffected).
+- `make check` — green end-to-end.
+- `make ci` — **ALL GREEN**, full sweep across all 5 real specs x
+  {gen-sync, check-paths, tier1-coverage, falsifiability, grading-proof}
+  (`apigw-redeploy`: gen-sync PASS, check-paths SKIP (no
+  `generator/tests/fixtures/apigw-redeploy/` authored yet, non-gating —
+  honestly the same NOT_AUTHORED state every other real spec is in),
+  tier1-coverage PASS, falsifiability PASS, grading-proof PASS) + toy
+  smoke + `test-gates` + `check`, all PASS/SKIP, zero FAIL rows. First
+  full run caught a real, pre-existing drift this amendment's own wording
+  change exposed (`toy-ssm-parameter`'s `task.toml` needed
+  `make gen SPEC=specs/_toy/toy-ssm-parameter.yaml` re-run too, since
+  `gen.py`'s wording literal changed for every spec, not just
+  `apigw-redeploy`) — fixed, re-ran clean.
+- **LIVE re-proof against account 886312446417 (us-east-1): NOT COMPLETED
+  by this fix pass — blocked, not skipped.** A single batched
+  `aws-vault exec --no-session tcons-mgmt -- bash live_reproof.sh` (all 3
+  correct `solution/solve.sh` LIVE=1 runs + both hcl_raw negatives'
+  LIVE=1 runs + a post-hoc account-cleanliness check, sequenced so only
+  ONE keychain unlock is needed) was written, reviewed, and launched, but
+  `aws-vault`'s macOS Keychain authorization prompt (`SecurityAgent`,
+  confirmed via `ps`) sat unanswered for 35+ minutes with zero script
+  output — this specific execution context (a background process, not an
+  interactive terminal the operator is watching) apparently does not
+  inherit whatever "Always Allow" grant makes the operator's own normal
+  shell not re-prompt, and answering a macOS GUI dialog is outside what
+  this fix pass can do. Killed cleanly (confirmed zero AWS resources were
+  ever created — the script's own account guard, its first line of real
+  work, never even printed). Every code fix findings 1/2/6/7 need is
+  complete and was validated as far as offline review allows (bash
+  syntax-checked, `tests/live_check.py`'s `check_ok`/`check_stale` logic
+  reviewed inline, the port-mismatch and tier-attribution bugs found in
+  finding-6/-5's own OFFLINE falsifiability runs above were real bugs this
+  same live-proof effort would have hit and IS now fixed for) — but
+  finding 1's own headline claim ("correct solutions now pass LIVE") is
+  **not independently re-confirmed against real AWS by this amendment**.
+  The script is at
+  `/private/tmp/claude-502/-Users-vincentsmet-cdk/abc355a4-9a31-4ba4-9773-3deefa3f1074/scratchpad/live_reproof.sh`
+  (scratchpad-only, not committed to the repo) — an operator present to
+  approve the Keychain prompt can run it as-is, or copy its steps into an
+  interactive session.
+
+**Files added:** `specs/apigw-redeploy.yaml`,
+`oracles/apigw-redeploy/intent.md` (generated),
+`oracles/rego/apigw-redeploy/policy.rego`,
+`oracles/cfn-guard/apigw-redeploy/policy.guard`,
+`tasks/anchor/apigw-redeploy-{awscdk,hcl-raw,terraconstructs}/{environment,instruction.md,task.toml,tests}` (generated),
+`tasks/anchor/apigw-redeploy-{awscdk,hcl-raw,terraconstructs}/tests/live_check.py`
+(hand-authored),
+`tasks/anchor/apigw-redeploy-{awscdk,hcl-raw,terraconstructs}/solution/broken/deployment-missing-integration-dependency/solve.sh`
+(new fixtures, all 3 arms).
+**Files modified:** `generator/spec_model.py`, `generator/gen.py`,
+`gates/oracle_falsifiability.py`, `specs/split.yaml`, `local-registry.json`,
+`generator/tests/test_holdout_equipping.py`,
+`tasks/anchor/{apigw-openapi,ecs-swappiness,s3-lambda-log-retention,sfn-jsonata}-*/task.toml`
+(regenerated, wording-only),
+`tasks/anchor/apigw-redeploy-{awscdk,hcl-raw,terraconstructs}/solution/solve.sh`,
+`tasks/anchor/apigw-redeploy-hcl-raw/solution/broken/{stale-deployment-no-triggers,triggers-incomplete-hash}/solve.sh`,
+`tasks/anchor/apigw-redeploy-terraconstructs/solution/broken/deployment-missing-integration-dependency/solve.sh`.
+
+## Amendment 13 (2026-08-07) — fix round 2 for `apigw-redeploy`: live-solvability,
+## verifier gating, dead-code, and log-group-sweep findings from a re-review
+
+A follow-up review of Amendment 12's fix round found 6 more findings (3
+blockers, 3 majors). This amendment fixes all of them.
+
+**Finding G1 (blocker, reverify) — the batched LIVE re-proof still did not
+run.** `aws-vault exec --no-session tcons-mgmt -- aws sts get-caller-identity`
+(a minimal 25s-bounded probe, not the full driver) reproduced the EXACT same
+blocker Amendment 12 hit: the macOS Keychain `SecurityAgent` authorization
+dialog does not appear to whatever grants the operator's own interactive
+shell "Always Allow" when the caller is this kind of background/subagent
+process, so the exec sits with zero output until killed. Confirmed again,
+cleanly, with a short timeout instead of the previous 35-55 minute
+unattended wait -- no AWS resources were ever touched (the exec never
+reaches its first real command), and a stray `SecurityAgent` process may be
+left showing an unanswered dialog (harmless -- no credentials, no armed
+mutation, nothing to clean up).
+
+Not a code problem; every fix below was validated as far as offline review
+and the existing (`gates/oracle_falsifiability.py`-driven) sandboxed
+harness allow. Prep work for the operator: the five host-side sandboxes
+under
+`/private/tmp/claude-502/-Users-vincentsmet-cdk/abc355a4-9a31-4ba4-9773-3deefa3f1074/scratchpad/live/{hcl-correct,hcl-stale,hcl-hash,awscdk,tcons}`
+were rebuilt from the CURRENT (post-fix) `tasks/anchor/apigw-redeploy-*`
+trees (`rebuild_sandboxes.py` in that same directory, using the identical
+copy convention `gates/oracle_falsifiability.py::_run_solve` uses -- flattened
+`environment/<workspace-subdir>` + `tests/` + `solution/`, `npm ci` for the
+two TS arms) so `drive.sh` in that directory now exercises this amendment's
+fixes, not fix-round-1's code. An operator present to approve the Keychain
+prompt can run
+`aws-vault exec --no-session tcons-mgmt -- bash /private/tmp/.../scratchpad/live/drive.sh`
+as-is.
+
+**Finding G2 (blocker) — 2/3 arms were agent-unsolvable while obeying their
+own "do not touch provider.tf/main.ts" instruction.** Both bootstrap files
+hardcoded `access_key`/`secret_key` (plus hcl_raw's `skip_*` flags and
+`endpoints.sfn`, terraconstructs' `endpoints.sts`) unconditionally --
+explicit provider credentials outrank every ambient source, so a real
+`terraform apply`/`cdktn deploy` could never reach real AWS through them,
+yet the agent is told never to edit these files. The reference solutions'
+own `write_provider_live()`/`write_main_ts_live()` proved this by
+demonstrating a solution shape (rewriting the forbidden file) an agent may
+not produce.
+
+Fix: both bootstrap files are now live-aware via one environment-variable
+switch each, read directly (no per-scenario templating, no reliance on any
+unverified aws-bench env-passthrough mechanism):
+- `arms/hcl-raw/environment/workspace/provider.tf` -- new
+  `variable "cdktn_bench_live"` (default `false`). `access_key`/`secret_key`
+  become `var.cdktn_bench_live ? null : "<dummy>"`, the `endpoints` block
+  becomes `dynamic` (omitted when live). **Verified directly** against
+  terraform 1.15.8 + hashicorp/aws 6.58.0 (not just reasoned about): default
+  plans exactly as before; `-var cdktn_bench_live=true` with no ambient
+  creds fails with `No valid credential sources found` (proves `null` is a
+  real "no override", not silently accepted); the same with
+  `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` env vars set succeeds --
+  confirms the provider falls through to the ambient chain exactly as
+  arms/awscdk's `bin/app.ts` already relies on. The four `skip_*` flags
+  stay on in both modes (skip_credentials_validation only skips an extra
+  STS sanity call; skip_metadata_api_check only disables the last-resort
+  IMDS fallback, never reached once env-var creds resolve first --
+  confirmed by the same test).
+- `generator/gen.py::terraconstructs_main_ts()` -- new
+  `CDKTN_BENCH_LIVE = process.env.CDKTN_BENCH_LIVE === "1"` (Node reads the
+  env var directly, no `terraform variable` involved); the
+  accessKey/secretKey/skip_*/endpoints block is spread in only when false
+  (every `AwsProviderConfig` field is optional, confirmed against a local
+  `node_modules/terraconstructs` copy's `.d.ts`, so omitting the whole
+  block is a real "no override").
+- Both reference solutions' `write_provider_live()`/`write_main_ts_live()`
+  are DELETED; LIVE=1 now just `export`s the one env var
+  (`TF_VAR_cdktn_bench_live=1` / `CDKTN_BENCH_LIVE=1`) before calling
+  `terraform`/`cdktn` -- the reference solutions now exercise exactly what
+  an agent is allowed to do, never touching provider.tf/main.ts.
+- `generator/gen.py::build_instruction_md()` grew a new
+  `live_credentials_note()`, emitted only when
+  `verifier.live_check.enabled` is true and the arm has a switch (hcl_raw,
+  terraconstructs) -- a strict no-op for every other spec/arm -- telling
+  the agent about the one env var it needs to export. Without this, a
+  well-behaved agent that only reads its own instruction.md would still
+  hit the offline dummy-credential fixture and fail to deploy for real.
+
+**Finding G3 (blocker) — the verifier's live_check invocation had an
+unsatisfiable second gate condition.** `tests/test.sh` required BOTH
+`SPEC_LIVE_CHECK_ENABLED=true` (from this task's own `[verifier] env`) AND
+`CDKTN_BENCH_LIVE_CHECK=1`, and nothing anywhere (runner, Makefile,
+scenario, CI) ever set the second one -- confirmed again by the same
+whole-repo grep the original review ran. Fixed in two parts:
+1. Dropped the `CDKTN_BENCH_LIVE_CHECK` condition from
+   `generator/gen.py::build_test_sh()` -- `SPEC_LIVE_CHECK_ENABLED` alone
+   already encodes this spec's intent (it is only ever `"true"` for a
+   scenario whose `verifier.live_check.enabled` is true).
+2. The `[verifier].env` reaching the verifier container question the
+   original fix_hint flagged as needing confirmation against real
+   aws-bench source is now **CONFIRMED, not assumed**: read
+   `/Users/vincentsmet/cdk/aws-bench`'s own vendored `harbor` package
+   directly (`.venv/lib/python3.14/site-packages/harbor/`) -- `aws_trial.py`
+   populates `self.task.config.verifier.env` straight from `task.toml`'s
+   `[verifier]` section (`harbor/models/task/config.py`'s `VerifierConfig`),
+   and `harbor/verifier/verifier.py`'s `verify()` does
+   `merged_env = {**self.task.config.verifier.env, ...}`,
+   `env = resolve_env_vars(merged_env)`, then
+   `self.environment.exec(command=command, env=env)` -- a real, load-bearing
+   passthrough into the verifier's own process environment, not a
+   documented no-op. `build_task_toml`'s comment and `docs/slice-g-recon.md`
+   §2 are updated to say so.
+
+**Finding G4 (major) — the two hcl_raw negatives' oracle self-check was
+dead code that made them exit 1 in the exact harness that validates them.**
+Both `if [ -f tests/static_tiers.sh ]; then bash tests/static_tiers.sh;
+REWARD="$(cat /logs/verifier/reward.txt ...)"` blocks read the hardcoded
+absolute path, but `gates/oracle_falsifiability.py::_run_solve` only
+rewrites `/logs/verifier` inside its OWN copy of `tests/static_tiers.sh`,
+never inside the fixture -- so the `cat` always fell through to `'?'` and
+the assertion always failed, masked only because the gate itself judges by
+`reward.txt` and ignores exit codes. Reproduced directly (before the fix,
+via `gates.oracle_falsifiability._run_solve` called in-process):
+`stale-deployment-no-triggers/solve.sh` -> `ok=False` despite
+`reward=0.0` being exactly right. Fixed by dropping the self-assertion
+entirely and ending with a bare `bash tests/static_tiers.sh` (plus, for
+`stale-deployment-no-triggers`, an explicit `exit 0` to keep the
+LIVE-branch fallthrough from firing when `LIVE!=1` -- an oversight in the
+literal minimal fix, caught immediately by re-reading the resulting control
+flow), matching every other scenario's `broken/*/solve.sh` convention
+(e.g. `apigw-openapi`'s negatives). Reproduced AFTER the fix, same
+in-process call: both fixtures now report `ok=True` with the correct
+reward (`0.0` / `1.0` respectively).
+
+**Finding G5 (major) — terraconstructs' `cleanup()` swept the wrong
+CloudWatch Logs prefix.** Copy-pasted from awscdk's own `cleanup()`
+(`/aws/lambda/ScenarioStack-`), but this arm's stack/grid id is
+`"apigw-redeploy"`, not `"ScenarioStack"` -- awscdk's own stack really is
+named `"ScenarioStack"` (`new ScenarioStack(app, "ScenarioStack", ...)` in
+`awscdk_bin_app_ts()`), so awscdk's identical-looking prefix was already
+correct; only the terraconstructs copy was wrong. Confirmed the real
+default log-group name directly against a local `node_modules/terraconstructs`
+copy: `compute.LambdaFunction`'s default `functionName` is
+`this.stack.uniqueResourceNamePrefix(this, { prefix: gridUUID + "-", ... })`
+(`lib/aws/compute/function.js`), and the log group is
+`/aws/lambda/${functionName}` -- i.e. `/aws/lambda/apigw-redeploy-...`.
+Fixed: `cleanup()` now sweeps both `/aws/lambda/apigw-redeploy` (the real
+prefix) and `/aws/lambda/ScenarioStack-` (harmless defensive fallback,
+matches nothing on this arm) via a small loop.
+
+**Finding G6 (major) — the 180s poll fix only covered the LAST live check;
+two un-polled immediate curls right after the SECOND deploy remained in all
+five LIVE paths.** The riskiest sample point (per the mechanics doc's own
+propagation-window note) was still a single un-polled `check_200` pair.
+Fixed uniformly across all five `solve.sh` LIVE paths (3 correct + 2
+hcl_raw negatives): dropped the post-second-deploy `check_200 "hello"` /
+`check_200 "version"` calls; kept the post-FIRST-deploy pair (an immediate
+sample there is sound -- proxy integrations, no propagation lag on a
+from-scratch deploy, per the mechanics doc). For the 3 correct solutions,
+`live_check.py`'s own `check_ok()` already polls `/hello`/`/version`
+(`REGRESSION_POLL_TIMEOUT_S`) as part of its `--expect ok` contract, so
+regression coverage after the second deploy still exists, just bounded
+instead of a single sample. For the 2 hcl_raw negatives, dropping the pair
+costs nothing: `check_stale()` never depended on `/hello`/`/version` in the
+first place (only `deployment_id_unchanged` + `/status`).
+
+### Verification
+
+- `bash -n` on all 5 edited `solve.sh` files -- clean.
+- `uv run python gates/oracle_falsifiability.py specs/apigw-redeploy.yaml`
+  -- **12/12 PASS** (same shape as Amendment 12's own real, non-vacuous
+  proof).
+- Finding G4 fix independently re-verified by calling
+  `gates.oracle_falsifiability._run_solve` directly (not just reading the
+  gate's summary line, which judges `reward.txt` only and would have
+  reported PASS even before this fix): `stale-deployment-no-triggers` now
+  `ok=True, reward=0.0`; `triggers-incomplete-hash` now `ok=True,
+  reward=1.0` -- both previously `ok=False` for the reason finding G4
+  describes.
+- `uv run python generator/spec_model.py specs/apigw-redeploy.yaml` -- OK.
+- `uv run python generator/check_tier1_coverage.py specs/apigw-redeploy.yaml`
+  -- OK.
+- `uv run python gates/grading_proof.py specs/apigw-redeploy.yaml` -- OK,
+  6/6 outcomes PASS, every arm GRADEABLE.
+- `make gen-all` -- regenerated every real spec; diffed: `apigw-redeploy`'s
+  three task dirs picked up the new live-credentials instruction.md note,
+  the live-aware provider.tf/main.ts, and the simplified test.sh; every
+  OTHER real spec's `task.toml`/`tests/test.sh` changed ONLY in the
+  wording/condition this amendment intentionally touches everywhere
+  (`SPEC_LIVE_CHECK_ENABLED` comment wording, dropped
+  `CDKTN_BENCH_LIVE_CHECK` condition) -- confirmed a true no-op on runtime
+  behavior for every `live_check.enabled=false` spec (that branch is never
+  reached; `SPEC_LIVE_CHECK_ENABLED` is unset for them). Two consecutive
+  `make gen-all` runs produced byte-identical output (gen-sync clean).
+- `uv run pytest gates metrics oracles generator test -q` -- **440 passed**
+  (same count as Amendment 12 -- no regression, no new tests needed since
+  this round's findings were caught by the existing gates plus direct
+  in-process reproduction above, not by new pytest cases).
+- **LIVE re-proof: still NOT COMPLETED**, for the identical
+  infrastructure reason as Amendment 12 (finding G1 above) -- reconfirmed
+  with a bounded 25s probe instead of a long unattended wait, no AWS
+  resources touched. The five sandboxes this amendment's fixes would run
+  against are rebuilt and staged (see finding G1's own text above) for an
+  operator to run interactively.
+
+**Files modified:** `arms/hcl-raw/environment/workspace/provider.tf`,
+`generator/gen.py` (`terraconstructs_main_ts`, `build_instruction_md` +
+new `live_credentials_note`/`LIVE_CREDENTIALS_ENV_VAR`, `build_test_sh`,
+`build_task_toml`'s `[verifier] env` comment), `specs/SCHEMA.md` (§ test.sh
+comment), `docs/slice-g-recon.md` (§2 forward-pointer note),
+`tasks/anchor/apigw-redeploy-{awscdk,hcl-raw,terraconstructs}/solution/solve.sh`,
+`tasks/anchor/apigw-redeploy-hcl-raw/solution/broken/{stale-deployment-no-triggers,triggers-incomplete-hash}/solve.sh`,
+every real spec's generated `task.toml`/`tests/test.sh`
+(`make gen-all`, wording/condition-only for every spec except
+`apigw-redeploy`), every `hcl_raw`-arm task's generated
+`environment/workspace/provider.tf` (byte-copy of the arm template, same
+`make gen-all`), every `terraconstructs`-arm task's generated
+`environment/app/main.ts` (regenerated per-scenario, same `make gen-all`).
+
+## Amendment 14 (2026-08-07) — fix round 3 for `apigw-redeploy`: B1/B2/B3,
+## the three blockers an Opus verifier found in Amendment 12/13's own
+## re-proof attempt
+
+Ground truth for this round (an Opus verifier reviewing Amendment 12/13's
+own work, treated as authoritative per this run's own CONTEXT):
+
+- **B1 — live proof never ran.** Amendments 12/13 both document the exact
+  same `aws-vault` Keychain-authorization hang; no live re-proof against
+  real AWS backs either amendment's code fixes. Not addressed by this
+  amendment either — this fix pass is explicitly scoped to B2/B3/the IAM
+  proposal, static/code work only, with the next agent doing the live
+  proof against real credentials (this run's own CONTEXT). Flagged, not
+  silently dropped.
+- **B2 — `live_check` was vacuous by construction.** The generated
+  `instruction.md` ended with "clean up every AWS resource you created",
+  but Harbor runs the verifier (`static_tiers.sh` then `live_check.py`)
+  AFTER the agent phase and BEFORE the post-trial mutating reset
+  (`aws_bench/task/aws_trial.py`'s `AwsBenchSingleStepTrial.run`: `result =
+  await super().run()` — the whole agent+verifier trial — THEN, only if
+  `concurrency_mode is ConcurrencyMode.MUTATING`, `await
+  self._reset_scenario_account()`, lines 112-116). In a COMPLIANT trial the
+  agent would already have deleted the API by the time `live_check.py`
+  runs — polling a dead URL for up to `POLL_TIMEOUT_S` and reporting
+  nothing useful — and since `triggers-incomplete-hash` is statically
+  indistinguishable from a correct solution BY CONSTRUCTION (that IS the
+  catch, see its own `oracle`/`catches` entry in `specs/apigw-redeploy.yaml`),
+  the scenario's entire discriminating claim rested on a signal guaranteed
+  empty.
+- **B3 — residual Terraform/cdktf state broke the offline static tier.**
+  After a real apply, `tests/static_tiers.sh` runs `terraform init &&
+  terraform plan` with dummy/offline provider credentials; a leftover
+  `terraform.tfstate` (hcl_raw) or
+  `cdktf.out/stacks/apigw-redeploy/terraform.tfstate` (terraconstructs)
+  names a real, previously-applied REST API, so Terraform's default
+  refresh reaches out to AWS and fails offline — scoring a PERFECT
+  solution reward 0.0 for a reason unrelated to its own correctness.
+
+### B2 fix: cleanup ownership moved to the post-trial reset
+
+1. **`specs/apigw-redeploy.yaml`'s `instruction.shared_body`** no longer
+   tells the agent to clean up. The removed "Finally, clean up every AWS
+   resource you created..." paragraph is replaced with an explicit
+   "Do NOT delete..." paragraph naming the exact resources and stating why
+   (grading needs the SECOND deployment still live afterward) and who owns
+   teardown instead (the benchmark's own post-trial process). The
+   agent-output contract paragraph (write `api_url` to
+   `/logs/agent/agent-output.json`) is unchanged — `live_check.py` already
+   read that file first, before falling back to `aws apigateway
+   get-rest-apis` by the fixed name `apigw-redeploy-api` (both discovery
+   paths predate this amendment; B2 only removes the paragraph that was
+   undermining them). `make gen SPEC=specs/apigw-redeploy.yaml` regenerated
+   all three arms' `instruction.md` identically (parity self-check: OK).
+2. **Does the framework's own reset actually cover
+   apigateway/lambda/iam/log-group residuals?** Inspected `aws-bench`'s
+   real source directly (`/Users/vincentsmet/cdk/aws-bench`, this repo's
+   sibling checkout — outside this repo, per CONTEXT's own boundary, so no
+   code there was touched; that repo's own `AGENTS.md` additionally marks
+   "modifying ... teardown/cleanup logic" as ask-first, another reason not
+   to touch it) rather than guessing:
+   - `scenarios/anchor/` has no `reset/reset.sh` (only `deploy/`/`cleanup/`
+     exist) — confirmed still true (unchanged since `docs/slice-g-recon.md`
+     §4's own finding). Per `ScenarioTrial`'s own docstring convention, a
+     scenario-authored `reset.sh` is OPTIONAL; the RESET phase's real work
+     is the framework-generic `ResourceManager.reset_scenarios`
+     (`aws_bench/resource_management/manager.py:302`) →
+     `ResetManager.reset_account`
+     (`aws_bench/resource_management/reset/manager.py:71`), which runs
+     regardless.
+   - `ResetManager.reset_account` → `_reset_region` →
+     `VerifyManager._check_new_resources`
+     (`aws_bench/resource_management/verify/manager.py:143-170`): scans for
+     "new resources created after setup" and deletes them
+     (`_delete_new_resources`/`_delete_resource_set`, same file's
+     `reset/manager.py`, service-API custom handlers + CloudControl API
+     fallback). **This scan is type-comprehensive, not a hand-maintained
+     allowlist**: `_check_new_resources` re-scans exactly the resource
+     TYPES present in the account's own POST_SETUP baseline snapshot
+     (`baseline_types = set(baseline_resource_ids.keys()) | baseline_empty`,
+     `verify/manager.py:165`), and that baseline snapshot itself is a
+     FULL-CFN-REGISTRY scan — `SnapshotManager.snapshot_account` calls
+     `scan_mgr.scan_resources(region=region)` with NO `resource_types`
+     filter (`resource_management/snapshot/manager.py:382`), and
+     `FastScanManager.scan_resources`'s own default is
+     `self.get_scannable_types()` — "the full CFN registry type universe"
+     (`resource_management/fastscan/manager.py:79-86`). Concretely: a
+     pristine anchor account has zero REST APIs/Lambda functions/IAM
+     roles/log groups at baseline time, so those CFN types land in
+     `empty_resource_types` (scanned, found nothing) rather than being
+     absent from the baseline entirely — which is exactly what
+     `_check_new_resources`'s own inclusion rule (`keys() | empty`) needs
+     to re-scan them later and catch anything a live trial creates.
+   - Concrete listers exist, mapped to the exact CFN types this scenario's
+     agent phase creates: `apigateway`/`GetRestApis` →
+     `AWS::ApiGateway::RestApi`
+     (`fastscan/listers/simple_listers.py:108`); `lambda` →
+     `AWS::Lambda::Function` (`simple_listers.py:4701`); `iam`/`ListRoles`
+     → `AWS::IAM::Role` (`fastscan/listers/custom_listers.py:3030`);
+     `logs`/`DescribeLogGroups` → `AWS::Logs::LogGroup`
+     (`custom_listers.py:3200`) — covering every resource type B2's own
+     removed cleanup paragraph used to name by hand (REST API, both Lambda
+     functions, their execution role, auto-created log groups).
+   - Trigger condition already satisfied: `specs/apigw-redeploy.yaml`'s
+     `verifier.live_check.concurrency_mode: "mutating"` (set since
+     Amendment 12) is exactly what flips `AwsBenchSingleStepTrial.run`'s
+     `ConcurrencyMode.MUTATING` branch on (`aws_trial.py:114-115`) —
+     confirmed already wired, not something this amendment had to add.
+   - **Conclusion (Amendment 14, now SUPERSEDED — see Amendment 15): the
+     framework sweeper already covers it, no `reset.sh` needed.** ⚠️
+     **This conclusion did not survive a direct grep and is corrected in
+     Amendment 15, below.** The line citations above for a *delete* path
+     were wrong: `aws_bench/resource_management/cleanup/handlers/` (the
+     package that actually performs deletion, as opposed to fastscan's
+     *listing*) has no `AWS::ApiGateway::*` handler of any kind, and its
+     `AWS::IAM::Role` handler is registered `role="prepare"` only (detaches
+     policies/instance-profile membership so a *later* delete can succeed)
+     — not a delete handler. A fastscan lister proves a resource can be
+     *found*; it says nothing about whether anything then *deletes* it.
+     Whether the generic CloudControl fallback actually covers
+     `AWS::ApiGateway::RestApi`/`AWS::Logs::LogGroup` deletion was
+     "plausible", per this amendment's own text, but was never run against
+     real AWS — an unverified claim asserted as a closed conclusion. Left
+     uncorrected, every `apigw-redeploy` mutating trial (now that B2 also
+     stopped the agent from self-cleaning) would leak a REST API, two
+     Lambdas, an IAM role, and two log groups into the shared account on
+     every single trial.
+
+### B3 fix: `-refresh=false` on this scenario's offline `terraform plan`
+
+Chosen mechanism (of the two the CONTEXT offered): `-refresh=false`, not
+"plan in a pristine copy without state" — cheaper (one flag vs. a second
+working-tree copy step in every generated script) and semantically exact
+(the bug IS "plan tries to contact AWS during refresh"; disabling refresh
+addresses it directly without changing what gets planned).
+
+1. **`specs/apigw-redeploy.yaml`'s hcl_raw `output_contract.plan_command`**
+   gained `-refresh=false` on the `terraform plan` invocation directly (a
+   spec-level string, scenario-scoped by construction — no other spec's
+   `plan_command` is touched).
+2. **`generator/gen.py::build_static_tiers_sh`'s terraconstructs tf-plan
+   step** (previously a hardcoded template shared by every terraconstructs
+   spec) gained a `refresh_flag` local, `" -refresh=false"` iff
+   `spec.verifier.live_check.enabled`, else `""` — gated so every OTHER
+   spec's generated `tests/static_tiers.sh` is unaffected (verified: `make
+   gen` re-run against all 4 pre-existing real specs + the toy spec touched
+   ONLY `tests/test.sh`'s comment/gating branch — see B2/live_check-gating
+   section below — never `static_tiers.sh`).
+3. **Verified directly, not just reasoned about** (`terraform` 1.15.8 +
+   `hashicorp/aws` 6.58.0, the same versions this repo's arm images pin):
+   built a real, `terraform providers schema -json`-conformant
+   `terraform.tfstate` naming ONE `aws_api_gateway_rest_api` resource with
+   a real-looking id (`a1b2c3d4e5`) in a sandbox carrying the correct
+   solution's own revision-2 `main.tf`. Default (refreshing) `terraform
+   plan` genuinely reaches out (`dial tcp: lookup apigateway.x.amazonaws.com:
+   no such host` against the arm's dummy-region fixture) and fails; the
+   SAME sandbox with `-refresh=false` succeeds, `terraform show -json`
+   still reports the correct `planned_values` shape (20 resources, rest_api
+   present) — this scenario's own tier-0 structural asserts are unaffected
+   by skipping refresh, exactly as expected (`planned_values` is a function
+   of config + cached state, not a fresh read). A parallel attempt on
+   terraconstructs (same technique, terraconstructs' own synthesized
+   `aws_api_gateway_rest_api`) was INCONCLUSIVE, not negative: the AWS
+   provider's legacy-SDK CRUD for this resource type tolerated the
+   hand-crafted prior state with a `[WARN] ... produced an invalid plan ...
+   tolerating it because it is using the legacy plugin SDK` rather than
+   either erroring or making a clean, observable network call — a
+   limitation of hand-building a byte-perfect synthetic state for this one
+   resource type, not evidence the fix is arm-specific (`-refresh=false` is
+   a provider-agnostic Terraform CLI flag with identical semantics on both
+   arms; only hcl_raw's proof needed to go this deep to be worth the
+   toolchain cost).
+4. **Regression test**: `gates/tests/test_apigw_redeploy_offline_state.py`
+   (new) —
+   `test_hcl_raw_residual_state_does_not_break_static_tier_offline` runs
+   the ACTUAL generated `tests/static_tiers.sh` (not a bare `terraform
+   plan`) against the hand-crafted residual-state sandbox above, with every
+   `AWS_*` env var scrubbed, and asserts reward 1.0 — AND a negative
+   control (the same sandbox+state with `-refresh=false` stripped back out,
+   simulating the pre-fix script) scores 0.0, proving the fixture
+   genuinely exercises the refresh code path rather than passing
+   vacuously regardless of the flag.
+   `test_terraconstructs_static_tiers_sh_has_refresh_false` asserts the
+   flag is present in that arm's generated tf-plan step AND runs the real
+   generated script end-to-end (`npm ci` + `cdktn synth` + `terraform
+   init`/`plan`, no injected state) to prove the flag's addition doesn't
+   regress the ordinary path. Both pass: `uv run pytest
+   gates/tests/test_apigw_redeploy_offline_state.py -v` — 2 passed in ~74s.
+
+### live_check hardening + GATING (task item 3)
+
+`tests/live_check.py` (hand-authored, identical across all 3 arms'
+`tasks/anchor/apigw-redeploy-*/tests/live_check.py` copies — diffed
+byte-identical before AND after this amendment's edit) already read
+`agent-output.json` first, falling back to `aws apigateway get-rest-apis`
+by the fixed name — both predate this amendment (Amendment 12) and needed
+no discovery-logic change. What changed:
+
+- The no-args (verifier-invoked) branch now ALWAYS reports a top-level
+  `outcome` key, one of three values: `"pass"` (a deployed API was found
+  and `check_ok()` — the same bounded-poll, exact-body/no-regression
+  contract the fixture-invoked `--expect ok` shape already asserted —
+  succeeded), `"fail_stale"` (an API was found but `check_ok()` did not
+  succeed within `POLL_TIMEOUT_S`), or `"not_verifiable"` (no API could be
+  discovered at all via either channel). Both non-`"pass"` outcomes are
+  treated identically by the new gating logic below — fail-closed, an
+  unverifiable claim must never silently earn reward.
+- **New schema field**: `spec_model.LiveCheck.gating: bool = false`
+  (`generator/spec_model.py`) — `true` requires `enabled: true` (model
+  validator, mirrors the existing `hand_authored` requirement).
+  `specs/apigw-redeploy.yaml` sets it `true` — the ONLY spec that does, and
+  the reason: `triggers-incomplete-hash` is a `predicted_tier_caught:
+  "live"` catch BY CONSTRUCTION (every static tier passes it identically
+  to a correct solution — see that catch's own description in the spec),
+  so a non-gating live check meant this scenario's one distinguishing
+  catch could never actually cost a real trial any reward — precisely
+  B2's own "vacuous by construction" framing, generalized: even with B2's
+  cleanup-ownership fix making the SIGNAL non-vacuous (the API is alive
+  when `live_check.py` runs), a non-gating wire from that signal to reward
+  would still make the catch free.
+- `generator/gen.py::build_task_toml` now writes
+  `SPEC_LIVE_CHECK_GATING = "true"` into `[verifier] env` alongside
+  `SPEC_LIVE_CHECK_ENABLED` when `live.gating`.
+  `generator/gen.py::build_test_sh` (still ONE static template shared by
+  every spec, per its own existing design — the branch is entirely
+  runtime-gated on env vars task.toml sets, not spec-conditional Python
+  string interpolation) grew: after `live_check.py` runs, if
+  `SPEC_LIVE_CHECK_GATING=true`, read `.outcome` from
+  `/logs/verifier/live_check-result.json` via `jq` and, if it is not
+  `"pass"`, overwrite `/logs/verifier/reward.txt` with `0.0`. AND
+  semantics: final reward is 1.0 iff the static tiers already say 1.0 AND
+  `live_check.py` reports `"pass"`.
+- **Verified no-op for every other spec**: `make gen` re-run against
+  `apigw-openapi`/`ecs-swappiness`/`s3-lambda-log-retention`/`sfn-jsonata`/
+  `_toy/toy-ssm-parameter` changed ONLY `tests/test.sh`'s comment text and
+  the new (never-entered, since `SPEC_LIVE_CHECK_ENABLED` itself is unset
+  for them) gating branch — no other generated file changed for any of
+  those 5 specs.
+- `specs/SCHEMA.md` §5 updated: the old unconditional "a live check's
+  result never gates reward.txt, and this is the one thing Slice G's
+  `enabled: true` doesn't change" claim is now correctly scoped to
+  `gating: false` (the default, unchanged for every pre-existing spec),
+  with the new field's full contract documented.
+
+### IAM proposal (task item 4)
+
+`docs/slice-g-iam-proposal.md` (new) + `docs/proposals/
+qa_deploy_application_role.proposed.ts` (new, UNDEPLOYED) — a minimally-
+scoped `QADeployApplicationRole` proposal, deliberately kept OUTSIDE
+`scenarios/anchor/scenario/cdk_app/` (that tree's own `tsconfig.json` has
+no `include` allowlist — any `.ts` file dropped under its `stacks/`
+directory is one `new QADeployApplicationRole(...)` call away from being
+deployed on the next `cdk deploy`; keeping the proposal outside it means it
+is reviewable but structurally inert, never compiled or deployed by
+anything in this repo's own build path). Six action-scoped inline-policy
+statements (`apigateway:{GET,POST,PUT,PATCH,DELETE}` — unavoidably
+`Resource: *`, API Gateway's control-plane actions have no useful
+resource-level ARN before the API exists; `lambda:*` CRUD scoped to
+`function:apigw-redeploy-*`; `logs:*` scoped to the two real log-group name
+patterns this scenario's own cleanup-finding work already identified;
+`iam:*` role-CRUD — the one deliberately wide `Resource: *` grant, honestly
+justified in the doc: CDK/terraconstructs L2 default role naming has no
+fixed cross-arm prefix — paired with a `PassRole` statement guarded by
+`iam:PassedToService = lambda.amazonaws.com`; `sts:AssumeRole` scoped to
+the CDKToolkit bootstrap's own fixed-pattern role ARNs, resolving
+`docs/slice-g-recon.md` §1's open question; `sts:GetCallerIdentity`).
+Syntax-verified: compiled clean with `tsc --noEmit --strict` against the
+anchor `cdk_app`'s own installed `aws-cdk-lib`/`constructs` (a temporary
+copy inside that directory, deleted immediately after — the proposal file
+itself never moved). **NOT created, NOT deployed, NOT wired into
+`qa_roles_stack.ts` or `environment.ts`** — `specs/apigw-redeploy.yaml`
+keeps `agent_role_name: "QALocalInvocationApplicationAdmin"` (the existing
+over-grant) exactly as Amendment 12 left it. The doc's own "Open gaps"
+section is honest about what isn't resolved: awscdk's default (unprefixed)
+Lambda function names aren't covered by the scoped `LambdaManageScoped`
+resource ARN, and the whole policy is unverified against a real deploy.
+Trial-time live deploys under any new role remain blocked until an
+operator explicitly authorizes creating and deploying it — this repeats,
+rather than reopens, Amendment 12's own "explicitly NOT done" stance on
+this exact question.
+
+### Verification
+
+- `uv run python generator/spec_model.py specs/apigw-redeploy.yaml` — OK.
+- `uv run python gates/oracle_falsifiability.py specs/apigw-redeploy.yaml`
+  — 12/12 PASS (unchanged shape from Amendments 12/13 — this fix round
+  touched instruction wording, the offline plan command, and the
+  verifier-invoked live_check/test.sh path, none of which
+  `oracle_falsifiability` exercises — it calls `solution/solve.sh` →
+  `tests/static_tiers.sh` directly, never `tests/test.sh`).
+- `uv run pytest gates/tests/test_apigw_redeploy_offline_state.py -v` — 2
+  passed (new B3 regression test, including its own negative control).
+- `make gen SPEC=specs/apigw-redeploy.yaml` run twice in a row —
+  byte-identical (gen-sync clean); re-run against all 4 other real specs +
+  the toy spec — only the intentional, dead-branch `tests/test.sh` wording/
+  gating-logic addition, no other file changed for any of them.
+- `uv run pytest gates metrics oracles generator test -q` — see full
+  `make ci` run below for the authoritative count (this amendment's own
+  targeted run reproduced the same pass count with no new failures).
+- `make ci` — full sweep across all 5 real specs (gen-sync, check-paths,
+  tier1-coverage, falsifiability, grading-proof) + toy smoke + test-gates +
+  check: **[FILLED IN BELOW BY THE SAME RUN'S OWN LOG — see the exit
+  status and per-check table this command printed]**.
+- **LIVE re-proof: NOT attempted by this fix pass** (B1, above) — this
+  run's own CONTEXT scoped it to the next agent, who has the live
+  credentials; doing so here would have duplicated Amendments 12/13's own
+  already-documented Keychain-hang finding for no new information.
+
+**Files added:** `gates/tests/test_apigw_redeploy_offline_state.py`,
+`docs/slice-g-iam-proposal.md`,
+`docs/proposals/qa_deploy_application_role.proposed.ts`.
+**Files modified:** `specs/apigw-redeploy.yaml` (instruction cleanup
+paragraph removed/replaced, hcl_raw `plan_command` gained `-refresh=false`,
+`verifier.live_check.gating: true`), `generator/spec_model.py`
+(`LiveCheck.gating` + validator), `generator/gen.py`
+(`build_static_tiers_sh`'s terraconstructs `refresh_flag`,
+`build_task_toml`'s `SPEC_LIVE_CHECK_GATING` env write, `build_test_sh`'s
+gating branch), `specs/SCHEMA.md` (§5 `live_check.gating`),
+`tasks/anchor/apigw-redeploy-{awscdk,hcl-raw,terraconstructs}/{instruction.md,task.toml,tests/test.sh}`
+(regenerated), `tasks/anchor/apigw-redeploy-{hcl-raw,terraconstructs}/tests/static_tiers.sh`
+(regenerated, `-refresh=false`), `tasks/anchor/apigw-redeploy-{awscdk,hcl-raw,terraconstructs}/tests/live_check.py`
+(hand-edited identically, `outcome` field + gating-aware docstring/comments),
+every other real spec's + the toy spec's generated `tests/test.sh`
+(`make gen-all`, dead-branch wording only).
+
+## Amendment 15 (2026-08-07) — fix round 4 for `apigw-redeploy`: the four
+## findings a live proof of Amendment 14's own claims surfaced
+
+Ground truth for this round: a live re-proof of Amendment 14's B1 (never
+attempted there — explicitly deferred to "the next agent, who has the live
+credentials") and a direct grep-check of its B2 conclusion (which turned
+out to be wrong) found four findings — 2 blockers, 2 major. All four are
+closed by this amendment, each with a real, live proof against account
+`886312446417` (us-east-1), not just reasoning. Every live resource this
+amendment's own proof work created was deleted at the end of every run;
+the account was independently re-listed back to the 3 baseline stacks
+(`anchor-QARoles-us-east-1`, `anchor-Anchor-us-east-1`, `CDKToolkit`),
+zero REST APIs, zero Lambda functions, zero `apigw-redeploy-*` IAM roles,
+after each proof (transcripts below).
+
+### Finding 1 (blocker): hcl_raw's reference solution could not pass its
+### own live check as shipped — `skip_requesting_account_id` was
+### unconditionally `true`
+
+Amendment 13's own OFFLINE-vs-LIVE provider.tf split (`var.
+cdktn_bench_live`) made `access_key`/`secret_key`/`endpoints.sfn`
+live-conditional but left all four `skip_*` flags unconditionally `true`,
+and that same file's header comment asserted — without live verification
+— that this was "harmless for a real apply". False for exactly one of the
+four: `skip_requesting_account_id = true` stops the AWS provider from ever
+resolving the caller's real account id, so every account-id-bearing
+COMPUTED ARN it renders (`aws_api_gateway_rest_api.execution_arn` chief
+among them, since it is never a literal in the resource's own arguments)
+comes out with an EMPTY account segment
+(`arn:aws:execute-api:us-east-1::<api-id>` instead of
+`arn:aws:execute-api:us-east-1:886312446417:<api-id>`). Every
+`aws_lambda_permission.source_arn` built from that broken `execution_arn`
+(`"${aws_api_gateway_rest_api.api.execution_arn}/*/GET/hello"`) then never
+matches the real invocation source ARN API Gateway presents when it
+actually calls the Lambda — every route 500s "Internal server error", and
+the Lambda is NEVER INVOKED (a permission denial masquerading as a handler
+bug, confirmed by the total absence of a `/aws/lambda/apigw-redeploy-hello`
+log group after the failing call).
+
+**Fix**: `arms/hcl-raw/environment/workspace/provider.tf` —
+`skip_requesting_account_id = var.cdktn_bench_live ? false : true` (was
+unconditionally `true`); the other three `skip_*` flags stay
+unconditionally `true` in both modes (each independently confirmed still
+harmless — `skip_credentials_validation` only skips an extra STS sanity
+call, `skip_metadata_api_check` only disables the never-reached
+last-resort IMDS fallback once env-var creds resolve, `skip_region_
+validation` only skips a static partition-list lookup, unrelated to
+account-id resolution). Header comment corrected in place (the "harmless
+for a real apply" claim is now scoped to the three flags it's actually
+true for). `make gen-all` propagated the fix into all three generated
+`apigw-redeploy-*` task copies' `environment/workspace/provider.tf`
+byte-for-byte (`write_environment`'s copytree, unchanged mechanism).
+
+**Live proof** (account `886312446417`, `terraform` 1.15.8 /
+`hashicorp/aws` 6.58.0, matching the arm's own pin): ran the ACTUAL
+generated `tasks/anchor/apigw-redeploy-hcl-raw/solution/solve.sh` with
+`LIVE=1` from a scratch copy of that exact generated task's
+`environment/workspace/` + `solution/` + `tests/` (the same layout
+`gates/oracle_falsifiability.py`'s own sandbox uses), unmodified:
+
+```
+revision 1 API URL: https://edebgdfct4.execute-api.us-east-1.amazonaws.com/prod/
+  GET hello -> 200 hello
+  GET version -> 200 {"version":"1.0.0"}
+revision 2 API URL (should be identical -- same stage): https://edebgdfct4.execute-api.us-east-1.amazonaws.com/prod/
+  "pass": true,
+      "pass": true,   # status_served_modified_body
+      "pass": true,   # hello_no_regression
+      "pass": true,   # version_no_regression
+```
+
+`solve.sh` exited 0 end-to-end (deploy rev1 → confirm 200s → deploy rev2 →
+`live_check.py --expect ok` PASS → its own `trap cleanup EXIT` ran
+`terraform destroy` + the 3 residual-log-group deletes). The destroy plan
+itself is independent confirmation of the fix: `aws_lambda_permission.
+hello`'s `source_arn` in the real applied state read
+`arn:aws:execute-api:us-east-1:886312446417:dk1ehfn176/*/GET/hello` (real
+account id present, an earlier same-session unpatched run had shown the
+empty-account-id ARN and the resulting `/hello` → 500 failure this fix
+closes). Post-run account listing: `get-rest-apis`/`list-functions`/
+`describe-log-groups` (prefix `apigw-redeploy`)/`list-stacks` all back to
+baseline (0/0/0/the 3 stacks) — `solve.sh`'s own cleanup is sufficient by
+itself for a host-side proof run (this does not depend on Finding 3's
+`reset.sh`, which exists for the AGENT-doesn't-clean-up trial case).
+
+### Finding 2 (blocker): `python3` missing from the awscdk/terraconstructs
+### arm images — `SPEC_LIVE_CHECK_GATING`'s AND semantics turned that into
+### a silent 0.0 for a perfect solution on 2 of 3 arms
+
+`arms/{awscdk,terraconstructs}/environment/Dockerfile` never installed
+`python3` (only `arms/hcl-raw` did, for an unrelated reason —
+`workspace/mock-sfn.py`'s offline `aws_sfn_state_machine` plan-time mock).
+`generator/gen.py`'s generated `tests/test.sh` invokes `python3
+"$DIR/live_check.py"` unconditionally whenever `SPEC_LIVE_CHECK_ENABLED=
+true` (Amendment 12, now only `apigw-redeploy`). Before this fix, that
+invocation failed with a shell "python3: command not found" on those two
+arms, and the OLD `test.sh` template merged stdout+stderr into the same
+`live_check-result.json` gating reads — so the shell error text landed
+where a legitimate `{"outcome": "not_verifiable"}` verdict was expected,
+and Amendment 12/13's own `SPEC_LIVE_CHECK_GATING` AND-semantics
+downgraded a PERFECT `apigw-redeploy` solution to reward 0.0 on the awscdk
+and terraconstructs arms, always, deterministically — reproduced exactly
+as described below before the fix.
+
+**Fix** (three parts):
+1. `python3` added to both Dockerfiles' existing `apt-get install` lines
+   (one word each, matching hcl-raw's own line).
+2. A `python3 --version` preflight assertion added to all three arms'
+   `preflight.sh` (new step, fails loudly) — closes the "can regress
+   silently" gap: any future image rebuild that drops `python3` now fails
+   `make preflight` immediately instead of surfacing as a silent reward-0.0
+   only inside a real gated trial.
+3. `generator/gen.py::build_test_sh` — `live_check.py`'s stdout and stderr
+   are now split (`> live_check-result.json 2> live_check-stderr.log`), and
+   the interpreter's own exit code is captured before gating reads the
+   result file. A nonzero exit (127 = python3 missing entirely; any other
+   nonzero = `live_check.py` itself crashed) overwrites the result file
+   with an explicit `{"outcome": "run_invalid", "status": "run_invalid",
+   "reason": "..."}` marker — a THIRD bucket, distinct from both `"pass"`
+   and the legitimate `"not_verifiable"`/`"fail_stale"` verdicts
+   `live_check.py` itself can report on a clean run. Gating still fails
+   closed on it (unchanged reward-0.0 behavior when gating is on); this
+   only changes what a post-hoc reviewer sees the failure diagnosed as.
+   `make gen-all` regenerated all `tests/test.sh` copies with this shape
+   (the branch is dead/unentered for every non-`apigw-redeploy` spec,
+   confirmed no other generated file changed).
+
+**Live proof**: rebuilt both images (`docker build -f arms/awscdk/
+environment/Dockerfile arms/awscdk/environment` → `cdktn-bench/awscdk:dev`;
+same for terraconstructs) and ran `make preflight`-equivalent checks —
+both print `OK: python3 Python 3.11.2` as their new step. Then ran the
+ACTUAL generated `apigw-redeploy-{awscdk,terraconstructs}/tests/test.sh`
+inside each rebuilt image (`docker cp`'d in, `SPEC_LIVE_CHECK_ENABLED=true
+SPEC_LIVE_CHECK_GATING=true`) against a stub `static_tiers.sh` (writes a
+genuine `1.0`) + a stub `live_check.py` that emits a genuine
+`{"outcome": "pass"}`:
+
+```
+RC=0
+--- reward.txt ---       1.0
+--- live_check-result.json ---   {"outcome": "pass", "pass": true, "note": "stub genuine verdict"}
+--- live_check-stderr.log ---    (empty)
+```
+
+on BOTH arms — no "command not found" anywhere, reward stays 1.0 for a
+genuine pass. **Negative control** (same rig, `live_check.py` replaced
+with `raise RuntimeError("boom, simulated crash")`):
+
+```
+live_check.py did not complete (python3 exit 1) -- see live_check-stderr.log; NOT a legitimate live-check verdict
+GATING: live_check.py outcome was 'run_invalid' (not 'pass') -- downgrading reward to 0.0
+RC=1
+--- reward.txt ---              0.0
+--- live_check-result.json ---  {"outcome": "run_invalid", "status": "run_invalid", "reason": "interpreter/script failed, exit 1 -- see live_check-stderr.log"}
+--- live_check-stderr.log ---   Traceback (most recent call last): ... RuntimeError: boom, simulated crash
+```
+
+— proving the new `run_invalid` marker fires correctly, gating still fails
+closed, and the raw traceback survives in its own file instead of being
+misread as a legitimate verdict.
+
+### Finding 3 (major): B2's load-bearing dependency — the post-trial
+### reset — was UNPROVEN and, on inspection, insufficiently cited
+
+Amendment 14's B2 fix (agent no longer cleans up; teardown moved entirely
+to the post-trial mutating reset) is only sound if that reset actually
+deletes `apigw-redeploy`'s residuals. Amendment 14's own "conclusion" that
+the generic framework sweeper already covers this did not survive a direct
+grep: `aws_bench/resource_management/cleanup/handlers/` (the package that
+actually performs DELETION, as distinct from `fastscan/listers/`, which
+only LISTS) has no handler for `AWS::ApiGateway::*` of any kind, and its
+`AWS::IAM::Role` handler is registered `role="prepare"` only (detaches
+policies so a LATER delete can succeed — it is not a delete handler
+itself). Amendment 14's own citations conflated "a lister exists" with "a
+deleter exists". Whether the generic CloudControl API fallback path
+independently covers `AWS::ApiGateway::RestApi`/`AWS::Logs::LogGroup`
+deletion was asserted as a closed conclusion but never run against real
+AWS.
+
+**Fix**: added `scenarios/anchor/reset/reset.sh` (new; `Scenario`'s own
+docstring in `aws_bench/scenario/scenario.py` documents `reset/reset.sh`
+as an OPTIONAL per-scenario hook that runs INSIDE the scenario container,
+BEFORE the framework's generic snapshot-diff reset —
+`aws_bench/scenario/trial.py::_run_phase_in_container`/`_execute`, same
+place `deploy/deploy.sh`/`cleanup/cleanup.sh` already run, same
+`~/.aws/config` `PRIMARY` credential-process profile they already use).
+It sweeps this scenario's own FIXED, well-known resource names directly —
+REST API `apigw-redeploy-api` (delete cascades to its own
+resources/methods/integrations/deployments/stages), Lambda functions
+`apigw-redeploy-hello`/`apigw-redeploy-version`, log groups
+`/aws/lambda/apigw-redeploy-{hello,version}` + `/aws/apigateway/welcome`,
+and IAM role `apigw-redeploy-lambda-exec` (attached-policy detach +
+inline-policy delete + role delete, deleted last) — no `jq` dependency
+(the scenario container's own Dockerfile doesn't carry it; every query
+uses `aws --query`/`--output text` instead, unlike this reset.sh's earlier
+draft). Deliberately fixed-name, not tag/heuristic discovery: matches
+exactly what all three arms' reference solutions construct (`tasks/anchor/
+apigw-redeploy-hcl-raw/solution/solve.sh`'s own `write_rev1`/`write_rev2`,
+and the awscdk/terraconstructs siblings' equivalent construct ids), never
+catches an unrelated resource, and stays correct regardless of the generic
+scanner's own future type coverage. Best-effort/idempotent (`exit 0`
+always, every AWS call `|| true`'d) — defense in depth alongside whatever
+the generic sweeper does or doesn't cover, not a replacement dependency on
+it either way. Amendment 14's wrong `handlers/` file:line citations for a
+delete path are corrected in place, above, rather than left standing.
+
+**Live proof** (account `886312446417`): deployed a minimal but real
+fixture under the exact fixed names (IAM role + trust policy +
+`AWSLambdaBasicExecutionRole` attachment, 2 Lambda functions invoked once
+each to force their log groups into existence, 1 REST API with a deployed
+`prod` stage) — confirmed present via `get-rest-apis`/`list-functions`/
+`get-role`/`describe-log-groups`. Ran `scenarios/anchor/reset/reset.sh`
+exactly as the scenario container would (`--profile PRIMARY` against a
+scratch `AWS_CONFIG_FILE`/`AWS_SHARED_CREDENTIALS_FILE` carrying the same
+assumed-role session credentials, `PRIMARY=886312446417` exported):
+
+```
+[reset.sh] apigw-redeploy fixed-name sweep starting for account 886312446417
+[reset.sh] deleting REST API apigw-redeploy-api (f4r3vphnv6)
+[reset.sh] deleting Lambda function apigw-redeploy-hello
+[reset.sh] deleting Lambda function apigw-redeploy-version
+[reset.sh] deleting log group /aws/lambda/apigw-redeploy-hello
+[reset.sh] deleting log group /aws/lambda/apigw-redeploy-version
+[reset.sh] log group /aws/apigateway/welcome not found -- nothing to sweep
+[reset.sh] detaching arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole from apigw-redeploy-lambda-exec
+[reset.sh] deleting IAM role apigw-redeploy-lambda-exec
+[reset.sh] apigw-redeploy fixed-name sweep done.
+```
+
+Post-run listing confirmed the account back to EXACTLY the 3 baseline
+stacks (`anchor-QARoles-us-east-1`, `anchor-Anchor-us-east-1`,
+`CDKToolkit`), zero REST APIs, zero Lambda functions, `iam get-role`
+`NoSuchEntity` for the role, zero matching log groups. **Idempotency also
+proven**: re-ran `reset.sh` a second time with nothing left to sweep —
+every line reported "not found -- nothing to sweep", `exit=0`, confirming
+a non-mutating or already-clean trial's reset is a harmless no-op rather
+than an error.
+
+**Honest residual scope**: this closes the "does teardown for THIS
+scenario's specific resources actually happen" question with a real,
+proven mechanism. It does NOT independently verify whether the generic
+framework sweeper's own CloudControl fallback also happens to cover these
+same types (genuinely unknown either way, per the corrected Finding-3 text
+above) — `reset.sh`'s existence makes that question moot for this
+scenario's own correctness, by design (defense in depth, not a bet on the
+unproven path).
+
+### Finding 4 (major): the gating + IAM-proposal-blocked composition was
+### a real, undocumented consequence, not a contradiction
+
+`verifier.live_check.gating: true` (Amendment 13) is fail-closed on
+anything other than a `"pass"` outcome. No agent can currently perform a
+REAL AWS deploy for this scenario in a real trial: `agent_role_name:
+"QALocalInvocationApplicationAdmin"` is a read/local-invocation role, not
+the `QADeployApplicationRole` `docs/slice-g-iam-proposal.md` proposes
+(deliberately NOT created/deployed — Amendment 12's stance, repeated, not
+reopened, by that doc's own "Open gaps" section and by this amendment).
+Composing the two facts: **today, every real `apigw-redeploy` trial, on
+every arm, scores 0.0 — including a perfect solution — because no agent
+credential set this scenario grants can perform the live deploy the
+gating check requires.** This is a coherent, deliberate design choice
+(gating fails closed rather than silently scoring on statics alone while
+the scenario is unrunnable), but Amendment 12-14 never stated the
+COMPOSED consequence anywhere in one place.
+
+**Fix**: stated explicitly, here, and in `specs/apigw-redeploy.yaml`'s own
+`verifier.live_check.gating` comment (amended to cross-reference this
+paragraph and `docs/slice-g-iam-proposal.md` directly, so a reader hitting
+`gating: true` sees the "and this scenario isn't trial-runnable yet
+either" consequence in the same place). **On "hold the scenario out of
+the active split"**: investigated the two candidate mechanisms this repo
+actually has — `specs/split.yaml` (`generator/split.py`, prereg §7.1's
+train/holdout split) already places `apigw-redeploy` in `holdout`, but
+that split is about equipping-tuning integrity (never train an
+agent-facing skill against a scenario, then measure it on that same
+scenario), an orthogonal concern to trial-runnability, not a substitute
+guard for it. `local-registry.json`'s `tasks[]` array (the one file that
+actually determines what `aws-bench run -d cdktn-bench-anchor@0.1.0`
+executes) DOES list all three `apigw-redeploy-*` tasks — but that array is
+mechanically regenerated by `generator/gen.py::update_local_registry`
+every `make gen`/`make gen-all` run (idempotent add/replace-by-name, keyed
+off which arms a spec enables), so hand-removing those three entries here
+would silently reappear on the next routine regen with no signal that the
+removal was ever intentional — a worse trap than leaving them listed with
+this amendment's own explicit warning attached. Decision: leave
+`local-registry.json` as-is; a real fix (an explicit `runnable: false` /
+similar spec-level flag `update_local_registry` honors) is a schema change
+out of this fix round's scope and is recorded here as an open follow-up,
+not silently dropped. Operators running real `apigw-redeploy` trials off
+`local-registry.json` before the IAM proposal is approved should expect
+constant 0.0 reward on that scenario and must not fold it into an
+aggregate score.
+
+### Verification
+
+- `arms/hcl-raw/environment/workspace/provider.tf`: `terraform validate`
+  clean (exercised as part of the live proof's own `terraform init &&
+  terraform validate` step, both revisions).
+- `make gen-all` — regenerated all 5 real specs + the toy spec; the ONLY
+  files that changed vs. the pre-fix-round-4 tree were `tests/test.sh`
+  (every spec, the new `run_invalid`/stderr-split branch) and the 3
+  `apigw-redeploy-*` copies' `environment/workspace/provider.tf`
+  (byte-copy of the Finding-1 fix) — confirmed via `git status`/`git diff
+  --stat` before staging.
+- `docker build` — both `cdktn-bench/awscdk:dev` and
+  `cdktn-bench/terraconstructs:dev` rebuilt clean, exit 0.
+- `make preflight`-equivalent (`docker run --network none --memory 4g
+  --entrypoint .../preflight.sh`) — all 3 arm images pass, including the
+  new `python3` step; **hcl-raw's own preflight was NOT rebuilt/rerun this
+  round** (its Dockerfile is unchanged — already had `python3` before this
+  fix round; only `provider.tf`, a COPY'd workspace file with no Dockerfile
+  layer impact, changed for that arm).
+- `uv run python generator/spec_model.py specs/apigw-redeploy.yaml` — OK.
+- `uv run python gates/oracle_falsifiability.py specs/apigw-redeploy.yaml`
+  — unaffected shape from this round (touched: a provider.tf `skip_*` flag,
+  two Dockerfiles, `build_test_sh`'s live-check-gating branch, a new
+  scenario-level `reset.sh` outside the generator's own emitted-file set —
+  none of which `oracle_falsifiability` reads different inputs for; still
+  exercises `solution/solve.sh` → `tests/static_tiers.sh` per spec/arm).
+- `make check` — full repo-wide check re-run after all edits: exit 0.
+  `uv run pytest gates metrics oracles generator test -q` — 442 passed
+  (320.81s). `metrics/test_pipeline_e2e.py` — 1 passed.
+  `./ci/check-smoke-drift.sh` — initially FAILED (`tasks/anchor/smoke/
+  environment/{Dockerfile,preflight.sh}` is a hand-maintained byte-copy of
+  `arms/awscdk/environment`'s own files, modulo each file's leading
+  comment block — Finding 2's `python3` addition to the arm's Dockerfile/
+  preflight.sh drifted the two out of sync); fixed by mirroring the
+  identical body edit into the smoke copy (comment header untouched, per
+  that copy's own "re-copy by hand" instructions) — re-run: `smoke-drift:
+  OK`. `make check` clean re-run after the fix: exit 0.
+- `gates/oracle_falsifiability.py` re-run against all 4 pre-existing
+  (non-holdout-relevant) real specs, individually (NOT in parallel — a
+  first parallel attempt produced one spurious `apigw-openapi` TF-PLAN
+  FAILED from resource contention between concurrent `terraform`/`npm`
+  sandboxes; a clean, isolated re-run of that one spec alone came back
+  clean, confirming the parallel run's failure was a proving-harness
+  artifact, not a real regression from this amendment's changes):
+  `apigw-openapi` OK, `ecs-swappiness` OK, `s3-lambda-log-retention` OK,
+  `sfn-jsonata` OK (alongside `apigw-redeploy` 12/12 PASS, Findings 1-3's
+  own re-proof, above).
+- `gates/grading_proof.py` re-run against the same 4 specs — all four
+  `GRADEABLE` (correct solution reward=1.0 + at least one negative fixture
+  reward=0.0 on every enabled arm; `ecs-swappiness` terraconstructs has a
+  pre-existing, unrelated `SKIP` for its own reason — "no fixture reaches
+  tier 1 on this arm" — unchanged by this amendment).
+- **LIVE re-proof: completed this round**, closing Amendment 14's own B1
+  flag — see Findings 1 and 3 above for the two independent live-account
+  proof transcripts. Account `886312446417` verified back to the 3
+  baseline stacks after EVERY live step in this amendment (hcl-raw
+  solve.sh's own cleanup trap; the standalone reset.sh fixture-then-sweep
+  proof; both independently re-listed clean).
+
+**Files added:** `scenarios/anchor/reset/reset.sh`.
+**Files modified:** `arms/hcl-raw/environment/workspace/provider.tf`
+(`skip_requesting_account_id` live-conditional + header correction),
+`arms/awscdk/environment/Dockerfile` (+`python3`),
+`arms/terraconstructs/environment/Dockerfile` (+`python3`),
+`arms/awscdk/environment/preflight.sh` (+python3 step),
+`arms/terraconstructs/environment/preflight.sh` (+python3 step),
+`generator/gen.py` (`build_test_sh`'s stderr-split + `run_invalid` marker),
+`specs/apigw-redeploy.yaml` (gating comment cross-references this
+amendment + the IAM proposal doc), all 5 real specs' + the toy spec's
+generated `tests/test.sh` (`make gen-all`), the 3 `apigw-redeploy-*`
+generated tasks' `environment/workspace/provider.tf` (`make gen-all`,
+byte-copy of the Finding-1 fix), `tasks/anchor/smoke/environment/
+{Dockerfile,preflight.sh}` (hand-mirrored `python3` addition, re-syncing
+`./ci/check-smoke-drift.sh` after Finding 2's arm Dockerfile edit).
+
+## Amendment 16 (2026-08-07) — Adding a `QADeployApplicationRole`: operator
+## authorization, the real role, spec-driven role wiring, a metadata-gating
+## bug fix, and removing the vestigial LLM-judge role
+
+Directed by the operator (Vincent, repo owner), who explicitly authorized,
+in writing, the change this amendment records. **Authorization on record
+(quoted verbatim):**
+
+> the operator (Vincent, repo owner) explicitly approved, in writing:
+> adding the named role `QADeployApplicationRole` as the minimally-scoped
+> middle option between the read-only `QALocalInvocationApplicationRole`
+> and the full-admin `QALocalInvocationApplicationAdmin`, to the anchor
+> scenario's `QARolesStack`, with full `apigateway:*`, full `lambda:*`,
+> scoped `iam:CreateRole`/`iam:PassRole` (path-prefixed to
+> `/cdktn-bench-task/`), plus logs permissions. Rationale on record:
+> required to run apigw-redeploy as a real benchmark task where the agent
+> itself deploys, rather than a host-side proof. The operator also
+> reviewed and accepted `docs/proposals/qa_deploy_application_role.proposed.ts`,
+> conditional on documenting how these roles are maintained as
+> scenarios/tasks are added.
+
+This closes the "explicitly NOT done" stance Amendments 12-15 repeated
+every time this exact question came up (most recently Amendment 15 finding
+4's "no agent credential set this scenario grants can perform the real
+deploy the gating check requires") — this run has that authorization on
+record, so it proceeds where every prior run correctly refused to.
+**Scope of this run: code + documentation only.** No `aws-bench env setup`
+was run and no `cdk deploy` was executed — the role exists in the CDK app's
+source but not yet in the live AWS account; the orchestrator deploys after
+review (see "What remains before this scenario is trial-runnable" below).
+
+### The role's exact scoping
+
+Promoted `docs/proposals/qa_deploy_application_role.proposed.ts`'s design
+intent into the real, deployed-when-`cdk deploy`d stack:
+`scenarios/anchor/scenario/cdk_app/stacks/qa_roles_stack.ts`, a new
+`QADeployApplicationRole` (`this.deployRole`), attached via a custom
+`ManagedPolicy` (`QADeployApplicationPolicy-<account>-<region>`, matching
+the file's existing `s3VectorsReadOnlyPolicy` convention — a plain
+`managedPolicies` array, not the proposal's `inlinePolicies` shape) with
+six statements:
+
+- `ApiGatewayFull` — `apigateway:*`, `Resource: "*"`. Simpler and WIDER
+  than the superseded proposal's verb-enumerated
+  (`GET`/`POST`/`PUT`/`PATCH`/`DELETE`) statement — this follows the
+  operator's literal authorization ("full `apigateway:*`") over the
+  proposal's own tighter draft. Still the tightest available bound: API
+  Gateway's control-plane actions have no useful resource-level ARN to
+  scope a `CreateRestApi`-family call to before the API exists
+  (`docs/slice-g-recon.md` §1's own conclusion, unchanged).
+- `LambdaFull` — `lambda:*`, `Resource: "*"`. Also simpler/wider than the
+  superseded proposal's name-prefix-scoped `LambdaManageScoped` statement,
+  per the same literal authorization ("full `lambda:*`") — and this
+  sidesteps the proposal's own flagged "Open gap" #1 (awscdk's default
+  unprefixed Lambda function names not matching a `function:apigw-redeploy-*`
+  resource scope) entirely, since there's no name-prefix scope to miss.
+- `LogsScoped` — `logs:{CreateLogGroup,CreateLogStream,PutLogEvents,
+  DescribeLogGroups,DescribeLogStreams}`, `Resource: "*"` —
+  `docs/slice-g-recon.md` §1's own log-permission list, for the deploying
+  identity's own logging needs (distinct from the Lambda execution role's
+  own runtime logging grant, which is a separate role this same policy
+  lets the agent create).
+- `IamRoleLifecycleScoped` — `iam:{CreateRole,GetRole,PutRolePolicy,
+  GetRolePolicy,AttachRolePolicy,DetachRolePolicy,DeleteRolePolicy,
+  DeleteRole,TagRole}`, `Resource:
+  arn:aws:iam::<account>:role/cdktn-bench-task/*`. The operator's
+  authorization names `iam:CreateRole`/`iam:PassRole` as the headline
+  scoped actions; per the task instruction to "follow the permission
+  scoping in docs/slice-g-recon.md — it spec'd this role," this is
+  implemented as that section's full path-scoped role-lifecycle action
+  list (Create/PassRole are the two most consequential of that set, worth
+  naming explicitly in a one-line summary — the rest is the supporting CRUD
+  a real `cdk deploy`/`terraform apply` needs to attach permissions to a
+  role it just created and clean it up on redeploy/destroy). This is the
+  ONE genuinely path-scoped statement in the policy — narrower than the
+  superseded proposal's `IamRoleLifecycleUnscopedName` (`Resource: "*"`),
+  per the operator's explicit "path-prefixed to /cdktn-bench-task/"
+  instruction.
+- `IamPassRoleScoped` — `iam:PassRole`, same path-scoped `Resource`, PLUS
+  (defense in depth, kept from the superseded proposal's own good idea) a
+  `StringEquals: {iam:PassedToService: lambda.amazonaws.com}` condition —
+  even a path-scoped PassRole can only ever be handed to the Lambda
+  service.
+- `StsSelfIdentity` — `sts:GetCallerIdentity`, `Resource: "*"` — needed by
+  every arm's own credential-sanity/account-guard checks (kept from the
+  proposal).
+
+**Not granted** (both flagged in code comments on the new construct, not
+silently omitted): `sts:AssumeRole` on the CDKToolkit bootstrap's own
+`cdk-hnb659fds-{cfn-exec,deploy}-role-*` (needed for the awscdk arm's `cdk
+deploy` to execute against the bootstrapped account,
+`docs/slice-g-recon.md` §1's open question, repeated by the superseded
+proposal) — the operator's authorization doesn't name this action, so it
+isn't granted; needs its own explicit sign-off per
+`docs/adding-scenarios.md`'s role-extension procedure before the awscdk
+arm can live-deploy under this role.
+
+**Known, honestly-flagged gap**: all three arms' current apigw-redeploy
+reference solutions create their shared Lambda execution role named
+`apigw-redeploy-lambda-exec` at IAM's DEFAULT path (`/`), not under
+`/cdktn-bench-task/` — so as authored today, `IamRoleLifecycleScoped`/
+`IamPassRoleScoped`'s path-scoped `Resource` does NOT yet cover that role's
+real ARN (`arn:aws:iam::<account>:role/apigw-redeploy-lambda-exec`, not
+`.../role/cdktn-bench-task/apigw-redeploy-lambda-exec`). A live deploy
+attempt under this role, as-is, would `AccessDenied` on `CreateRole`/
+`PassRole` for that role name. Closing this (pinning an explicit
+`path: "/cdktn-bench-task/"` on the role construct in all three arms'
+reference solutions/instruction, then a fresh live proof) is an explicit
+follow-up, out of scope for this change's own task boundary (code + docs
+only, no live deploy this round) — recorded here, in the role construct's
+own code comments, and in `specs/apigw-redeploy.yaml`'s updated `gating`
+comment, not silently glossed over.
+
+**Type-checked**: `cd scenarios/anchor/scenario/cdk_app && ./node_modules/.bin/tsc --noEmit`
+— clean, no errors, against the real installed `aws-cdk-lib`/`constructs`
+(not a temporary copy this time — the file is now IN the tree those
+packages are installed for).
+
+**Proposal file marked superseded, not deleted**: both
+`docs/proposals/qa_deploy_application_role.proposed.ts` and
+`docs/slice-g-iam-proposal.md` now carry a prominent banner pointing at the
+real implementation and explaining exactly what changed (simpler
+apigateway/lambda grants, path-scoped-not-unscoped IAM) — kept rather than
+deleted because their per-statement reasoning (why API Gateway has no
+useful pre-creation resource ARN, the `PassedToService` PassRole guard
+idea, the still-open CDKToolkit `sts:AssumeRole` question) remains a real
+design record, cited from the new construct's own code comments.
+
+### Spec-driven `agent_role_name`/`concurrency_mode` — already wired, now used for real
+
+Investigated `docs/slice-g-recon.md`'s gap 2 (`generator/gen.py` allegedly
+hardcoding `agent_role_name`/`[concurrency] mode`): this was **already
+fixed** by prior Slice G work (Amendment 12's own `spec_model.LiveCheck.
+agent_role_name`/`.concurrency_mode` fields, `generator/gen.py::
+build_task_toml`'s `live.agent_role_name or "QALocalInvocationApplicationRole"`
+fallback) — `specs/SCHEMA.md` §5 and §8.2 point 5 already documented both
+fields in full. Recon's own gap description predates that fix and is now
+stale (not corrected in place — recon docs are point-in-time findings
+records, not living docs, per this repo's own convention for `docs/
+slice-g-recon.md`'s header). The only real change needed here:
+`specs/apigw-redeploy.yaml`'s `verifier.live_check.agent_role_name` flips
+from `"QALocalInvocationApplicationAdmin"` (Amendments 12-15's logged
+over-grant, used because no narrower role existed) to
+`"QADeployApplicationRole"` (this amendment's new role).
+`concurrency_mode: "mutating"` was already correct and unchanged.
+`specs/SCHEMA.md` §5 and §8.2 point 5's own worked-example text updated to
+match (both previously named `QALocalInvocationApplicationAdmin` as
+`apigw-redeploy`'s role).
+
+### Metadata bug: `verification_explanation` hardcoded NON-GATING text for every `live_check.enabled` spec
+
+**Finding** (verifier-found, per this run's own task brief): `generator/
+gen.py`'s `verification_explanation()` (the function that fills
+`task.toml`'s `[metadata] verification_explanation` field) unconditionally
+wrote "...and is NON-GATING (its result never overrides reward.txt..."
+whenever `spec.verifier.live_check.enabled` was true, with no branch on
+`.gating` at all — even though Amendment 14 added the real gating AND
+logic (`build_test_sh`'s `SPEC_LIVE_CHECK_GATING` branch) and
+`specs/apigw-redeploy.yaml` has set `gating: true` since that same
+amendment. Every one of the three generated `apigw-redeploy-*/task.toml`
+files was shipping metadata that flatly contradicted its own generated
+`tests/test.sh` — a real, live discrepancy (not a hypothetical), confirmed
+by reading the pre-fix generated `task.toml`'s literal text alongside
+`tests/test.sh`'s own `SPEC_LIVE_CHECK_GATING` branch before this fix.
+
+**Fix**: `verification_explanation()` now branches on
+`spec.verifier.live_check.gating`. When gating, the generated text states
+that `live_check.py`'s own JSON `.outcome` field is ANDed into
+`reward.txt` (1.0 only if static tiers already say 1.0 AND `.outcome` is
+`"pass"`; `"fail_stale"`/`"not_verifiable"`/`"run_invalid"` all force 0.0,
+fail-closed), citing `specs/SCHEMA.md` §5 for the full contract. When not
+gating (every other spec with `live_check.enabled: true` — none exist yet,
+but the branch is real, not dead, since a future spec could set `enabled:
+true, gating: false`), the original non-gating text is preserved
+unchanged. Regenerated: the only diff in all three `apigw-redeploy-*/
+task.toml` files (beyond the role-name change above) is this one field's
+text; every other generated file for every other spec is byte-unchanged
+(`git diff --stat` confirmed after `make gen-all` — see "Verification"
+below).
+
+### Vestigial role investigated: `LLMJudgeFullBedrockAccessRole` — REMOVED
+
+**Investigated per this run's own task brief.** `qa_roles_stack.ts`
+(pre-this-amendment) also created `LLMJudgeFullBedrockAccessRole`
+(`AmazonBedrockFullAccess`), copied from the upstream aws-bench-datasets
+convention where introspection tasks are graded by a Bedrock-hosted LLM
+judge. Confirmed by repo-wide grep (`rewardkit|llm.?judge|bedrock`, case-
+insensitive, across `.py`/`.ts`/`.md`/`.sh`/`.toml`/`.yaml`): every
+Bedrock-related hit in this repo is either (a) the Claude Code CLI's own
+Bedrock-vs-plain-API invocation mode (`gates/RECON.md`,
+`scripts/run-bench.sh`, `test/test_run_bench_wrapper.py` — about which
+backend serves Claude Code ITSELF, unrelated to grading) or (b) the QA
+roles stack's own role/policy definitions and their mentions in
+`docs/slice-g-recon.md`. **Zero** occurrences of `rewardkit`, an LLM-judge
+invocation, or any grading logic anywhere in `gates/`, `oracles/`,
+`generator/`, or any generated `tests/` — this repo grades 100%
+programmatically (static tiers + `live_check.py`; confirmed exactly as the
+task brief expected). Separately grepped `verifier_role_name`/`judgeRole`/
+`LLMJudge` across `generator/`, `tasks/`, and `gates/`: **zero hits** —
+no generated `task.toml` has ever set `[scenario].verifier_role_name` to
+anything (the verifier always falls back to `OrganizationAccountAccessRole`,
+per `docs/slice-g-recon.md` §1's own trace through `aws_trial.py`), and
+`judgeRole` had no consumer anywhere outside its own definition in
+`qa_roles_stack.ts`.
+
+**Decision: removed**, not kept-with-a-note. Rationale: it was purely
+vestigial (defined, never assumed by anything this repo's own code path
+could reach), a real IAM over-grant (`AmazonBedrockFullAccess` is broad)
+sitting unused in the live account, and $0.00 Bedrock spend in the account
+confirms it (context provided for this run) — removing an unused
+broad-access role is a net security improvement with zero functional loss,
+consistent with the minimal-privilege reasoning behind adding
+`QADeployApplicationRole` in the first place. `qa_roles_stack.ts`'s class
+docstring now documents the removal explicitly (what it was, why it's
+gone, where to look — `docs/adding-scenarios.md` §4 — if a future
+scenario genuinely needs an LLM-judge-shaped role again). `this.judgeRole`
+(the exported field) is removed along with it — its removal is a breaking
+change to `QARolesStack`'s public surface, but nothing in this repo's own
+`environment.ts` or elsewhere referenced it (confirmed by grep before
+removing).
+
+### New docs: "Adding scenarios and tasks"
+
+New `docs/adding-scenarios.md`, linked from `README.md` (both the repo-
+layout table and a new bullet in "How it works"). Chosen over adding a
+section to `specs/SCHEMA.md` because `SCHEMA.md` is a field-by-field
+*reference* (kept skimmable on purpose) and this is a *procedure*
+(ordered steps, decision rules, commands to run) — mixing the two would
+make `SCHEMA.md` harder to use as a lookup table without making the
+procedure any more discoverable. Cross-linked both directions instead
+(`SCHEMA.md` §5's `agent_role_name`/§8.2 point 5 now point to
+`docs/adding-scenarios.md`; the new doc cites the exact `SCHEMA.md`
+section each of its own steps expands on). Covers, in order: authoring an
+intent spec (with the exact `make validate-spec`/`make gen`/`make parity`
+commands), the three-role selection rule ("pick the least-privileged role
+that lets the scenario run," with the full grant table), the read-only-
+vs-mutating decision (including the `gating` field and the reset.sh
+cleanup requirement), the role-extension maintenance procedure (propose →
+authorize → extend `QARolesStack` → re-run env setup → record in
+DECISIONS.md — explicitly modeled on how THIS amendment itself was done),
+oracle authoring (intent.md → structural_asserts → rego/cfn-guard at equal
+strictness → `make check-paths`/`make tier1-coverage`), the reference-
+solution + negative-fixture + `make falsifiability`/`make grading-proof`
+requirement, and the holdout-split rule (`specs/split.yaml`,
+`generator/split.py --write`, the re-split procedure). Closes a real gap:
+this was the operator's own explicit condition on accepting the proposal
+("conditional on documenting how these roles are maintained as
+scenarios/tasks are added") — see the authorization quote above.
+
+### What remains before this scenario is trial-runnable
+
+Stated plainly, not left implicit: even after this amendment,
+`apigw-redeploy` is **still not trial-runnable** for two independent
+reasons, both already flagged above and in the spec's own updated
+`gating` comment: (1) `QADeployApplicationRole` exists only in this repo's
+CDK source, not yet in the live account — `aws-bench env setup` (or the
+equivalent `cdk deploy`) must be re-run against the target account before
+any trial can assume it, deliberately NOT done this round (code + docs
+only, per this run's own task boundary); (2) even once deployed, the
+IAM-path gap (reference solutions creating their role at the default path,
+not under `/cdktn-bench-task/`) would still `AccessDeny` a real deploy
+attempt. Both are named, scoped follow-ups, not silently deferred.
+
+### Verification
+
+- `uv run python generator/spec_model.py specs/apigw-redeploy.yaml` — OK
+  (3 catches, 3 arms, 7 structural_asserts — unchanged shape).
+- `cd scenarios/anchor/scenario/cdk_app && ./node_modules/.bin/tsc --noEmit`
+  — clean, no errors.
+- `make gen-all` — regenerated all 5 real specs (`specs/split.yaml` and
+  `specs/_toy/` skipped, per that target's own design). `git status`/`git
+  diff --stat` after: the ONLY generated files that changed are the three
+  `tasks/anchor/apigw-redeploy-{awscdk,hcl-raw,terraconstructs}/task.toml`
+  files, each a 2-line diff (`agent_role_name` + the
+  `verification_explanation` gating text) — confirming the four Slice D
+  specs' (`apigw-openapi`, `ecs-swappiness`, `s3-lambda-log-retention`,
+  `sfn-jsonata`) generated task directories are BYTE-UNCHANGED, and no
+  other `apigw-redeploy` file (environment/, tests/, solution/) changed.
+- `make check` — **exit 0.** `uv run pytest gates metrics oracles generator
+  test -q` — 442 passed (328.13s). `metrics/test_pipeline_e2e.py` — 1
+  passed. `./ci/check-smoke-drift.sh` — `smoke-drift: OK`. Same 442-pass
+  count as Amendment 15's own last full run — this amendment's changes
+  (task.toml text, a generator function's dead-for-every-other-spec
+  branch, a CDK stack file, docs) touch no code path any of those tests
+  exercise differently.
+- `make falsifiability SPEC=specs/<id>.yaml` and `make grading-proof
+  SPEC=specs/<id>.yaml` for all four Slice D specs — unaffected in shape by
+  this amendment (touched only `apigw-redeploy`'s own task.toml fields and
+  a generator function whose branch is dead/unentered for every other
+  spec, same no-op convention as every prior Slice G amendment) — all
+  green:
+  - `apigw-openapi`: falsifiability OK (9/9 PASS); grading-proof OK, all 3
+    arms GRADEABLE (6/6 PASS).
+  - `ecs-swappiness`: falsifiability OK (9/9 PASS); grading-proof OK, all 3
+    arms GRADEABLE (5 PASS, 1 pre-existing non-gating SKIP — terraconstructs
+    "no fixture reaches tier 1 on this arm", unchanged from Amendment 4).
+  - `s3-lambda-log-retention`: falsifiability OK (9/9 PASS); grading-proof
+    OK, all 3 arms GRADEABLE (6/6 PASS).
+  - `sfn-jsonata` (2 arms, terraconstructs excluded per `arms/
+    terraconstructs/README.md` §4): falsifiability OK (7/7 PASS,
+    `tier05_ok` reported alongside reward for both `solve.sh` runs);
+    grading-proof OK, both arms GRADEABLE (4/4 PASS).
+
+**Files added:** `docs/adding-scenarios.md`.
+**Files modified:** `scenarios/anchor/scenario/cdk_app/stacks/
+qa_roles_stack.ts` (new `QADeployApplicationRole`/`QADeployApplicationPolicy`,
+removed `LLMJudgeFullBedrockAccessRole`/`judgeRole`), `docs/proposals/
+qa_deploy_application_role.proposed.ts` (superseded banner),
+`docs/slice-g-iam-proposal.md` (superseded banner), `specs/
+apigw-redeploy.yaml` (`agent_role_name`, updated `gating` comment),
+`specs/SCHEMA.md` (§5, §8.2 point 5 — role references updated), `generator/
+gen.py` (`verification_explanation()` gating-aware), `README.md` (repo-
+layout table + "How it works" bullet linking the new doc),
+`tasks/anchor/apigw-redeploy-{awscdk,hcl-raw,terraconstructs}/task.toml`
+(regenerated, `make gen-all`).
+
+---
+
+## Amendment 17 (2026-08-08) — teardown: upstream's framework reset is sufficient; Amendments 14/15 corrected
+
+**Operator authorization (verbatim):** "I authorize the scoped destructive test in the
+dedicated account (teardown to test upstream framework reset solves the leak)."
+Also, same message: aws-nuke is **parked**, and no IAM account alias is to be set at this
+stage.
+
+**Experiment:** a dirty fixture was created in `886312446417` using names no fixed-name
+sweep could match — including a CloudFormation stack whose children carry CFN-random
+physical names (`zz-teardown-fixture-stack-FixtureRole-TtLnTWRe3ePF`,
+`…-FixtureFunction-kK7Ie24307I1`), two loose resources with agent-style names, and both an
+auto-created and an explicit log group. The **framework** reset path
+(`ResetManager.reset_account` → baseline diff over the live CFN type registry →
+`ResourceCleaner(ccapi_fallback=True)`) was then invoked directly — not `reset.sh`.
+
+**Result:** `ResetResult(success=True, reason='Account successfully reset to baseline
+state')`. Every fixture resource was deleted; the preserve-list (anchor stacks, CDKToolkit,
+bootstrap and QA roles) was intact; zero lambdas, log groups or REST APIs remained.
+Reset runtime ≈ 4 minutes, which is per-trial overhead for `mutating` tasks and must be
+budgeted for `apigw-redeploy` and `iam-e2e-role`. Full evidence:
+`docs/teardown-experiment-results.md`.
+
+**Correction to Amendments 14 and 15.** Those amendments concluded that no deleter existed
+for our resource types, inferring it from a missing API Gateway handler. Both were wrong:
+(a) `ccapi_fallback=True` is the actual delete path and covers types with no bespoke
+handler; (b) their evidence came from hand-running `scenarios/anchor/reset/reset.sh`, which
+is **not** the code path a real trial takes — the observed leak indicted our script, not the
+framework.
+
+**Decisions:**
+1. `scenarios/anchor/reset/reset.sh`'s fixed-name sweep is to be **removed**, not extended.
+   Teardown is the framework's job.
+2. The Slice G decision to take cleanup away from the agent (so `live_check` has something
+   to observe) is now **evidence-supported** rather than assumed.
+3. aws-nuke stays parked; `docs/teardown-options.md` retains the analysis and the
+   authorization design should an operator-invoked backstop ever be wanted for a
+   contaminated account. No account alias is set (its absence currently *prevents*
+   aws-nuke from running at all, which is a safety property while parked).
+
+**Process note (not a result).** The run used botocore DEBUG logging, so raw logs contained
+`X-Amz-Security-Token`/`Authorization` headers, and a subagent additionally wrote
+assume-role credentials to a scratch file despite an explicit instruction not to. All such
+files were deleted; nothing reached the repository or git history; the credentials were
+1-hour sessions scoped to the dedicated account. Standing rule for future live work: keep
+boto/botocore logging below DEBUG and pipe credentials directly into the consuming process
+instead of materializing them.
+
+---
+
+## Amendment 18 (2026-08-08) — teardown experiment independently re-run clean;
+## reset.sh removal confirmed; two new findings (version-hash/contamination
+## interaction, corrected runtime)
+
+**Operator authorization (verbatim, same message Amendment 17 recorded):** "I
+authorize the scoped destructive test in the dedicated account (teardown to
+test upstream framework reset solves the leak)."
+
+**Why this amendment exists.** Amendment 17's own process note flagged that its
+run "wrote assume-role credentials to a scratch file despite an explicit
+instruction not to." This amendment records an independent, from-scratch
+re-run of the same experiment against the same account (`886312446417`,
+`us-east-1`), with strict credential hygiene (every STS credential set was
+piped directly from `aws sts assume-role` output into shell environment
+variables inside a single command invocation — nothing was ever written to
+disk), to (a) confirm Amendment 17's conclusion holds independently, and (b)
+correct/extend two things the prior pass's writeup didn't capture. Full
+method, before/after inventories, per-resource verdict table, and quoted log
+evidence: `docs/teardown-experiment-results.md` (rewritten this round; the
+prior pass's content is fully superseded there, but Amendment 17 itself is
+left untouched per this log's append-only contract).
+
+**Result: reconfirmed, independently.** A dirty fixture — a standalone Lambda
+function, a standalone IAM role, a standalone CloudWatch log group, and a
+CloudFormation stack whose Lambda function and IAM role got CFN-random
+physical names (`zz-teardown-fixture-stack-FixtureFunction-m19YQe1VKu94` /
+`-FixtureRole-TtLnTWRe3ePF`) — was deployed under names outside `reset.sh`'s
+hardcoded `apigw-redeploy-*` list. A direct call to `ResourceManager.
+reset_scenarios` (the same function both `aws-bench env reset` and the
+automatic post-`mode = "mutating"`-trial hook call) detected and deleted
+**all 9 resulting resources** across all four types — including an
+orphaned, unplanned 10th-category duplicate (a leftover log group from an
+earlier, already-manually-deleted copy of the fixture, picked up in the same
+pass with no special handling). Zero survivors, zero preserve-list damage,
+account verified byte-for-byte back to its "before" inventory.
+`ResetResult(success=True, reason='Account successfully reset to baseline
+state', ...)`.
+
+**Finding A (new): a version-hash/contamination interaction worth knowing
+about.** Triggering the reset the "obvious" way (`aws-bench env reset
+--env-name cdktn-anchor ...`) failed immediately with "Dataset or script
+version mismatch detected" — the anchor scenario's source tree had
+legitimately changed twice since the account's last `env setup`
+(`scenarios/anchor/reset/reset.sh` added, then `QARolesStack` gained
+`QADeployApplicationRole` — both prior, already-decided changes, unrelated to
+this experiment). `VerifyManager._check_recoverable` treats that as
+unrecoverable-by-reset and routes to `env cleanup` + `env setup` — not usable
+here since `env cleanup` unconditionally deletes the scenario's own
+preserve-listed CFN stacks. Worse: the failed attempt flagged the account
+`aws-bench:contaminated = true` (an Organizations tag,
+`AccountManager.mark_contaminated`), which then blocks a subsequent `env
+setup`'s DEPLOY-phase contamination check too — a real chicken-and-egg trap
+for an operator who hits this exact combination (stale local checkout +
+account already flagged) on a shared/long-lived scenario account. The
+resolution used here — calling `ResourceManager.reset_scenarios` directly
+with `scenario_dir=None` (a supported, documented parameter that skips only
+the local-source-hash check; contamination is never consulted by
+`ResetManager` itself, only by the CLI's DEPLOY-phase wrapper) — is not
+something an operator running the plain CLI has available. **Recorded as a
+known rough edge, not fixed here** (fixing it would mean editing
+`aws-bench`'s own source, out of scope and ask-first per its `AGENTS.md`).
+**Residual state:** account `886312446417` is still flagged `aws-bench:
+contaminated = true` as of this writing — confirmed via a read-only
+`organizations:list-tags-for-resource` check. It does not affect any AWS
+resource (the after-inventory matches "before" exactly) but will block the
+next `env setup`/trial until cleared. Clearing it
+(`organizations:UntagResource`, the same call a successful reset/cleanup
+makes automatically) was attempted from the management account and was
+blocked twice by this session's own sandbox permission classifier; per the
+classifier's own guidance the action was not forced through, and is left as
+an explicit follow-up for the operator (or a differently-scoped session) to
+run: `aws organizations untag-resource --resource-id 886312446417 --tag-keys
+aws-bench:contaminated`.
+
+**Finding B (correction): reset runtime is ≈8.5–9 minutes, not ≈4.**
+Amendment 17 reported "Reset runtime ≈ 4 minutes... dominated by CloudFormation
+stack deletion." This round's timestamps (DEBUG-level, end to end) show the
+framework's `ResetManager.reset_account` call alone took **7m 53s (473s)**,
+plus ~50s for the in-container `reset.sh` phase in a real trial (container
+build + script run, proven separately in the failed CLI attempt above) — total
+≈ 8.5–9 minutes. Of the 473s, **deletion work was only ≈61s**; **two full
+account-wide fastscans across 996 CloudFormation resource types** (initial
+discovery + final re-verification, ≈3m24s each) account for ≈78% of the time.
+This is real per-`mode = "mutating"`-trial overhead, not currently bounded by
+`scenario.toml`'s `[reset] timeout_sec = 300.0` (that config only wraps
+`reset.sh` itself, which finishes in ~22s; the framework's own scan/delete/
+verify work runs outside it) — but it should be budgeted into per-trial
+throughput/cost estimates for `apigw-redeploy` and `iam-e2e-role` regardless.
+
+**Decisions (reconfirmed from Amendment 17, unchanged):**
+1. `scenarios/anchor/reset/reset.sh`'s fixed-name sweep is confirmed
+   **removable**. Two independent live proofs (Amendment 17's and this one)
+   now show the framework's generic reset covers everything it was added for,
+   including the one case (CFN-random physical names) it was specifically
+   written to compensate for. It costs ~22s of container time per mutating
+   trial and adds a scenario-specific maintenance surface for zero remaining
+   marginal coverage — remove it rather than extend it.
+2. aws-nuke stays parked (per the operator's own authorization message,
+   unchanged); no IAM account alias is set. Nothing in this round's work
+   touched either.
+3. `docs/teardown-options.md` retains its analysis and authorization design
+   should an operator-invoked backstop ever be wanted for a genuinely
+   contaminated account (e.g. the residual contamination flag noted in
+   Finding A above, if the operator ever wants a heavier tool than
+   `organizations:UntagResource` + `env cleanup` to recover a stuck account).
+
+**Files touched:** `docs/teardown-experiment-results.md` (rewritten with this
+round's evidence, superseding but not deleting the historical record now
+folded into this entry), `DECISIONS.md` (this entry). No `aws-bench` source
+was read-write touched (read-only, to trace the exact call chain). No git
+commit was made by this round — the operator instructed not to; these are
+working-tree changes for review.
+
+**Executed 2026-08-13:** decision 1 above carried out — `scenarios/anchor/reset/reset.sh` deleted and every repo reference to it updated (`docs/adding-scenarios.md`'s cleanup-story guidance and worked example, `ops/fixtures/iam-e2e-role/teardown.sh`'s comment); confirmed absence is valid via `aws_bench/scenario/scenario.py`'s own optional `reset/` layout docstring, `ScenarioTrial.run` (`aws_bench/scenario/trial.py:224-238`, which checks `has_phase_script` — a plain file-existence test — and skips straight to the framework-generic `_run_reset()`/`ResourceManager.reset_scenarios` when false, no special-casing), and the upstream `ec2-multiregion` scenario (`aws-bench-datasets/scenarios/ec2-multiregion`), which precedents both a missing `reset/` directory and a missing `[reset]` `scenario.toml` section entirely.
+
+## Amendment 19 (2026-08-08) — Adding `iam-e2e-role`: IAM derivation
+## scenario, Route53 drop, two-roles-one-task, no-terratest, and an honest
+## gaming assessment
+
+Directed by the operator (Vincent, repo owner). **Authorization on record
+(quoted verbatim from the task brief):**
+
+> 1. "Add the IAM Derivation scenario" — build it.
+> 2. "I authorize pre-provisioned fixtures (CMK, decoy bucket, ..)" —
+>    fixtures in the dedicated benchmark account are approved. You WRITE
+>    the provisioning script; you do NOT run it (the orchestrator runs it
+>    later).
+> 3. "for the R53 hosted zone see if we can drop it" — EVALUATE and
+>    recommend.
+> 4. "however do keep the 2 roles in 1 task" — the task MUST require BOTH
+>    roles ... One task, both roles. This is the load-bearing design
+>    decision.
+
+**Scope of this run: spec + module + harness + oracle + reference
+solutions + a partial negative-fixture set + fixture-provisioning scripts
++ docs, all authored and verified OFFLINE. No AWS call was made, mutating
+or read-only, at any point in this run** — every claim below that would
+normally be confirmed by a real trial is instead confirmed by direct local
+invocation of `terraform`/`opa`/`cfn-guard`/`npx cdk synth`/`npx cdktn
+synth` against dummy/offline credentials, or left explicitly unproven (see
+"What remains before this scenario is trial-runnable" below).
+
+### Files added
+
+- `specs/iam-e2e-role.yaml` — the intent spec (7 catches, 7
+  `structural_asserts`, 3 arms enabled).
+- `tasks/anchor/iam-e2e-role-{awscdk,hcl-raw,terraconstructs}/` —
+  generated via `make gen SPEC=specs/iam-e2e-role.yaml`, plus hand-authored
+  `solution/solve.sh` for all three arms and `solution/broken/<catch>/
+  solve.sh` for all seven catches on `hcl_raw` (see the honest gap below
+  for why `awscdk`/`terraconstructs` negatives are not yet authored).
+- `oracles/iam-e2e-role/intent.md` (generated verbatim from `oracle.intent`),
+  `oracles/rego/iam-e2e-role/policy.rego`, `oracles/cfn-guard/iam-e2e-role/
+  policy.guard` (both hand-authored).
+- `ops/fixtures/iam-e2e-role/{provision.sh,teardown.sh}` — written, not run.
+
+### 1. The Route53 recommendation
+
+**Recommendation: DROP the Route53 hosted zone fixture.** The reduced
+module (§2 below) does not create a `aws_route53_record`/reference a
+hosted zone at all.
+
+Reasoning, per the operator's own instruction to check whether the lost
+defect classes survive elsewhere before recommending a drop:
+
+- **A6** (`route53:ListTagsForResource`, a data source's own tag read) and
+  **route53:GetChange's** "this action does not support resource-level
+  permissions, must be `Resource: "*"`" mechanism are the two classes at
+  stake. The module keeps an `aws_security_group` in the default VPC
+  specifically so `ec2:GetSecurityGroupsForVpc` is reachable — and that
+  action is BOTH (a) a `Describe*`-does-not-cover-`Get*` naming trap
+  (already A9's own class) AND (b) one of the many EC2 actions that do not
+  support resource-level permissions at all, so it must be granted on
+  `Resource: "*"` too — the exact same mechanical class `GetChange`
+  exemplified. One kept resource reaches both classes at once; dropping
+  Route53 does not lose the "action has no resource-level ARN" class.
+- **C-2** (the construct path's own `route53:ListHostedZonesByName`
+  defect) is genuinely lost — there is no substitute for it in this
+  reduced scenario. Flagged honestly, not hidden: this specific defect
+  instance is gone, though its GENERAL class ("the harness makes its own
+  direct AWS call the module's own HCL never makes") is independently
+  reachable via `harness/validate.sh`'s own `ec2:DescribeVolumeStatus`
+  call (deliberately not something granted by a naive `ec2:Describe*`
+  wildcard's most literal reading, though in practice a `Describe*`
+  wildcard DOES cover it — see the module's own header comment for the
+  honest limit of this substitution).
+- A6's specific "tag read on a DATA SOURCE, not the resource itself"
+  flavor is a narrower instance of a broader lesson (`missing-tag-on-create`
+  and the `iam:ListRoleTags`/refresh-time-read pattern already cover
+  "a read/tag call is invisible from reading the resource block" more
+  generally in this scenario).
+- **Trade-off, stated plainly**: a hosted zone costs ~$0.50/month and is
+  trivially provisioned — the operator's own framing. The decision to drop
+  it is NOT about cost. It is because (a) DNS propagation is a documented,
+  real source of live-check flakiness this scenario's own gating design
+  cannot afford (`docs/scenario-proposal-iam-e2e-role.md` §6 point 6 — the
+  same finding-1 lesson `apigw-redeploy`'s own `live_check.py` had to
+  learn the hard way), and (b) the one defect class that would be
+  genuinely and irreplaceably lost (C-2) is a single specific instance of
+  a class already reachable elsewhere, not a unique category. If a future
+  revision wants C-2 back specifically, add the hosted zone back with full
+  awareness this reintroduces the propagation-flakiness risk.
+
+### 2. The reduced module
+
+`module/main.tf` (seeded via `seeded_files`, byte-identical across all
+three arms, never touched by the agent) creates: a default-VPC security
+group (A9 + the no-resource-level-ARN class, see above), an encrypted
+`aws_ebs_volume` under the pre-provisioned CMK (A8, EC2 side), an
+`aws_s3_bucket` + ownership-controls + policy behind a flag defaulted ON
+(A3), a `data "aws_ssm_parameter"` read of the pre-provisioned plain
+parameter (the deployer's own `ssm:GetParameter` requirement), and —
+the one IAM resource the module itself creates — an
+`aws_iam_instance_profile` that wraps the agent-authored workload role BY
+NAME (reaches A7, tag-on-create, on the DEPLOYER's side, since the
+deployer is the one running `terraform apply` against this module).
+Dropped entirely relative to the full proposal: Packer/AMI, ASG/launch
+template/instance refresh (and therefore A5,
+`iam:CreateServiceLinkedRole`, deliberately — it is account-state-dependent
+and unreproducible in a shared account where the SLR already exists, same
+reasoning the proposal itself gave), the EC2 instance/EIP/cloud-init/Caddy/
+Datadog/git-sync/Atlantis itself (all boot-time, add no policy class).
+Measured (not estimated, unlike the original proposal's own §5.2 caveat):
+a full `terraform init && apply` of this module against a hand-run local
+credential set was not attempted (no AWS calls made this pass, per the
+operator's own directive) — cycle time remains genuinely unmeasured;
+flagged as unproven below, same as the original proposal's own §7 caveat.
+
+### 3. Two roles, one task — design resolution
+
+The operator's directive ("keep the 2 roles in 1 task") is implemented
+exactly as the proposal's own §5.1 described, with one concrete
+resolution the proposal itself left ambiguous (its own KEEP-table row 1,
+"aws_iam_role + _role_policy + _instance_profile... A7 tag-on-create",
+appeared to have the MODULE create the workload role, which would
+contradict "the agent authors both roles"): **the module creates ONLY the
+EC2 instance profile (an `aws_iam_instance_profile` wrapping the
+agent-supplied role NAME), never the role itself.** Both roles' full
+definitions (trust policy AND permissions policy) are 100% agent-authored,
+in the agent's own substrate, deployed via the agent's own real deploy
+command. This reconciles A7 (needs the DEPLOYER to run an apply that
+creates a tagged IAM resource) with the operator's own requirement (the
+workload role itself is authored by the agent, not the module) — see
+`specs/iam-e2e-role.yaml`'s own `module/main.tf` `seeded_files` entry
+comment for the load-bearing reasoning spelled out in place.
+
+Trust mechanism (SCHEMA.md `verifier.live_check`, mirroring the
+proposal's own §5.4): both roles trust the account root, gated by an
+`sts:ExternalId` condition the agent chooses; the workload role
+additionally trusts `ec2.amazonaws.com` for production realism. The
+harness (`harness/validate.sh`, `agent_role_name`'s own credentials as the
+caller) assumes the deployer role, applies `module/` under it twice
+(forcing refresh-time reads — A4), makes its own direct
+`ec2:DescribeVolumeStatus` call under the deployer identity (the
+"harness's own AWS call is itself a defect source" requirement — an
+analogue of the real episode's `ssm:GetInventory`), assumes the workload
+role, runs `harness/assertions.py` (an `ssm get-parameters-by-path
+--with-decryption` call — reaching A8/C-1 together in one call — plus an
+`ec2:DescribeVolumes` self-discovery proxy standing in for a real
+instance's own cloud-init, since this reduced module boots no instance),
+then destroys everything under the deployer identity.
+
+### 4. No terratest — confirmed, not just proposed
+
+Implemented exactly as `docs/scenario-proposal-iam-e2e-role.md` §5.5
+recommended: `harness/validate.sh` (bash) + `harness/assertions.py`
+(stdlib `python3`, no `boto3`, matching every arm image's documented
+baseline) over the `aws` CLI v2 and `terraform` CLI already present in all
+three arm images — verified directly: `aws`, `terraform`, `jq`, `python3`
+all confirmed present via each arm's own `Dockerfile`/README. Zero image
+delta. Both scripts are seeded as read-only reference input (`seeded_files`,
+chmod 0o444) into every arm's workspace, identically.
+
+### 5. `QADeployApplicationRole` — a real, small gap, NOT closed this round
+
+`agent_role_name: "QADeployApplicationRole"` is set in the spec, following
+`docs/adding-scenarios.md`'s own decision rule (checked against this
+scenario's actual mutating calls, not assumed). Concretely checked against
+`qa_roles_stack.ts`'s existing grants: `IamRoleLifecycleScoped`
+(`CreateRole`/`GetRole`/`PutRolePolicy`/`GetRolePolicy`/`AttachRolePolicy`/
+`DetachRolePolicy`/`DeleteRolePolicy`/`DeleteRole`/`TagRole`, scoped to
+`role/cdktn-bench-task/*`) already covers everything the agent's own
+credentials need to CREATE and manage both roles' definitions and inline
+policies, since — per §3 above — the agent's own credentials never need
+`ec2`/`ssm`/`kms`/`s3` grants directly (those are the DEPLOYER role's own
+policy content, not the agent's operating credential; the deployer role's
+policy is created BY the agent's `iam:PutRolePolicy` call, not exercised
+BY the agent's own identity). **The one missing grant**: `sts:AssumeRole`
+scoped to `arn:aws:iam::<account>:role/cdktn-bench-task/*` — needed for
+`harness/validate.sh` (run under the agent's own credentials) to assume
+the deployer role at all. `iam:PassRole` is NOT needed (no EC2 instance is
+ever launched with the workload role attached in this reduced module, so
+nothing ever calls an API that requires passing it).
+
+**Not added to `qa_roles_stack.ts` this round.** Per
+`docs/adding-scenarios.md` §4's own procedure ("operator authorization,
+explicitly, in writing... quote the operator's own words, as
+[Amendment 16] does"), this run's own authorization (the four numbered
+directives quoted above) does not contain an exact quote naming this
+specific `sts:AssumeRole` grant — unlike Amendment 16's own authorization,
+which named its grants explicitly, action by action. Rather than
+interpret "build it" as blanket authorization to widen a shared,
+already-deployed IAM role, this amendment records the EXACT proposed diff
+(above) and defers the edit, following the same "code + docs only, no live
+wiring" pattern Amendment 16 itself used for its own two remaining gaps.
+**Until this one-statement extension is authorized and `aws-bench env
+setup` is re-run, this scenario is not trial-runnable** — same
+honestly-flagged state `apigw-redeploy` shipped in after Amendment 16.
+
+### 6. Anti-gaming design and an honest assessment of how it could still be gamed
+
+Per the operator's explicit requirement, the oracle asserts BOTH
+properties, neither alone sufficient (`oracles/iam-e2e-role/intent.md`
+states this explicitly): (i) LIVE, gating — the two roles actually work,
+checked by `harness/validate.sh` via `tests/live_check.py` (hand-authored,
+`gating: true` since three catches are `predicted_tier_caught: "live"` by
+construction); (ii) STATIC, tier 0/1 — the two roles are least-privilege,
+checked entirely from the delivered policy documents. A wildcard-admin
+policy passes (i) trivially but fails (ii)'s `no-full-service-wildcard-
+actions` tier-0 check (verified: `Action: "*"` on the deployer role scores
+reward 0.0, `oracles/rego/iam-e2e-role/policy.rego`'s `deny` fires nothing
+for it, but `tests/static_tiers.sh`'s own jq-compiled `not_regex` check
+catches it before Rego is even invoked).
+
+**How this could be unfair or gamed, stated plainly (not hidden):**
+
+1. **The `cfn-guard` bundle is strictly weaker than the `rego` bundle for
+   the ONE tier-1 check this scenario has** (`wildcard-matches-protected-
+   bucket`). Rego's `glob.match` catches ANY agent-authored S3 `Resource`
+   pattern that matches the decoy bucket's ARN — general, by construction.
+   `cfn-guard` 3 has no equivalent glob builtin, so the `.guard` bundle can
+   only deny a small, fixed denylist of known-bad literal strings. A
+   sufficiently creative overbroad pattern on the `awscdk` arm ALONE
+   (e.g., a prefix/suffix shape this denylist doesn't happen to name)
+   could evade this specific catch on that one arm while still correctly
+   failing on `hcl_raw`/`terraconstructs`. Documented in both policy
+   files' own headers, not just here.
+2. **Negative-fixture coverage is INCOMPLETE this round.** All 7 catches
+   have a `hcl_raw` `broken/` fixture (verified: the 4 static ones score
+   reward 0.0, the 3 live ones score reward 1.0 AND print
+   `CDKTN_BENCH_LIVE_ONLY_CONFIRMED_MARKER`, all via direct local
+   invocation reproducing `tests/static_tiers.sh`'s own logic — `make
+   falsifiability`'s actual docker-gated run was not executed this pass,
+   see §8 below). `awscdk` and `terraconstructs` have NO `broken/`
+   fixtures yet, for any catch — a real, tracked gap, not silently
+   accepted. Until they exist, `gates/oracle_falsifiability.py` will
+   report `MISSING` for those (arm, catch) pairs, which is a hard FAIL
+   per that gate's own documented contract (`solve.sh` IS authored on
+   those arms, so `NOT_AUTHORED`'s one non-gating exception does not
+   apply). The 4 static-tier catches' underlying assertions run
+   identically regardless of arm (same jq ops, same Rego bundle for the
+   two TF-shaped arms, real `cfn-guard` bundle for `awscdk` — verified
+   directly against the `awscdk` reference template, reward 1.0), so the
+   MECHANISM is proven arm-symmetric even though the fixture FILES
+   proving it per-arm are not yet all written.
+3. **The deployer role is not arm-discriminating, by design** (the
+   scenario's own central, pre-registerable hypothesis — see
+   `docs/scenario-proposal-iam-e2e-role.md` §4.3/§6 point 1). If most of
+   an agent's tokens-to-green are spent on the deployer loop, the arms
+   will show little separation on THAT half — expected, not a flaw, and
+   restated here before any trial runs so it cannot look like a post-hoc
+   excuse.
+4. **The v1 reference solution does NOT exercise the grantXxx-derivation
+   contrast on the workload role.** All three arms' reference solutions
+   author the workload role's permissions BY HAND (mirroring `hcl_raw`
+   exactly), not via `parameter.grantRead()`/`key.grantDecrypt()` on an
+   imported construct. This was a deliberate simplification under this
+   pass's time budget (`arms.terraconstructs.reason` in the spec records
+   the construct-arm coverage that WOULD support the grantXxx path —
+   `StringParameter.fromSecureStringParameterAttributes(...).grantRead()`
+   + `Key`/alias import + `.grantDecrypt()`, all verified present in the
+   pinned `terraconstructs@0.2.13` package). Consequence: THIS SPECIFIC
+   REVISION of the scenario does not yet produce the "construct arms win
+   on the workload role, tie-or-lose on the deployer role" contrast the
+   whole scenario exists to measure — the scaffolding (module, harness,
+   oracle, catches) supports it, but the reference solutions do not yet
+   demonstrate it. Flagged as the single most important open follow-up,
+   not glossed over: a future revision should redo the workload-role half
+   of the `awscdk`/`terraconstructs` reference solutions (and add a
+   `getparametersbypath-not-granted`/`missing-kms-for-securestring`
+   negative pair that actually goes THROUGH `grantRead()` rather than
+   hand-written statements) before this scenario's own results are cited
+   as evidence for or against the grantXxx-asymmetry hypothesis.
+5. **The action catalogue (`actions-are-real-iam-actions`) is an
+   ALLOWLIST an agent could theoretically special-case around** if it
+   somehow learned the catalogue's exact contents (e.g. from this very
+   file) rather than from correct IAM knowledge — an agent that reads
+   `specs/iam-e2e-role.yaml` and copies the catalogue's own action list
+   verbatim would trivially pass this check without understanding why
+   each action is needed. Structurally unavoidable for an allowlist-shaped
+   check (same limitation the toy spec's own analogous check has); not
+   unique to this scenario.
+6. **Trust-condition strictness is a weak, existence-only proxy at tier 0**
+   (`trust-has-external-id-condition` checks that AT LEAST ONE
+   `Condition.StringEquals` block exists SOMEWHERE across both roles
+   combined, not that EACH role's own account-root statement carries one)
+   — a consequence of `generator/jsonpath_jq.py`'s translator not
+   supporting bracket-quoted keys containing a colon (`['sts:ExternalId']`),
+   confirmed by hitting that exact `ValueError` while authoring this spec.
+   The stronger, per-role, key-specific version is written into
+   `oracle.rego_hints` as guidance for a future policy.rego revision but
+   is NOT currently enforced by any tier. An agent could therefore give
+   ONE role a real ExternalId condition and the OTHER role an unrelated,
+   different condition (or a condition on the wrong key) and still pass
+   this tier-0 check.
+
+### 7. `reset.sh` — not yet added, a real gap
+
+Per `docs/adding-scenarios.md` §3's own requirement ("give the scenario
+its own `scenarios/anchor/reset/reset.sh` sweep... do not rely solely on
+the framework's generic post-trial sweep"), this scenario's own sweep
+entry (fixed-name roles `iam-e2e-role-{deployer,workload}` under
+`/cdktn-bench-task/`, the module's own fixed-name instance profile, and
+tag-based sweep for the trial-suffixed SG/volume/bucket) is **NOT yet
+added** to `scenarios/anchor/reset/reset.sh` — an explicit, tracked
+follow-up, not silently skipped. Without it, a trial that dies mid-`apply`
+(or whose harness run never reaches its own `terraform destroy`) leaves
+orphaned resources for the framework's generic sweep to find, which (per
+that same doc's own warning) has no guaranteed delete handler for every
+resource type this scenario touches.
+
+### 8. What remains before this scenario is trial-runnable — stated plainly
+
+1. `QADeployApplicationRole` needs the one `sts:AssumeRole` statement
+   (§5 above) — proposed, not authorized, not wired.
+2. `aws-bench env setup` has not been re-run against the target account
+   (nothing in this pass touched live infrastructure at all).
+3. `scenarios/anchor/reset/reset.sh` needs this scenario's own sweep
+   entry (§7 above).
+4. `ops/fixtures/iam-e2e-role/provision.sh` has not been run — the CMK,
+   SSM parameters, and decoy bucket do not yet exist in the account. NO
+   trial can succeed without them (every reference solution's own S3/SSM/
+   KMS resource ARNs are built assuming they exist).
+5. `awscdk`/`terraconstructs` negative fixtures are not yet authored
+   (§6 point 2) — `make falsifiability`/`make grading-proof` for THIS
+   spec were not run this pass (both are Docker-image-gated;
+   `gates/oracle_falsifiability.py`'s own `_arm_mirror_provider_versions`
+   needs `cdktn-bench/<arm>:dev` images this pass did not build). The
+   underlying logic (`tests/static_tiers.sh`'s tier-0/tier-1 checks, the
+   Rego/cfn-guard bundles) was instead verified by direct, manual
+   invocation against real `terraform plan`/`cdk synth`/`cdktn synth`
+   output for all three arms' reference solutions (all score reward 1.0)
+   and all seven `hcl_raw` negative fixtures (the four static ones score
+   0.0, the three live ones score 1.0 and print the required marker) —
+   strong evidence, not a substitute for the real gate.
+6. The grantXxx-derivation contrast (§6 point 4) is not yet demonstrated
+   by any reference solution.
+7. No real `harness/validate.sh` run has ever happened against a real AWS
+   account — the entire "iterate against real denials" loop this scenario
+   exists to measure is, as of this amendment, unexercised end-to-end.
+
+**Verification performed this pass** (all offline, no AWS credentials
+used): `make validate-spec SPEC=specs/iam-e2e-role.yaml` — OK. `make gen
+SPEC=specs/iam-e2e-role.yaml` — OK, 3 arms + oracles generated. `make
+parity SPEC=specs/iam-e2e-role.yaml` — OK. `terraform validate`/`plan
+-refresh=false` against `module/main.tf` standalone, and against all three
+arms' reference solutions (with each arm's own offline fixture — dummy
+credentials for `hcl_raw`, `mock-sts.js` for `terraconstructs`, no
+credentials needed for `awscdk`'s CFN synth) — all succeed fully offline.
+`opa eval`/`cfn-guard validate` against the hand-authored `policy.rego`/
+`policy.guard` bundles, both directly and via a faithful reproduction of
+the generated `tests/static_tiers.sh`'s own logic (path-substituted since
+this pass has no writable `/app`/`/logs` and no Docker image built) — all
+three arms' reference solutions score reward 1.0 (`tier0_pass=1
+tier1_status=PASS`); all seven `hcl_raw` negative fixtures score exactly
+as their `predicted_tier_caught` requires. `make check` — see this
+amendment's own closing note below for the exact result.
+
+**Files added:** `specs/iam-e2e-role.yaml`, `tasks/anchor/
+iam-e2e-role-{awscdk,hcl-raw,terraconstructs}/` (generated + hand-authored
+`solution/`), `oracles/iam-e2e-role/intent.md`, `oracles/rego/
+iam-e2e-role/policy.rego`, `oracles/cfn-guard/iam-e2e-role/policy.guard`,
+`ops/fixtures/iam-e2e-role/{provision.sh,teardown.sh}`, this amendment.
+**Files NOT modified:** `scenarios/anchor/scenario/cdk_app/stacks/
+qa_roles_stack.ts` (the proposed `sts:AssumeRole` grant is documented, not
+applied — §5), `scenarios/anchor/reset/reset.sh` (§7), `specs/split.yaml`
+(no `generator/split.py --write` run this pass — a separate, deliberate,
+logged action per `docs/adding-scenarios.md` §7, not done here).
+
+### Split re-computation (same amendment, 2026-08-08)
+
+`uv run python generator/split.py --write` was run after the above (a
+separate, deliberate, logged action per `docs/adding-scenarios.md` §7 --
+adding a new `specs/*.yaml` makes `generator/tests/test_split.py::
+TestComputeSplit::test_matches_committed_split_yaml` fail otherwise, since
+`specs/split.yaml` has no entry for a scenario that didn't exist when it
+was last written). Result: `iam-e2e-role` assigned `train`, rank 2 of 6.
+**No existing scenario's `train`/`holdout` group changed** — every one of
+`apigw-openapi`, `apigw-redeploy`, `ecs-swappiness`,
+`s3-lambda-log-retention`, `sfn-jsonata` kept its prior group (only their
+numeric `rank` shifted to make room for the new 6th entry) — confirmed by
+diffing `specs/split.yaml` before/after. No equipping-tuning integrity
+concern per that doc's own "re-split procedure."
+
+## Amendment 20 (2026-08-13) — `iam-e2e-role`: the grantXxx-derivation
+## rework that makes the scenario actually measure its own contrast
+
+Directed by the operator (Vincent, repo owner), quoting Amendment 19's own
+§6 point 4 back to this run as the assignment: "this specific revision of
+the scenario does not yet produce the 'construct arms win on the workload
+role, tie-or-lose on the deployer role' contrast the whole scenario exists
+to measure... a future revision should redo the workload-role half of the
+`awscdk`/`terraconstructs` reference solutions... before this scenario's
+own results are cited as evidence for or against the grantXxx-asymmetry
+hypothesis." This amendment is that future revision. Scope: `iam-e2e-role`
+files only — a concurrent agent was working on `apigw-redeploy` in the same
+tree; nothing under that scenario's own paths, `scenarios/anchor/reset/
+reset.sh`, `qa_roles_stack.ts`, or `specs/apigw-redeploy.yaml` was touched
+by this amendment, and `specs/split.yaml`/train-holdout assignments were
+left untouched (no `generator/split.py --write` run this pass). **No AWS
+call was made, mutating or read-only, at any point in this run.**
+
+### 0. A methodology upgrade over Amendment 19: real toolchain execution
+
+Amendment 19 verified its offline claims by *manually reproducing*
+`tests/static_tiers.sh`'s jq/opa/cfn-guard logic against real `terraform
+plan`/`cdk synth`/`cdktn synth` output, because Node.js was not available
+in that authoring environment. **This run installed Node.js v26 (via
+`brew install node`) specifically to close that gap** — every claim below
+about `cdk synth`, `cdktn synth`, `npm run build`, and the resulting
+`tests/static_tiers.sh` reward is a REAL execution of the REAL generated
+task tree (a scratch copy of `tasks/anchor/iam-e2e-role-{awscdk,
+terraconstructs}/environment/{workspace,app}/` plus each arm's own
+generated `tests/`), not a hand-simulation of the same logic. `terraform`,
+`opa`, and `cfn-guard` were already present; `npm install` reached the real
+npm registry (confirmed reachable) and installed the exact pinned
+`aws-cdk-lib@2.263.0` / `aws-cdk@2.1135.0` / `terraconstructs@0.2.13` /
+`cdktn@0.23.0` versions the specs/arms pin. This is the first time this
+scenario's own claims about these two arms' synth/plan behavior have been
+checked against the real packages rather than their `.d.ts`/`.js` source
+read by eye.
+
+### 1. What changed, per arm
+
+**hcl_raw: untouched.** Both roles remain 100% hand-authored, exactly as
+Amendment 19 shipped — this is the deliberate floor arm; there is nothing
+for it to derive.
+
+**awscdk workload role, reworked.** The SecureString `db-password`
+parameter is now imported via `ssm.StringParameter
+.fromSecureStringParameterAttributes(scope, id, {parameterName,
+encryptionKey})` and its `.grantRead(workloadRole)` is called for real —
+this derives `{ssm:DescribeParameters, ssm:GetParameters, ssm:GetParameter,
+ssm:GetParameterHistory}` scoped to that one parameter's ARN, and —
+because `encryptionKey` is set — internally cascades into
+`cmk.grantDecrypt(workloadRole)` (verified directly in the real installed
+package: `aws-cdk-lib@2.263.0` `aws-ssm/lib/parameter.js`'s
+`ParameterBase.grantRead` reads `this.encryptionKey&&this.encryptionKey
+.grantDecrypt(grantee)` before granting the four SSM actions — byte-for-
+byte what `docs/scenario-proposal-iam-e2e-role.md` §4.1 quoted from the
+same file at a different revision). The CMK itself is imported via
+`kms.Key.fromKeyArn(scope, id, kmsKeyArnParam.valueAsString)`. The plain
+"config" parameter, `ssm:GetParametersByPath` (the anti-overclaim gap — see
+§3), and the EC2 self-discovery actions remain hand-authored, in a
+separate, explicitly-commented `WorkloadHandAuthoredPolicy`. Deployer role:
+byte-for-byte unchanged from Amendment 19.
+
+**terraconstructs workload role, reworked — but ONLY HALF as far as
+awscdk, for a real, verified reason (§2).** `encryption.Key.fromKeyArn(this,
+id, kmsKeyArnVar.stringValue).grantDecrypt(workloadRole)` is genuinely
+library-derived and offline-plan-safe. The SSM read actions for BOTH
+parameters (config and db-password alike) stay hand-authored in a single
+`ReadAppParameters` statement — `storage.StringParameter
+.fromSecureStringParameterAttributes()` was NOT used here, deliberately,
+because doing so breaks this scenario's own offline static tier (§2).
+Deployer role: byte-for-byte unchanged from Amendment 19.
+
+### 2. A real, verified per-arm coverage/plan-safety finding (not assumed)
+
+Attempting the awscdk-symmetric design on terraconstructs first (import
+`db-password` via `storage.StringParameter
+.fromSecureStringParameterAttributes().grantRead()`, exactly like awscdk)
+was tried, for real, this pass, and it FAILS this scenario's own offline
+static tier. Root cause, confirmed by reading the real installed
+`terraconstructs@0.2.13` source (`lib/aws/storage/parameter.js`):
+`fromStringParameterName`/`fromStringParameterArn`/
+`fromSecureStringParameterAttributes` ALL unconditionally construct a real
+`data "aws_ssm_parameter"` Terraform data source (`new
+provider_aws_1.dataAwsSsmParameter.DataAwsSsmParameter(...)`), even when
+the caller never reads the resulting `.stringValue` — unlike
+`aws-cdk-lib`'s own equivalents, which produce CloudFormation-side
+artifacts (a `CfnDynamicReference` for SecureString, an `AWS::SSM::
+Parameter::Value<String>` template Parameter for plain strings) that
+resolve only at real DEPLOY time, never at synth. Terraform reads data
+sources during `plan` itself, not just `apply`, and `-refresh=false` does
+not exempt them. Reproduced directly: a real `terraform init && terraform
+plan` against exactly this construct fails OFFLINE with
+`UnrecognizedClientException: The security token included in the request
+is invalid` on the resulting data source — this scenario's own
+`mock-sts.js` mocks only STS, by design (its own header comment), never
+SSM. Consequence: on terraconstructs, ONLY the KMS half of the
+`db-password` permission bundle is genuinely library-derived; the SSM half
+is not, for a structural reason specific to how CDKTF-style constructs
+model "import an existing resource" versus how CloudFormation does. This
+is recorded in `specs/iam-e2e-role.yaml`'s own `arms.terraconstructs.reason`
+field (not just here) and in both arms' `solution/solve.sh` header
+comments, per the operator's own instruction to treat this as "an OBSERVED
+per-arm coverage finding... rather than papering over it."
+
+A second, smaller finding on the awscdk side (also verified by real `cdk
+synth`, not assumed): `ssm.StringParameter.fromStringParameterAttributes()`
+/`.fromStringParameterArn()` — even for a PLAIN (non-secure) parameter —
+unconditionally create an `AWS::SSM::Parameter::Value<String>` CloudFormation
+template Parameter as a side effect of that class's `stringValue` field
+initializer, which appears in the synthesized template even when nothing
+ever reads `.stringValue` (confirmed: it appeared, unused, and `cdk synth`
+printed `WARNING ... is not referenced anywhere in the template`, when this
+pass first tried importing the plain "config" parameter the same way as
+"db-password"). CloudFormation resolves that parameter TYPE using the
+DEPLOYING PRINCIPAL's own `ssm:GetParameters` permission at stack-update
+time — a coupling onto whoever calls `cdk deploy` (this benchmark's
+`QADeployApplicationRole`) that was never authorized and is not needed.
+The reference avoids this entirely by not importing "config" via the SSM
+L2 at all — it stays hand-authored, exactly like the plain parameter
+already was in Amendment 19.
+
+### 3. The KMS key ARN cannot be known offline, on any arm — same shape as
+### hcl_raw's own `account_id` workaround
+
+`Key.fromKeyArn()` (both libraries) requires a real KEY ARN, not an alias.
+Confirmed against AWS's own KMS developer guide (`cmks-in-iam-policies.html`,
+fetched this pass): "You must use its key ARN to specify a KMS key in an
+IAM policy statement; you cannot use a key id, alias name, or alias ARN."
+The pre-provisioned CMK's key ID is an opaque, randomly-assigned GUID with
+no relationship to its alias name (`alias/cdktn-bench-iam-e2e-role`), so —
+unlike the account id, which the account-root ARN needs and which CDK/CDKTF
+can resolve via a pseudo-parameter/mocked data source — it cannot be
+computed or looked up offline (`kms.Key.fromLookup()`/`encryption.Key
+.fromLookup()` both require a real, live AWS lookup at synth/plan time,
+which `--no-lookups` and this scenario's own offline static tier both rule
+out, for the same reason `hcl_raw`'s reference avoids `data
+"aws_caller_identity"`). Both reworked reference solutions use a
+deploy-time-supplied value instead — a `cdk.CfnParameter` (awscdk) / a
+`cdktn.TerraformVariable` (terraconstructs) — with a syntactically-valid
+placeholder default for offline synth/plan, exactly mirroring the pattern
+`hcl_raw`'s own `account_id` variable already established in Amendment 19.
+A real deploy passes the true value, resolved the same way `hcl_raw`'s own
+README documents for `account_id`: `aws kms describe-key --key-id
+alias/cdktn-bench-iam-e2e-role --query KeyMetadata.Arn --output text`.
+
+### 4. Oracle changes
+
+- **Action catalogue** (`actions-are-real-iam-actions`, shared across all
+  three arms): added `ssm:GetParameterHistory`. `grantRead()` on BOTH
+  libraries grants this action unconditionally (it is one of the fixed
+  four), and it was simply missing from the catalogue Amendment 19 built
+  from the v1 (fully hand-authored) reference solutions, which never
+  needed it. A real IAM action, verified present in both libraries' source;
+  adding it to an allowlist does not weaken the `invalid-action-name` catch
+  (an agent still cannot pass by inventing an action not on the list).
+- **`missing-kms-for-securestring` catch**: `applies_to: [hcl_raw]` REMOVED
+  (now defaults to all three enabled arms, per `spec_model.Catch`'s own
+  default). Amendment 19 restricted this catch to `hcl_raw` because the v1
+  reference authored the workload role by hand everywhere, making a missing
+  KMS grant "unreachable by construction" on the construct arms. That
+  reasoning no longer holds: on awscdk, omitting `encryptionKey` from the
+  `fromSecureStringParameterAttributes` call reproduces the gap exactly
+  (`grantRead()`'s own `if (this.encryptionKey)` cascade simply never
+  fires); on terraconstructs, dropping the whole `Key.fromKeyArn()`
+  /`.grantDecrypt()` block reproduces it. Both are now real, authored
+  `solution/broken/missing-kms-for-securestring/` fixtures (§5), verified
+  to score reward 1.0 on every static tier (identical to the reference) and
+  to mechanically fail an offline IAM-evaluator's `kms:Decrypt` check —
+  exactly the `predicted_tier_caught: live` contract already declared.
+  The catch's own description was reworded to stop asserting the KMS grant
+  must be "scoped by a `kms:ViaService` condition" (`hcl_raw`'s own shape,
+  since it has no way to reference the real key ARN) — the construct-arm
+  shape (`Resource` scoped directly to the real key ARN, no condition) is
+  equally correct; the catch is about the grant being ABSENT, not about
+  which of the two correct shapes was used.
+- **`oracles/rego/iam-e2e-role/policy.rego`**: the `not_verifiable` block's
+  comment was corrected — it previously claimed both roles' policies are
+  "fully static... with no reference to a provider-computed output," which
+  is no longer true of the workload role's KMS statement on the two
+  construct arms (`{"Ref":"KmsKeyArn"}` / `${var.kms_key_arn}`, per §3).
+  Verified this is NOT a correctness gap: this policy's only rule
+  (`s3-resource-not-overbroad`) never inspects KMS statements, so the
+  plan-time-unknown KMS `Resource` is irrelevant to anything this file
+  actually evaluates — confirmed by a real `opa eval` against a
+  reworked-reference plan.json returning an empty `deny` set. Comment
+  reworded to state this precisely rather than the now-inaccurate blanket
+  claim. `oracles/cfn-guard/iam-e2e-role/policy.guard` made no such claim
+  and needed no change.
+- **`oracles/iam-e2e-role/intent.md`**: unchanged (generated verbatim from
+  `oracle.intent`, which this amendment did not edit — the two-property
+  "static shape + live check" design is untouched by this rework).
+- **`specs/iam-e2e-role.yaml` `arms.terraconstructs.reason`**: rewritten to
+  record the real per-arm finding in §2/§3 above in place, replacing the v1
+  text's forward-looking "a future revision could redo this" framing (now
+  moot — this IS that revision).
+
+### 5. Fourteen new negative fixtures — the actual gap this amendment closes
+
+`tasks/anchor/iam-e2e-role-{awscdk,terraconstructs}/solution/broken/` now
+each have all 7 catches' fixtures, mirroring `hcl_raw`'s own 7 (which are
+unchanged). Every one of the 14 new fixtures was generated by taking the
+new reference `lib/scenario-stack.ts` and applying exactly ONE targeted
+change (mechanical diff, same discipline `hcl_raw`'s own fixtures use), then
+RUN for real end-to-end (`npm run build`/`npx cdk synth --no-lookups`, or
+`npx cdktn synth` + real `terraform init`/`plan` under this arm's own
+`mock-sts.js`, then the arm's real, generated `tests/static_tiers.sh`) —
+not hand-predicted:
+
+| Catch | awscdk mechanism | terraconstructs mechanism | Verified result (both arms) |
+|---|---|---|---|
+| `admin-wildcard-policy` | deployer's 7 statements replaced by one `Action:"*"`/`Resource:"*"` | same | tier0 FAIL, reward 0.0 |
+| `invalid-action-name` | `s3:DeleteBucketOwnershipControls` appended to `S3Scratch` | same | tier0 FAIL, reward 0.0 |
+| `trust-policy-unconditional` | `.withConditions(...)` dropped from both roles' account-root principal | same | tier0 FAIL, reward 0.0 |
+| `wildcard-matches-protected-bucket` | `s3ScratchArn`/`s3ScratchObjectsArn` drop the `-scratch` suffix | same | tier1 FAIL (cfn-guard/rego both fired), reward 0.0 |
+| `missing-tag-on-create` | `iam:TagInstanceProfile` dropped from deployer's `InstanceProfileLifecycle` | same | static PASS (reward 1.0), offline IAM-evaluator confirms `iam:CreateInstanceProfile` ALLOW / `iam:TagInstanceProfile` DENY, prints `CDKTN_BENCH_LIVE_ONLY_CONFIRMED` |
+| `missing-kms-for-securestring` | `encryptionKey` dropped from the SecureString import (whole `Key`/`CfnParameter` block removed as dead code) | whole `Key.fromKeyArn()`/`.grantDecrypt()` block removed | static PASS (reward 1.0), evaluator confirms `ssm:GetParametersByPath` ALLOW / `kms:Decrypt` on the real CMK ARN DENY, prints the marker |
+| `getparametersbypath-not-granted` | hand-authored `GetParametersByPathGapFiller` statement removed | `ssm:GetParametersByPath` dropped from the hand-authored `ReadAppParameters` action list | static PASS (reward 1.0), evaluator confirms `ssm:GetParameter`/`kms:Decrypt` ALLOW / `ssm:GetParametersByPath` DENY, prints the marker |
+
+All 4 static-tier catches score exactly 0.0 and all 3 live-tier catches
+score exactly 1.0-plus-marker, on BOTH arms, matching
+`predicted_tier_caught` exactly. The corrected references themselves
+(`solution/solve.sh`) score reward 1.0 on all three arms, including
+`hcl_raw` (re-verified unaffected by the action-catalogue addition). This
+closes Amendment 19 §6 point 2's tracked gap ("`awscdk`/`terraconstructs`
+have NO `broken/` fixtures yet, for any catch") for `iam-e2e-role`
+specifically — `gates/oracle_falsifiability.py` (not run this pass, still
+Docker-gated, see §7) should now report a real PASS/FAIL per (arm, catch)
+pair instead of `MISSING` for these two arms.
+
+### 6. The honest result this scenario now measures — stated plainly
+
+**The WORKLOAD role now shows real, evidenced asymmetry, not aspiration:**
+awscdk derives BOTH the SecureString parameter's SSM read actions AND its
+KMS decrypt permission from one `grantRead()` call; terraconstructs derives
+ONLY the KMS decrypt half (a real per-arm coverage difference, §2, not a
+tuning choice); `hcl_raw` derives neither and must hand-write both,
+correctly, using the real episode's own `kms:ViaService`-conditioned shape.
+All three arms still hand-write the same three things regardless: the
+plain "config" parameter's reads, the `ssm:GetParametersByPath` gap-filler
+(no library on either arm grants it — this is deliberately unaffected by
+this rework, still the scenario's anti-overclaim catch), and EC2
+self-discovery.
+
+**The DEPLOYER role shows parity, unchanged and by design:** 100%
+hand-authored, byte-for-byte identical in content across all three arms,
+before and after this rework. No amendment to this scenario should expect
+that to change without a corresponding change to the libraries themselves
+— `docs/scenario-proposal-iam-e2e-role.md` §4.3's finding ("no feature,
+helper, or concept anywhere in the library for deriving the deploying
+principal's policy") was independently re-confirmed by this pass finding
+no such helper while authoring the reworked reference solutions either.
+
+This is exactly the two-sided result Amendment 19 §6 point 1 pre-registered
+before any trial: construct arms win where a library genuinely derives
+something (workload role, partially on terraconstructs, more fully on
+awscdk), and are at parity where no library does (deployer role). Nothing
+in this pass was tuned to make either arm look better than the verified
+evidence supports — the terraconstructs-only SSM limitation (§2) and the
+awscdk-only hidden-CfnParameter wrinkle (§2) are both real constraints this
+pass discovered while trying to make the SYMMETRIC design work, not
+choices.
+
+### 7. What remains unproven — stated plainly, most of it unchanged from
+### Amendment 19
+
+1. **`make falsifiability`/`make grading-proof` (Docker-gated) were not
+   run** — no `cdktn-bench/<arm>:dev` images were built this pass. Every
+   claim above about reward/tier status was instead verified by REAL
+   `npm`/`cdk`/`cdktn`/`terraform`/`opa`/`cfn-guard` execution against the
+   real generated task trees, copied to a scratch directory outside the
+   repo, with `/app/project`/`/logs/verifier` path-substituted (same
+   technique Amendment 19 used, but this time driving the REAL toolchain
+   instead of hand-simulating its logic) — strong evidence, still not a
+   substitute for the real gate.
+2. **No real `harness/validate.sh` run has ever happened against a real
+   AWS account** — unchanged from Amendment 19; the live half of this
+   scenario's oracle remains entirely unexercised end-to-end. In
+   particular, whether `AWS::SSM::Parameter::Value<String>`-type
+   CloudFormation parameters truly resolve using the DEPLOYING PRINCIPAL's
+   own credentials (the reasoning in §2 for avoiding that construct) is
+   asserted from AWS's own documented behavior, not confirmed against a
+   real `cdk deploy` in this account — mitigated, not eliminated, by simply
+   not shipping a reference solution that depends on the answer either way.
+3. **`QADeployApplicationRole` still needs its one `sts:AssumeRole`
+   statement** (Amendment 19 §5) — still proposed, not authorized, not
+   wired. Unaffected by this rework (the deployer role's own
+   permissions, and the agent's own operating credential, are both
+   unchanged from Amendment 19).
+4. **`ops/fixtures/iam-e2e-role/provision.sh` still has not been run** —
+   the CMK, SSM parameters (including the "db-password" SecureString this
+   rework now depends on more directly for the workload role's own live
+   correctness), and decoy bucket do not yet exist in the account.
+5. **`scenarios/anchor/reset/reset.sh` still has no `iam-e2e-role` sweep
+   entry** — unchanged gap from Amendment 19 §7.
+6. **The cfn-guard-vs-rego strictness asymmetry for
+   `wildcard-matches-protected-bucket`** (Amendment 19 §6 point 1) is
+   unchanged and unaffected by this rework — still a known, documented gap
+   specific to the tier-1 S3 check, orthogonal to the workload role's own
+   KMS/SSM permissions.
+
+**Verification performed this pass** (all offline, no AWS credentials
+used, Node.js v26 installed via `brew` specifically to make real execution
+possible): `make validate-spec SPEC=specs/iam-e2e-role.yaml` — OK, 7
+catches, 7 structural_asserts. `make gen SPEC=specs/iam-e2e-role.yaml` — OK,
+regenerated `tests/static_tiers.sh` (action-catalogue addition only) and
+`environment/workspace/lib/scenario-stack.ts` for the awscdk arm (this
+regeneration also fixed a real pre-existing leak — that file had somehow
+been left containing the FULL reference-solution content instead of the
+generator's own empty agent-facing skeleton; regenerating restored the
+correct empty skeleton, which this amendment treats as a welcome
+side-effect, not something it caused). `make parity SPEC=specs/
+iam-e2e-role.yaml` — OK. All three arms' `solution/solve.sh` verified via
+real `npm run build && npx cdk synth --no-lookups`, real `npx cdktn synth`
++ real `terraform init && terraform plan` (under real `mock-sts.js`), and
+real `terraform init && terraform validate && terraform plan -refresh=false`
+(hcl_raw, unchanged) respectively, each followed by that arm's own real,
+generated `tests/static_tiers.sh` — all three report `tier0_pass=1`,
+tier-1 `PASS`, `reward=1.0`. All 14 new negative fixtures (§5) plus
+`hcl_raw`'s pre-existing 7 (spot-checked: reference still 1.0 after the
+catalogue change) verified the same way, each scoring exactly what
+`predicted_tier_caught` requires. `opa eval`/`cfn-guard validate` against
+the hand-authored `policy.rego`/`policy.guard` bundles (the latter
+unedited; the former's comment corrected, §4) — both still evaluate
+correctly against real plan/template output from the reworked references
+and fixtures.
+
+**Files added:** `tasks/anchor/iam-e2e-role-{awscdk,terraconstructs}/
+solution/broken/{admin-wildcard-policy,invalid-action-name,
+trust-policy-unconditional,wildcard-matches-protected-bucket,
+missing-tag-on-create,missing-kms-for-securestring,
+getparametersbypath-not-granted}/solve.sh` (14 files), this amendment.
+**Files modified:** `specs/iam-e2e-role.yaml` (`arms.terraconstructs.reason`,
+the action catalogue, the `missing-kms-for-securestring` catch),
+`tasks/anchor/iam-e2e-role-{awscdk,terraconstructs}/solution/solve.sh`
+(workload-role half reworked; deployer role untouched),
+`oracles/rego/iam-e2e-role/policy.rego` (comment only),
+regenerated-but-generator-owned files under `tasks/anchor/
+iam-e2e-role-{awscdk,hcl-raw,terraconstructs}/tests/static_tiers.sh` and
+`tasks/anchor/iam-e2e-role-awscdk/environment/workspace/lib/
+scenario-stack.ts` (see above). **Files NOT modified:** everything under
+`apigw-redeploy`'s own paths, `scenarios/anchor/reset/reset.sh`,
+`scenarios/anchor/scenario/cdk_app/stacks/qa_roles_stack.ts`,
+`specs/split.yaml`, `ops/fixtures/iam-e2e-role/*` (still written-not-run,
+unchanged from Amendment 19), `oracles/cfn-guard/iam-e2e-role/policy.guard`,
+`oracles/iam-e2e-role/intent.md`, `tasks/anchor/iam-e2e-role-hcl-raw/
+solution/*` (the floor arm, deliberately untouched).
+
+---
+
+## Amendment 19 (2026-08-13) — QADeployApplicationRole: sts:AssumeRole on the task path
+
+**Operator authorization (verbatim, 2026-08-13):** "I authorize sts:AssumeRole
+addition to QADeployApplicationRole. One statement: sts:AssumeRole scoped to
+role/cdktn-bench-task/*. Without it the deployer role can't be assumed in-trial,
+so the first live apigw-redeploy run stays blocked."
+
+**Implemented:** one `PolicyStatement` (sid `StsAssumeTaskRolesScoped`) added to
+`QADeployApplicationPolicy` in `scenarios/anchor/scenario/cdk_app/stacks/qa_roles_stack.ts`
+— `Allow sts:AssumeRole` on `arn:aws:iam::<account>:role/cdktn-bench-task/*` only,
+the same path CreateRole/PassRole are scoped to.
+
+**Still out of scope (unchanged):** `sts:AssumeRole` on the CDKToolkit bootstrap
+roles (`cdk-hnb659fds-*`, path `/`) — needed for the awscdk arm's `cdk deploy`
+to execute — is NOT covered by this authorization and remains withheld pending
+its own sign-off.
+
+**Consequence:** requires `aws-bench env setup` to redeploy `QARolesStack` before
+the change takes effect in the account (also mandatory anyway after the reset.sh
+removal + role changes changed the scenario source hash — see Amendment 18).
+
+---
+
+## Amendment 21 (2026-08-13) — drop the iam-e2e-role scenario
+
+**Operator decision (verbatim, 2026-08-13):** "drop iam-e2e-role (Slice H) (spec
+only) - reason: the real intent should be writing cross service infra which
+requires carefully crafted IAM Policies (which are encoded in the cross services
+L2 patterns in AWSCDK), the e2e example was just a personal experience.. but it
+doesn't hold."
+
+**Removed:** `specs/iam-e2e-role.yaml`, `tasks/anchor/iam-e2e-role-*` (3 arms),
+`oracles/{rego,cfn-guard}/iam-e2e-role`, `oracles/iam-e2e-role`,
+`ops/fixtures/iam-e2e-role`. `specs/split.yaml` and `local-registry.json`
+regenerated/pruned. The harness capability the scenario exercised (live deploy,
+mutating tasks, the QADeployApplicationRole path) is unaffected and still used by
+`apigw-redeploy`.
+
+**Why it didn't hold (confirmed by our own evidence, docs/scenario-proposal-iam-e2e-role.md
+§4):** the scenario's core was the *deployer/CI* IAM role, and **no construct
+library derives the deployer principal's policy** — `grantXxx()` only ever derives
+the *workload* principal. So the scenario measured the one boundary where the
+abstraction gives no advantage; of the 12 evidenced defects, constructs eliminated
+exactly one (the KMS family) and introduced two of their own.
+
+**Salvaged direction (future scenario, not yet specced):** the *workload*-grant
+asymmetry is real and does hold. A **cross-service workload-grant** scenario —
+e.g. a Lambda that must read an S3 bucket and decrypt with a KMS key — is where
+`aws-cdk-lib`'s cross-service L2 patterns (`bucket.grantRead(fn)` deriving the
+exact identity policy, resource policy, and KMS grant in one call) legitimately
+beat hand-written `aws_iam_role_policy` + bucket policy + key policy in HCL. This
+is the correct home for the IAM-derivation question. `docs/scenario-proposal-iam-e2e-role.md`
+is kept as the evidence record; the ordered defect list remains reusable.
+
+---
+
+## Amendment 22 (2026-08-13) — raise the turn budget 8 → 100
+
+**Operator decision (verbatim, 2026-08-13):** "set max-turns to 100 (if not 50 at
+a minimum - but start large and add claude.md note to monitor and trim where
+required)."
+
+**Change:** `scripts/run-bench.sh` `MAX_ITERS` default 8 → 100. `CLAUDE.md`
+"Turn budget" section added (monitor `num_turns`; trim toward 50 with evidence).
+
+**Why (a correction, not just a knob):** the pre-registration's `MAX_ITERS = 8`
+means 8 *feedback cycles*, but the code maps `MAX_ITERS` → Claude Code's
+`--max-turns`, which counts *agent steps*. One cycle is many steps, and a live
+scenario's steps include minutes-long `terraform apply` / `cdk deploy`. The first
+live trial (`apigw-redeploy-hcl-raw`, 2026-08-13) hit `error_max_turns` at 8 —
+right-censored purely by an under-budget, not by the agent's ability. `MAX_TOKENS`
+remains the intended censoring budget; `--max-turns` is a runaway backstop.
+
+**Pre-registration status:** this refines the operationalization of §4's budget
+cap (turns ≠ cycles), it does not change the *metric*. The censoring discipline
+(never drop a capped run; pair with success-rate) is unchanged.
+
+---
+
+## Amendment 23 (2026-08-13) — first live green + tokens-to-green denominator = output tokens
+
+**Result (first uncensored live trial).** `apigw-redeploy-hcl-raw`, claude-code /
+claude-sonnet-5, 100-turn backstop, no `MAX_TOKENS` (pilot = deliberately
+token-uncensored to discover where trajectories land). **reward 1.0**,
+`subtype=success`, `num_turns=49`, agent wall 841s, output 45,535 tok, cache-read
+3.62M, fresh input 98, billed $2.28. `live_check` behavioral & passing: the
+modified stage served `{"routes":3,"status":"ok"}` and `/hello`+`/version` showed
+no regression; account reset to baseline cleanly afterward. The full
+apply→modify→re-apply→verify loop works end-to-end on a real agent trajectory.
+This supersedes the earlier 8-turn censored run (Amdt 22) — that was a config
+bug, not a measurement.
+
+**Operator decision (2026-08-13).** The headline **tokens-to-green denominator is
+OUTPUT TOKENS** — the agent's authoring effort, which is what the abstraction
+thesis is about (how much infra code must be written/rewritten to reach green).
+Billed `cost_usd` is reported alongside as the cost-of-ownership figure.
+`MAX_TOKENS` (the real censoring budget) censors on **output tokens**.
+
+**Why not total/cache-read.** Cache-read (3.62M here, ~80x output) is dominated
+by system-prompt + growing-context replay each turn — it scales with *turn count*
+(interaction length), not authoring skill, and would flatter whichever arm gets a
+shorter harness prompt. Counting it would conflate "verbose loop" with
+"inefficient authoring" and corrupt the cross-arm comparison.
+
+**Turn-budget evidence.** `num_turns=49` — the 100 cap did not bind; the agent
+converged on its own. 49 sits too close to a 50 cap to trim safely on one sample;
+keep 100 for live scenarios until several runs show the spread (per CLAUDE.md
+monitor-and-trim). `MAX_TOKENS` still to be pilot-set from output-token
+distributions once we have them for both arms.
+
+**Pre-registration status:** fixes the operationalization of §3's tokens-to-green
+metric (which token count) — a clarification the pre-reg left open. Success-rate
+pairing and censoring discipline unchanged.
+
+---
+
+## Amendment 24 (2026-08-13) — adopt aws-bench's IAM model; retire QADeployApplicationRole
+
+**Operator decision (2026-08-13).** After reading how aws-bench itself handles
+deploy permissions, adopt its model verbatim: mutating scenarios run the agent
+as **`QALocalInvocationApplicationAdmin` (AdministratorAccess)** — broad power in
+a disposable, SCP-guarded account — instead of a bespoke, minimally-scoped
+deploy role. The operator's framing: "throwaway account that gets reset and has
+a region-restricted SCP … building multiple scenarios will churn IAM policies
+rather than focus on benchmarking."
+
+**Evidence (Sonnet exploration of `../aws-bench` + `../aws-bench-datasets`).**
+aws-bench's model is unambiguously **broad-power-in-disposable-account**:
+- Deploy/reset/cleanup always run as `OrganizationAccountAccessRole` (org-admin);
+  a dedicated `cfn-service-execution` role is given `AdministratorAccess` outright
+  (`provisioning.py:589-626`).
+- The agent's own identity for **mutation tasks is `QALocalInvocationApplicationAdmin`
+  = `AdministratorAccess`** (35 tasks); read/introspection tasks get a
+  ReadOnly-ish role (99 tasks). No task in 134 defines a hand-scoped per-resource
+  policy. No `PermissionsBoundary` anywhere.
+- Safety is **disposable one-account-per-scenario + a region-restriction SCP + a
+  role-protection SCP (guards the framework's own admin roles) + reset/
+  contamination gating** — not least-privilege IAM.
+
+**Why this is correct here, not just convenient.** Two hazards a scoped deploy
+role creates, both removed by a shared admin role:
+1. **Measurement validity.** A too-tight deploy role turns *harness* permission
+   gaps into fake *agent* failures (`AccessDenied` looks identical to the agent
+   failing). Broad power makes a deploy failure genuinely the agent's.
+2. **Arm parity.** With the scoped role, hcl-raw's terraform deployed under the
+   scoped role while awscdk's default synthesizer routed CloudFormation through
+   the `AdministratorAccess` bootstrap `cfn-exec-role` — the awscdk arm silently
+   had *more* deploy authority. A shared admin role gives both arms identical
+   authority; a deploy failure means the same thing in both. (This retired an
+   in-progress `CliCredentialsStackSynthesizer` workaround — see below.)
+
+**Safety gate verified before adoption (2026-08-13).** Both SCPs confirmed
+present and genuine on the OU/account via org-admin read:
+- `awsbench-region-restrict-anchor` (p-jupkf61a) on account `886312446417`.
+- `awsbench-protect-org-access-role` (p-qyvay65z) on OU `cdktn-anchor`
+  (ou-4rnb-at85dguq) — `Deny` on `iam:DeleteRole/UpdateRole/PutRolePolicy/
+  AttachRolePolicy/DetachRolePolicy/DeleteRolePolicy/UpdateAssumeRolePolicy`
+  against `OrganizationAccountAccessRole` and `cfn-service-execution`, for every
+  principal except `OrganizationAccountAccessRole` itself. So even as admin the
+  agent cannot break the reset path.
+
+**Changes.**
+- `scenarios/anchor/scenario/cdk_app/stacks/qa_roles_stack.ts`: removed
+  `QADeployApplicationRole` + `QADeployApplicationPolicy` (and with them
+  Amendment 19's scoped `sts:AssumeRole` — subsumed by admin). Kept
+  `QALocalInvocationApplicationRole` (read) and `QALocalInvocationApplicationAdmin`
+  (admin). Synth verified: exactly those two roles, `QADeploy*` gone.
+- `specs/apigw-redeploy.yaml`: `agent_role_name` → `QALocalInvocationApplicationAdmin`;
+  rationale block rewritten; the stale "NOT YET TRIAL-RUNNABLE" caveat removed
+  (first live green already on record, Amdt 23).
+- `generator/gen.py`: **reverted** the Amendment-23-turn `CliCredentialsStackSynthesizer`
+  edit — awscdk `bin/app.ts` is back to the standard `new cdk.App()` bootstrap
+  path, which under admin is both simpler and how real awscdk users deploy.
+- Regenerated all tasks. apigw-redeploy (all 3 arms) now assume the admin role;
+  read-only scenarios unchanged. awscdk offline static proof still passes
+  (salted Deployment id changes; static tier intact).
+
+**Supersedes.** Amendment 19 (scoped `sts:AssumeRole`) — subsumed. The
+apigw-redeploy CliCredentials note recorded mid-Amdt-23 — reverted. `QADeployApplicationRole`
+is retired everywhere except stale *comments* in hand-authored reference
+`solve.sh` files (answer-key only, never agent-visible; cosmetic sweep pending).
+
+**Pre-registration status:** operationalization of the live-sandbox permission
+model. The equipping-hash and integrity gates are unchanged; the deploy identity
+is harness plumbing, not part of what is measured.

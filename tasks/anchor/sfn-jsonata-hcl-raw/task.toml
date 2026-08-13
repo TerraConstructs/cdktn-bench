@@ -15,7 +15,7 @@ agent_role_name = "QALocalInvocationApplicationRole"
 # Static-tier verifier only (synth/plan, no deploy); no AWS mutation
 # happens in agent, verifier, pre_invoke, or post_invoke, so read-only
 # trials of the anchor scenario can co-run (verifier.live_check.enabled
-# is false in v1 -- see specs/SCHEMA.md §5).
+# is false for this scenario -- see specs/SCHEMA.md §5).
 mode = "read-only"
 
 # --- Harbor standard --- flexible metadata
@@ -27,7 +27,7 @@ request_type = "mutation"
 aws_services = ["stepfunctions", "iam"]
 difficulty_explanation = "difficulty 2 (Sequential) per specs/SCHEMA.md's difficulty->complexity mapping."
 solution_explanation = "see solution/solve.sh -- writes a known-good main.tf, then runs the same tests/static_tiers.sh a real trial's verifier runs."
-verification_explanation = "tests/static_tiers.sh runs: terraform init/validate/plan -> tier-0 structural asserts (jq, compiled from specs/sfn-jsonata.yaml oracle.structural_asserts) -> tier-1 OPA/Rego (oracles/rego/sfn-jsonata/policy.rego, skipped if not yet hand-authored); writes /logs/verifier/reward.txt. No live AWS calls in v1 (verifier.live_check.enabled is always false)."
+verification_explanation = "tests/static_tiers.sh runs: terraform init/validate/plan -> tier-0 structural asserts (jq, compiled from specs/sfn-jsonata.yaml oracle.structural_asserts) -> tier-1 OPA/Rego (oracles/rego/sfn-jsonata/policy.rego, skipped if not yet hand-authored); writes /logs/verifier/reward.txt. No live AWS calls in v1 (verifier.live_check.enabled is false for this scenario)."
 intent = "Provisioning"
 complexity = "Sequential"
 layer = "ControlPlane"

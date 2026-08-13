@@ -65,6 +65,15 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # below). jq/git/curl/unzip match the common agent-container baseline shared
 # with arms/awscdk and arms/hcl-raw — see ../../DECISIONS.md "Agent-container
 # baseline contract".
+# python3 (stdlib only, no pip package ever installed): added fix-round-3
+# (benchmark-integrity review finding G2, 2026-08-07) -- same rationale as
+# arms/awscdk/environment/Dockerfile's identical addition: this arm's
+# generated tests/test.sh invokes `python3 "$DIR/live_check.py"` for any
+# spec with verifier.live_check.enabled: true, and this image previously
+# had no python3 at all, silently downgrading a perfect apigw-redeploy
+# solution to reward 0.0 via a shell "command not found" misread as a
+# legitimate not_verifiable live-check outcome. Amends DECISIONS.md
+# "Agent-container baseline contract".
 RUN apt-get update && apt-get install -y --no-install-recommends \
       curl \
       gnupg \
@@ -73,6 +82,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       jq \
       git \
       less \
+      python3 \
     && curl -fsSL https://apt.releases.hashicorp.com/gpg -o /tmp/hashicorp.gpg \
     && gpg --dearmor -o /usr/share/keyrings/hashicorp-archive-keyring.gpg /tmp/hashicorp.gpg \
     && echo "deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com $(. /etc/os-release && echo "$VERSION_CODENAME") main" \

@@ -255,14 +255,16 @@ class TestBudgetWiring:
     are.
     """
 
-    def test_max_iters_defaults_to_8_and_injects_ak_max_turns(
+    def test_max_iters_defaults_to_100_and_injects_ak_max_turns(
         self, tmp_path: Path
     ) -> None:
+        # Default raised 8 -> 100 (Amendment 22): --max-turns counts agent
+        # steps, not feedback cycles, and live scenarios need the headroom.
         proc = run_dry([], env={}, tmp_path=tmp_path)
 
         assert proc.returncode == 0, proc.stderr
-        assert "MAX_ITERS=8" in proc.stdout
-        assert "--ak max_turns=8" in proc.stdout
+        assert "MAX_ITERS=100" in proc.stdout
+        assert "--ak max_turns=100" in proc.stdout
 
     def test_max_iters_env_var_overrides_default(self, tmp_path: Path) -> None:
         proc = run_dry([], env={"MAX_ITERS": "3"}, tmp_path=tmp_path)
@@ -270,7 +272,7 @@ class TestBudgetWiring:
         assert proc.returncode == 0, proc.stderr
         assert "MAX_ITERS=3" in proc.stdout
         assert "--ak max_turns=3" in proc.stdout
-        assert "max_turns=8" not in proc.stdout
+        assert "max_turns=100" not in proc.stdout
 
     def test_max_iters_flag_overrides_env_var(self, tmp_path: Path) -> None:
         proc = run_dry(
@@ -302,7 +304,7 @@ class TestBudgetWiring:
 
         assert proc.returncode == 0, proc.stderr
         argv_line = proc.stdout.splitlines()[0]
-        assert argv_line.index("max_turns=8") < argv_line.index("max_turns=20")
+        assert argv_line.index("max_turns=100") < argv_line.index("max_turns=20")
 
     def test_max_tokens_unset_by_default(self, tmp_path: Path) -> None:
         proc = run_dry([], env={}, tmp_path=tmp_path)

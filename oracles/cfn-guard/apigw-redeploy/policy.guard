@@ -1,0 +1,47 @@
+#
+# oracles/cfn-guard/apigw-redeploy/policy.guard -- HAND-AUTHORED (SCHEMA.md
+# §8.2 rule 7). Encodes specs/apigw-redeploy.yaml's oracle.structural_asserts
+# tier-"1" entry (deployment-depends-on-all-methods). Graded against the
+# awscdk arm's synthesized CloudFormation template
+# (cdk.out/ScenarioStack.template.json) -- specs/SCHEMA.md §4.2/§8.
+#
+# Intent doc: oracles/apigw-redeploy/intent.md
+#
+# Adapted directly from oracles/cfn-guard/apigw-openapi/policy.guard's own
+# deployment_depends_on_all_methods rule -- same cardinality-proxy
+# rationale and the same documented residual gap (a manual escape-hatch
+# DependsOn naming >= method-count unrelated resources is not caught here;
+# see that file's own header for the full write-up, which applies
+# unchanged to this scenario). route_count_correct is NOT reused: this
+# scenario does not declare that catch.
+#
+
+let methods = Resources.*[ Type == "AWS::ApiGateway::Method" ]
+let deployments = Resources.*[ Type == "AWS::ApiGateway::Deployment" ]
+
+# Fails closed if methods exist but no Deployment resource is present at all.
+rule deployment_exists_when_methods_exist when %methods !empty {
+	%deployments !empty
+	<<
+		Violation: API Gateway methods exist but no AWS::ApiGateway::Deployment resource was found in the template
+	>>
+}
+
+# deployment-depends-on-all-methods (THE PLANTED CATCH, cardinality proxy --
+# see oracles/cfn-guard/apigw-openapi/policy.guard's header comment for why
+# this is sound for this one fact specifically, and its documented residual
+# gap, unchanged here).
+rule deployment_depends_on_all_methods when %methods !empty %deployments !empty {
+	let mcount = count(%methods)
+	%deployments {
+		DependsOn exists
+		<<
+			Violation: AWS::ApiGateway::Deployment has no DependsOn at all -- the classic API Gateway deployment race
+		>>
+		let dcount = count(DependsOn.*)
+		%dcount >= %mcount
+		<<
+			Violation: AWS::ApiGateway::Deployment's DependsOn does not cover every route method
+		>>
+	}
+}

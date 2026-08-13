@@ -1,0 +1,6 @@
+
+> @cdktn-bench/scenario-anchor@1.0.0 build
+> tsc
+
+Killed
+npx ts-node lib/app.ts: Subprocess exited with error 137

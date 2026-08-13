@@ -18,6 +18,15 @@
 #    per-scenario in Slice D, mirroring arms/hcl-raw's split).
 set -euo pipefail
 
+echo "=== python3 present (fix-round-3 G2: tests/test.sh runs python3 live_check.py for live-check scenarios) ==="
+if command -v python3 >/dev/null 2>&1; then
+  echo "OK: python3 $(python3 --version 2>&1)"
+else
+  echo "FAIL: python3 not found -- any scenario with verifier.live_check.enabled=true would silently score 0.0 on this arm (see DECISIONS.md 'Agent-container baseline contract')"
+  exit 1
+fi
+echo
+
 echo "=== versions ==="
 echo "node:            $(node --version)"
 echo "npm:             $(npm --version)"

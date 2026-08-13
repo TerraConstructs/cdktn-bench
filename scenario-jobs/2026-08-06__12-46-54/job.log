@@ -1,0 +1,34 @@
+2026-08-06 19:46:55,274 INFO     aws_bench.cli.preflight:74 — Using AWS account 489592802338 (arn:aws:iam::489592802338:user/vincent-tyme-org), OU 'cdktn-anchor'
+2026-08-06 19:46:57,561 INFO     aws_bench.scenario.job:333 — Deploying... 1 scenario(s) for job 2026-08-06__12-46-54
+2026-08-06 19:46:57,565 INFO     aws_bench.scenario.trial:197 — [anchor__FrrVxsD] Deploying... trial anchor__FrrVxsD
+2026-08-06 19:46:57,566 INFO     aws_bench.scenario.container.awsbench-anchor__frrvxsd:211 — [anchor__FrrVxsD] Building image awsbench-anchor ...
+2026-08-06 19:46:57,867 INFO     aws_bench.scenario.container.awsbench-anchor__frrvxsd:217 — [anchor__FrrVxsD] Built image awsbench-anchor.
+2026-08-06 19:46:57,881 DEBUG    aws_bench.scenario.container.awsbench-anchor__frrvxsd:337 — [anchor__FrrVxsD] Removed stale container awsbench-anchor__frrvxsd.
+2026-08-06 19:46:58,834 DEBUG    aws_bench.scenario.container.awsbench-anchor__frrvxsd:266 — [anchor__FrrVxsD] Started container awsbench-anchor__frrvxsd.
+2026-08-06 19:46:59,655 DEBUG    aws_bench.resource_management.snapshot.manager:85 — [anchor__FrrVxsD] Initializing S3 storage backend (lazy)
+2026-08-06 19:47:00,502 DEBUG    aws_bench.resource_management.storage.s3_backend:91 — [anchor__FrrVxsD] Initializing S3 backend: bucket=awsbench-state-489592802338, region=us-east-1
+2026-08-06 19:47:01,272 DEBUG    aws_bench.resource_management.storage.s3_backend:113 — [anchor__FrrVxsD] S3 bucket exists: awsbench-state-489592802338
+2026-08-06 19:47:01,273 DEBUG    aws_bench.resource_management.storage.s3_backend:209 — [anchor__FrrVxsD] Applying configuration to S3 bucket: awsbench-state-489592802338
+2026-08-06 19:47:02,885 DEBUG    aws_bench.resource_management.storage.s3_backend:255 — [anchor__FrrVxsD] Applied configuration to 'awsbench-state-489592802338': versioning, encryption, public access block, and lifecycle policy
+2026-08-06 19:47:02,886 DEBUG    aws_bench.resource_management.storage.s3_backend:385 — [anchor__FrrVxsD] Checking existence of snapshots/anchor/pre-setup/694710432912/baseline.json
+2026-08-06 19:47:03,154 DEBUG    aws_bench.resource_management.storage.s3_backend:389 — [anchor__FrrVxsD] Key exists: snapshots/anchor/pre-setup/694710432912/baseline.json
+2026-08-06 19:47:04,739 DEBUG    aws_bench.account_management.organizations:332 — [anchor__FrrVxsD] SERVICE_CONTROL_POLICY already enabled on org root
+2026-08-06 19:47:05,544 DEBUG    aws_bench.account_management.organizations:355 — [anchor__FrrVxsD] SERVICE_CONTROL_POLICY is ENABLED on org root
+2026-08-06 19:47:06,262 INFO     aws_bench.account_management.organizations:451 — [anchor__FrrVxsD] Created SCP 'awsbench-region-restrict-anchor' (p-spoezqd7)
+2026-08-06 19:47:07,187 INFO     aws_bench.account_management.organizations:464 — [anchor__FrrVxsD] Attached SCP p-spoezqd7 to account 694710432912
+2026-08-06 19:47:09,152 DEBUG    aws_bench.scenario.trial:705 — [anchor__FrrVxsD] Deleted stale cdk-deploy-change-set from AgentCore-ghbroker-default in us-east-1
+2026-08-06 19:47:09,454 DEBUG    aws_bench.scenario.trial:705 — [anchor__FrrVxsD] Deleted stale cdk-deploy-change-set from CDKToolkit in us-east-1
+2026-08-06 19:47:09,724 DEBUG    aws_bench.scenario.trial:705 — [anchor__FrrVxsD] Deleted stale cdk-deploy-change-set from StackSet-AWS-QuickSetup-JITNA-LA-kfhqq-f68db75e-8d4e-48c8-a661-b1102a8aa9c1 in us-east-1
+2026-08-06 19:47:09,989 DEBUG    aws_bench.scenario.trial:705 — [anchor__FrrVxsD] Deleted stale cdk-deploy-change-set from AWS-QuickSetup-JITNA-LocalDeploymentRolesStack in us-east-1
+2026-08-06 19:47:10,259 DEBUG    aws_bench.scenario.trial:705 — [anchor__FrrVxsD] Deleted stale cdk-deploy-change-set from StackSet-AWS-QuickSetup-SSM-LA-4sf9y-6ca4d321-3072-4e35-86cc-51124bd9efa6 in us-east-1
+2026-08-06 19:47:10,526 DEBUG    aws_bench.scenario.trial:705 — [anchor__FrrVxsD] Deleted stale cdk-deploy-change-set from AWS-QuickSetup-SSM-LocalDeploymentRolesStack in us-east-1
+2026-08-06 19:47:12,097 DEBUG    aws_bench.scenario.trial:390 — [anchor__FrrVxsD] Running deploy script in container (timeout 900s)
+2026-08-06 19:49:11,852 DEBUG    aws_bench.scenario.trial:399 — [anchor__FrrVxsD] deploy script finished (exit=1)
+2026-08-06 19:49:11,853 DEBUG    aws_bench.scenario.trial:544 — [anchor__FrrVxsD] Deploy failed; skipping baseline snapshot
+2026-08-06 19:49:11,854 ERROR    aws_bench.scenario.trial:256 — [anchor__FrrVxsD] Trial anchor/anchor__FrrVxsD deploy failed: deploy phase exited 1
+stdout tail:
+> @cdktn-bench/scenario-anchor@1.0.0 build
+> tsc
+
+Killed
+npx ts-node lib/app.ts: Subprocess exited with error 137

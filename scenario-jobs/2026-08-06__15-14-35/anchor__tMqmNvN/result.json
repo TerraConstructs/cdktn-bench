@@ -1,0 +1,37 @@
+{
+  "id": "532be0df-3b30-4c16-9d43-384397d70997",
+  "scenario_name": "anchor",
+  "trial_name": "anchor__tMqmNvN",
+  "phase": "deploy",
+  "started_at": "2026-08-06T15:14:38.302536Z",
+  "finished_at": "2026-08-06T15:23:54.863365Z",
+  "environment_setup": {
+    "started_at": "2026-08-06T15:14:38.304861Z",
+    "finished_at": "2026-08-06T15:14:41.641331Z"
+  },
+  "execute": {
+    "started_at": "2026-08-06T15:14:53.734136Z",
+    "finished_at": "2026-08-06T15:19:53.387908Z"
+  },
+  "exit_code": 0,
+  "exception_info": null,
+  "account_mapping": {
+    "PRIMARY": "886312446417"
+  },
+  "regions": [
+    "us-east-1"
+  ],
+  "resource_results": {
+    "snapshot": [
+      {
+        "account_id": "886312446417",
+        "success": true,
+        "regions_captured": [
+          "us-east-1"
+        ],
+        "error_message": null,
+        "output_path": null
+      }
+    ]
+  }
+}

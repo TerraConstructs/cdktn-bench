@@ -37,8 +37,25 @@ FROM node:20.20.2-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2
 # Same baseline utility set as the upstream dataset's Dockerfile
 # (ca-certificates/curl/unzip/less/groff/jq/zip), plus git (Claude Code
 # harness installs/uses it per-trial per aws-bench-guide.md §5).
+#
+# python3 (stdlib only, no pip package ever installed): added fix-round-3
+# (benchmark-integrity review finding G2, 2026-08-07) -- this arm's
+# generated tests/test.sh (generator/gen.py::build_test_sh) invokes
+# `python3 "$DIR/live_check.py"` whenever a spec sets
+# verifier.live_check.enabled: true (currently only apigw-redeploy). Before
+# this line, python3 did not exist in this image at all: the interpreter
+# invocation failed with "command not found", and that shell error text
+# landed in live_check-result.json (stdout+stderr were merged) where
+# gen.py's own gating logic read it as an innocuous "not_verifiable"
+# outcome -- silently downgrading a PERFECT solution to reward 0.0 on
+# every apigw-redeploy trial on this arm. Amends DECISIONS.md
+# "Agent-container baseline contract", which previously (deliberately)
+# excluded python3 from the shared baseline -- see arms/hcl-raw's own
+# Dockerfile comment for that arm's version of this same addition
+# (installed earlier, for mock-sfn.py, for an unrelated reason) and
+# DECISIONS.md's amendment for the full rationale change.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl unzip less groff jq zip git \
+    ca-certificates curl unzip less groff jq zip git python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # --- AWS CLI v2 ----------------------------------------------------------

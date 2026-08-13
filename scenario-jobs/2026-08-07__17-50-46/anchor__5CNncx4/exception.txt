@@ -1,0 +1,12 @@
+Traceback (most recent call last):
+  File "/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/trial.py", line 242, in run
+    raise script_error
+  File "/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/trial.py", line 232, in run
+    await self._run_phase_in_container(phase)
+  File "/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/trial.py", line 356, in _run_phase_in_container
+    await self._raise_if_contaminated()
+  File "/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/trial.py", line 528, in _raise_if_contaminated
+    raise AccountContaminatedError(
+    ...<2 lines>...
+    )
+aws_bench.exceptions.AccountContaminatedError: Scenario 'anchor' has 1 contaminated account(s): 886312446417. A prior reset failed to restore baseline. Run 'aws-bench env cleanup' to clean them and clear the flag.

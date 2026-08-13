@@ -29,3 +29,8 @@ jobs/
 .cache/
 
 # uv.lock IS tracked (do not ignore) — kept for reproducible dependency pins.
+
+# offline-proof / solve.sh byproducts in task workspaces (never commit)
+cdk.out.rev*/
+**/environment/workspace/bin/*.js
+**/environment/workspace/outputs.rev*.json

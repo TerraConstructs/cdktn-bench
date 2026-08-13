@@ -1,0 +1,28 @@
+2026-08-08 00:46:34,871 INFO     aws_bench.scenario.trial:197 — [anchor__6YJNSqP] Resetting... trial anchor__6YJNSqP
+2026-08-08 00:46:34,872 INFO     aws_bench.scenario.container.awsbench-anchor__6yjnsqp:211 — [anchor__6YJNSqP] Building image awsbench-anchor ...
+2026-08-08 00:47:01,738 INFO     aws_bench.scenario.container.awsbench-anchor__6yjnsqp:217 — [anchor__6YJNSqP] Built image awsbench-anchor.
+2026-08-08 00:47:01,754 DEBUG    aws_bench.scenario.container.awsbench-anchor__6yjnsqp:337 — [anchor__6YJNSqP] Removed stale container awsbench-anchor__6yjnsqp.
+2026-08-08 00:47:02,847 DEBUG    aws_bench.scenario.container.awsbench-anchor__6yjnsqp:266 — [anchor__6YJNSqP] Started container awsbench-anchor__6yjnsqp.
+2026-08-08 00:47:02,848 DEBUG    aws_bench.scenario.trial:390 — [anchor__6YJNSqP] Running reset script in container (timeout 300s)
+2026-08-08 00:47:24,414 DEBUG    aws_bench.scenario.trial:399 — [anchor__6YJNSqP] reset script finished (exit=0)
+2026-08-08 00:47:24,418 DEBUG    aws_bench.resource_management.scanner:83 — [anchor__6YJNSqP][PRIMARY/886312446417] Scan backend: fastscan-lambda (account 886312446417, region None)
+2026-08-08 00:47:24,464 DEBUG    aws_bench.resource_management.reset.manager:84 — [anchor__6YJNSqP][PRIMARY/886312446417] Starting reset for account 886312446417 in environment 'anchor'
+2026-08-08 00:47:24,464 DEBUG    aws_bench.resource_management.snapshot.manager:180 — [anchor__6YJNSqP][PRIMARY/886312446417] Loading snapshot for environment 'anchor', account 886312446417
+2026-08-08 00:47:24,465 DEBUG    aws_bench.resource_management.snapshot.manager:85 — [anchor__6YJNSqP][PRIMARY/886312446417] Initializing S3 storage backend (lazy)
+2026-08-08 00:47:25,220 DEBUG    aws_bench.resource_management.storage.s3_backend:91 — [anchor__6YJNSqP][PRIMARY/886312446417] Initializing S3 backend: bucket=awsbench-state-489592802338, region=us-east-1
+2026-08-08 00:47:25,999 DEBUG    aws_bench.resource_management.storage.s3_backend:113 — [anchor__6YJNSqP][PRIMARY/886312446417] S3 bucket exists: awsbench-state-489592802338
+2026-08-08 00:47:26,000 DEBUG    aws_bench.resource_management.storage.s3_backend:209 — [anchor__6YJNSqP][PRIMARY/886312446417] Applying configuration to S3 bucket: awsbench-state-489592802338
+2026-08-08 00:47:27,518 DEBUG    aws_bench.resource_management.storage.s3_backend:255 — [anchor__6YJNSqP][PRIMARY/886312446417] Applied configuration to 'awsbench-state-489592802338': versioning, encryption, public access block, and lifecycle policy
+2026-08-08 00:47:27,519 DEBUG    aws_bench.resource_management.storage.s3_backend:347 — [anchor__6YJNSqP][PRIMARY/886312446417] Loading from snapshots/anchor/post-setup/886312446417/baseline.json
+2026-08-08 00:47:28,587 DEBUG    aws_bench.resource_management.storage.s3_backend:356 — [anchor__6YJNSqP][PRIMARY/886312446417] Loaded snapshots/anchor/post-setup/886312446417/baseline.json (177631 bytes, ETag 9a03464d16692c46137689858a057c37)
+2026-08-08 00:47:28,588 DEBUG    aws_bench.resource_management.snapshot.manager:199 — [anchor__6YJNSqP][PRIMARY/886312446417] Loaded snapshot for 886312446417: 3 stacks, 1286 resources
+2026-08-08 00:47:28,589 DEBUG    aws_bench.resource_management.reset.manager:93 — [anchor__6YJNSqP][PRIMARY/886312446417] Resetting across 1 region(s): us-east-1
+2026-08-08 00:47:28,594 DEBUG    aws_bench.resource_management.scanner:83 — [anchor__6YJNSqP][PRIMARY/886312446417][us-east-1] Scan backend: fastscan-lambda (account 886312446417, region us-east-1)
+2026-08-08 00:47:28,666 DEBUG    aws_bench.resource_management.reset.manager:211 — [anchor__6YJNSqP][PRIMARY/886312446417][us-east-1] Phase 1: verifying to identify issues
+2026-08-08 00:47:28,667 DEBUG    aws_bench.resource_management.verify.manager:323 — [anchor__6YJNSqP][PRIMARY/886312446417][us-east-1] Verifying account 886312446417 state for environment anchor
+2026-08-08 00:47:29,831 DEBUG    aws_bench.scenario.hashing:47 — [anchor__6YJNSqP][PRIMARY/886312446417][us-east-1] Computed hash dec1829c... for /Users/vincentsmet/cdk/cdktn-bench/scenarios/anchor
+2026-08-08 00:47:29,831 ERROR    aws_bench.resource_management.reset.manager:276 — [anchor__6YJNSqP][PRIMARY/886312446417][us-east-1] Dataset or script version mismatch detected - requires full cleanup and redeploy
+2026-08-08 00:47:29,832 ERROR    aws_bench.resource_management.reset.manager:126 — [anchor__6YJNSqP][PRIMARY/886312446417] Region 'us-east-1' reset failed: Dataset/script version mismatch - requires full cleanup
+Suggestion: Run 'aws-bench env cleanup' and 'aws-bench env setup'
+2026-08-08 00:47:29,832 ERROR    aws_bench.resource_management.reset.manager:170 — [anchor__6YJNSqP][PRIMARY/886312446417] Reset failed: Dataset/script version mismatch - requires full cleanup
+2026-08-08 00:47:30,638 ERROR    aws_bench.scenario.trial:256 — [anchor__6YJNSqP] Trial anchor/anchor__6YJNSqP reset failed: env reset failed for 1 account(s): Dataset/script version mismatch - requires full cleanup

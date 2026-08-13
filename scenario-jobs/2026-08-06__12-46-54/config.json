@@ -1,0 +1,61 @@
+{
+  "ou_name": "cdktn-anchor",
+  "dataset": {
+    "path": null,
+    "name": "cdktn-bench-anchor",
+    "version": "0.1.0",
+    "ref": null,
+    "registry_url": null,
+    "registry_path": "local-registry.json",
+    "overwrite": false,
+    "download_dir": null,
+    "task_names": null,
+    "exclude_task_names": null,
+    "n_tasks": null,
+    "scenarios_path": null,
+    "include_scenario_names": null,
+    "exclude_scenario_names": null,
+    "scenario_download_dir": null
+  },
+  "jobs_dir": "scenario-jobs",
+  "job_name": "2026-08-06__12-46-54",
+  "n_concurrent": 4,
+  "timeout_multiplier": 1.0,
+  "environment": {
+    "force_build": false,
+    "delete": true,
+    "override_build_timeout_sec": null,
+    "override_cpus": null,
+    "override_memory_mb": null,
+    "mounts_json": null
+  },
+  "retry": {
+    "max_retries": 0,
+    "include_exceptions": null,
+    "exclude_exceptions": null,
+    "wait_multiplier": 2.0,
+    "min_wait_sec": 1.0,
+    "max_wait_sec": 60.0
+  },
+  "test_environment": {
+    "org": {
+      "org_id": "o-le9luwjpx4",
+      "root_id": "r-4rnb",
+      "management_account_id": "489592802338",
+      "management_account_email": "vincent.desmet+org@outlook.com"
+    },
+    "ou_id": "ou-4rnb-at85dguq",
+    "ou_name": "cdktn-anchor",
+    "accounts": {
+      "anchor": {
+        "PRIMARY": {
+          "account_id": "694710432912",
+          "email": "vincent.desmet@outlook.com",
+          "scenario_name": "anchor",
+          "account_tag": "PRIMARY",
+          "status": "ACTIVE"
+        }
+      }
+    }
+  }
+}

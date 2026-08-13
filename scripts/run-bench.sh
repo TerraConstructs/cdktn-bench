@@ -176,7 +176,14 @@ DRY_RUN="${AWS_BENCH_DRY_RUN:-0}"
 # MAX_TOKENS has deliberately no numeric default (pilot-set, see this
 # script's own header) — an unset/empty value means "no MAX_TOKENS recorded
 # for this job", not "0".
-MAX_ITERS="${MAX_ITERS:-8}"
+# Default raised 8 -> 100 (2026-08-13, DECISIONS.md Amendment 22). `--max-turns`
+# counts Claude Code AGENT STEPS, not the pre-reg's feedback CYCLES — one cycle
+# (author -> deploy -> read error -> amend) is many steps, and a LIVE scenario's
+# steps include minutes-long applies, so 8 steps under-budgets badly (the first
+# live trial hit error_max_turns at 8). Start large; MAX_TOKENS remains the real
+# censoring budget. MONITOR actual turn usage per scenario and TRIM toward 50 if
+# 100 proves wasteful — see CLAUDE.md "Turn budget".
+MAX_ITERS="${MAX_ITERS:-100}"
 MAX_TOKENS="${MAX_TOKENS:-}"
 EXTRA=()
 

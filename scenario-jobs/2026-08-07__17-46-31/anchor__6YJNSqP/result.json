@@ -1,0 +1,46 @@
+{
+  "id": "6cb40c8e-d63f-4675-81b3-9b35de7f2ddd",
+  "scenario_name": "anchor",
+  "trial_name": "anchor__6YJNSqP",
+  "phase": "reset",
+  "started_at": "2026-08-07T17:46:34.871597Z",
+  "finished_at": "2026-08-07T17:47:40.849136Z",
+  "environment_setup": {
+    "started_at": "2026-08-07T17:46:34.872593Z",
+    "finished_at": "2026-08-07T17:47:02.848573Z"
+  },
+  "execute": {
+    "started_at": "2026-08-07T17:47:02.848717Z",
+    "finished_at": "2026-08-07T17:47:24.415466Z"
+  },
+  "exit_code": 0,
+  "exception_info": {
+    "exception_type": "ResetFailedError",
+    "exception_message": "env reset failed for 1 account(s): Dataset/script version mismatch - requires full cleanup",
+    "exception_traceback": "Traceback (most recent call last):\n  File \"/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/trial.py\", line 238, in run\n    await self._run_resource_management(phase, script_failed=script_error is not None)\n  File \"/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/trial.py\", line 550, in _run_resource_management\n    await self._run_reset()\n  File \"/Users/vincentsmet/cdk/cdktn-bench/.venv/lib/python3.14/site-packages/aws_bench/scenario/trial.py\", line 880, in _run_reset\n    raise ResetFailedError(\n        failures=[r.reason or \"reset failed\" for r in failed],\n    )\naws_bench.scenario.exceptions.ResetFailedError: env reset failed for 1 account(s): Dataset/script version mismatch - requires full cleanup\n",
+    "occurred_at": "2026-08-08T00:47:30.638026"
+  },
+  "account_mapping": {
+    "PRIMARY": "886312446417"
+  },
+  "regions": [
+    "us-east-1"
+  ],
+  "resource_results": {
+    "reset": [
+      {
+        "success": false,
+        "reason": "Dataset/script version mismatch - requires full cleanup",
+        "account_id": "886312446417",
+        "scenario_name": "anchor",
+        "details": {
+          "expected_hash": "4320e25a79cb6d9e254dd2ed8cff8f94aca1f84c2cbc5da21ec9054919e79eaa",
+          "current_hash": "dec1829c957b32815e41f7ed2535b8b0e40b2976149cee834c563f3dd890722b"
+        },
+        "suggestion": "Run 'aws-bench env cleanup' and 'aws-bench env setup'",
+        "needs_redeploy": false,
+        "redeploy_succeeded": null
+      }
+    ]
+  }
+}
