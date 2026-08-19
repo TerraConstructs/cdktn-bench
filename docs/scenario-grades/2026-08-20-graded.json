@@ -1,0 +1,842 @@
+{
+ "exported": "2026-08-20",
+ "source": "chrome-localStorage",
+ "graded": 30,
+ "candidates": [
+  {
+   "name": "default-tags-vs-tags-all",
+   "sweep": "pitfall",
+   "shard": "meta-crosscutting",
+   "family": "nested-attribute",
+   "root_cause": "",
+   "mode": "static",
+   "cx": "S",
+   "tier": "A2",
+   "dedupe": "default-tags-vs-tags-all-dual-surface",
+   "signal": 507,
+   "opened": "2019-03-13",
+   "last_activity": "2023-06-20",
+   "curator_note": "OPERATOR NOTE: Requires proof to confirm exclude/include. Linked issues are closed with comments saying resolved in provider v5 (default_tags support added, permanent diff fixed) \u2014 EXCEPT #19583 where several comments claim v5 still exhibits it. Exclude unless v6 empirically shows the issue (needs empirical proof).",
+   "decision": "in",
+   "comment": "Requires proof to confirm exclude/include\n\nIssues linked are closed and have a comment mentioning they are resolved in terraform-provider-aws version v5 that released fixes (default_tags support was added, permanent diff was resolved, ..)\n\nexcept https://github.com/hashicorp/terraform-provider-aws/issues/19583 which has several issues claiming v5 still had that issue - exclude if v6 does not show this issue with empirical proof",
+   "features": [
+    "Rego helper that iterates ALL resources in plan-json and normalizes the tag map across the tags/tags_all/Tags-list representations so the three arms are graded by one equivalence class",
+    "oracle-equivalence check for 'module output value' assertions (grading a synthesized output/CfnOutput, not just a resource property)"
+   ],
+   "evidence": [
+    "https://github.com/hashicorp/terraform-provider-aws/issues/7926",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/18311",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/19583",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/19204",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/23288"
+   ]
+  },
+  {
+   "name": "s3-bucket-decomposition-missing-subresource",
+   "sweep": "pitfall",
+   "shard": "s3",
+   "family": "nested-attribute",
+   "root_cause": "",
+   "mode": "static",
+   "cx": "S",
+   "tier": "A1",
+   "dedupe": "s3-bucket-split-subresources-drift",
+   "signal": 300,
+   "opened": "2022-02-10",
+   "last_activity": "2024-09-06",
+   "curator_note": "OPERATOR NOTE: near-duplicate of the other s3-bucket v4-decomposition candidates (same evidence base) \u2014 merge into ONE scenario at spec time; see related list.",
+   "decision": "in",
+   "comment": null,
+   "features": [
+    "Rego helper for resolving the aws_s3_bucket_* sub-resource -> parent bucket edge in plan-json (the `bucket = aws_s3_bucket.x.id` reference must be followed to assert per-bucket coverage rather than per-account existence)",
+    "cfn-guard/Rego equivalence pair for \"policy statement covers both bucket and object ARNs\" \u2014 a set-containment assert the existing oracle helpers do not have"
+   ],
+   "evidence": [
+    "https://github.com/hashicorp/terraform-provider-aws/issues/23106",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/23103",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/25325",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/23758",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/26328"
+   ]
+  },
+  {
+   "name": "s3-bucket-inline-subresources",
+   "sweep": "pitfall",
+   "shard": "blogs-web",
+   "family": "nested-attribute",
+   "root_cause": "",
+   "mode": "static",
+   "cx": "S",
+   "tier": "A1",
+   "dedupe": "s3-bucket-v4-inline-subresource-split",
+   "signal": 300,
+   "opened": "2022-02-10",
+   "last_activity": "2023-03-28",
+   "curator_note": "OPERATOR NOTE: near-duplicate of the other s3-bucket v4-decomposition candidates (same evidence base) \u2014 merge into ONE scenario at spec time; see related list.",
+   "decision": "in",
+   "comment": null,
+   "features": [
+    "nothing new \u2014 this is the cheapest scenario to build on the existing rails",
+    "worth a spec note that the catch is LOUD (tier 0) by design: it is a token-cost differential probe, not a silent-failure probe, so it should be labelled as such and not padded into the silent-catch statistics"
+   ],
+   "evidence": [
+    "https://github.com/hashicorp/terraform-provider-aws/issues/23106",
+    "https://developer.hashicorp.com/validated-patterns/terraform/upgrade-terraform-provider",
+    "https://oneuptime.com/blog/post/2026-02-23-create-s3-bucket-with-versioning-in-terraform/view",
+    "https://oneuptime.com/blog/post/2026-02-12-upgrade-terraform-aws-provider-versions-safely/view",
+    "https://medium.com/@anitha.padmanaban04/create-s3-bucket-with-encryption-versioning-enabled-and-lifecycle-configuration-using-terraform-b2ecd44538f2"
+   ]
+  },
+  {
+   "name": "iam-managed-policy-exclusive-vs-attachment",
+   "sweep": "pitfall",
+   "shard": "hashicorp-discuss",
+   "family": "nested-attribute",
+   "root_cause": "",
+   "mode": "static",
+   "cx": "S",
+   "tier": "",
+   "dedupe": "iam-exclusive-vs-additive-policy-attachment",
+   "signal": 0,
+   "opened": "",
+   "last_activity": "",
+   "curator_note": null,
+   "decision": "in",
+   "comment": null,
+   "features": [
+    "idempotence oracle (re-plan-after-apply empty) \u2014 shared with sg-inline-vs-standalone-rules; building it once unlocks both"
+   ],
+   "evidence": [
+    "https://discuss.hashicorp.com/t/confusion-about-aws-iam-role-managed-policy-arns-attribute/29728",
+    "https://discuss.hashicorp.com/t/terraform-breaking-iam-role-by-removing-and-then-re-adding-policies/61217",
+    "https://discuss.hashicorp.com/t/how-to-attach-multiple-policies-to-a-role/32806",
+    "https://discuss.hashicorp.com/t/why-does-aws-terraform-treat-policy-attachment-as-a-resource-and-not-an-attribute-in-itself/21626",
+    "https://discuss.hashicorp.com/t/iam-role-policy-attachment-issue-in-terraform-aws-eks-module/36016"
+   ]
+  },
+  {
+   "name": "asg-launch-template-tag-propagation",
+   "sweep": "pitfall",
+   "shard": "meta-crosscutting",
+   "family": "nested-attribute",
+   "root_cause": "",
+   "mode": "static",
+   "cx": "M",
+   "tier": "",
+   "dedupe": "tag-propagation-to-launched-children",
+   "signal": 507,
+   "opened": "2017-06-13",
+   "last_activity": "2024-02-29",
+   "curator_note": null,
+   "decision": "in",
+   "comment": null,
+   "features": [
+    "slow-resource budget IF we ever want the live variant (ASG instance launch + tag settle); static plan grading avoids it entirely",
+    "terraconstructs coverage note: expect aws-autoscaling to be absent \u2014 need the harness to record 'arm blocked by missing L2' as a distinct outcome rather than a failure"
+   ],
+   "evidence": [
+    "https://github.com/hashicorp/terraform-provider-aws/issues/729",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/19890",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/7926"
+   ]
+  },
+  {
+   "name": "s3-notification-on-unowned-bucket",
+   "sweep": "cdkpain",
+   "shard": "l2-coverage-lag",
+   "family": "cfn-engine",
+   "root_cause": "cfn-engine",
+   "mode": "live",
+   "cx": "M",
+   "tier": "",
+   "dedupe": "cfn-s3-notification-subresource",
+   "signal": 479,
+   "opened": "2019-03-12",
+   "last_activity": "2026-06-01",
+   "curator_note": "OPERATOR NOTE: Terraform is arguably WORSE here \u2014 it has no custom-resource UPSERT for existing bucket notifications; adding notification config to a bucket that already has notifications easily creates flip-flop infra across resource owners. Re-examine this candidate's arm prediction before speccing.",
+   "decision": "in",
+   "comment": "Terraform is even worse here as it can't provide a custom resource to UPSERT existing bucket notification - adding bucket notification configuration to an existing bucket with bucket notifications is very easy to create flip-flop infra across resource owners",
+   "features": [
+    "Needs a pre-seeded, agent-unowned fixture: a bucket created OUT OF BAND (by the harness, before the trial) already carrying one notification. The generator has no 'pre-provisioned AWS fixture' concept today \u2014 iam-e2e-role's fixtures are the closest precedent; this needs a documented seed+teardown step and a name handed to the agent via the instruction.",
+    "A 'no extra resources of type X' assertion primitive that reads identically on both oracles (cfn-guard: count AWS::Lambda::Function == expected; Rego: count aws_lambda_function == expected). Worth building once \u2014 it is the generic shape for every custom-resource-tax scenario.",
+    "Live teardown must remove the notification from the seeded bucket before deleting it, or the sandwiched fixture leaks."
+   ],
+   "evidence": [
+    "https://github.com/aws-cloudformation/cloudformation-coverage-roadmap/issues/79",
+    "https://github.com/aws/aws-cdk/issues/2004",
+    "https://github.com/aws/aws-cdk/blob/main/packages/aws-cdk-lib/aws-s3/lib/notifications-resource/notifications-resource.ts",
+    "https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket_notification"
+   ]
+  },
+  {
+   "name": "Drift blindness: cdk deploy will not re-assert state it thinks it already deployed",
+   "sweep": "cdkpain",
+   "shard": "cfn-engine-pain",
+   "family": "cfn-engine",
+   "root_cause": "cfn-engine",
+   "mode": "live",
+   "cx": "M",
+   "tier": "",
+   "dedupe": "cfn-drift-no-reconcile-loop",
+   "signal": 65,
+   "opened": "2019-02-10",
+   "last_activity": "2026-08-17",
+   "curator_note": null,
+   "decision": "in",
+   "comment": "Harness must improve trial steps support to have ability for:\n1. run out of band modifications for drift\n2. re-prompt the agent\n\ncurrent aws-bench uses SingleStepTrial from Harbor - may need to vendor some of aws-bench and implement multi_step?",
+   "features": [
+    "out-of-band mutation injection between the agent's first and second deploy (a verifier-side or anchor-side boto3 poke; nothing in the current harness runs mid-trial)",
+    "live_check that reads the specific drifted property back from the service API",
+    "turn/wall-clock headroom: the awscdk arm may need cdk drift + a forced redeploy, which is several extra minutes"
+   ],
+   "evidence": [
+    "https://github.com/aws/aws-cdk/issues/1723",
+    "https://github.com/aws/aws-cdk/issues/24494",
+    "https://github.com/aws-cloudformation/cloudformation-coverage-roadmap/issues/901",
+    "https://github.com/aws/aws-cdk/issues/37797",
+    "https://github.com/aws/aws-cdk/issues/20812",
+    "https://github.com/aws/aws-cdk/issues/35958"
+   ]
+  },
+  {
+   "name": "auto-created-security-groups-default-to-allow-all-egress",
+   "sweep": "cdkpain",
+   "shard": "l2-defaults-behavior",
+   "family": "cdk-l2-library",
+   "root_cause": "cdk-l2-library",
+   "mode": "static",
+   "cx": "M",
+   "tier": "",
+   "dedupe": "cdk-autocreated-sg-allow-all-egress",
+   "signal": 11,
+   "opened": "2018-12-25",
+   "last_activity": "2026-08-17",
+   "curator_note": null,
+   "decision": "in",
+   "comment": "Needs empirical validation that AWSCDK still does this today and if Terraconstructs really does add the default security groups (terraform-provider-aws requires you to explicitly re-define security group rules that AWS adds by default, so its posture is fundamentally different).",
+   "features": [
+    "policy must walk BOTH inline SG egress (CFN AWS::EC2::SecurityGroup.SecurityGroupEgress and TF inline egress) and standalone rule resources (AWS::EC2::SecurityGroupEgress / aws_vpc_security_group_egress_rule) \u2014 one shared normalizer, or the two oracle implementations drift in strictness",
+    "VPC fixture that is cheap and static-gradeable (no NAT gateways) so the scenario stays plan-only"
+   ],
+   "evidence": [
+    "https://github.com/aws/aws-cdk/issues/1430",
+    "https://github.com/aws/aws-cdk/issues/38558",
+    "https://github.com/aws/aws-cdk/issues/8945"
+   ]
+  },
+  {
+   "name": "auto-created-log-groups-orphan-collide-and-never-expire",
+   "sweep": "cdkpain",
+   "shard": "l2-defaults-behavior",
+   "family": "cdk-l2-library",
+   "root_cause": "cdk-l2-library",
+   "mode": "static",
+   "cx": "S",
+   "tier": "",
+   "dedupe": "cdk-autocreated-loggroup-retention-orphan",
+   "signal": 24,
+   "opened": "2022-09-30",
+   "last_activity": "2026-08-17",
+   "curator_note": null,
+   "decision": "in",
+   "comment": "Terraconstructs might actually handle this better today (it did not port the RETAIN policy ~ in TF this would be prevent_destroy and errors on destroy of those resources)\n\nthis does remain a CDK Pain",
+   "features": [
+    "'for every resource of type LogGroup' quantified assert in both oracle languages (shares the normalizer problem with the removal-policy candidate)",
+    "teardown-phase orphan detector (shared with removal-policy candidate)"
+   ],
+   "evidence": [
+    "https://github.com/aws/aws-cdk/issues/22307",
+    "https://github.com/aws/aws-cdk/issues/24656",
+    "https://github.com/aws/aws-cdk/issues/37797"
+   ]
+  },
+  {
+   "name": "lambda-log-group-behavior-forks-on-a-cdk-json-feature-flag",
+   "sweep": "cdkpain",
+   "shard": "l2-defaults-behavior",
+   "family": "cdk-l2-library",
+   "root_cause": "cdk-l2-library",
+   "mode": "static",
+   "cx": "M",
+   "tier": "",
+   "dedupe": "cdk-lambda-loggroup-featureflag-fork",
+   "signal": 6,
+   "opened": "2022-08-31",
+   "last_activity": "2026-08-13",
+   "curator_note": null,
+   "decision": "out",
+   "comment": null,
+   "features": [
+    "scenario-controlled seeding of the awscdk arm's cdk.json context block, with a documented parity story for the other two arms (this is a real prompt-parity hazard: seeding a flag list is equipping, and must be hashed into the equipping hash)",
+    "a 'no custom resources' assertion primitive for the cfn-guard side that has a meaningful Rego counterpart on the TF side (nearest equivalent: no null_resource / no provisioner / no aws_lambda_function beyond the declared one)"
+   ],
+   "evidence": [
+    "https://github.com/aws/aws-cdk/issues/21853",
+    "https://github.com/aws/aws-cdk/issues/31893",
+    "https://github.com/aws/aws-cdk/issues/34894",
+    "https://github.com/aws/aws-cdk/issues/38503"
+   ]
+  },
+  {
+   "name": "cross-stack-export-deadly-embrace-on-refactor",
+   "sweep": "cdkpain",
+   "shard": "l2-defaults-behavior",
+   "family": "cfn-engine",
+   "root_cause": "cfn-engine",
+   "mode": "live",
+   "cx": "L",
+   "tier": "",
+   "dedupe": "cfn-cross-stack-export-deletion-deadlock",
+   "signal": 34,
+   "opened": "2019-12-05",
+   "last_activity": "2026-08-04",
+   "curator_note": null,
+   "decision": "in",
+   "comment": "Harness must improve trial steps support to have ability for:\n1. request the change to stop consuming a referenced attribute/rename a construct\n2. trigger deploy\n3. feedback the issue for the arm to troubleshoot (if there is an issue at all)\n\ncurrent aws-bench uses SingleStepTrial from Harbor - may need to vendor some of aws-bench and implement multi_step?\n\nNOTE: TerraConstructs (CDK Terrain) suffers from this in a way that outputs magically drop ",
+   "features": [
+    "MULTI-STACK scenario support: the generator currently assumes one stack/one state per task. Needs a two-stack CDK app AND a defensible hcl-raw/terraconstructs equivalent (two workspaces + remote state data source, or two root modules) that preserves prompt parity without handing the TF arms an unfair single-state shortcut. This is the biggest toolkit lift on the list and should be scoped before the scenario",
+    "reuse the apply -> modify -> re-apply harness from apigw-redeploy (docs/apigw-redeploy-mechanics.md) \u2014 this scenario is the same shape at higher difficulty",
+    "stuck-stack recovery budget: a failed second apply can leave UPDATE_ROLLBACK_FAILED, which the teardown/reset path must survive (relevant to task #11's findings)"
+   ],
+   "evidence": [
+    "https://github.com/aws/aws-cdk/issues/5304",
+    "https://github.com/aws/aws-cdk/issues/26135",
+    "https://github.com/aws/aws-cdk/issues/10961",
+    "https://github.com/aws/aws-cdk/issues/33395",
+    "https://github.com/aws/aws-cdk/issues/38492",
+    "https://github.com/aws/aws-cdk/issues/31582",
+    "https://github.com/aws/aws-cdk/issues/27902"
+   ]
+  },
+  {
+   "name": "sg-inline-vs-standalone-rules",
+   "sweep": "pitfall",
+   "shard": "blogs-web",
+   "family": "nested-attribute",
+   "root_cause": "",
+   "mode": "live",
+   "cx": "L",
+   "tier": "A3",
+   "dedupe": "sg-inline-vs-standalone-rules",
+   "signal": 105,
+   "opened": "2017-06-13",
+   "last_activity": "2026-08-02",
+   "curator_note": null,
+   "decision": "in",
+   "comment": "Harness must improve trial steps support to have ability for:\n1. First prompt wants inline rules -> Deploy\n2. request a change to add a new rule as a separate rule -> Deploy\n\ncurrent aws-bench uses SingleStepTrial from Harbor - may need to vendor some of aws-bench and implement multi_step?",
+   "features": [
+    "'apply -> re-plan -> assert empty diff' oracle primitive (drift/idempotency check). This does not exist yet and is broadly reusable \u2014 several perpetual-diff pitfalls in this shard would unlock with it",
+    "VPC fixture (or default VPC) for the security groups"
+   ],
+   "evidence": [
+    "https://github.com/hashicorp/terraform-provider-aws/issues/12580",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/19082",
+    "http://cavaliercoder.com/blog/inline-vs-discrete-security-groups-in-terraform.html",
+    "https://spacelift.io/blog/terraform-security-group",
+    "https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/security_group",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/265"
+   ]
+  },
+  {
+   "name": "acm-dns-validation-record-wiring",
+   "sweep": "pitfall",
+   "shard": "route53-acm-cloudfront",
+   "family": "graph-dependency",
+   "root_cause": "",
+   "mode": "static",
+   "cx": "M",
+   "tier": "",
+   "dedupe": "acm-dns-validation-record-wiring",
+   "signal": 333,
+   "opened": "2018-07-18",
+   "last_activity": "2026-02-24",
+   "curator_note": null,
+   "decision": "in",
+   "comment": "Very relevant even used as example in CDKTF / CDK Terrain docs (edge.Certificate handles this in TerraConstructs transparently",
+   "features": [
+    "pre-provisioned public hosted zone fixture (or in-scenario zone create; live validation is impossible without real NS delegation, so plan-only)",
+    "terraconstructs escape-hatch baseline: no acm/route53 L2s in 0.2.13",
+    "Rego helper for 'group plan resources by attribute and assert cardinality'"
+   ],
+   "evidence": [
+    "https://github.com/hashicorp/terraform-provider-aws/issues/14447",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/8531",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/27386",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/27299",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/7918",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/5237",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/10997"
+   ]
+  },
+  {
+   "name": "policy-json-string-normalization-diff",
+   "sweep": "pitfall",
+   "shard": "iam-sts",
+   "family": "anti-L2",
+   "root_cause": "",
+   "mode": "live",
+   "cx": "M",
+   "tier": "",
+   "dedupe": "iam-policy-raw-json-string-normalization",
+   "signal": 252,
+   "opened": "2017-10-12",
+   "last_activity": "2026-06-17",
+   "curator_note": null,
+   "decision": "in",
+   "comment": "trial prepared workspace must be provisioned with existing code (scenario or task set up?) so the LLM must troubleshoot and resolve the perm diff\n\ndoes this require multi step trials as well?",
+   "features": [
+    "post-apply idempotence oracle (shared with exclusive-vs-additive candidate)",
+    "REPRODUCIBILITY RISK: the provider's suppressEquivalentPolicyDiffs may already neutralise the ordering half on current provider versions \u2014 needs a 15-minute spike (apply a 3-ARN Principal.AWS trust policy, re-plan) BEFORE this is promoted; the whitespace half is the safe fallback catch"
+   ],
+   "evidence": [
+    "https://github.com/hashicorp/terraform-provider-aws/issues/11801",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/22314",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/1873",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/22274",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/20107",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/6107",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/19727"
+   ]
+  },
+  {
+   "name": "caller-identity-arn-as-principal",
+   "sweep": "pitfall",
+   "shard": "iam-sts",
+   "family": "typed-value-trap",
+   "root_cause": "",
+   "mode": "static",
+   "cx": "S",
+   "tier": "",
+   "dedupe": "iam-caller-identity-sts-arn-as-principal",
+   "signal": 252,
+   "opened": "2020-01-29",
+   "last_activity": "2026-01-27",
+   "curator_note": null,
+   "decision": "in",
+   "comment": "very high value",
+   "features": [
+    "the trial's credentials must be assume-role credentials (not a static IAM user) for the live variant to reproduce \u2014 worth asserting in preflight since the sandbox already uses an admin deploy ROLE",
+    "policy-JSON semantic oracle (shared)"
+   ],
+   "evidence": [
+    "https://github.com/hashicorp/terraform-provider-aws/issues/16657",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/11801",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/42545"
+   ]
+  },
+  {
+   "name": "ssm-securestring-app-config",
+   "sweep": "cdkpain",
+   "shard": "l2-coverage-lag",
+   "family": "cfn-engine",
+   "root_cause": "cfn-engine",
+   "mode": "live",
+   "cx": "S",
+   "tier": "B1",
+   "dedupe": "cfn-securestring-parameter-store",
+   "signal": 204,
+   "opened": "2019-08-01",
+   "last_activity": "2026-04-02",
+   "curator_note": null,
+   "decision": "out",
+   "comment": "should not allow secrets in iac",
+   "features": [
+    "awscdk arm has no CloudFormation resource-schema linter (cfn-lint / registry schema validation) \u2014 without one, a schema-invalid template sails through tier 0 and tier 1 and the tier-attribution row is unfairly generous to the CDK arm. Either add cfn-lint 1.x to arms/awscdk/environment/Dockerfile (alongside the existing cfn-guard 3.2.0) or pre-register that this scenario is live-only.",
+    "live-apply harness already exists (apigw-redeploy, iam-e2e-role) but needs a KMS CMK teardown path \u2014 CMKs cannot be hard-deleted, only scheduled (7-day minimum), so the sandbox reset story must tolerate PendingDeletion keys or the scenario must use the aws/ssm AWS-managed key and drop the CMK half."
+   ],
+   "evidence": [
+    "https://github.com/aws-cloudformation/cloudformation-coverage-roadmap/issues/82",
+    "https://github.com/aws-cloudformation/cloudformation-coverage-roadmap/issues/227",
+    "https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-resource-ssm-parameter.html",
+    "https://github.com/aws/aws-cdk/blob/main/packages/aws-cdk-lib/aws-ssm/lib/parameter.ts#L313",
+    "https://github.com/aws/aws-cdk/issues/9815"
+   ]
+  },
+  {
+   "name": "acm-cert-cross-region-for-cloudfront",
+   "sweep": "cdkpain",
+   "shard": "l2-coverage-lag",
+   "family": "cfn-engine",
+   "root_cause": "cfn-engine",
+   "mode": "static",
+   "cx": "M",
+   "tier": "",
+   "dedupe": "cfn-single-region-stack-acm",
+   "signal": 152,
+   "opened": "2020-06-15",
+   "last_activity": "2026-05-14",
+   "curator_note": null,
+   "decision": "out",
+   "comment": "aws-bench scp restricts trials to a single region. keep for backlog",
+   "features": [
+    "BLOCKER: the awscdk arm's output_contract assumes exactly one synthesized template (`artifact_path: cdk.out/ScenarioStack.template.json`, per specs/apigw-openapi.yaml). A correct CDK solution here is a multi-stack app; the generator, the trajectory-audit gate and the cfn-guard invocation all need a multi-artifact mode (glob of cdk.out/*.template.json, policy applied across the set). This is the largest toolkit change requested by any candidate in this shard, and it unlocks every future cross-region/cross-stack scenario.",
+    "hcl-raw and terraconstructs arms need credentials valid in two regions \u2014 same account, same admin role, so no new AWS setup, but the offline/mock-STS preflight (arms/terraconstructs/environment/app/mock-sts.js) must tolerate a second aliased provider.",
+    "Region policy: DECISIONS.md pins the sandbox to us-east-1. This scenario deliberately needs a non-us-east-1 workload region. Static/plan-only means nothing is created outside us-east-1, but the pre-registration should be amended explicitly rather than silently."
+   ],
+   "evidence": [
+    "https://github.com/aws-cloudformation/cloudformation-coverage-roadmap/issues/523",
+    "https://github.com/aws/aws-cdk/issues/25343",
+    "https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-resource-certificatemanager-certificate.html",
+    "https://registry.terraform.io/providers/hashicorp/aws/latest/docs/guides/custom-service-endpoints"
+   ]
+  },
+  {
+   "name": "named-resource-replacement-create-before-destroy",
+   "sweep": "pitfall",
+   "shard": "meta-crosscutting",
+   "family": "graph-dependency",
+   "root_cause": "",
+   "mode": "static",
+   "cx": "M",
+   "tier": "",
+   "dedupe": "named-resource-replacement-ordering",
+   "signal": 136,
+   "opened": "2017-06-13",
+   "last_activity": "2026-02-04",
+   "curator_note": null,
+   "decision": "in",
+   "comment": "Scenarios (or tasks?) must bootstrap with a workspace and existing config that sets up the pitfall (config with explicit physical `name` without create_before_destroy)\n\nTrials must have multi steps for the trap to fire on the 2nd apply\n\nthis is important capability of the benchmark because the goal is to provide what looks at first like a simple config, but as changes are requested results in a complex operation.",
+   "features": [
+    "two-phase STATIC grading: plan -> apply-less state fixture (or pre-seeded tfstate/CFN stack) -> mutate one forcing attribute -> re-plan; today only apigw-redeploy does two-phase and it is LIVE",
+    "pre-provisioned fixture: an existing ALB/listener (or tfstate stub) so the replacement ordering is observable without a live 20-min trial",
+    "plan-json helper for reading change.actions ordering (replace direction) in the shared Rego lib"
+   ],
+   "evidence": [
+    "https://github.com/hashicorp/terraform-provider-aws/issues/11344",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/265",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/16889",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/636",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/35717",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/1666",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/8041"
+   ]
+  },
+  {
+   "name": "s3-acl-vs-object-ownership-log-delivery",
+   "sweep": "pitfall",
+   "shard": "s3",
+   "family": "graph-dependency",
+   "root_cause": "",
+   "mode": "static",
+   "cx": "M",
+   "tier": "",
+   "dedupe": "s3-acl-requires-object-ownership",
+   "signal": 107,
+   "opened": "2021-12-17",
+   "last_activity": "2026-06-18",
+   "curator_note": null,
+   "decision": "in",
+   "comment": "Again this task initial prompt should look simple (or the workspace is poisoned with configuration ripe for pitfall and the model is prompted with a change request or an observed known failure mode.. we measure tokens to green per arm)",
+   "features": [
+    "Rego helper for reading explicit `depends_on` edges out of plan-json (plan-json exposes them, but the existing oracles assert on values, not graph edges \u2014 this is the reusable capability the whole graph-dependency family needs)",
+    "service-principal + SourceArn condition matcher, shared with the CloudFront-OAC candidate"
+   ],
+   "evidence": [
+    "https://github.com/hashicorp/terraform-provider-aws/issues/28353",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/26164",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/34079",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/30951",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/22271",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/30698"
+   ]
+  },
+  {
+   "name": "S3 bucket notifications: no CFN resource, so the CDK ships a Lambda that eats your existing config",
+   "sweep": "cdkpain",
+   "shard": "cfn-engine-pain",
+   "family": "cfn-engine",
+   "root_cause": "cfn-engine",
+   "mode": "static",
+   "cx": "M",
+   "tier": "",
+   "dedupe": "cfn-s3-notification-custom-resource",
+   "signal": 96,
+   "opened": "2019-03-12",
+   "last_activity": "2026-07-08",
+   "curator_note": null,
+   "decision": "in",
+   "comment": null,
+   "features": [
+    "anchor-seeded bucket carrying a pre-existing notification (for the live variant)",
+    "live_check comparing s3:GetBucketNotificationConfiguration before/after \u2014 needs a before-snapshot hook the harness does not have"
+   ],
+   "evidence": [
+    "https://github.com/aws-cloudformation/cloudformation-coverage-roadmap/issues/79",
+    "https://github.com/aws/aws-cdk/issues/2004",
+    "https://github.com/aws/aws-cdk/issues/29004",
+    "https://github.com/aws/aws-cdk/issues/28915",
+    "https://github.com/aws/aws-cdk/issues/35352",
+    "https://github.com/aws/aws-cdk/issues/16811"
+   ]
+  },
+  {
+   "name": "count-index-identity-churn",
+   "sweep": "pitfall",
+   "shard": "meta-crosscutting",
+   "family": "anti-L2",
+   "root_cause": "",
+   "mode": "static",
+   "cx": "S",
+   "tier": "",
+   "dedupe": "count-index-identity-churn",
+   "signal": 91,
+   "opened": "2019-07-25",
+   "last_activity": "2026-02-24",
+   "curator_note": null,
+   "decision": "out",
+   "comment": null,
+   "features": [
+    "two-phase STATIC harness with a seeded prior state (tfstate for HCL/terraconstructs, a prior synthesized template or deployed stack for CDK) \u2014 required for any 'what does the SECOND plan do' catch",
+    "cross-arm equivalence for 'logical identity stability' (tf address vs CFN logical id) in the shared oracle lib"
+   ],
+   "evidence": [
+    "https://github.com/hashicorp/terraform-provider-aws/issues/14447",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/9733",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/9495"
+   ]
+  },
+  {
+   "name": "lambda-alias-tracks-unpublished-latest",
+   "sweep": "pitfall",
+   "shard": "lambda-logs",
+   "family": "graph-dependency",
+   "root_cause": "",
+   "mode": "static",
+   "cx": "M",
+   "tier": "",
+   "dedupe": "lambda-alias-pinned-to-latest-publish-not-set",
+   "signal": 82,
+   "opened": "2017-06-13",
+   "last_activity": "2026-06-02",
+   "curator_note": null,
+   "decision": "in",
+   "comment": "multi step trials or poisoned workspace?",
+   "features": [
+    "ideally the differential two-pass mutation (same feature as lambda-code-hash-drift) to show the alias actually advancing \u2014 without it the catch is the static $LATEST/publish check only"
+   ],
+   "evidence": [
+    "https://github.com/hashicorp/terraform-provider-aws/issues/13329",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/11152",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/601",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/12419",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/13099",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/28559"
+   ]
+  },
+  {
+   "name": "rds-blue-green-deployment",
+   "sweep": "cdkpain",
+   "shard": "l2-coverage-lag",
+   "family": "mixed",
+   "root_cause": "mixed",
+   "mode": "live",
+   "cx": "L",
+   "tier": "",
+   "dedupe": "cfn-no-blue-green-rds",
+   "signal": 75,
+   "opened": "2019-01-16",
+   "last_activity": "2026-06-26",
+   "curator_note": null,
+   "decision": "in",
+   "comment": "terraconstructs hasn't landed L2 constructs for RDS (it is part of stacked open PRs) - arm may be able to succeed due to L1 binding for now, but scenario is valuable to eval when RDS support does land.",
+   "features": [
+    "SLOW RESOURCE \u2014 hard blocker against the stated ~20 min live budget. An RDS instance takes 10-15 min to create before the blue/green deployment even starts, then the green environment provisions and the switchover runs; realistic wall clock is 40-60 min. This needs either a per-scenario live-budget override with its own justification, or a pre-provisioned long-lived blue instance in the sandbox that trials attach to (which then needs its own lifecycle, cost accounting and contamination story between trials).",
+    "Cost: the only candidate in this shard with non-trivial AWS spend."
+   ],
+   "evidence": [
+    "https://github.com/aws-cloudformation/cloudformation-coverage-roadmap/issues/1483",
+    "https://github.com/aws/aws-cdk/issues/23872",
+    "https://github.com/aws/aws-cdk/issues/1559",
+    "https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/db_instance"
+   ]
+  },
+  {
+   "name": "s3-notification-authoritative-singleton",
+   "sweep": "pitfall",
+   "shard": "s3",
+   "family": "graph-dependency",
+   "root_cause": "",
+   "mode": "static",
+   "cx": "M",
+   "tier": "",
+   "dedupe": "s3-notification-authoritative-singleton",
+   "signal": 74,
+   "opened": "2017-06-13",
+   "last_activity": "2026-06-22",
+   "curator_note": null,
+   "decision": "in",
+   "comment": null,
+   "features": [
+    "Rego \"uniqueness of authoritative resource per parent\" helper \u2014 a reusable shape, since the same pattern recurs for aws_s3_bucket_acl, aws_s3_bucket_policy and others",
+    "if run live: two-consumer observation fixture (SQS receive + SNS delivery) and a long eventual-consistency wait in live_check for notification-config propagation"
+   ],
+   "evidence": [
+    "https://github.com/hashicorp/terraform-provider-aws/issues/501",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/23951",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/5299",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/22147",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/38402",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/48509"
+   ]
+  },
+  {
+   "name": "singleton-child-resource-clobber",
+   "sweep": "pitfall",
+   "shard": "meta-crosscutting",
+   "family": "graph-dependency",
+   "root_cause": "",
+   "mode": "static",
+   "cx": "M",
+   "tier": "",
+   "dedupe": "singleton-child-resource-clobber",
+   "signal": 74,
+   "opened": "2017-06-13",
+   "last_activity": "2026-06-22",
+   "curator_note": null,
+   "decision": "in",
+   "comment": "multi step or poinsoned workspace",
+   "features": [
+    "Rego/cfn-guard helper to json-decode an embedded policy-document STRING inside plan-json and assert statement-set membership order-independently (needed by several candidates)",
+    "prompt framing that presents the two requirements as separate 'tickets' so the two-call-sites authoring shape is natural rather than telegraphed"
+   ],
+   "evidence": [
+    "https://github.com/hashicorp/terraform-provider-aws/issues/6334",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/501",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/16791",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/39376"
+   ]
+  },
+  {
+   "name": "s3-notification-clobber",
+   "sweep": "pitfall",
+   "shard": "blogs-web",
+   "family": "nested-attribute",
+   "root_cause": "",
+   "mode": "static",
+   "cx": "M",
+   "tier": "",
+   "dedupe": "s3-notification-single-resource-clobber",
+   "signal": 74,
+   "opened": "2017-06-13",
+   "last_activity": "2026-06-22",
+   "curator_note": null,
+   "decision": "in",
+   "comment": null,
+   "features": [
+    "Rego helper for 'group plan resources by a referenced parent resource address' (per-bucket cardinality asserts) \u2014 current structural_asserts are mostly per-resource"
+   ],
+   "evidence": [
+    "https://github.com/hashicorp/terraform-provider-aws/issues/501",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/1715",
+    "https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/s3_bucket_notification.html",
+    "https://github.com/pbs-common/terraform-aws-bucket-notification-module",
+    "https://serverlessland.com/patterns/terraform-s3-lambda"
+   ]
+  },
+  {
+   "name": "v2-route-settings-zero-vs-unset",
+   "sweep": "pitfall",
+   "shard": "apigateway",
+   "family": "typed-value-trap",
+   "root_cause": "",
+   "mode": "static",
+   "cx": "S",
+   "tier": "",
+   "dedupe": "apigwv2-default-route-settings-zero-vs-unset",
+   "signal": 66,
+   "opened": "2020-08-19",
+   "last_activity": "2026-06-17",
+   "curator_note": null,
+   "decision": "in",
+   "comment": "High value ",
+   "features": [
+    "terraconstructs has no aws-apigatewayv2 constructs \u2014 three-arm comparison degenerates to two L2 arms + one L1 arm"
+   ],
+   "evidence": [
+    "https://github.com/hashicorp/terraform-provider-aws/issues/30373",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/14742",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/27674"
+   ]
+  },
+  {
+   "name": "ecr-repo-destroy-requires-force-delete",
+   "sweep": "pitfall",
+   "shard": "ecs-ecr",
+   "family": "typed-value-trap",
+   "root_cause": "",
+   "mode": "live",
+   "cx": "M",
+   "tier": "",
+   "dedupe": "ecr-repository-force-delete-nonempty",
+   "signal": 61,
+   "opened": "2019-08-29",
+   "last_activity": "2026-06-24",
+   "curator_note": null,
+   "decision": "in",
+   "comment": null,
+   "features": [
+    "pre-provisioned fixture: an image must actually exist in the repo (docker push is not available in the harness \u2014 would need `aws ecr put-image` with a hand-crafted manifest, or a pull-through-cache pull)",
+    "destroy-phase oracle (grading currently focuses on apply/plan, not on whether teardown succeeds)"
+   ],
+   "evidence": [
+    "https://github.com/hashicorp/terraform-provider-aws/issues/33523",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/9911"
+   ]
+  },
+  {
+   "name": "lambda-function-url-public-invoke",
+   "sweep": "pitfall",
+   "shard": "lambda-logs",
+   "family": "graph-dependency",
+   "root_cause": "",
+   "mode": "static",
+   "cx": "S",
+   "tier": "A11",
+   "dedupe": "lambda-function-url-none-auth-missing-invoke-url-permission",
+   "signal": 60,
+   "opened": "2022-04-20",
+   "last_activity": "2026-08-01",
+   "curator_note": null,
+   "decision": "in",
+   "comment": null,
+   "features": [
+    "(optional live variant only) unauthenticated HTTPS GET from the live_check harness",
+    "account-level BlockPublicPolicy / public-function-URL setting may be SCP- or account-blocked in the sandbox \u2014 verify before choosing the live variant (see issue 39396)"
+   ],
+   "evidence": [
+    "https://github.com/hashicorp/terraform-provider-aws/issues/44829",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/38260",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/24325",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/35920"
+   ]
+  },
+  {
+   "name": "ddb-gsi-attribute-definitions",
+   "sweep": "pitfall",
+   "shard": "ddb-messaging-events",
+   "family": "graph-dependency",
+   "root_cause": "",
+   "mode": "static",
+   "cx": "M",
+   "tier": "",
+   "dedupe": "ddb-gsi-attribute-definition-desync",
+   "signal": 57,
+   "opened": "2017-06-13",
+   "last_activity": "2026-04-14",
+   "curator_note": null,
+   "decision": "in",
+   "comment": null,
+   "features": [
+    "rego helper for cross-block set-equality assertions within one resource",
+    "terraconstructs DynamoDB GSI coverage probe"
+   ],
+   "evidence": [
+    "https://github.com/hashicorp/terraform-provider-aws/issues/671",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/46322",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/3828",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/556",
+    "https://github.com/hashicorp/terraform-provider-aws/issues/728"
+   ]
+  }
+ ]
+}

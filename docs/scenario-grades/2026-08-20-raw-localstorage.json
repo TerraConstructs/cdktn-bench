@@ -1,0 +1,110 @@
+{
+    "pitfall:meta-crosscuttin:default-tags-vs-tags-all": {
+        "d": "in",
+        "c": "Requires proof to confirm exclude/include\n\nIssues linked are closed and have a comment mentioning they are resolved in terraform-provider-aws version v5 that released fixes (default_tags support was added, permanent diff was resolved, ..)\n\nexcept https://github.com/hashicorp/terraform-provider-aws/issues/19583 which has several issues claiming v5 still had that issue - exclude if v6 does not show this issue with empirical proof"
+    },
+    "pitfall:s3:s3-bucket-decomposition-missing-subresource": {
+        "d": "in"
+    },
+    "pitfall:blogs-web:s3-bucket-inline-subresources": {
+        "d": "in"
+    },
+    "pitfall:hashicorp-discus:iam-managed-policy-exclusive-vs-attachment": {
+        "d": "in"
+    },
+    "pitfall:meta-crosscuttin:asg-launch-template-tag-propagation": {
+        "d": "in"
+    },
+    "cdkpain:l2-coverage-lag:s3-notification-on-unowned-bucket": {
+        "d": "in",
+        "c": "Terraform is even worse here as it can't provide a custom resource to UPSERT existing bucket notification - adding bucket notification configuration to an existing bucket with bucket notifications is very easy to create flip-flop infra across resource owners"
+    },
+    "cdkpain:cfn-engine-pain:Drift blindness: cdk deploy will not re-assert state it thin": {
+        "c": "Harness must improve trial steps support to have ability for:\n1. run out of band modifications for drift\n2. re-prompt the agent\n\ncurrent aws-bench uses SingleStepTrial from Harbor - may need to vendor some of aws-bench and implement multi_step?",
+        "d": "in"
+    },
+    "cdkpain:l2-defaults-beha:auto-created-security-groups-default-to-allow-all-egress": {
+        "d": "in",
+        "c": "Needs empirical validation that AWSCDK still does this today and if Terraconstructs really does add the default security groups (terraform-provider-aws requires you to explicitly re-define security group rules that AWS adds by default, so its posture is fundamentally different)."
+    },
+    "cdkpain:l2-defaults-beha:auto-created-log-groups-orphan-collide-and-never-expire": {
+        "c": "Terraconstructs might actually handle this better today (it did not port the RETAIN policy ~ in TF this would be prevent_destroy and errors on destroy of those resources)\n\nthis does remain a CDK Pain",
+        "d": "in"
+    },
+    "cdkpain:l2-defaults-beha:lambda-log-group-behavior-forks-on-a-cdk-json-feature-flag": {
+        "d": "out"
+    },
+    "cdkpain:l2-defaults-beha:cross-stack-export-deadly-embrace-on-refactor": {
+        "c": "Harness must improve trial steps support to have ability for:\n1. request the change to stop consuming a referenced attribute/rename a construct\n2. trigger deploy\n3. feedback the issue for the arm to troubleshoot (if there is an issue at all)\n\ncurrent aws-bench uses SingleStepTrial from Harbor - may need to vendor some of aws-bench and implement multi_step?\n\nNOTE: TerraConstructs (CDK Terrain) suffers from this in a way that outputs magically drop ",
+        "d": "in"
+    },
+    "pitfall:blogs-web:sg-inline-vs-standalone-rules": {
+        "c": "Harness must improve trial steps support to have ability for:\n1. First prompt wants inline rules -> Deploy\n2. request a change to add a new rule as a separate rule -> Deploy\n\ncurrent aws-bench uses SingleStepTrial from Harbor - may need to vendor some of aws-bench and implement multi_step?",
+        "d": "in"
+    },
+    "pitfall:route53-acm-clou:acm-dns-validation-record-wiring": {
+        "d": "in",
+        "c": "Very relevant even used as example in CDKTF / CDK Terrain docs (edge.Certificate handles this in TerraConstructs transparently"
+    },
+    "pitfall:iam-sts:policy-json-string-normalization-diff": {
+        "c": "trial prepared workspace must be provisioned with existing code (scenario or task set up?) so the LLM must troubleshoot and resolve the perm diff\n\ndoes this require multi step trials as well?",
+        "d": "in"
+    },
+    "pitfall:iam-sts:caller-identity-arn-as-principal": {
+        "d": "in",
+        "c": "very high value"
+    },
+    "cdkpain:l2-coverage-lag:ssm-securestring-app-config": {
+        "d": "out",
+        "c": "should not allow secrets in iac"
+    },
+    "cdkpain:l2-coverage-lag:acm-cert-cross-region-for-cloudfront": {
+        "d": "out",
+        "c": "aws-bench scp restricts trials to a single region. keep for backlog"
+    },
+    "pitfall:meta-crosscuttin:named-resource-replacement-create-before-destroy": {
+        "c": "Scenarios (or tasks?) must bootstrap with a workspace and existing config that sets up the pitfall (config with explicit physical `name` without create_before_destroy)\n\nTrials must have multi steps for the trap to fire on the 2nd apply\n\nthis is important capability of the benchmark because the goal is to provide what looks at first like a simple config, but as changes are requested results in a complex operation.",
+        "d": "in"
+    },
+    "pitfall:s3:s3-acl-vs-object-ownership-log-delivery": {
+        "d": "in",
+        "c": "Again this task initial prompt should look simple (or the workspace is poisoned with configuration ripe for pitfall and the model is prompted with a change request or an observed known failure mode.. we measure tokens to green per arm)"
+    },
+    "cdkpain:cfn-engine-pain:S3 bucket notifications: no CFN resource, so the CDK ships a": {
+        "d": "in"
+    },
+    "pitfall:meta-crosscuttin:count-index-identity-churn": {
+        "d": "out"
+    },
+    "pitfall:lambda-logs:lambda-alias-tracks-unpublished-latest": {
+        "d": "in",
+        "c": "multi step trials or poisoned workspace?"
+    },
+    "cdkpain:l2-coverage-lag:rds-blue-green-deployment": {
+        "d": "in",
+        "c": "terraconstructs hasn't landed L2 constructs for RDS (it is part of stacked open PRs) - arm may be able to succeed due to L1 binding for now, but scenario is valuable to eval when RDS support does land."
+    },
+    "pitfall:s3:s3-notification-authoritative-singleton": {
+        "d": "in"
+    },
+    "pitfall:meta-crosscuttin:singleton-child-resource-clobber": {
+        "d": "in",
+        "c": "multi step or poinsoned workspace"
+    },
+    "pitfall:blogs-web:s3-notification-clobber": {
+        "d": "in"
+    },
+    "pitfall:apigateway:v2-route-settings-zero-vs-unset": {
+        "d": "in",
+        "c": "High value "
+    },
+    "pitfall:ecs-ecr:ecr-repo-destroy-requires-force-delete": {
+        "d": "in"
+    },
+    "pitfall:lambda-logs:lambda-function-url-public-invoke": {
+        "d": "in"
+    },
+    "pitfall:ddb-messaging-ev:ddb-gsi-attribute-definitions": {
+        "d": "in"
+    }
+}
