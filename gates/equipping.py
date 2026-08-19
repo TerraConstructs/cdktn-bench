@@ -4,7 +4,9 @@
 together everything that can make one trial's result incomparable to
 another's under the *same* arm/model/reward label:
 
-  1. the exact instruction text the agent received (``instruction.md``);
+  1. the exact instruction text the agent received (``instruction.md``, or
+     every ``steps/<name>/instruction.md`` for a multi-step task, which has no
+     root instruction.md at all — see ``_discover_step_instructions``);
   2. every skill/MCP/plugin config file shipped alongside the task
      (the ``--skill``/``--mcp-config``/plugin-manifest equipping that makes
      up the prereg §2.2 empty-vs-tuned harness axis,
@@ -68,6 +70,39 @@ def _discover_equipping_files(task_dir: Path) -> list[Path]:
     return found
 
 
+def _discover_step_instructions(task_dir: Path) -> list[dict[str, str]]:
+    """Every ``steps/<name>/instruction.md`` under task_dir, sorted, hashed.
+
+    A MULTI-STEP task (``[[steps]]`` in task.toml, run by
+    ``cdktn_bench.trial.CdktnMultiStepTrial``) has **no root instruction.md**:
+    Harbor sets ``Task.instruction = ""`` for a steps task and delivers
+    ``steps/<name>/instruction.md`` per step instead
+    (``harbor/models/task/task.py``). Without this, ``compute_equipping_hash``
+    raised FileNotFoundError on every multi-step task and ``to_result_row``
+    then refused to emit a row at all — a multi-step trial could not be
+    published (2026-08-20, task #14).
+
+    Sorted by relative posix path so filesystem walk order never leaks into the
+    hash, exactly like ``equipping_files``. Every step instruction is folded
+    in, not just the declared ones, because an undeclared
+    ``steps/<n>/instruction.md`` sitting in a task dir is itself a difference
+    between two otherwise-identical equippings.
+    """
+    steps_dir = task_dir / "steps"
+    if not steps_dir.is_dir():
+        return []
+    found = [
+        p for p in steps_dir.glob("*/instruction.md") if p.is_file()
+    ]
+    return [
+        {
+            "path": p.relative_to(task_dir).as_posix(),
+            "sha256": _sha256_bytes(p.read_bytes()),
+        }
+        for p in sorted(found, key=lambda p: p.relative_to(task_dir).as_posix())
+    ]
+
+
 def _resolve_image_digest(image_ref: str) -> tuple[str, bool]:
     """Return ``(content_address, resolved)`` for a Docker image reference.
 
@@ -117,7 +152,8 @@ def compute_equipping_hash(
     """Canonical sha256 hex digest over everything that equips one trial.
 
     Args:
-        task_dir: task directory containing ``instruction.md`` and (if the
+        task_dir: task directory containing ``instruction.md`` (or, for a
+            multi-step task, ``steps/<name>/instruction.md``) and (if the
             task uses tuned equipping) any ``mcp.json``/``plugins.json``/
             ``skills/`` config alongside it.
         image_ref: the Docker image reference the agent container ran
@@ -142,12 +178,19 @@ def compute_equipping_hash(
     task_dir = Path(task_dir)
 
     instruction_path = task_dir / "instruction.md"
-    if not instruction_path.is_file():
+    step_instructions = _discover_step_instructions(task_dir)
+    if instruction_path.is_file():
+        instruction_sha: str | None = _sha256_bytes(instruction_path.read_bytes())
+    elif step_instructions:
+        # Multi-step task: the prompts live per step. See
+        # _discover_step_instructions.
+        instruction_sha = None
+    else:
         raise FileNotFoundError(
-            f"compute_equipping_hash: {instruction_path} does not exist — "
-            f"every task must have an instruction.md to hash."
+            f"compute_equipping_hash: {instruction_path} does not exist and no "
+            f"{task_dir / 'steps'}/*/instruction.md was found — every task must "
+            f"have an instruction to hash."
         )
-    instruction_sha = _sha256_bytes(instruction_path.read_bytes())
 
     equipping_files = [
         {"path": rel.as_posix(), "sha256": _sha256_bytes((task_dir / rel).read_bytes())}
@@ -167,13 +210,21 @@ def compute_equipping_hash(
             f"(model/harness flags), got: {exc}"
         ) from exc
 
-    manifest = {
+    manifest: dict[str, Any] = {
         "hash_scheme_version": HASH_SCHEME_VERSION,
-        "instruction_md_sha256": instruction_sha,
         "equipping_files": equipping_files,
         "image_ref": image_ref,
         "image_digest": image_digest,
         "extra_cfg": extra_cfg_canonical,
     }
+    # Exactly one of these two keys is ever present. A single-step task keeps
+    # the original key and therefore its original hash BIT-FOR-BIT — no
+    # HASH_SCHEME_VERSION bump, no re-hashing of published results. The
+    # multi-step key is new for a task shape that has never been hashed before,
+    # so it cannot move an existing hash.
+    if instruction_sha is not None:
+        manifest["instruction_md_sha256"] = instruction_sha
+    else:
+        manifest["step_instructions"] = step_instructions
     canonical = json.dumps(manifest, sort_keys=True, separators=(",", ":"))
     return _sha256_bytes(canonical.encode("utf-8"))

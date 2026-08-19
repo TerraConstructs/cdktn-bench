@@ -46,6 +46,7 @@ import argparse
 import json
 import re
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any
 
@@ -53,7 +54,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from gates.audit import KNOWN_ARMS, audit_trial
+from gates.audit import KNOWN_ARMS, audit_trial, resolve_step_names
 from gates.equipping import compute_equipping_hash
 
 sys.path.insert(0, str(_REPO_ROOT / "generator"))
@@ -112,6 +113,41 @@ _LOG_CANDIDATES = [
 ]
 
 
+# --- multi-step trial-dir layout -------------------------------------------
+#
+# A multi-step trial (cdktn_bench.trial.CdktnMultiStepTrial, running Harbor's
+# harbor/trial/multi_step.py engine) RELOCATES the per-phase output dirs after
+# every step: `agent/`, `verifier/` and `artifacts/` are moved into
+# `steps/<name>/` (`MultiStepTrial._archive_step_outputs`). So at the end of a
+# multi-step trial the trial dir has NO top-level `agent/` or `verifier/` at
+# all -- every reader below that hardcoded those paths would silently report
+# "absent" for a trial that produced full evidence.
+#
+# The three harness-owned logs `classify_infra_failure` scans (`trial.log`,
+# `exception.txt`, `result.json`) are NOT relocated: they are written by the
+# trial itself at trial level, once. That reader therefore needs no change --
+# and must not gain one, since `_LOG_CANDIDATES` was deliberately narrowed to
+# harness-owned artifacts (see its own comment: the self-void vector).
+#
+# Every helper below follows the same shape, which is what keeps a single-step
+# trial dir byte-identical: look at the top-level path FIRST and return exactly
+# what the pre-multi-step code returned if it is there; only fall back to
+# `steps/<name>/...` when it is not.
+
+
+def _step_verifier_dirs(trial_dir: str | Path) -> list[Path]:
+    """Per-step ``steps/<name>/verifier/`` dirs in execution order.
+
+    Empty list for a single-step trial dir. Both verifier-evidence readers
+    below consume this REVERSED (last step first) -- see their docstrings for
+    why the scoring step, not the first one, owns the published evidence.
+    """
+    trial_dir = Path(trial_dir)
+    return [
+        trial_dir / "steps" / name / "verifier" for name in resolve_step_names(trial_dir)
+    ]
+
+
 def classify_infra_failure(trial_dir: str | Path) -> dict[str, Any] | None:
     """Scan a trial dir's logs for an infra-failure signal.
 
@@ -161,15 +197,26 @@ def read_tier1_not_verifiable(trial_dir: str | Path) -> tuple[bool, str | None]:
     iff the marker file exists); ``detail`` is the marker's own text
     (already human-readable -- written by `build_static_tiers_sh`) when
     the file exists and is non-empty, else ``None``.
+
+    Multi-step (2026-08-20, task #14): the marker is relocated to
+    `<trial_dir>/steps/<name>/verifier/tier1-not-verifiable`. Steps are
+    searched in REVERSE execution order and the first hit wins, because the
+    published reward comes from the LAST step under the cdktn default
+    `multi_step_reward_strategy = "final"` (DECISIONS.md Amendment 26) -- the
+    flag must describe the verification that actually produced the score, not
+    an earlier one that has since been superseded. A single-step trial dir
+    never reaches that branch.
     """
-    marker = Path(trial_dir) / "verifier" / "tier1-not-verifiable"
-    if not marker.is_file():
-        return False, None
-    try:
-        text = marker.read_text(errors="replace").strip()
-    except OSError:
-        return True, None
-    return True, (text or None)
+    for verifier_dir in [Path(trial_dir) / "verifier", *reversed(_step_verifier_dirs(trial_dir))]:
+        marker = verifier_dir / "tier1-not-verifiable"
+        if not marker.is_file():
+            continue
+        try:
+            text = marker.read_text(errors="replace").strip()
+        except OSError:
+            return True, None
+        return True, (text or None)
+    return False, None
 
 
 # `  PASS [name]` / `  FAIL [name]: ...` -- generator/gen.py's
@@ -229,9 +276,24 @@ def read_tier_evidence(trial_dir: str | Path) -> dict[str, Any] | None:
     so a caller can distinguish "no evidence file at all" from "the file
     exists but a toolchain step failed before tier-0/1 ever ran" (the
     latter yields ``{"tier0": {}, "tier1_status": None}``, not ``None``).
+
+    Multi-step (2026-08-20, task #14): `verifier/` is relocated to
+    `steps/<name>/verifier/`. Same reverse-order, first-hit-wins rule as
+    `read_tier1_not_verifiable` and for the same reason -- the tier
+    attribution must describe the verification that produced the published
+    reward (the last step, under `multi_step_reward_strategy = "final"`), not
+    an earlier step's. Per-step tier evidence for every step is a separate
+    (not yet needed) metric; nothing is merged across steps here, because
+    merging would silently claim an earlier step's tier-0 PASS as evidence
+    about the step that was actually scored.
     """
-    path = Path(trial_dir) / "verifier" / "test-stdout.txt"
-    if not path.is_file():
+    path = None
+    for verifier_dir in [Path(trial_dir) / "verifier", *reversed(_step_verifier_dirs(trial_dir))]:
+        candidate = verifier_dir / "test-stdout.txt"
+        if candidate.is_file():
+            path = candidate
+            break
+    if path is None:
         return None
     try:
         text = path.read_text(errors="replace")
@@ -284,8 +346,33 @@ def extract_n_llm_calls(trial_dir: str | Path) -> int | None:
     testing and carries no per-step `metrics`/`llm_call_count` at all; that
     IS a real, known answer ("this trajectory really made zero countable
     LLM calls"), not a missing one.
+
+    Multi-step (2026-08-20, task #14): `agent/trajectory.json` is relocated to
+    `steps/<name>/agent/trajectory.json`, one per step, each covering that
+    step ALONE (a fresh agent session per step -- DECISIONS.md Amendment 26).
+    The trial's `n_llm_calls` is the CUMULATIVE sum across steps, matching the
+    cumulative definition Amendment 26 pre-registers for tokens-to-green: a
+    two-step trial's iterations-to-green is what it cost end to end, not what
+    the last step cost. Per-step counts are additionally reported under the
+    record's `steps` block by `build_result_record`.
+
+    The `None`-not-`0` contract extends across steps: if ANY step's trajectory
+    is missing, unreadable, malformed, or has no `steps` list, the whole sum
+    is unknown and `None` is returned. A partial sum silently understates
+    iterations-to-green, which is exactly the failure the `None` contract
+    exists to prevent.
     """
-    path = Path(trial_dir) / "agent" / "trajectory.json"
+    per_step = extract_n_llm_calls_per_step(trial_dir)
+    if not per_step:
+        return None
+    values = list(per_step.values())
+    if any(v is None for v in values):
+        return None
+    return sum(values)  # type: ignore[arg-type]
+
+
+def _n_llm_calls_from_trajectory(path: Path) -> int | None:
+    """`extract_n_llm_calls`'s per-file core. See that function's docstring."""
     if not path.is_file():
         return None
     try:
@@ -306,6 +393,35 @@ def extract_n_llm_calls(trial_dir: str | Path) -> int | None:
         elif step.get("metrics") is not None:
             n_llm_calls += 1
     return n_llm_calls
+
+
+def extract_n_llm_calls_per_step(trial_dir: str | Path) -> dict[str, int | None]:
+    """LLM-call counts keyed by trial phase, in execution order.
+
+    Single-step trial dir: ``{"trial": <n>}`` (or ``{}`` when there is no
+    `agent/trajectory.json` at all). Multi-step: one entry per step dir, keyed
+    by step name, value ``None`` for a step whose trajectory is
+    missing/unreadable/malformed.
+
+    Deliberately keyed rather than a bare list: a caller attributing
+    iterations-to-green to a step needs the step's NAME, and the aborted-trial
+    case (a `min_reward` gate stopping the run after step 1) shows up here as
+    a shorter dict rather than as a silently smaller number.
+    """
+    trial_dir = Path(trial_dir)
+    root = trial_dir / "agent" / "trajectory.json"
+    if root.is_file():
+        return {"trial": _n_llm_calls_from_trajectory(root)}
+
+    step_names = resolve_step_names(trial_dir)
+    if not step_names:
+        return {}
+    return {
+        name: _n_llm_calls_from_trajectory(
+            trial_dir / "steps" / name / "agent" / "trajectory.json"
+        )
+        for name in step_names
+    }
 
 
 def resolve_split_group(spec_id: str | None) -> str:
@@ -447,6 +563,150 @@ def _aggregate_step_tokens(step_results: Any) -> dict[str, Any]:
         if ctx.get("cost_usd") is not None:
             out["cost_usd"] = (out["cost_usd"] or 0.0) + ctx["cost_usd"]
     return out
+
+
+def _step_token_breakdown(step_results: Any) -> list[dict[str, Any]]:
+    """Per-step token/cost rows, in ``result.json`` order.
+
+    The trial-level totals `_aggregate_step_tokens` produces are the SUM of
+    these; this keeps the addends visible so a cumulative tokens-to-green
+    (DECISIONS.md Amendment 26: "cumulative sum of per-step agent output
+    tokens up to and including the step at which the trial's final oracle
+    first passes") can be computed downstream without re-reading result.json.
+    """
+    rows: list[dict[str, Any]] = []
+    if not isinstance(step_results, list):
+        return rows
+    for step_result in step_results:
+        if not isinstance(step_result, dict):
+            continue
+        ctx = step_result.get("agent_result")
+        ctx = ctx if isinstance(ctx, dict) else {}
+        verifier_result = step_result.get("verifier_result") or {}
+        rewards = verifier_result.get("rewards") if isinstance(verifier_result, dict) else None
+        rows.append(
+            {
+                "step_name": step_result.get("step_name"),
+                "reward": _coerce_reward(rewards) if rewards is not None else None,
+                "cost_usd": ctx.get("cost_usd"),
+                "n_input_tokens": ctx.get("n_input_tokens"),
+                "n_output_tokens": ctx.get("n_output_tokens"),
+                "n_cache_tokens": ctx.get("n_cache_tokens"),
+                "exception_type": (step_result.get("exception_info") or {}).get("exception_type")
+                if isinstance(step_result.get("exception_info"), dict)
+                else None,
+            }
+        )
+    return rows
+
+
+def _count_failed_steps(step_results: Any) -> int:
+    """Steps that started and died, by Harbor's own abort predicate.
+
+    Mirrors ``MultiStepTrial._should_stop_after_step``
+    (``harbor/trial/multi_step.py``) verbatim: ``exception_info and not
+    verifier_result``. Kept identical on purpose — this number's job is to say
+    "Harbor would have aborted here", so any drift from that predicate would
+    make it lie. A step with BOTH an exception and a verifier_result does not
+    count: Harbor keeps going, and the step carries a real score.
+    """
+    if not isinstance(step_results, list):
+        return 0
+    n = 0
+    for step_result in step_results:
+        if not isinstance(step_result, dict):
+            continue
+        if step_result.get("exception_info") and not step_result.get("verifier_result"):
+            n += 1
+    return n
+
+
+def _declared_step_names(task_dir: str | Path) -> list[str] | None:
+    """Step names declared by ``<task_dir>/task.toml``'s ``[[steps]]``.
+
+    ``None`` (not ``[]``) when task.toml is absent/unreadable/malformed, so
+    "we could not tell how many steps were declared" stays distinguishable
+    from "the task declares no steps".
+    """
+    path = Path(task_dir) / "task.toml"
+    if not path.is_file():
+        return None
+    try:
+        data = tomllib.loads(path.read_text(errors="replace"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    steps = data.get("steps")
+    if not isinstance(steps, list):
+        return []
+    return [s.get("name") for s in steps if isinstance(s, dict)]
+
+
+def read_step_summary(trial_dir: str | Path, task_dir: str | Path) -> dict[str, Any] | None:
+    """Per-step diagnostics for a multi-step trial, or ``None`` if single-step.
+
+    Closes the gap memo §6.7 names: Harbor's ``min_reward`` green gate aborts
+    the remaining steps by RETURNING, recording the failure on the
+    ``StepResult`` and never on ``TrialResult.exception_info``. So a trial that
+    ran half its steps and stopped looks, to every top-level reader, exactly
+    like a clean trial -- including this gate's own validity classification.
+    ``n_started`` vs ``n_declared``, ``n_failed``, and ``aborted_early`` are
+    the signals that distinguish them.
+
+    Counting is subtle enough to spell out, because the obvious reading is
+    wrong. Harbor appends the ``StepResult`` BEFORE running the step
+    (``harbor/trial/multi_step.py``: ``step_result = StepResult(...)`` /
+    ``step_results.append(step_result)``, then ``_run_step``), so
+    ``len(step_results)`` counts steps *started*, not steps *finished* — a step
+    that died in ``_prepare_step`` (a harness ``pre_invoke`` deploy that failed)
+    is still in the list. Hence ``n_started``, not the ``n_completed`` this
+    once returned: when the failing step is the LAST declared one — exactly
+    where the design puts the harness deploy of the prior step's work —
+    ``n_started == n_declared`` and a purely arithmetic ``aborted_early`` would
+    read ``False`` for a trial whose final step never ran an agent.
+
+    So ``aborted_early`` also fires on ``n_failed``, using Harbor's OWN abort
+    predicate verbatim (``_should_stop_after_step``: ``exception_info and not
+    verifier_result``). A step carrying ``exception_info`` *with* a
+    ``verifier_result`` is deliberately NOT counted: Harbor does not stop for
+    it, the step was scored, and the trial genuinely continued.
+
+    Returns ``None`` for a single-step trial dir, which is what keeps every
+    existing single-step record byte-identical.
+    """
+    trial_dir = Path(trial_dir)
+    names = resolve_step_names(trial_dir)
+
+    step_results: Any = None
+    result_path = trial_dir / "result.json"
+    if result_path.is_file():
+        try:
+            data = json.loads(result_path.read_text(errors="replace"))
+        except (OSError, json.JSONDecodeError):
+            data = None
+        if isinstance(data, dict):
+            step_results = data.get("step_results")
+
+    if not names and not isinstance(step_results, list):
+        return None
+
+    declared = _declared_step_names(task_dir)
+    n_started = len(step_results) if isinstance(step_results, list) else len(names)
+    n_declared = len(declared) if declared is not None else None
+    n_failed = _count_failed_steps(step_results)
+
+    return {
+        "names": names,
+        "n_started": n_started,
+        "n_declared": n_declared,
+        "n_failed": n_failed,
+        # Two independent ways a trial can fail to run its declared program:
+        # steps MISSING from the tail (we know both numbers and they
+        # disagree), or a step that started and died. The second is the only
+        # signal when the LAST declared step is the one that failed.
+        "aborted_early": (n_declared is not None and n_started < n_declared) or n_failed > 0,
+        "per_step": _step_token_breakdown(step_results),
+        "n_llm_calls_per_step": extract_n_llm_calls_per_step(trial_dir),
+    }
 
 
 def _extract_score_fields(trial_dir: Path) -> dict[str, Any]:
@@ -595,6 +855,18 @@ def build_result_record(
     }
     if equipping_hash_error is not None:
         record["equipping_hash_error"] = equipping_hash_error
+
+    # Multi-step only (task #14). Attached regardless of validity_class -- an
+    # aborted or infra-invalid multi-step trial is exactly when "how far did it
+    # get" matters most -- but NEVER attached for a single-step trial, so every
+    # existing single-step record keeps its byte-identical shape. The published
+    # schema row (to_result_row / metrics/result_schema.json, which sets
+    # additionalProperties: false) is deliberately NOT extended here: the row's
+    # shape is pre-registered and a multi-step-specific field would be a
+    # schema-version bump, not a gate change.
+    step_summary = read_step_summary(trial_dir, task_dir)
+    if step_summary is not None:
+        record["steps"] = step_summary
 
     if validity_class != VALID:
         # The refusal: no score fields at all for an invalid trial.

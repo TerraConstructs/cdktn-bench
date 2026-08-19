@@ -1,0 +1,21 @@
+# Toy STEPLESS task: the control for the dispatch test. It must fall through to
+# aws-bench's own AwsBenchSingleStepTrial, untouched — cdktn-bench adds
+# multi-step, it does not re-route the existing single-step path.
+
+[task]
+name = "cdktn/toy-singlestep"
+
+[scenario]
+scenario_id = "anchor"
+
+[concurrency]
+mode = "mutating"
+
+[environment]
+docker_image = "cdktn-bench/toy:dev"
+
+[agent]
+timeout_sec = 60.0
+
+[verifier]
+timeout_sec = 60.0

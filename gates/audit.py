@@ -676,25 +676,111 @@ def audit_trajectory(trajectory: dict[str, Any], arm: str) -> dict[str, Any]:
     }
 
 
-def resolve_trajectory_path(trial_dir_or_file: str | Path) -> Path:
-    """Accept a trial dir, an ``agent/`` dir, or the trajectory.json itself."""
+def resolve_step_names(trial_dir: str | Path) -> list[str]:
+    """Ordered per-step output-dir names under ``<trial_dir>/steps/``.
+
+    A multi-step trial relocates ``agent/``, ``verifier/`` and ``artifacts/``
+    into ``steps/<name>/`` after each step
+    (``harbor/trial/multi_step.py::_archive_step_outputs``), so every
+    trial-dir reader in this repo needs to know which step dirs exist and in
+    what order. Returns ``[]`` for a single-step trial dir (no ``steps/``),
+    which is what keeps every single-step code path below byte-identical.
+
+    Order comes from ``result.json``'s own ``step_results`` when it is
+    readable — that is the authoritative execution order — with any remaining
+    directories appended in sorted order. Sorted-name order is a correct
+    fallback only because the task-dir convention numbers steps
+    (``01-initial``, ``02-change-request``, per
+    ``docs/design/multistep-trial-investigation.md`` §5); ``result.json`` is
+    preferred precisely so a task that ignores that convention still reads in
+    true execution order.
+    """
+    steps_dir = Path(trial_dir) / "steps"
+    if not steps_dir.is_dir():
+        return []
+    present = {p.name for p in steps_dir.iterdir() if p.is_dir()}
+    ordered: list[str] = []
+
+    result_path = Path(trial_dir) / "result.json"
+    if result_path.is_file():
+        try:
+            data = json.loads(result_path.read_text(errors="replace"))
+        except (OSError, json.JSONDecodeError):
+            data = None
+        if isinstance(data, dict):
+            for step_result in data.get("step_results") or []:
+                if not isinstance(step_result, dict):
+                    continue
+                name = step_result.get("step_name")
+                if name in present and name not in ordered:
+                    ordered.append(name)
+
+    ordered.extend(sorted(present - set(ordered)))
+    return ordered
+
+
+def resolve_trajectory_paths(trial_dir_or_file: str | Path) -> list[Path]:
+    """Every trajectory belonging to one trial, in execution order.
+
+    Single-step: exactly one (``agent/trajectory.json``). Multi-step: one per
+    step that produced one (``steps/<name>/agent/trajectory.json``) — Harbor
+    relocates the agent log dir into the step dir after each step, and starts
+    the next step with an empty ``/logs/agent``, so a step's trajectory covers
+    that step ALONE (a fresh ``claude --print`` session per step; DECISIONS.md
+    Amendment 26).
+
+    Raises:
+        FileNotFoundError: if no trajectory exists anywhere under the dir.
+    """
     p = Path(trial_dir_or_file)
     if p.is_file():
-        return p
+        return [p]
+
     candidates = [p / "agent" / "trajectory.json", p / "trajectory.json"]
     for c in candidates:
         if c.is_file():
-            return c
-    checked = ", ".join(str(c) for c in candidates)
+            return [c]
+
+    step_paths = [
+        p / "steps" / name / "agent" / "trajectory.json"
+        for name in resolve_step_names(p)
+    ]
+    step_paths = [c for c in step_paths if c.is_file()]
+    if step_paths:
+        return step_paths
+
+    checked = ", ".join(str(c) for c in [*candidates, p / "steps" / "*" / "agent" / "trajectory.json"])
     raise FileNotFoundError(f"no trajectory.json found under {p} (checked: {checked})")
 
 
+def resolve_trajectory_path(trial_dir_or_file: str | Path) -> Path:
+    """The trial's first trajectory. See ``resolve_trajectory_paths``."""
+    return resolve_trajectory_paths(trial_dir_or_file)[0]
+
+
 def audit_trial(trial_dir_or_file: str | Path, arm: str) -> dict[str, Any]:
-    """Load + audit a trial's trajectory. See ``audit_trajectory`` for the shape."""
-    traj_path = resolve_trajectory_path(trial_dir_or_file)
-    data = json.loads(traj_path.read_text())
-    result = audit_trajectory(data, arm)
-    result["trajectory_path"] = str(traj_path)
+    """Load + audit a trial's trajectory. See ``audit_trajectory`` for the shape.
+
+    A multi-step trial is audited over the CONCATENATION of its per-step
+    trajectories, because the question this gate answers — "did this trial ever
+    really invoke the arm's toolchain?" — is a trial-level question. An agent
+    that ran ``terraform plan`` in step 1 and only edited files in step 2 has
+    not bypassed the toolchain. Auditing each step separately would invent a
+    stricter rule than the one this benchmark pre-registered.
+
+    ``trajectory_path`` keeps naming the first trajectory (unchanged for
+    single-step); ``trajectory_paths`` is added ONLY when there is more than
+    one, so a single-step record is byte-identical to before.
+    """
+    traj_paths = resolve_trajectory_paths(trial_dir_or_file)
+    steps: list[Any] = []
+    for path in traj_paths:
+        data = json.loads(path.read_text())
+        steps.extend(data.get("steps") or [])
+    result = audit_trajectory({"steps": steps}, arm)
+    result["trajectory_path"] = str(traj_paths[0])
+    if len(traj_paths) > 1:
+        result["trajectory_paths"] = [str(p) for p in traj_paths]
     return result
 
 

@@ -59,9 +59,16 @@ check-result-schema:
 # toolchain needed, so it fits the policy-only job's graceful-degradation
 # floor same as the other four). All five suites pass together as of this
 # fix.
+# cdktn_bench/ added 2026-08-20 (task #14): the multi-step trial extension
+# (cdktn_bench/tests/ -- MRO composition, [[steps]] dispatch, the per-step
+# credentialed pre_invoke hook, the "final" reward default, and the
+# multi-step task-dir layout contract). Same reasoning as the four suites
+# above: pure Python, no docker/AWS/toolchain, so it belongs in the offline
+# floor. Note it is collected as the INSTALLED package (pyproject flipped to
+# package = true, uv installs it editable), not via a sys.path shim.
 test-gates:
-	@echo "==> pytest: gates/ metrics/ oracles/ generator/ test/"
-	uv run pytest gates metrics oracles generator test -q
+	@echo "==> pytest: gates/ metrics/ oracles/ generator/ test/ cdktn_bench/"
+	uv run pytest gates metrics oracles generator test cdktn_bench -q
 
 # --- Gate 1 (preflight) wiring ----------------------------------------------
 #

@@ -1,0 +1,51 @@
+# Toy multi-step task, hand-authored for cdktn_bench's tests.
+#
+# NOT a generated task: tasks/anchor/** is generator-owned (CLAUDE.md "Never:
+# hand-edit generated tasks/**"), and multi-step emission from the generator is
+# a separate slice. This fixture exists to pin the task-DIRECTORY CONTRACT the
+# runtime depends on (docs/design/multistep-trial-investigation.md §5) so a
+# later generator change has something to be checked against:
+#
+#   - every step's oracle lives in steps/<name>/tests/, never in the shared
+#     tests/ (the shared one is uploaded during EVERY step's verification, so
+#     step-2 material there would be visible to step 1's agent);
+#   - step instructions live host-side only and are never uploaded;
+#   - the credentialed harness action is steps/<name>/pre_invoke/pre_invoke.sh.
+#
+# multi_step_reward_strategy is deliberately LEFT UNSET here, to exercise
+# CdktnMultiStepTrial's "final" default (DECISIONS.md Amendment 26). A real
+# generated task should state it explicitly.
+
+[task]
+name = "cdktn/toy-multistep"
+
+[scenario]
+scenario_id = "anchor"
+pre_invoke_role_name = "QALocalInvocationApplicationAdmin"
+
+[concurrency]
+mode = "mutating"
+
+[environment]
+docker_image = "cdktn-bench/toy:dev"
+
+[agent]
+timeout_sec = 60.0
+
+[verifier]
+timeout_sec = 60.0
+
+[[steps]]
+name = "01-initial"
+# Hard green gate: step 2's prompt never fires unless step 1 verified green
+# (harbor/trial/multi_step.py::_should_stop_after_step).
+min_reward = 1.0
+
+[steps.agent]
+timeout_sec = 30.0
+
+[[steps]]
+name = "02-change-request"
+
+[steps.agent]
+timeout_sec = 30.0

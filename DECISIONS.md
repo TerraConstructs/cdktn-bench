@@ -4993,3 +4993,207 @@ the equipping hash — expected, and exactly what that hash exists to record.
 measured is unchanged: the same type errors are caught, at the same tier, by the
 same diagnostics; output equivalence (`cdk.tf.json` / CloudFormation templates)
 was verified byte-identical across the old and new execution paths.
+
+---
+
+## Amendment 26 (2026-08-20) — multi-step trial semantics — **DRAFT, pre-registered, not yet exercised live**
+
+**Status: DRAFT / pending-first-live-run.** Every semantic below is *pre-registered*
+— written down before any multi-step trial has been run, so it cannot be chosen
+after seeing which choice flatters an arm. Nothing here has been validated against
+a real trajectory yet. The first live multi-step run may falsify any of it; when it
+does, the correction lands as a *new* amendment, never as an edit to this one. No
+multi-step result may be published under this amendment while it is still marked
+draft.
+
+**What was built (task #14).** `cdktn_bench/`, an importable package + a
+`cdktn-bench` console script that *extends* `aws_bench` by inheritance. Nothing in
+`aws-bench` or `harbor` is modified or vendored. Harbor 0.9.0 already ships a
+complete `MultiStepTrial`; upstream aws-bench simply refuses to build one
+(`AwsBenchTrial.create`: *"multi-step AWS tasks are not yet supported (per-step
+pre/post-invoke credentialing is undefined)"*). `CdktnMultiStepTrial(MultiStepTrial,
+AwsBenchSingleStepTrial)` composes Harbor's step engine with aws-bench's AWS
+lifecycle by MRO, and answers the credentialing objection with aws-bench's own
+`ScriptRunner` re-based onto the step. Architecture and evidence:
+`docs/design/multistep-trial-investigation.md` (Seam A).
+
+### 1. Fresh agent session per step. `--resume` is explicitly REJECTED.
+
+Each step invokes a brand-new `claude --print` process, and Harbor relocates the
+session store (`/logs/agent` → `steps/<name>/agent/`) between steps, so step 2
+starts with an empty Claude config dir. We keep that.
+
+The reason is measurement, not convenience: a resumed session writes the **full
+prior history** into the resumed session's JSONL, and Harbor's trajectory parser
+de-duplicates only *within one parse*. Step 2 would therefore re-sum step 1's
+assistant usage, and **per-step output-token attribution — the denominator of
+tokens-to-green (Amendment 23) — silently breaks.** A `--resume` arm remains
+possible later (it would measure the value of retained context) but only behind
+per-step JSONL de-duplication by message id.
+
+Consequence to design around: **each step's instruction must be self-contained.**
+"Now also add X to what you just built" lands on an agent with no recall; state
+carries through the *workspace*, which is the artefact being graded. This also
+strengthens the no-foreshadowing property — there is no conversational channel
+through which step-2 intent could leak.
+
+### 2. The harness deploys prior-step work, by default.
+
+`steps/<name>/pre_invoke/pre_invoke.sh` runs before that step's agent, inside the
+agent container, with `~/.aws/credentials` staged for the task's
+`[scenario].pre_invoke_role_name`. That is where `terraform apply` / `cdk deploy`
+of the previous step's IaC lives, and where out-of-band ("someone changed it in
+the console") drift injection lives. Its `placeholder.json` feeds `{{...}}` tokens
+into *that step's* prompt, so a drift-injection script can hand the next
+instruction the ARN it just mutated.
+
+**A spec may opt into agent-deploys instead** — a step-1 instruction that says
+"…and deploy it" — where the deploy loop *is* the measurement (the apigw-redeploy
+shape, Amendment 23). The choice changes what the trap measures and whether
+agent-side deploy failures score against the agent, so it is a per-spec, declared
+choice, never a default that drifts.
+
+Per-**step** IAM roles are deliberately deferred: one `pre_invoke_role_name` per
+task for now. A dedicated over-privileged "console operator" identity for drift
+injection is a later amendment if drift realism demands it.
+
+### 3. `min_reward` is a HARD gate; the reward strategy is `"final"`.
+
+`[[steps]]` may declare `min_reward`; a step that misses it aborts the remaining
+steps. Step 2's prompt never fires unless step 1 verified green. That stays a hard
+gate — a change-request task whose starting state was never actually built is not
+a measurement of anything.
+
+The trial-level reward is **`final`** (the last step's `verifier_result`
+verbatim), *not* Harbor's `mean` default. `CdktnMultiStepTrial` applies `final`
+whenever `task.toml` leaves `multi_step_reward_strategy` unset; an explicit
+setting still wins. With `mean`, a trial that fails step 1 and is aborted scores
+the mean of the one step it ran — **which can beat a trial that ran both steps and
+failed the second.** That is a perverse incentive in a green/not-green benchmark
+and it is closed here rather than discovered in the data.
+
+The abort is quiet by construction (Harbor records it on the `StepResult`, never
+on `TrialResult.exception_info`), so `gates/emit_result.py` now emits
+`steps.n_started` / `steps.n_declared` / `steps.n_failed` / `steps.aborted_early`
+on the record. A half-run trial must never read as a clean one.
+
+**Why `n_started` and not `n_completed`, and why `aborted_early` is not just
+arithmetic.** Harbor appends the `StepResult` *before* it runs the step
+(`harbor/trial/multi_step.py::_run`), so the list counts steps **started**. A
+step that died in `_prepare_step` still occupies its slot. Comparing counts
+alone therefore misses exactly one case — **the failing step is the LAST
+declared one**, where `n_started == n_declared` — and that is precisely where
+this design puts the harness action (step 2's `pre_invoke` deploys step 1's work
+and injects drift). So `aborted_early` is the OR of two independent conditions:
+steps missing from the tail (`n_started < n_declared`), or `n_failed > 0`, where
+`n_failed` uses Harbor's own abort predicate verbatim (`_should_stop_after_step`:
+`exception_info and not verifier_result`). A step that raised but was still
+scored is not counted — Harbor does not stop for it. Pinned by
+`gates/tests/test_emit_result_multistep.py::test_a_failed_LAST_step_is_still_aborted_early`.
+
+**Open question, deliberately left open for the first live run.** A *harness*
+failure inside `steps/<name>/pre_invoke` (a `terraform apply` the harness itself
+could not complete) currently aborts the step and is **not** reclassified as
+`invalid-infra`: the record stays `valid` and the published row carries reward
+`0.0`. Precisely, as verified against the installed rev:
+
+- `steps.per_step[].exception_type` is set (e.g. `ScriptExecutionError`). This is
+  the **reliable, always-present** signal that a step died — prefer it over any
+  count when identifying harness failures.
+- `steps.aborted_early` is `true` — but only because `n_failed` feeds it (see
+  above). Counting alone would report `false` for the last-step case.
+- The **record-level** `reward` is `null`, not `0.0`: strategy `final` selects
+  the last step's `verifier_result`, and a step that died never verified. It is
+  `to_result_row` that coerces `null → 0.0` for the published row. So the
+  scored-as-zero behaviour is a property of the ROW, and a reader of the record
+  must not expect a `0.0` there.
+
+Arguably this should be reclassified: a harness deploy that failed is
+infrastructure, not an agent failure, and scoring it 0.0 penalises the arm for
+the harness. It is left as a scored 0 for now because inventing the
+reclassification rule before seeing a real failure would be guessing at which
+exception types are genuinely harness-side. The evidence to decide is emitted on
+every record; the decision lands as its own amendment.
+
+### 4. Tokens-to-green across steps = cumulative sum, per-step also emitted.
+
+**Definition.** A multi-step trial's tokens-to-green is the **cumulative sum of
+per-step agent OUTPUT tokens** (Amendment 23's denominator, unchanged) **up to and
+including the step at which the trial's final oracle first passes.** Steps after
+that point, if any, do not count; a trial that never reaches that point is
+right-censored exactly as a single-step one is.
+
+Per-step output tokens are emitted alongside (`steps.per_step[].n_output_tokens`),
+so the addends stay visible and a per-step analysis needs no re-derivation. The
+same cumulative rule applies to iterations-to-green (`n_llm_calls`, summed across
+steps, with `steps.n_llm_calls_per_step` emitted alongside).
+
+**Comparability warning, stated up front:** an N-step task and a 1-step task are
+not equipping-comparable on tokens-to-green by construction — more prompts means
+more authoring. Cross-shape comparisons are refused, not adjusted.
+
+### 5. `MAX_TOKENS` censoring stays TRIAL-level, shared across steps.
+
+One budget for the whole trial, not N per step. The budget is a statement about
+how much authoring effort a task is allowed to consume before we call it censored;
+splitting it per step would make the same task cost more the more prompts it is
+decomposed into, and would make a decomposition change silently move the censoring
+threshold.
+
+**Known and accepted, pending the first live run:** `--max-turns` (the runaway
+backstop, Amendment 22) is applied *per `claude` invocation* by Harbor and
+therefore does double for a 2-step trial. It is a backstop, not the headline cap
+(Amendment 22), so this is tolerated for now — but `jobs/<name>/budget.json`
+records a single `max_iters`, and a multi-step run must not be compared against a
+single-step one on turns without accounting for it.
+
+### 6. Existing generated tasks stay single-step. No normalization churn.
+
+The 3-arm generated tasks under `tasks/anchor/` keep exactly one `instruction.md`
+and are untouched. Normalizing them to a 1-step multi-step shape would churn every
+task checksum (`Task.checksum` is a dirhash of the whole task dir and rides the
+resume identity), invalidating resumes and moving every equipping hash, in
+exchange for collapsing two result shapes into one. Not worth it.
+
+The extended CLI therefore handles **both** shapes: `cdktn_bench.trial.CdktnTrial`
+dispatches on `task.has_steps` — a stepless task falls through to the *untouched*
+`AwsBenchSingleStepTrial`, a `[[steps]]` task builds a `CdktnMultiStepTrial`. One
+CLI, two task shapes, so gates and equipping have exactly one path to reason about
+(`aws-bench` itself stays installed and working; `scripts/run-bench.sh` is
+unchanged).
+
+### 7. Task-directory rules the generator will have to obey.
+
+Not yet implemented (generator emission of `steps/` is a separate slice); pinned
+now by `cdktn_bench/tests/fixtures/multistep-task/` and its tests so the rules
+exist before the code that must follow them:
+
+1. **Every step's oracle goes in `steps/<name>/tests/`.** The shared root `tests/`
+   stays empty or strictly step-agnostic — Harbor uploads it for *every* step's
+   verification and only empties `/tests` at the start of the *next* step's
+   verification, i.e. after that step's agent has already run. A step-2 oracle in
+   the shared `tests/` is readable by step 1's agent.
+2. **Never place later-step material in `environment/`** — that is the image the
+   agent lives in from second zero.
+3. **Never place later-step material in an earlier step's `workdir/`** — it is
+   copied into the agent's cwd before that step runs.
+4. Step instructions live host-side only and are read on demand at that step's
+   agent invocation; the task directory is never uploaded. That is what makes the
+   no-foreshadowing guarantee real rather than a convention.
+
+### 8. Gate changes that came with it.
+
+`gates/emit_result.py` and `gates/audit.py` are now step-aware: the trajectory,
+`tier1-not-verifiable` and `test-stdout.txt` readers follow the relocation into
+`steps/<name>/`. Verifier-side evidence is read from the **scoring** step (the
+last one, per `final`); trajectory evidence is **concatenated across steps**,
+because "did this trial ever really invoke the arm's toolchain?" is a trial-level
+question. `gates/equipping.py` folds every `steps/<name>/instruction.md` into the
+equipping hash, since a multi-step task has no root `instruction.md` at all —
+without it, no multi-step trial could be published. Single-step trial dirs are
+byte-identical through all of it, and `HASH_SCHEME_VERSION` is **not** bumped: no
+existing hash moves.
+
+**Pre-registration status:** new semantics, registered before first use. Nothing
+in Amendments 22–25 changes. The single-step measurement — its reward, its
+tokens-to-green denominator, its censoring, its equipping hash — is untouched.
