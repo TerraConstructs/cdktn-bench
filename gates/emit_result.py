@@ -148,6 +148,100 @@ def _step_verifier_dirs(trial_dir: str | Path) -> list[Path]:
     ]
 
 
+def _read_step_results(trial_dir: str | Path) -> Any:
+    """``result.json``'s ``step_results``, or ``None`` when unavailable.
+
+    ``None`` (not ``[]``) for "no result.json / unparseable / no such key", so
+    "we cannot tell what the steps did" stays distinguishable from "the trial
+    ran no steps".
+    """
+    result_path = Path(trial_dir) / "result.json"
+    if not result_path.is_file():
+        return None
+    try:
+        data = json.loads(result_path.read_text(errors="replace"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data.get("step_results")
+
+
+def _step_aborted_unverified(step_result: Any) -> bool:
+    """Harbor's OWN abort predicate for one ``StepResult``, verbatim.
+
+    ``MultiStepTrial._should_stop_after_step`` (``harbor/trial/multi_step.py``):
+    ``exception_info and not verifier_result``. A step carrying BOTH an
+    exception and a ``verifier_result`` is not an abort -- Harbor keeps going
+    and the step carries a real score. Single definition on purpose: every
+    reader that asks "did this step start and die?" must ask it the same way,
+    or the answers disagree.
+    """
+    if not isinstance(step_result, dict):
+        return False
+    return bool(step_result.get("exception_info")) and not step_result.get(
+        "verifier_result"
+    )
+
+
+def _unverified_scoring_step(trial_dir: str | Path) -> str | None:
+    """Name of the LAST started step iff it died before its verifier ran.
+
+    ``None`` when the last step verified, when there are no steps, or when
+    ``result.json`` cannot be read -- i.e. ``None`` means "no reason to
+    distrust the usual evidence lookup".
+
+    This exists because ``_create_step_dirs`` makes ``steps/<name>/verifier/``
+    **before** the step runs and ``_archive_step_outputs`` runs even when
+    ``_prepare_step`` raised, so a step that died in its ``pre_invoke`` leaves a
+    real-but-EMPTY verifier dir behind. A first-hit-wins scan over the step dirs
+    therefore skips straight past it into step N-1's evidence and attributes an
+    earlier step's tier verdict to the trial -- for ``tier1_not_verifiable``,
+    that is a required published-row field being filled from a step that was
+    never scored. See ``_verifier_evidence_dirs``.
+
+    An aborted last step whose ``step_name`` is missing or not a string yields
+    ``""``, which matches no step dir: "the scoring step aborted and we cannot
+    even name it" must still suppress the fallback, never re-enable it.
+    """
+    step_results = _read_step_results(trial_dir)
+    if not isinstance(step_results, list) or not step_results:
+        return None
+    last = step_results[-1]
+    if not _step_aborted_unverified(last):
+        return None
+    name = last.get("step_name") if isinstance(last, dict) else None
+    return name if isinstance(name, str) else ""
+
+
+def _verifier_evidence_dirs(trial_dir: str | Path) -> list[Path]:
+    """Search order for the two verifier-evidence readers below.
+
+    Top-level ``verifier/`` FIRST (a single-step trial dir must behave exactly
+    as it did before multi-step existed), then the per-step dirs in REVERSE
+    execution order: under the cdktn default ``multi_step_reward_strategy =
+    "final"`` (DECISIONS.md Amendment 26) the published reward comes from the
+    LAST step, so the evidence must describe the verification that actually
+    produced the score.
+
+    **Unless that last step never verified.** When Harbor's own abort predicate
+    says the scoring step started and died (``_unverified_scoring_step``), the
+    earlier steps are dropped from the search entirely: falling back to them
+    would answer a question about the scored step with an unscored step's
+    evidence. The readers then find nothing and return their honest
+    "no evidence" value, which is the truth -- the trial has no verdict from
+    the step whose verdict the row reports. The aborted step's own dir stays in
+    the list (it is normally empty; if the abort happened after the verifier
+    wrote something, that IS the scoring step's evidence).
+    """
+    trial_dir = Path(trial_dir)
+    step_dirs = _step_verifier_dirs(trial_dir)
+    unverified = _unverified_scoring_step(trial_dir)
+    if unverified is not None:
+        step_dirs = [d for d in step_dirs if d.parent.name == unverified]
+    return [trial_dir / "verifier", *reversed(step_dirs)]
+
+
 def classify_infra_failure(trial_dir: str | Path) -> dict[str, Any] | None:
     """Scan a trial dir's logs for an infra-failure signal.
 
@@ -206,8 +300,16 @@ def read_tier1_not_verifiable(trial_dir: str | Path) -> tuple[bool, str | None]:
     flag must describe the verification that actually produced the score, not
     an earlier one that has since been superseded. A single-step trial dir
     never reaches that branch.
+
+    If the scoring step ABORTED before verifying, there is no fallback to an
+    earlier step (`_verifier_evidence_dirs`) and this returns ``(False, None)``
+    -- the same "no marker found" answer it gives any trial whose verifier left
+    no marker, and the only honest one: the trial has no tier-1 verdict from
+    the step its published reward comes from. Returning an earlier step's
+    marker would put a never-scored step's flag on a required published-row
+    field (`to_result_row`'s ``tier1_not_verifiable``).
     """
-    for verifier_dir in [Path(trial_dir) / "verifier", *reversed(_step_verifier_dirs(trial_dir))]:
+    for verifier_dir in _verifier_evidence_dirs(trial_dir):
         marker = verifier_dir / "tier1-not-verifiable"
         if not marker.is_file():
             continue
@@ -285,10 +387,13 @@ def read_tier_evidence(trial_dir: str | Path) -> dict[str, Any] | None:
     an earlier step's. Per-step tier evidence for every step is a separate
     (not yet needed) metric; nothing is merged across steps here, because
     merging would silently claim an earlier step's tier-0 PASS as evidence
-    about the step that was actually scored.
+    about the step that was actually scored. For the same reason, a scoring
+    step that aborted before verifying does not fall back to an earlier step
+    (`_verifier_evidence_dirs`): this returns ``None``, exactly as it does for
+    a trial whose verifier never ran at all -- which is what happened.
     """
     path = None
-    for verifier_dir in [Path(trial_dir) / "verifier", *reversed(_step_verifier_dirs(trial_dir))]:
+    for verifier_dir in _verifier_evidence_dirs(trial_dir):
         candidate = verifier_dir / "test-stdout.txt"
         if candidate.is_file():
             path = candidate
@@ -603,22 +708,16 @@ def _step_token_breakdown(step_results: Any) -> list[dict[str, Any]]:
 def _count_failed_steps(step_results: Any) -> int:
     """Steps that started and died, by Harbor's own abort predicate.
 
-    Mirrors ``MultiStepTrial._should_stop_after_step``
-    (``harbor/trial/multi_step.py``) verbatim: ``exception_info and not
-    verifier_result``. Kept identical on purpose — this number's job is to say
-    "Harbor would have aborted here", so any drift from that predicate would
-    make it lie. A step with BOTH an exception and a verifier_result does not
-    count: Harbor keeps going, and the step carries a real score.
+    ``_step_aborted_unverified`` is that predicate
+    (``MultiStepTrial._should_stop_after_step``, verbatim). Kept identical on
+    purpose — this number's job is to say "Harbor would have aborted here", so
+    any drift from that predicate would make it lie. A step with BOTH an
+    exception and a verifier_result does not count: Harbor keeps going, and the
+    step carries a real score.
     """
     if not isinstance(step_results, list):
         return 0
-    n = 0
-    for step_result in step_results:
-        if not isinstance(step_result, dict):
-            continue
-        if step_result.get("exception_info") and not step_result.get("verifier_result"):
-            n += 1
-    return n
+    return sum(1 for step_result in step_results if _step_aborted_unverified(step_result))
 
 
 def _declared_step_names(task_dir: str | Path) -> list[str] | None:
@@ -676,15 +775,7 @@ def read_step_summary(trial_dir: str | Path, task_dir: str | Path) -> dict[str, 
     trial_dir = Path(trial_dir)
     names = resolve_step_names(trial_dir)
 
-    step_results: Any = None
-    result_path = trial_dir / "result.json"
-    if result_path.is_file():
-        try:
-            data = json.loads(result_path.read_text(errors="replace"))
-        except (OSError, json.JSONDecodeError):
-            data = None
-        if isinstance(data, dict):
-            step_results = data.get("step_results")
+    step_results: Any = _read_step_results(trial_dir)
 
     if not names and not isinstance(step_results, list):
         return None

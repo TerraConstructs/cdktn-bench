@@ -561,17 +561,33 @@ def _classify_evidence_status(
     return "ok"
 
 
+# Private annotation `audit_trial` stamps onto each ATIF step of a MERGED
+# multi-step trajectory, so evidence drawn from the concatenation can name the
+# trial step it came from. Never present on a single-step trial's steps (and
+# never written to disk -- the annotation is applied to in-memory copies), which
+# is what keeps a single-step audit record byte-identical.
+_STEP_NAME_KEY = "_cdktn_step_name"
+
+
 def iter_bash_calls(trajectory: dict[str, Any]) -> Iterable[dict[str, Any]]:
-    """Yield ``{step_id, tool_call_id, command, observation,
+    """Yield ``{step_id, step_name, tool_call_id, command, observation,
     structured_exit_code}`` for every Bash tool call. ``observation`` is the
     matching ``ObservationResult`` dict (joined via
     ``observation.results[].source_call_id == tool_call_id``, per Harbor's
     ATIF schema) or ``None`` if the step carries no observation for that
     call. ``structured_exit_code`` is the step's structured exit code (see
     ``_extract_structured_exit_code``), or ``None`` if unavailable/ambiguous.
+
+    ``step_name`` is the TRIAL step (``steps/<name>/``) the ATIF step came
+    from, and is ``None`` for anything but a merged multi-step trajectory --
+    ATIF's own ``step_id`` is a per-trajectory counter that RESTARTS at 1 in
+    every trial step (a fresh ``claude --print`` session per step, DECISIONS.md
+    Amendment 26), so in a concatenation it is not a unique key. See
+    ``audit_trial``.
     """
     for step in trajectory.get("steps") or []:
         step_id = step.get("step_id")
+        step_name = step.get(_STEP_NAME_KEY)
         structured_exit_code = _extract_structured_exit_code(step)
         obs_by_call_id: dict[str, dict[str, Any]] = {}
         for res in (step.get("observation") or {}).get("results") or []:
@@ -588,6 +604,7 @@ def iter_bash_calls(trajectory: dict[str, Any]) -> Iterable[dict[str, Any]]:
                 tool_call_id = tc.get("tool_call_id")
                 yield {
                     "step_id": step_id,
+                    "step_name": step_name,
                     "tool_call_id": tool_call_id,
                     "command": command,
                     "observation": obs_by_call_id.get(tool_call_id),
@@ -605,7 +622,10 @@ def audit_trajectory(trajectory: dict[str, Any], arm: str) -> dict[str, Any]:
     bash_call_count}``.
 
     ``evidence`` entries each carry a ``status`` (``ok``/``failed``/
-    ``missing``/``sigkill``/``unknown``, see ``_classify_evidence_status``).
+    ``missing``/``sigkill``/``unknown``, see ``_classify_evidence_status``), and
+    -- only for the merged multi-step trajectory ``audit_trial`` builds -- a
+    ``step_name`` naming the trial step the call came from. The key is absent
+    (not ``None``) otherwise, so a single-step record is byte-identical.
 
     ``valid`` is True iff at least one Bash call matched the arm's toolchain
     pattern(s) AND was not exclusively evidenced as unavailable (``missing``/
@@ -629,15 +649,16 @@ def audit_trajectory(trajectory: dict[str, Any], arm: str) -> dict[str, Any]:
     for call in bash_calls:
         for name, seg, tool in _matches(patterns, call["command"]):
             status = _classify_evidence_status(call["observation"], tool, call["structured_exit_code"])
-            evidence.append(
-                {
-                    "step_id": call["step_id"],
-                    "tool_call_id": call["tool_call_id"],
-                    "pattern": name,
-                    "command": seg[:300],
-                    "status": status,
-                }
-            )
+            entry: dict[str, Any] = {
+                "step_id": call["step_id"],
+                "tool_call_id": call["tool_call_id"],
+                "pattern": name,
+                "command": seg[:300],
+                "status": status,
+            }
+            if call.get("step_name") is not None:
+                entry["step_name"] = call["step_name"]
+            evidence.append(entry)
 
     has_evidence = len(evidence) > 0
     degrading = [e for e in evidence if e["status"] in _DEGRADED_STATUSES]
@@ -771,12 +792,30 @@ def audit_trial(trial_dir_or_file: str | Path, arm: str) -> dict[str, Any]:
     ``trajectory_path`` keeps naming the first trajectory (unchanged for
     single-step); ``trajectory_paths`` is added ONLY when there is more than
     one, so a single-step record is byte-identical to before.
+
+    **Concatenation needs a step key.** ATIF's ``step_id`` is a counter local to
+    one trajectory and RESTARTS at 1 in every trial step (a fresh
+    ``claude --print`` session per step, DECISIONS.md Amendment 26), so in the
+    merged trajectory ``step_id`` values COLLIDE across steps: ``step_id: 3``
+    alone cannot be traced back to a call. Each merged ATIF step is therefore
+    annotated (on a shallow copy — nothing on disk is touched) with the trial
+    step dir it came from, and every evidence entry drawn from it carries a
+    ``step_name``. Only when merging: a single-step audit gains no new key.
     """
     traj_paths = resolve_trajectory_paths(trial_dir_or_file)
+    merged = len(traj_paths) > 1
     steps: list[Any] = []
     for path in traj_paths:
         data = json.loads(path.read_text())
-        steps.extend(data.get("steps") or [])
+        traj_steps = data.get("steps") or []
+        if merged:
+            # `steps/<name>/agent/trajectory.json` -> `<name>`.
+            step_name = path.parent.parent.name
+            traj_steps = [
+                {**s, _STEP_NAME_KEY: step_name} if isinstance(s, dict) else s
+                for s in traj_steps
+            ]
+        steps.extend(traj_steps)
     result = audit_trajectory({"steps": steps}, arm)
     result["trajectory_path"] = str(traj_paths[0])
     if len(traj_paths) > 1:

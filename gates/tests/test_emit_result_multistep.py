@@ -250,6 +250,38 @@ def test_single_step_audit_record_is_unchanged(multistep) -> None:
     """No ``trajectory_paths`` key for a single-step trial: byte-identical."""
     report = audit_trial(trial_dir("awscdk", "genuine"), "awscdk")
     assert "trajectory_paths" not in report
+    assert all("step_name" not in e for e in report["evidence"])
+
+
+def test_merged_evidence_names_its_step_because_step_ids_collide(multistep) -> None:
+    """ATIF ``step_id`` restarts at 1 in every trial step (a fresh
+    ``claude --print`` session per step), so the concatenation this gate audits
+    contains duplicate ``step_id`` values. Without a second key, an evidence
+    entry cannot be traced back to the call that produced it."""
+    trial, _ = multistep
+    report = audit_trial(trial, "awscdk")
+
+    step_ids = [e["step_id"] for e in report["evidence"]]
+    # The collision is real, not hypothetical — that is why step_name exists.
+    assert len(set(step_ids)) < len(step_ids)
+
+    assert all(e["step_name"] in STEP_NAMES for e in report["evidence"])
+    # Every (step_name, step_id, tool_call_id) is unique: the entries are now
+    # individually addressable.
+    keys = [(e["step_name"], e["step_id"], e["tool_call_id"]) for e in report["evidence"]]
+    assert len(set(keys)) == len(keys)
+    # Both steps contributed, in execution order.
+    assert sorted({e["step_name"] for e in report["evidence"]}) == sorted(STEP_NAMES)
+
+
+def test_merged_step_names_are_not_written_back_to_the_trajectories(multistep) -> None:
+    """The annotation is applied to in-memory copies; the on-disk ATIF files
+    stay exactly what Harbor wrote."""
+    trial, _ = multistep
+    path = trial / "steps" / "01-initial" / "agent" / "trajectory.json"
+    before = path.read_bytes()
+    audit_trial(trial, "awscdk")
+    assert path.read_bytes() == before
 
 
 # --- gate 3: score fields ---------------------------------------------------
@@ -343,6 +375,123 @@ def test_tier_evidence_is_read_from_the_scoring_step(multistep) -> None:
 def test_tier_evidence_none_when_no_step_verified(multistep) -> None:
     trial, _ = multistep
     assert read_tier_evidence(trial) is None
+
+
+def test_an_aborted_scoring_step_never_inherits_an_EARLIER_steps_evidence(
+    tmp_path: Path,
+) -> None:
+    """The attribution hole in "reverse order, first hit wins".
+
+    ``MultiStepTrial._create_step_dirs`` makes ``steps/<name>/verifier/``
+    **before** the step runs, and ``_archive_step_outputs`` runs even when
+    ``_prepare_step`` raised — so a step that died in its ``pre_invoke`` deploy
+    leaves a real-but-EMPTY verifier dir. First-hit-wins then walked straight
+    past it into step 1's full evidence and reported step 1's tier verdict as
+    the trial's, even though step 1's reward was superseded and never
+    published (``multi_step_reward_strategy = "final"``). For
+    ``tier1_not_verifiable`` that is a REQUIRED published-row field
+    (``to_result_row``) carrying a never-scored step's flag.
+
+    The honest answer for both readers is "no evidence", and that is what the
+    scored step really produced.
+    """
+    trial = _multistep_trial_dir(
+        tmp_path,
+        rewards=(1.0, None),
+        final_reward=None,
+        failed_steps=("02-change-request",),
+    )
+    task = _multistep_task_dir(tmp_path)
+
+    # Step 1 is fully green and left complete verifier evidence behind.
+    step1 = trial / "steps" / "01-initial" / "verifier"
+    (step1 / "tier1-not-verifiable").write_text("step 1 could not check tier 1")
+    (step1 / "test-stdout.txt").write_text(
+        "  PASS [only-in-step-1]\n== summary: tier0_pass=1 tier1_status=pass ==\n"
+    )
+    # Step 2 died in pre_invoke: its verifier dir exists (Harbor made it) and
+    # is empty (its verifier never ran).
+    assert (trial / "steps" / "02-change-request" / "verifier").is_dir()
+    assert list((trial / "steps" / "02-change-request" / "verifier").iterdir()) == []
+
+    assert read_tier1_not_verifiable(trial) == (False, None)
+    assert read_tier_evidence(trial) is None
+
+    record = build_result_record(trial, "awscdk", task, FAKE_DIGEST_IMAGE_REF, {})
+    assert record["tier1_not_verifiable"] is False
+    assert record["tier1_not_verifiable_detail"] is None
+    assert record["tier_evidence"] is None
+    # The abort itself is still fully visible — the point is WHERE the evidence
+    # is attributed, not hiding that the trial died.
+    assert record["steps"]["aborted_early"] is True
+    assert record["steps"]["n_failed"] == 1
+
+    row = to_result_row(
+        record,
+        model="claude-sonnet-5",
+        harness="empty",
+        oracle_version="oracles@fixture",
+    )
+    assert validate_result(row) == []
+    assert row["tier1_not_verifiable"] is False
+
+
+def test_a_verified_scoring_step_still_wins_over_earlier_steps(multistep) -> None:
+    """The no-fallback rule fires only on Harbor's abort predicate.
+
+    A last step that carries an exception *and* a verifier_result did not abort
+    the trial (``_should_stop_after_step``), so its own evidence is read exactly
+    as before — the fix must not turn every exception into "no evidence".
+    """
+    trial, _ = multistep
+    data = json.loads((trial / "result.json").read_text())
+    data["step_results"][-1]["exception_info"] = {
+        "exception_type": "FlakyWarning",
+        "exception_message": "recovered",
+        "exception_traceback": "...",
+        "occurred_at": "2026-08-20T00:00:00Z",
+    }
+    (trial / "result.json").write_text(json.dumps(data))
+
+    (trial / "steps" / "01-initial" / "verifier" / "tier1-not-verifiable").write_text(
+        "step 1 marker"
+    )
+    (
+        trial / "steps" / "02-change-request" / "verifier" / "tier1-not-verifiable"
+    ).write_text("step 2 marker")
+
+    assert read_tier1_not_verifiable(trial) == (True, "step 2 marker")
+
+
+def test_an_aborted_scoring_step_that_DID_verify_first_keeps_its_own_evidence(
+    tmp_path: Path,
+) -> None:
+    """No-fallback drops the earlier steps, not the aborted step's own dir.
+
+    A step can die after its verifier already wrote (the abort predicate only
+    needs ``exception_info`` with no ``verifier_result`` on the StepResult).
+    Whatever is in the scoring step's own verifier dir IS the scoring step's
+    evidence and must still be read.
+    """
+    trial = _multistep_trial_dir(
+        tmp_path,
+        rewards=(1.0, None),
+        final_reward=None,
+        failed_steps=("02-change-request",),
+    )
+    (trial / "steps" / "01-initial" / "verifier" / "test-stdout.txt").write_text(
+        "  PASS [only-in-step-1]\n== summary: tier0_pass=1 tier1_status=pass ==\n"
+    )
+    (
+        trial / "steps" / "02-change-request" / "verifier" / "test-stdout.txt"
+    ).write_text(
+        "  FAIL [only-in-step-2]: nope\n== summary: tier0_pass=0 tier1_status=fail ==\n"
+    )
+
+    assert read_tier_evidence(trial) == {
+        "tier0": {"only-in-step-2": "FAIL"},
+        "tier1_status": "fail",
+    }
 
 
 # --- gate 3: the aborted-trial signal (memo §6.7) ---------------------------

@@ -5197,3 +5197,43 @@ existing hash moves.
 **Pre-registration status:** new semantics, registered before first use. Nothing
 in Amendments 22–25 changes. The single-step measurement — its reward, its
 tokens-to-green denominator, its censoring, its equipping hash — is untouched.
+
+**Draft addendum (2026-08-20, pre-first-run):** two consequences of the shipped
+implementation that the draft above leaves unstated. Both are properties of the
+code as committed, recorded here so the first live run is read correctly; neither
+is a new decision, and both stay inside this draft.
+
+*(a) The per-step `pre_invoke` inherits the TASK-level timeout — there is no
+per-step override.* `CdktnMultiStepTrial._run_step_phase_script`
+(`cdktn_bench/trial.py`) reads `self.task.config.pre_invoke` — the single
+task-level `[pre_invoke]` section — and passes its `timeout_sec` to every step's
+`ScriptRunner`. `[[steps]]` has no `pre_invoke` block of its own to raise it, and
+aws-bench's default is **600 s** (`PhaseScript.timeout_sec: float = 600.0`,
+`aws_bench/dataset/task_config.py`). §2 above puts `terraform apply` / `cdk deploy`
+of the *previous* step's stack inside that hook, and a real deploy can comfortably
+exceed 600 s. **A multi-step task whose step `pre_invoke` deploys therefore MUST
+set `[pre_invoke].timeout_sec` explicitly in `task.toml`** — and the value applies
+to *every* step, so it must be sized for the slowest one. A timeout here does not
+read as a slow deploy: it surfaces as the step-aborted shape §3 describes
+(`steps.per_step[].exception_type` set, `steps.aborted_early` true, record-level
+`reward` null coerced to a published `0.0`), i.e. as a scored-zero trial. Per-step
+timeouts are a later amendment if the shared value proves too coarse.
+
+*(b) A step with no `trajectory.json` makes the whole trial's `n_llm_calls` null,
+which makes that trial turn-censoring-blind.* The `None`-not-`0` contract
+(`gates/emit_result.py::extract_n_llm_calls` / `extract_n_llm_calls_per_step`)
+extends across steps by design: if ANY step's trajectory is missing, unreadable,
+malformed, or carries no `steps` list, the cumulative sum is **unknown** and the
+record's `n_llm_calls` is `null` — a partial sum would silently understate
+iterations-to-green. The consequence to state plainly: `to_result_row`'s censoring
+auto-detection reaches its `max_iters` branch only when `n_llm_calls is not None`,
+so such a trial can never be auto-detected as turn-censored, and — if it did not
+also meet `max_tokens` — publishes `censored: false` even if it really did exhaust
+its turns. This is **turn-censoring blindness only**: token accounting is
+unaffected (tokens come from `result.json`'s `step_results[].agent_result`, not the
+trajectory — `_aggregate_step_tokens`), so the `max_tokens` branch, which
+Amendment 22 names the real censoring budget, still fires normally. A step that
+died before its agent ever ran is exactly the case that produces it, and it is
+visible on the record as `steps.n_llm_calls_per_step[<name>] == null` alongside
+`steps.aborted_early`. Passing `censored=` explicitly (the caller-knows-best path)
+also bypasses the blindness entirely.

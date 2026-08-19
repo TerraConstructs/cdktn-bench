@@ -16,8 +16,11 @@ Harbor's ``TrialQueue`` nor ``AwsBenchTrialQueue`` exposes a factory hook. The
 alternatives were rebinding ``aws_bench.task.queue.AwsBenchTrial`` (a
 process-global mutation of upstream, invisible at the call site) or copying the
 whole queue. This override is the smallest honest seam; the loop body below is
-a deliberate mirror of upstream's and is covered by
-``cdktn_bench/tests/test_queue_dispatch.py``.
+a deliberate mirror of upstream's, exercised by
+``cdktn_bench/tests/test_dispatch.py`` and — because a hand-mirrored copy that
+nothing compares against will silently keep running the previous release's retry
+semantics after an aws-bench bump — diffed against upstream's own normalized
+source by ``cdktn_bench/tests/test_queue_drift.py``.
 """
 
 from __future__ import annotations
