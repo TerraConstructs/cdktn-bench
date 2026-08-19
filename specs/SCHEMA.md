@@ -277,6 +277,23 @@ seeded file is regenerated (overwritten) on every `make gen` run, exactly
 like `entry_file`'s empty skeleton or a bootstrap file — it is spec-derived
 content, never hand-edited in place (§0).
 
+Writing the file into the workspace directory is **not sufficient on its
+own**: the arm Dockerfiles deliberately COPY *named* workspace paths (never a
+blanket `COPY workspace/ ./` — see `arms/*/README.md` "Generated-task
+workspace split"), so a file the generator adds is in the Docker build
+context but not in the image. The generator therefore also patches the
+generated task's `Dockerfile` (`gen.py::patch_dockerfile_workspace_copies`,
+the same patch-the-copied-arm-file mechanism as the `preflight.sh` patches),
+appending one `COPY <workspace-subdir>/<path> ./<path>` per uncovered file
+under the arm's own agent WORKDIR. Without that step a seeded file is visible
+only on the host — including to the host-side gates, which is what masked the
+gap — and never to the agent, even though `instruction.md` names it
+(`docs/design/poisoned-workspace-design.md` §9-B1, fixed 2026-08-20). The
+invariant is enforced repo-wide by
+`generator/tests/test_dockerfile_workspace_coverage.py`: every git-tracked
+file under any `environment/<workspace-subdir>/` must be covered by that
+environment's Dockerfile COPY set.
+
 Validation (`generator/spec_model.py`):
 - `path` must not be absolute and must not contain a `..` segment (workspace
   escape).

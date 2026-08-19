@@ -155,4 +155,19 @@ WORKDIR /app/project
 COPY workspace/provider.tf ./provider.tf
 COPY workspace/mock-sfn.py ./mock-sfn.py
 COPY workspace/main.tf ./main.tf
+
+# --- Seeded workspace reference inputs (generator-appended) ---------------
+# One COPY per file generator/gen.py wrote into this task's
+# environment/workspace/ that the arm-level COPYs above do not already
+# cover — spec `seeded_files` (specs/SCHEMA.md §2.5). Without these the files
+# exist only in the build context and on the host (where the host-side gates
+# read them directly), never inside the agent's container, while instruction.md
+# tells the agent to read them: docs/design/poisoned-workspace-design.md §9-B1.
+# Named file-by-file, never a blanket `COPY workspace/ ./`, to preserve
+# the arm Dockerfiles' deliberate named-COPY discipline. Generated — regenerate
+# with `make gen` / `make gen-all`, never hand-edit (SCHEMA.md §0).
+WORKDIR /app/project
+COPY workspace/lambda/placeholder.zip ./lambda/placeholder.zip
+COPY workspace/openapi/widgets-api.json ./openapi/widgets-api.json
+
 CMD ["/bin/bash"]

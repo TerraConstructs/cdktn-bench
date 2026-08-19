@@ -183,4 +183,18 @@ WORKDIR /app/project
 COPY preflight.sh /usr/local/bin/preflight.sh
 RUN chmod +x /usr/local/bin/preflight.sh
 
+# --- Seeded workspace reference inputs (generator-appended) ---------------
+# One COPY per file generator/gen.py wrote into this task's
+# environment/app/ that the arm-level COPYs above do not already
+# cover — spec `seeded_files` (specs/SCHEMA.md §2.5). Without these the files
+# exist only in the build context and on the host (where the host-side gates
+# read them directly), never inside the agent's container, while instruction.md
+# tells the agent to read them: docs/design/poisoned-workspace-design.md §9-B1.
+# Named file-by-file, never a blanket `COPY app/ ./`, to preserve
+# the arm Dockerfiles' deliberate named-COPY discipline. Generated — regenerate
+# with `make gen` / `make gen-all`, never hand-edit (SCHEMA.md §0).
+WORKDIR /app/project
+COPY app/lambda/placeholder.zip ./lambda/placeholder.zip
+COPY app/openapi/widgets-api.json ./openapi/widgets-api.json
+
 CMD ["/usr/local/bin/preflight.sh"]

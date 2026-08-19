@@ -755,12 +755,21 @@ Three interactions to get right:
 
 **Blockers (need a decision before implementation starts):**
 
-- **B1. The `seeded_files` container gap (§3.1).** Confirm the read: the arm
-  Dockerfiles COPY named paths and never the seeded ones, so
+- **B1. The `seeded_files` container gap (§3.1). — RESOLVED 2026-08-20, fixed
+  now, NOT with a broad `COPY workspace/ ./`.** The read was confirmed:
   `apigw-openapi`'s `openapi/widgets-api.json` and `lambda/placeholder.zip`
-  are absent at trial time and only the host-side gates see them. Fix now
-  (broad `COPY workspace/ ./`) or scope the feature to entry-file-only seeds
-  and defer?
+  were absent at trial time and only the host-side gates saw them. Fix:
+  `generator/gen.py::patch_dockerfile_workspace_copies` patches the generated
+  task's Dockerfile (the mechanism that already patches `preflight.sh`),
+  appending one **named** `COPY <workspace-subdir>/<path> ./<path>` per
+  workspace file the arm's own COPYs don't already cover, under the WORKDIR
+  derived from that arm's own workspace COPYs. The named-COPY discipline the
+  arm Dockerfiles document is preserved. The invariant ("every git-tracked
+  file in a workspace dir is in its Dockerfile's COPY set") is now a
+  generator test — `generator/tests/test_dockerfile_workspace_coverage.py`,
+  which fails on the pre-fix Dockerfile and would have caught this. Note this
+  does **not** by itself answer Q4: the guard is a static Dockerfile/tree
+  comparison, not a trial-time execution of `seed_asserts`.
 - **B2. Does a poisoned workspace change the pre-registration?** The prereg's
   "empty-harness trial starts from a working, synth-able zero state"
   (SCHEMA §2.4) becomes "…from a working, synth-able **non-zero** state" for
