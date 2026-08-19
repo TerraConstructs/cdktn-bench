@@ -54,8 +54,20 @@ What this means and doesn't mean:
   template — there is no `cdktn.json`). The CLI binary is `cdktn`
   (`cdktn-cli` package, `bin: {"cdktn": "bin/cdktn"}`).
 - **Synth is `cdktn synth`**, which shells out to the app command in
-  `cdktf.json` (`npx ts-node main.ts`) — i.e. it type-checks and runs your
-  TypeScript directly, same as `cdktf synth`. Output lands at
+  `cdktf.json`. Here that command is
+  **`npx tsc -p tsconfig.json && node main.js`** — a real `tsc` compile
+  (emitting `main.js`/`lib/*.js` in place; the tsconfig sets no `outDir`)
+  chained ahead of plain `node` on the freshly-emitted JS. So synth still
+  type-checks your TypeScript, and a type error still short-circuits into a
+  synth failure exactly as it did under the previous `npx ts-node main.ts`,
+  but the type-check and the execution are now *sequential processes* —
+  peak RSS is `max(compile, synth)` rather than ts-node's concurrent sum
+  (2,385 → ~1,092 MB measured; `docs/ts-runtime-spike2-results.md`). The
+  compile is **chained into the app string on purpose**: with a bare
+  `node main.js`, editing `main.ts`/`lib/scenario-stack.ts` into a
+  type-broken state would still synth exit-0 off the stale good JS
+  (`noEmitOnError: true` means a failed build never overwrites it) — a
+  broken solution scoring as correct. Output lands at
   `cdktf.out/stacks/<stack-id>/cdk.tf.json` — plain Terraform JSON, one file
   per stack, no CloudFormation involved at any point.
 - **Fully offline.** `@cdktn/provider-aws` ships **prebuilt, jsii-generated
@@ -95,7 +107,7 @@ was verified upstream:
 | `@aws-cdk/cloud-assembly-schema` | `49.4.0` | `^49.4.0` | `54.16.0` (out of peer range) |
 | `@aws-cdk/region-info` | `2.233.0` | `^2.233.0` | `2.263.0` |
 | `typescript` | `5.7.3` | `~5.7` | — |
-| `ts-node` | `10.9.1` | — | — |
+| `ts-node` | `10.9.1` | — | — (no longer on any execution path: the `cdktf.json` app command is `npx tsc … && node main.js`; the pin is kept only so dropping it doesn't force a `package-lock.json` regeneration) |
 | `terraform` (CLI, apt) | `1.15.8` | — | `1.15.8` (current stable, 2026-07-08) |
 | `hashicorp/aws` (TF provider, mirrored) | `6.52.0` | fixed by `@cdktn/provider-aws@24.8.0`'s jsii bindings (not a peer range — the generated `cdk.tf.json`'s `required_providers.aws.version` hardcodes this) | `6.58.0` (`arms/hcl-raw`'s independent pin — see `../../DECISIONS.md` "TF provider version per arm" for why the two TF arms don't share one version) |
 | `node` | `20.20.2` (base image `node:20-bookworm-slim`) | `>=20.9.0` | — |
@@ -176,7 +188,7 @@ arms/terraconstructs/
     └── app/                      minimal preflight app (not a scenario task)
         ├── package.json
         ├── package-lock.json      committed — `npm ci` in the Dockerfile is reproducible
-        ├── cdktf.json             {"language":"typescript","app":"npx ts-node main.ts"}
+        ├── cdktf.json             {"language":"typescript","app":"npx tsc -p tsconfig.json && node main.js"}
         ├── tsconfig.json
         ├── mock-sts.js            loopback GetCallerIdentity stub for offline `terraform plan`
         ├── main.ts                App/provider bootstrap only — imports lib/scenario-stack.ts

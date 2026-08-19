@@ -1,5 +1,5 @@
 {
-  "app": "node bin/app.js",
+  "app": "npx tsc -p tsconfig.json && node bin/app.js",
   "watch": {
     "include": ["**"],
     "exclude": [

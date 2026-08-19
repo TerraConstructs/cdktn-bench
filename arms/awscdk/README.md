@@ -18,7 +18,7 @@ arms/awscdk/
             package.json      pinned deps (see "Pinned versions" below)
             package-lock.json committed — `npm ci` in the Dockerfile is reproducible
             tsconfig.json
-            cdk.json          app entrypoint = compiled JS (see "Why not ts-node")
+            cdk.json          app entrypoint = chained compile + compiled JS (see "Why not ts-node")
             bin/app.ts         entrypoint; instantiates ExampleStack
             lib/example-stack.ts  one-construct (S3 bucket) smoke-test stack
 ```
@@ -91,7 +91,12 @@ with `"module": "commonjs"`).
 
 Rather than pin `typescript` back to a `ts-node`-compatible 5.x to keep the
 ts-node convenience, this workspace **compiles then runs plain `node`**:
-`cdk.json` `"app"` is `"node bin/app.js"`, and `package.json`'s `synth` script is
+`cdk.json` `"app"` is `"npx tsc -p tsconfig.json && node bin/app.js"` (the
+compile is *chained into* the app string, not left to a separate step: with a
+bare `node bin/app.js`, editing a `.ts` into a type-broken state would still
+synth exit-0 off the previously-emitted good JS — `noEmitOnError` semantics mean
+a failed build never overwrites it — and a broken solution would score as
+correct; see `docs/ts-runtime-spike2-results.md`), and `package.json`'s `synth` script is
 `npm run build && cdk synth --no-lookups`. This is a more boring, more robust
 pattern anyway (no on-the-fly transpilation magic in the hot path an agent
 depends on) — `preflight.sh` runs `npm run build` before every `cdk synth` and

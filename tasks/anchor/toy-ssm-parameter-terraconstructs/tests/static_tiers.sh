@@ -14,6 +14,13 @@ mkdir -p /logs/verifier
 
 cd /app/project
 
+echo '== build: npx tsc -p tsconfig.json =='
+if ! ( npx tsc -p tsconfig.json ); then
+  echo "BUILD FAILED"
+  echo "0.0" > /logs/verifier/reward.txt
+  exit 0
+fi
+
 echo '== synth: npx cdktn synth =='
 if ! ( npx cdktn synth ); then
   echo "SYNTH FAILED"

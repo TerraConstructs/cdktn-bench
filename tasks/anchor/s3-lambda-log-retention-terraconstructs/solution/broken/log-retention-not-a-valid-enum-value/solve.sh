@@ -2,8 +2,11 @@
 # Deliberately-BAD reference solution -- HAND-AUTHORED (SCHEMA.md §8.2
 # point 8). Violates the log-retention-not-a-valid-enum-value catch:
 # `retention: 10` against the L2 `cloudwatch.LogGroup`'s typed
-# `RetentionDays` prop. Reward must be 0.0 from the toolchain step itself
-# (`npx cdktn synth`, which shells to `ts-node` and therefore type-checks)
+# `RetentionDays` prop. Reward must be 0.0 from the toolchain step itself:
+# static_tiers.sh's explicit `build` step (`npx tsc -p tsconfig.json`,
+# injected unconditionally for this arm by gen.py) fails first, and the
+# following `npx cdktn synth` would fail too since cdktf.json's app command
+# chains the same compile ahead of `node main.js`
 # -- verified directly at authoring time: the identical `TS2322: Type '10'
 # is not assignable to type 'RetentionDays | undefined'` diagnostic as the
 # awscdk arm. No structural_assert or tier-1 policy is ever reached.

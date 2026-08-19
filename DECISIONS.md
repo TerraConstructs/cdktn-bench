@@ -4908,3 +4908,88 @@ is retired everywhere except stale *comments* in hand-authored reference
 **Pre-registration status:** operationalization of the live-sandbox permission
 model. The equipping-hash and integrity gates are unchanged; the deploy identity
 is harness plumbing, not part of what is measured.
+
+---
+
+## Amendment 25 (2026-08-20) — one toolchain shape everywhere: `tsc` (emitting) → `node`, gate chained into the app command
+
+**Decision.** Land the consolidated verdict of `docs/ts-runtime-spike2-results.md`
+(five measurement agents, 2026-08-13) as a single package: **every TypeScript
+tree in this benchmark now runs a real `tsc` compile and then plain `node` on
+the emitted JS**, and on the two *graded* arms the compile is **chained into the
+synth app command** so an agent can never synth stale JS. `ts-node` is off every
+execution path. No new runtime was introduced — bun, tsx,
+`--experimental-strip-types`/`-transform-types`, the cdk-terrain #198 pattern,
+deep-import hints and slim provider shims were all measured and **rejected**
+(evidence in `docs/ts-runtime-spike2-results.md` and `docs/ts7-spike-results.md`).
+
+**Why chaining, not just a build step.** Two hazards, both reproduced:
+1. *Stale-JS gate loss.* With a bare `node main.js` / `node bin/app.js` and a
+   previously-good emitted JS on disk, editing the `.ts` into a type-broken
+   state still synthesizes **exit 0 with the old code** — a broken solution
+   scores as correct and the agent's edit silently does nothing (phantom debug
+   turns corrupting tokens-to-green). `noEmitOnError: true` means a failing
+   build never overwrites good JS, so the *build's exit code* is the
+   load-bearing gate and must be impossible to skip. Re-verified on both arms
+   during this landing (terraconstructs: `retention: 10` → TS2322 →
+   `cdktn synth` exit 1 with a stale-good `main.js` present; awscdk:
+   `versioned: "yes"` → TS2322 → `cdk synth` exit 2 with a stale-good
+   `bin/app.js` present; and the negative control — bare `node main.js` on the
+   same broken tree — exits **0**).
+2. *Transpile-only runners invert the instrument.* Anything that removes
+   type-checking from the agent's iteration loop also removes the steering this
+   benchmark measures. Sequential `tsc` → `node` keeps the type error in the
+   loop at peak `max(gate, synth)` rather than ts-node's concurrent sum.
+
+**Changes.**
+- `arms/terraconstructs/environment/app/cdktf.json`: `"app"` `npx ts-node main.ts`
+  → **`npx tsc -p tsconfig.json && node main.js`** (tsconfig has no `outDir`;
+  emit lands next to sources).
+- `arms/terraconstructs/environment/app/tsconfig.json`: `+ "skipLibCheck": true`
+  (spike-measured 1416 → 989 MB, 4.36 → 1.89 s, **catch-preserving** — all five
+  typed-value traps still fire).
+- `arms/awscdk/environment/workspace/cdk.json` (and its hand-maintained byte-copy
+  `tasks/anchor/smoke/environment/workspace/cdk.json`): `"app"` `node bin/app.js`
+  → **`npx tsc -p tsconfig.json && node bin/app.js`**, closing the identical
+  desync hazard on that arm. Its spec-level `build_command` step stays.
+- `generator/gen.py::build_static_tiers_sh`: for **every** `terraconstructs`
+  spec, unconditionally inject `npx tsc -p tsconfig.json` as the arm's first
+  toolchain step, with its own `BUILD FAILED` → `reward 0.0` branch — the same
+  unconditional pattern the arm's tf-plan step already uses, rather than relying
+  on per-spec `build_command` YAML discipline. A spec that *does* set
+  `build_command` for this arm is now a hard generation error (`specs/SCHEMA.md`
+  updated). awscdk behaviour is unchanged.
+- `arms/terraconstructs/environment/Dockerfile`: run the gate once at image build
+  so a warm `.tsbuildinfo` (tsconfig already sets `"incremental": true`) ships in
+  the image. Deliberately fatal: in a generated task this compiles that task's own
+  skeleton, so a skeleton that does not type-check breaks the image build loudly
+  instead of becoming a reward-0.0 "agent failure" in every trial.
+- `scenarios/anchor/scenario/cdk_app/` (deploy plumbing, the historical exit-137
+  site): `cdk.json` `"app"` → **`node dist/lib/app.js`**; `tsconfig.json`
+  `+ "types": ["node"]` (`outDir: ./dist` was already correct);
+  `scenario/Dockerfile` now `npm ci && npm run build` so `dist/` is baked.
+  **No chained `tsc` here on purpose** — this tree is harness plumbing no agent
+  ever edits, so the compile is paid once at image build. Local-dev rebuild
+  instructions added to `scenarios/anchor/README.md`.
+- `.gitignore`: emit artifacts the new shape creates next to tracked sources
+  (`main.js`/`main.d.ts`/`lib/*.js`/`lib/*.d.ts` in the arms' workspaces,
+  `*.tsbuildinfo`, `cdktf.out/`), enumerated file-by-file rather than as a
+  blanket `*.js` because `mock-sts.js` is a tracked source in the same directory.
+- All tasks regenerated; regeneration is idempotent (second full run is a
+  byte-for-byte no-op). The five `tasks/anchor/*-terraconstructs/` dirs carry a
+  byte-identical `cdktf.json` and a `build` gate in `tests/static_tiers.sh`.
+
+**`ts-node` pins retained** in `arms/terraconstructs/environment/app/package.json`
+and `scenarios/anchor/scenario/cdk_app/package.json`: dropping the dependency
+would force a `package-lock.json` regeneration for zero behavioural gain, and the
+packages are no longer on any execution path. Revisit at the next pin bump.
+
+**Operational follow-ups (not done here).** `scenarios/anchor/**` changed, so
+`env setup` must be re-run before the next live run or resets fail on the
+scenario-source-hash. Arm images must be rebuilt (`make build-arms`), which moves
+the equipping hash — expected, and exactly what that hash exists to record.
+
+**Pre-registration status:** toolchain/plumbing operationalization. What is
+measured is unchanged: the same type errors are caught, at the same tier, by the
+same diagnostics; output equivalence (`cdk.tf.json` / CloudFormation templates)
+was verified byte-identical across the old and new execution paths.

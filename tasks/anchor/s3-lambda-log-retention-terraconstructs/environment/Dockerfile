@@ -146,6 +146,25 @@ COPY app/lib ./lib
 # "terraconstructs offline `terraform plan` needs a mocked STS endpoint".
 COPY app/mock-sts.js ./mock-sts.js
 
+# --- bake the TypeScript compile once, at image-build time ---
+# cdktf.json's app command is now `npx tsc -p tsconfig.json && node main.js`
+# (was `npx ts-node main.ts`) and the generated tests/static_tiers.sh runs the
+# same `npx tsc -p tsconfig.json` as its own explicit build gate -- see
+# ../../generator/gen.py::build_static_tiers_sh and
+# ../../docs/ts-runtime-spike2-results.md. tsconfig.json sets
+# `"incremental": true` and no `outDir`, so this RUN emits main.js /
+# lib/*.js / *.d.ts next to their sources AND a tsconfig.tsbuildinfo, which
+# means the agent's FIRST in-trial compile is the warm incremental one
+# (~1.9 s / ~989 MB with skipLibCheck) instead of the cold one (~4.4 s /
+# ~1416 MB). Emitted JS is never stale at grading time because every synth
+# recompiles by construction (the chained app string above).
+#
+# Deliberately fatal (no `|| true`): in a generated task this compiles that
+# task's own skeleton lib/scenario-stack.ts, so a skeleton that does not
+# type-check breaks the image build loudly here rather than surfacing as a
+# reward-0.0 "agent failure" in every trial of that scenario.
+RUN npx --no-install tsc -p tsconfig.json
+
 # --- pre-warm the hashicorp/aws provider filesystem mirror at the exact
 # --- version this arm's own synth output pins. Build-time network only;
 # --- nothing after this layer needs network (mirrors arms/hcl-raw's pattern

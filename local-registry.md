@@ -117,6 +117,12 @@ full `agent/trajectory.json` persisted). Operational lessons for the next run:
   docker-compose` + symlink into `~/.docker/cli-plugins/`.
 - **Memory**: the scenario deploy container OOM-killed `tsc`/`ts-node` at
   2048 MB (exit 137); `scenario.toml [environment]` now sets 4096 MB / 2 cpus.
+  Root cause since removed as well as headroomed: `cdk_app/cdk.json`'s app
+  command was `npx ts-node lib/app.ts` (1.7 GB tree RSS, an in-process
+  type-check inside the synth process) and is now `node dist/lib/app.js` on
+  JS precompiled at image build (~0.87 GB) — `docs/ts7-spike-results.md`,
+  `docs/ts-runtime-spike2-results.md`. The 4096 MB floor stays (the
+  terraconstructs arm still needs it).
 - **SCP side effect**: `env setup` creates and attaches an
   `awsbench-region-restrict-<scenario>` SCP (deny non-us-east-1, global
   services exempted) to the scenario account and re-creates it each setup.

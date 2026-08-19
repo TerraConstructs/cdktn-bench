@@ -19,6 +19,7 @@
         "strictPropertyInitialization": false,
         "outDir": "./dist",
         "rootDir": ".",
+        "types": ["node"],
         "typeRoots": ["./node_modules/@types"]
     },
     "exclude": ["node_modules", "cdk.out", "dist"]

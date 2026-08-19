@@ -38,4 +38,14 @@ RUN npm install -g aws-cdk@2.1135.0
 # purpose, in the stricter direction; upstream itself ships a lockfile this
 # scenario previously dropped.
 COPY cdk_app/ /app/cdk_app/
-RUN cd /app/cdk_app && npm ci
+# `npm run build` (= `tsc`, outDir ./dist) is REQUIRED here, not an
+# optimization: cdk_app/cdk.json's app command is now `node dist/lib/app.js`
+# (was `npx ts-node lib/app.ts`), so `dist/` must exist in the image or every
+# `cdk synth`/`deploy`/`destroy` — including cleanup.sh paths that run without
+# a prior deploy.sh — fails with "Cannot find module". Dropping ts-node from
+# the synth path is what retires this container's historical exit-137: the
+# in-process ts-node type-check peaked at 1.7 GB tree RSS during `cdk deploy`,
+# vs ~0.87 GB precompiled (docs/ts7-spike-results.md, docs/ts-runtime-spike2-results.md).
+# deploy.sh still runs `npm run build` itself, which is now a warm no-op
+# rebuild rather than a compile whose output was thrown away.
+RUN cd /app/cdk_app && npm ci && npm run build

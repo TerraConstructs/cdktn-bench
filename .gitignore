@@ -1,6 +1,10 @@
 # Node / CDK arms
 node_modules/
 cdk.out/
+# cdktn/cdktf synth output (the terraconstructs arm's `cdk.out/` equivalent).
+# Produced on the HOST too, not just in-container, whenever anyone runs the
+# arm's own `cdktn synth` from arms/terraconstructs/environment/app/.
+cdktf.out/
 
 # Terraform arms
 .terraform/
@@ -34,3 +38,18 @@ jobs/
 cdk.out.rev*/
 **/environment/workspace/bin/*.js
 **/environment/workspace/outputs.rev*.json
+
+# tsc emit artifacts in the TS arms' workspaces. Both graded arms now run
+# `npx tsc -p tsconfig.json && node <emitted>.js` as their synth app command
+# (docs/ts-runtime-spike2-results.md), and neither tsconfig sets an outDir, so
+# the compiler emits .js/.d.ts NEXT TO the tracked sources. Listed file-by-file
+# rather than as a blanket `*.js` because arms/terraconstructs/environment/app/
+# mock-sts.js is a TRACKED source file living in the same directory.
+**/environment/workspace/lib/*.js
+**/environment/workspace/lib/*.d.ts
+**/environment/workspace/bin/*.d.ts
+**/environment/app/main.js
+**/environment/app/main.d.ts
+**/environment/app/lib/*.js
+**/environment/app/lib/*.d.ts
+*.tsbuildinfo

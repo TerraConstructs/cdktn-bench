@@ -196,16 +196,31 @@ synth-able zero state.
 output_contract:
   entry_file: <path relative to /app/project, the file(s) the skeleton pre-wires>
   artifact_path: <path relative to /app/project, where the synthesized/planned artifact lands>
-  build_command: <string, optional — only awscdk needs this (tsc compile step)>
+  build_command: <string, optional — awscdk ONLY. MUST be unset for terraconstructs
+                  (gen.py injects that arm's compile gate itself, see below) and is
+                  unused by hcl_raw>
   synth_command: <string>          # or `plan_command` for hcl_raw
   json_fields: [{name: <string>, description: <string>}, ...]   # optional, default []
 ```
+
+**`build_command` and the terraconstructs compile gate.** For `awscdk` this is
+an ordinary per-spec field (`npm run build`). For `terraconstructs` it must be
+**omitted**: `generator/gen.py::build_static_tiers_sh` injects
+`npx tsc -p tsconfig.json` unconditionally as that arm's first toolchain step —
+the same unconditional-injection pattern it already uses for the arm's tf-plan
+step — so the compile gate cannot go missing because a spec author forgot a YAML
+key. Setting it anyway is a hard generation error. The compile is *also* chained
+into `arms/terraconstructs/environment/app/cdktf.json`'s app command
+(`npx tsc -p tsconfig.json && node main.js`, mirroring awscdk's
+`npx tsc -p tsconfig.json && node bin/app.js`), so every synth an agent runs
+re-type-checks by construction and can never execute stale emitted JS. See
+`docs/ts-runtime-spike2-results.md`.
 
 | Arm | `entry_file` | Non-agent-owned bootstrap file | `artifact_path` | commands |
 |---|---|---|---|---|
 | `awscdk` | `lib/scenario-stack.ts` (class `ScenarioStack`, resource logic only) | `bin/app.ts` — `App`/`ScenarioStack` instantiation; the generator rewrites its import/instantiation once per scenario, never per trial | `cdk.out/ScenarioStack.template.json` | `build_command: npm run build`, `synth_command: npx cdk synth --no-lookups --quiet -o cdk.out` |
 | `hcl_raw` | `main.tf` (resource blocks ONLY — no `provider` block; see below) | `provider.tf` — the `terraform{}`/`provider "aws" {}` block + `skip_*`/dummy-credential fixture lines (byte-copied from `arms/hcl-raw/environment/workspace/provider.tf`, never per-scenario content) | `plan.json` | `synth_command` not used; `plan_command: terraform init && terraform validate && terraform plan -out=plan.tfplan && terraform show -json plan.tfplan > plan.json` |
-| `terraconstructs` | `lib/scenario-stack.ts` (class `ScenarioStack extends AwsStack`, resource logic only) | `main.ts` — `App`/`providerConfig` bootstrap (incl. the offline `skip_*`/dummy-credential fixture and the mock-STS `endpoints` pointer), imports and instantiates `ScenarioStack`; regenerated every run, mirroring `awscdk`'s `bin/app.ts` | `cdktf.out/stacks/<id>/plan.json` where `<id>` is the generator-assigned stack id, always equal to `id` (the spec's own scenario id) — **not** `cdk.tf.json`: `generator/gen.py::build_static_tiers_sh` always appends a real `terraform init && terraform plan && terraform show -json` step after `synth_command`, chdir'd into the synthesized stack's own directory, so this arm is graded in the same plan-JSON shape `hcl_raw` is (see §4.2) | `synth_command: npx cdktn synth` |
+| `terraconstructs` | `lib/scenario-stack.ts` (class `ScenarioStack extends AwsStack`, resource logic only) | `main.ts` — `App`/`providerConfig` bootstrap (incl. the offline `skip_*`/dummy-credential fixture and the mock-STS `endpoints` pointer), imports and instantiates `ScenarioStack`; regenerated every run, mirroring `awscdk`'s `bin/app.ts` | `cdktf.out/stacks/<id>/plan.json` where `<id>` is the generator-assigned stack id, always equal to `id` (the spec's own scenario id) — **not** `cdk.tf.json`: `generator/gen.py::build_static_tiers_sh` always appends a real `terraform init && terraform plan && terraform show -json` step after `synth_command`, chdir'd into the synthesized stack's own directory, so this arm is graded in the same plan-JSON shape `hcl_raw` is (see §4.2) | `synth_command: npx cdktn synth`; `build_command` **must be unset** — gen.py always injects `npx tsc -p tsconfig.json` as an explicit first toolchain step with its own reward-0.0 branch (see the `build_command` note above §8.3) |
 
 **`entry_file` vs. the non-agent-owned bootstrap file (finding G1, fixed
 2026-08-06):** every arm's workspace ships both. `entry_file` is what the
@@ -900,7 +915,9 @@ tasks/<scenario-id>/
                                     # (from this task's own [verifier] env, i.e. verifier.live_check.enabled
                                     # is true for this spec) and live_check.py exists, also run it
                                     # (informational only, §5)
-            static_tiers.sh        # generated per arm: build_command -> synth_command ->
+            static_tiers.sh        # generated per arm: build step (awscdk: build_command;
+                                    # terraconstructs: gen.py-injected `npx tsc -p tsconfig.json`)
+                                    # -> synth_command ->
                                     # structural_asserts (tier "0") -> cfn-lint -> cfn-guard
                                     # (tier "1") -> writes /logs/verifier/reward.txt
             live_check.py           # scaffolded stub iff verifier.live_check.module names it;

@@ -156,8 +156,11 @@ catches:
           authoring time against the pinned 0.2.13 package. Using the L2
           `cloudwatch.LogGroup`'s typed `retention: RetentionDays` prop
           (this scenario's own reference solution's approach), `retention:
-          10` is rejected by `tsc` inside `cdktn synth` (which shells to
-          `ts-node`, so type errors surface at synth time) with the
+          10` is rejected by `tsc` -- both at static_tiers.sh's explicit
+          `npx tsc -p tsconfig.json` build step and again inside `cdktn
+          synth`, whose cdktf.json app command chains that same compile
+          ahead of `node main.js`, so type errors surface at synth time in
+          the agent's own iteration loop -- with the
           identical `TS2322` diagnostic as awscdk. Separately, even
           bypassing the typed L2 prop entirely (an L1
           `cloudwatchLogGroup.CloudwatchLogGroup` with a bare
