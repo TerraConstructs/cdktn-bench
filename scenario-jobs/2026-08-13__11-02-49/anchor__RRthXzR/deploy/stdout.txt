@@ -1,0 +1,50 @@
+
+> @cdktn-bench/scenario-anchor@1.0.0 build
+> tsc
+
+ ⏳  Bootstrapping environment aws://886312446417/us-east-1...
+Trusted accounts for deployment: (none)
+Trusted accounts for lookup: (none)
+Using default execution policy of 'arn:aws:iam::aws:policy/AdministratorAccess'. Pass '--cloudformation-execution-policies' to customize.
+✅  Environment aws://886312446417/us-east-1 bootstrapped (no changes).
+
+✨  Synthesis time: 60.98s
+
+anchor-Anchor-us-east-1
+anchor-QARoles-us-east-1: start: Building anchor-QARoles-us-east-1 Template
+anchor-QARoles-us-east-1: success: Built anchor-QARoles-us-east-1 Template
+anchor-QARoles-us-east-1: start: Publishing anchor-QARoles-us-east-1 Template (886312446417-us-east-1-2815c8d5)
+anchor-Anchor-us-east-1: creating CloudFormation changeset...
+anchor-QARoles-us-east-1: success: Published anchor-QARoles-us-east-1 Template (886312446417-us-east-1-2815c8d5)
+anchor-QARoles-us-east-1
+anchor-Anchor-us-east-1: deploying... [1/2]
+
+✅  anchor-Anchor-us-east-1 (no changes)
+
+✨  Deployment time: 0s
+
+Outputs:
+anchor-Anchor-us-east-1.AnchorParameterName = /cdktn-bench/anchor-Anchor-us-east-1/anchor
+anchor-Anchor-us-east-1.StackId = arn:aws:cloudformation:us-east-1:886312446417:stack/anchor-Anchor-us-east-1/25ee0620-91aa-11f1-a517-0e4ffc68be55
+Stack ARN:
+arn:aws:cloudformation:us-east-1:886312446417:stack/anchor-Anchor-us-east-1/25ee0620-91aa-11f1-a517-0e4ffc68be55
+anchor-QARoles-us-east-1: creating CloudFormation changeset...
+Changeset arn:aws:cloudformation:us-east-1:886312446417:changeSet/cdk-deploy-change-set/cf7fff62-890c-4712-bb0c-38d681afa617 created and waiting in review for manual execution (--no-execute)
+anchor-QARoles-us-east-1: deploying... [2/2]
+anchor-QARoles-us-east-1 | 0/4 | 11:06:43 AM | UPDATE_IN_PROGRESS      | AWS::CloudFormation::Stack | anchor-QARoles-us-east-1 User Initiated
+anchor-QARoles-us-east-1 | 1/4 | 11:06:46 AM | UPDATE_COMPLETE_CLEANUP | AWS::CloudFormation::Stack | anchor-QARoles-us-east-1 
+anchor-QARoles-us-east-1 | 1/4 | 11:06:47 AM | DELETE_IN_PROGRESS      | AWS::IAM::Role             | QADeployApplicationRole9F796C25 
+anchor-QARoles-us-east-1 | 2/4 | 11:06:58 AM | DELETE_COMPLETE         | AWS::IAM::Role             | QADeployApplicationRole9F796C25 
+anchor-QARoles-us-east-1 | 2/4 | 11:06:59 AM | DELETE_IN_PROGRESS      | AWS::IAM::ManagedPolicy    | QADeployApplicationPolicy26940A1D 
+anchor-QARoles-us-east-1 | 3/4 | 11:07:00 AM | DELETE_COMPLETE         | AWS::IAM::ManagedPolicy    | QADeployApplicationPolicy26940A1D 
+anchor-QARoles-us-east-1 | 4/4 | 11:07:00 AM | UPDATE_COMPLETE         | AWS::CloudFormation::Stack | anchor-QARoles-us-east-1 
+
+✅  anchor-QARoles-us-east-1
+
+✨  Deployment time: 22.85s
+
+Stack ARN:
+arn:aws:cloudformation:us-east-1:886312446417:stack/anchor-QARoles-us-east-1/2633e8c0-91aa-11f1-80c4-0ef759634907
+
+✨  Total time: 105.38s
+
