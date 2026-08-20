@@ -56,6 +56,20 @@ set -euo pipefail
 
 LIVE="${LIVE:-0}"
 PROJECT_DIR="$(pwd)"
+
+# STEP -- the MULTI-STEP form (DECISIONS.md Amendment 27,
+# docs/prompt-decomposition-audit.md). Unset/empty (the default) runs the
+# WHOLE scenario: this file is the reference solution for the FINAL step
+# (steps/02-change-request), whose oracle is the full tier suite, and it is
+# the shape every solution/broken/<catch>/ fixture is written against.
+#
+# STEP=01 stops after revision 1, then runs whatever tests/static_tiers.sh is
+# staged -- which under gates/oracle_falsifiability.py's step branch is step
+# 01's own (subset) oracle. steps/01-initial-deploy/solution/solve.sh is a
+# thin wrapper that sets this, so revision 1 has exactly ONE definition on
+# this arm; a duplicated heredoc in the step solution would drift from this
+# one the first time either is touched.
+STEP="${STEP:-}"
 mkdir -p lib
 
 write_rev1() {
@@ -243,6 +257,17 @@ if [ "$LIVE" != "1" ]; then
   npx cdk synth --no-lookups --quiet -o cdk.out.rev1
   assert_facts "cdk.out.rev1/ScenarioStack.template.json" 2
 
+  if [ "$STEP" = "01" ]; then
+    echo "== STEP=01: stopping after revision 1 (steps/01-initial-deploy reference solution) =="
+    if [ -f tests/static_tiers.sh ]; then
+      echo "== tests/static_tiers.sh found -- running it against revision 1 =="
+      bash tests/static_tiers.sh
+    else
+      echo "== NOTE: tests/static_tiers.sh not present -- the offline proof above is the full check =="
+    fi
+    exit 0
+  fi
+
   write_rev2
   npm run build
   npx cdk synth --no-lookups --quiet -o cdk.out.rev2
@@ -311,6 +336,17 @@ check_200() {
 
 check_200 "hello"
 check_200 "version"
+
+if [ "$STEP" = "01" ]; then
+  echo "== STEP=01: revision 1 is deployed and serving; stopping before the change request =="
+  # Step 01's own live_check.py (2-route contract) -- staged at tests/ by
+  # whoever invoked this. The EXIT trap still tears the account down, which
+  # is correct for this MANUAL proof shape: it proves "revision 1 deploys and
+  # serves", it is not the trial (in a real trial the AGENT deploys and
+  # nothing is destroyed until the post-trial reset).
+  python3 "$PROJECT_DIR/tests/live_check.py" --api-url "$API_URL" --expect ok
+  exit 0
+fi
 
 write_rev2
 npm run build

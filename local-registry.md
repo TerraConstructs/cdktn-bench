@@ -17,8 +17,15 @@ access are exercised by any command in this document; none of them were run as p
 authoring this file.
 
 ```bash
-# One-time: install the pinned aws-bench runner (already done for this repo; see
-# DECISIONS.md).
+# One-time: install the pinned aws-bench runner AND this repo's own extended CLI
+# (already done for this repo; see DECISIONS.md).
+#
+# `cdktn-bench` is a strict SUPERSET of `aws-bench` (DECISIONS.md Amendments
+# 26/27): same flags, same `env` commands, plus multi-step tasks instead of
+# NotImplementedError. `scripts/run-bench.sh` execs it. The `env init/setup/
+# cleanup` commands below are byte-identical under either name -- they are the
+# same Typer app object -- and are left as `aws-bench` here only because that
+# is what the upstream guide they cite calls them.
 uv sync
 
 # 1. env init — provisions/maps the anchor scenario onto a real AWS Organizations
@@ -35,7 +42,9 @@ uv run aws-bench env setup --env-name cdktn-anchor \
   --registry-path ./local-registry.json -d cdktn-bench-anchor@0.1.0
 
 # 3. run — one trial of tasks/anchor/smoke against the deployed anchor scenario.
-uv run aws-bench run --env-name cdktn-anchor \
+#    `cdktn-bench`, not `aws-bench`: a task.toml declaring [[steps]] (today only
+#    apigw-redeploy) is REFUSED outright by upstream's AwsBenchTrial.create.
+uv run cdktn-bench run --env-name cdktn-anchor \
   --registry-path ./local-registry.json -d cdktn-bench-anchor@0.1.0 \
   -a claude-code -m global.anthropic.claude-sonnet-5 \
   -l 1 --yes
@@ -52,7 +61,7 @@ uv run aws-bench env cleanup --env-name cdktn-anchor \
 for this scenario/task pair and needs no `local-registry.json`:
 
 ```bash
-uv run aws-bench run --env-name cdktn-anchor \
+uv run cdktn-bench run --env-name cdktn-anchor \
   --scenario-path ./scenarios --path ./tasks/anchor \
   -a claude-code -m global.anthropic.claude-sonnet-5 \
   -l 1 --yes

@@ -5,6 +5,15 @@ venv `.venv/lib/python3.14/site-packages/` unless stated otherwise. aws-bench
 is pinned at git rev `6450cb56c4552934a37feff492a6fd4eb84d1108`
 (`pyproject.toml:15-16`).
 
+**Naming note (2026-08-20, DECISIONS.md Amendment 27).** `scripts/run-bench.sh`
+now execs `uv run cdktn-bench run …` rather than `uv run aws-bench run …`.
+Every mechanism this document analyses is unchanged by that: `cdktn-bench`
+registers aws-bench's own `start` function object on its own Typer app, so it
+IS the same control-plane process reading the same `os.environ`, with the same
+flags, and `ClaudeCode.run()` is reached by the identical path. Read every
+`uv run aws-bench run …` below as "the control-plane process", which today is
+spelled `cdktn-bench`.
+
 ## 1. How the agent container gets env vars
 
 `ClaudeCode.run()` (`harbor/agents/installed/claude_code.py:1016-1155`) builds a

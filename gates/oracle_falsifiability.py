@@ -42,6 +42,32 @@ exception, matching the rest of this codebase's stub-detection convention
 (is_stub_policy in generator/gen.py's ASSERT_LIB_SH). Once solve.sh IS
 authored, missing broken/ coverage for any catch is a hard FAIL: "no
 scenario should be registerable without it."
+
+MULTI-STEP (SCHEMA.md §2.6 / DECISIONS.md Amendment 27, 2026-08-20)
+===================================================================
+A spec with `steps:` has one oracle PER STEP, under `steps/<name>/tests/`,
+and no root `tests/` oracle at all. This gate then:
+
+  * runs the task-root `solution/solve.sh` and every
+    `solution/broken/<catch>/solve.sh` against the **FINAL** step's oracle.
+    That is not a convenience: the final step's oracle IS the full tier
+    suite (spec_model enforces it), so those rows check byte-for-byte what
+    they checked before the decomposition -- same asserts, same script, same
+    expected rewards. Every declared catch is a fact about the FINAL
+    delivered artifact, which is what the root reference solution produces.
+  * ADDITIONALLY requires each NON-final step to have its own
+    `steps/<name>/solution/solve.sh` scoring reward 1.0 against that step's
+    own (subset) oracle. This is the new proof obligation the decomposition
+    creates: without it nothing shows an intermediate step's oracle is
+    satisfiable, and a step-01 oracle that no correct step-01 solution can
+    pass would abort every trial at the min_reward gate before step 02's
+    prompt ever fired.
+
+The sandbox's `tests/` for a given step is the SHARED root `tests/` merged
+with that step's own `tests/` -- exactly what Harbor's verifier uploads into
+`/tests` for that step (harbor/verifier/verifier.py::_resolve_tests), so a
+solve.sh's `bash tests/static_tiers.sh` means the same thing here as in a
+real trial.
 """
 
 from __future__ import annotations
@@ -57,15 +83,18 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "generator"))
-from gen import ARM_DIRNAME, ARM_WORKSPACE_SUBDIR, task_dir  # noqa: E402
-from spec_model import Arm, Catch, Spec, load_spec  # noqa: E402
+from gen import (  # noqa: E402
+    ARM_DIRNAME,
+    ARM_WORKSPACE_SUBDIR,
+    SOLVE_STUB_MARKER,
+    task_dir,
+)
+from spec_model import Arm, Catch, Spec, Step, load_spec  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from oracles.lib.tier05_jsonata import Tier05Error, run_tier05  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-
-SOLVE_STUB_MARKER = "is not yet authored (Slice D)"
 
 # Slice G addition (apigw-redeploy, 2026-08-06): the fixed marker string a
 # `predicted_tier_caught: "live"` broken/ fixture's OFFLINE (LIVE unset/0)
@@ -269,6 +298,25 @@ def _is_stub(solve_sh: Path) -> bool:
     return SOLVE_STUB_MARKER in solve_sh.read_text()
 
 
+def _stage_tests_dir(task: Path, project: Path, step: Step | None) -> None:
+    """Build the sandbox's `tests/` the way Harbor builds a step's `/tests`.
+
+    Single-step: the task's own `tests/`, unchanged.
+    Multi-step: the SHARED root `tests/` first, then `steps/<name>/tests/`
+    over the top -- the same two source dirs, in the same order, that
+    `harbor/verifier/verifier.py::_resolve_tests` uploads into `/tests` for
+    that step. The shared dir is optional there and here (a multi-step task's
+    root `tests/` holds only a README).
+    """
+    shared = task / "tests"
+    if shared.is_dir():
+        shutil.copytree(shared, project / "tests", dirs_exist_ok=True)
+    if step is not None:
+        step_tests = task / "steps" / step.name / "tests"
+        if step_tests.is_dir():
+            shutil.copytree(step_tests, project / "tests", dirs_exist_ok=True)
+
+
 def _run_solve(
     task: Path,
     arm: Arm,
@@ -277,6 +325,7 @@ def _run_solve(
     *,
     tier05_spec: dict | None = None,
     artifact_rel: str | None = None,
+    step: Step | None = None,
 ) -> RunResult:
     """Copy `task`'s environment/<workspace-subdir> (the exact tree the
     arm's own Dockerfile COPYs into WORKDIR /app/project -- flattened, no
@@ -314,8 +363,15 @@ def _run_solve(
         logs.mkdir(parents=True)
         workspace_dir = task / "environment" / ARM_WORKSPACE_SUBDIR[arm]
         shutil.copytree(workspace_dir, project, dirs_exist_ok=True)
-        shutil.copytree(task / "tests", project / "tests", dirs_exist_ok=True)
-        shutil.copytree(task / "solution", project / "solution", dirs_exist_ok=True)
+        _stage_tests_dir(task, project, step)
+        if (task / "solution").is_dir():
+            shutil.copytree(task / "solution", project / "solution", dirs_exist_ok=True)
+        # Multi-step: the step tree is copied at its real relative path, so a
+        # `steps/<n>/solution/solve.sh` still resolves (and so a step solution
+        # can reach the root one -- steps/01's reference solution is a thin
+        # STEP=01 wrapper around it, by design; see that file's header).
+        if (task / "steps").is_dir():
+            shutil.copytree(task / "steps", project / "steps", dirs_exist_ok=True)
         # awscdk/terraconstructs ship package.json/package-lock.json in
         # their workspace subdir but node_modules is only populated inside
         # the arm's Docker image (`npm ci` at build time) -- on the host
@@ -404,14 +460,54 @@ def _run_solve(
         )
 
 
+def _check_non_final_steps(spec: Spec, arm: Arm, task: Path) -> list[RunResult]:
+    """Every NON-final step needs its own reference solution scoring 1.0.
+
+    The new proof obligation the multi-step decomposition creates (see this
+    module's docstring). Nothing else in the repo shows that an intermediate
+    step's oracle is SATISFIABLE, and an unsatisfiable step-01 oracle would
+    abort every trial at the `min_reward` hard gate before step 02's prompt
+    is ever delivered -- silently, since Harbor records a step abort on the
+    StepResult and not on the trial (DECISIONS.md Amendment 26 §3).
+
+    The FINAL step is deliberately absent here: its reference is the
+    task-root `solution/solve.sh`, checked by `check_arm` under its original
+    label so `gates/grading_proof.py`'s own row lookups keep working.
+    """
+    results: list[RunResult] = []
+    steps = spec.steps or []
+    artifact_rel = getattr(spec.instruction.per_arm, arm).output_contract.artifact_path
+    for step in steps[:-1]:
+        step_solve = task / "steps" / step.name / "solution" / "solve.sh"
+        label = f"{arm}/steps/{step.name}/solution/solve.sh"
+        if _is_stub(step_solve):
+            results.append(RunResult(label, None, True, "NOT_AUTHORED (step reference solution pending)"))
+            continue
+        run = _run_solve(task, arm, step_solve, label, artifact_rel=artifact_rel, step=step)
+        run.ok = run.ok and run.reward == 1.0
+        if run.mirror_ok is False:
+            run.ok = False
+        results.append(run)
+    return results
+
+
 def check_arm(spec: Spec, arm: Arm) -> list[RunResult]:
     task = task_dir(spec, arm)
     solve_sh = task / "solution" / "solve.sh"
     results: list[RunResult] = []
 
+    # Multi-step: the task-root reference + every broken/ fixture are graded
+    # against the FINAL step's oracle -- which spec_model guarantees is the
+    # full tier suite, i.e. exactly what they were graded against before the
+    # decomposition. `final_step` is None for a single-step spec, which makes
+    # every _run_solve call below byte-identical to its pre-steps behaviour.
+    final_step: Step | None = (spec.steps or [None])[-1] if spec.is_multi_step() else None
+
     if _is_stub(solve_sh):
         results.append(RunResult(f"{arm}/solution/solve.sh", None, True, "NOT_AUTHORED (Slice D pending)"))
         return results
+
+    results.extend(_check_non_final_steps(spec, arm, task))
 
     # Tier-0.5-aware plumbing (SCHEMA.md §4.4, DECISIONS.md "Tier-0.5 runs
     # host-side, non-gating"): a catch whose predicted_tier_caught is "0.5"
@@ -427,7 +523,7 @@ def check_arm(spec: Spec, arm: Arm) -> list[RunResult]:
 
     good = _run_solve(
         task, arm, solve_sh, f"{arm}/solution/solve.sh",
-        tier05_spec=tier05_spec, artifact_rel=artifact_rel,
+        tier05_spec=tier05_spec, artifact_rel=artifact_rel, step=final_step,
     )
     good.ok = good.ok and good.reward == 1.0
     if tier05_spec is not None:
@@ -481,7 +577,10 @@ def check_arm(spec: Spec, arm: Arm) -> list[RunResult]:
             # offline -- no AWS credentials or network needed -- while still
             # requiring the fixture to MECHANICALLY demonstrate (not just
             # claim in a comment) that it reproduces the documented gap.
-            bad = _run_solve(task, arm, broken_solve, label, artifact_rel=artifact_rel)
+            bad = _run_solve(
+                task, arm, broken_solve, label,
+                artifact_rel=artifact_rel, step=final_step,
+            )
             bad.ok = bad.ok and bad.reward == 1.0 and LIVE_ONLY_CONFIRMED_MARKER in bad.detail
             if bad.reward == 1.0 and LIVE_ONLY_CONFIRMED_MARKER not in bad.detail:
                 bad.detail = (
@@ -494,7 +593,7 @@ def check_arm(spec: Spec, arm: Arm) -> list[RunResult]:
         elif tier == "0.5":
             bad = _run_solve(
                 task, arm, broken_solve, label,
-                tier05_spec=tier05_spec, artifact_rel=artifact_rel,
+                tier05_spec=tier05_spec, artifact_rel=artifact_rel, step=final_step,
             )
             # Falsified two ways at once, both required: (a) reward stays
             # 1.0 -- proving the static tiers genuinely cannot see this
@@ -506,7 +605,10 @@ def check_arm(spec: Spec, arm: Arm) -> list[RunResult]:
             # to the one tier reward.txt can never cover by design).
             bad.ok = bad.ok and bad.reward == 1.0 and bad.tier05_ok is False
         else:
-            bad = _run_solve(task, arm, broken_solve, label, artifact_rel=artifact_rel)
+            bad = _run_solve(
+                task, arm, broken_solve, label,
+                artifact_rel=artifact_rel, step=final_step,
+            )
             observed = observed_tier(bad.detail)
             # Mechanical backstop for `predicted_tier_caught` (benchmark-
             # integrity review finding "gates/oracle_falsifiability.py --
@@ -548,7 +650,7 @@ def check_arm(spec: Spec, arm: Arm) -> list[RunResult]:
             if not extra_solve.exists():
                 results.append(RunResult(label, None, False, "directory present but solve.sh missing"))
                 continue
-            bad = _run_solve(task, arm, extra_solve, label)
+            bad = _run_solve(task, arm, extra_solve, label, step=final_step)
             bad.ok = bad.ok and bad.reward == 0.0
             results.append(bad)
 

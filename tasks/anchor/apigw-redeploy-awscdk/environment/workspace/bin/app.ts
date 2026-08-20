@@ -24,5 +24,5 @@ import { ScenarioStack } from "../lib/scenario-stack";
 const app = new cdk.App();
 
 new ScenarioStack(app, "ScenarioStack", {
-  description: "API Gateway REST API: deploy, confirm, modify, re-deploy (day-2 iteration)",
+  description: "API Gateway REST API (live)",
 });

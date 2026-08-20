@@ -42,6 +42,31 @@ Fill in, in this order (each corresponds to a `SCHEMA.md` section):
    `arms.terraconstructs.reason` was verified, see that spec's own comment
    block). A `reason` that isn't independently checkable against the arm's
    own README fails review — `SCHEMA.md` §1.
+2b. **Does it need `steps:`?** Ask one question before writing a single line
+   of prose: *does this scenario's prompt describe more than one point in
+   time?* If it says "build X, then change it to Y", or "deploy it and then
+   …", it is a **multi-step** scenario and must be decomposed (`SCHEMA.md`
+   §2.6). A single prompt narrating both days measures day-1 authoring with
+   perfect foreknowledge, which is the one condition a real day-2 change never
+   has — the agent designs X so Y is trivial, or authors the final shape in one
+   pass, and a trap that only fires on a *second* apply never fires at all.
+   `docs/prompt-decomposition-audit.md` is the worked audit of every existing
+   spec against that rule, including the four separate leaks the one offender
+   had. Realistic day-1 context that names no specific future change ("this API
+   will evolve") is fine: **realism is fine, prophecy is not.**
+
+   The three other rules that bite when you write the steps: a step-1 prompt
+   must not name the later change *anywhere*, including in a per-arm
+   `language_line`; every step's oracle goes in `steps/<name>/tests/`, never in
+   the shared root `tests/`, which Harbor uploads at every step's verification;
+   and a multi-step spec **must** declare `workspace_title` (`SCHEMA.md` §0.1)
+   — a *terminal* one-liner describing only what step 1 builds. It replaces
+   `title` as the header stamped into each arm's skeleton entry file under
+   `environment/`, which the arm Dockerfile copies into the agent image. Your
+   scenario `title` describes the whole arc; put it there and step 1's agent
+   reads the day-2 plan on line 1 of its own `main.tf` (that is exactly what
+   happened once — Amendment 27 §5.1).
+
 3. **`instruction`** — one `shared_body` (identical prose across arms; the
    generator diffs it post-placeholder-substitution and fails the build if
    arms' instructions diverge outside the language line, `SCHEMA.md` §2/
@@ -391,6 +416,12 @@ concentrated in one scenario:
   sweep couldn't handle — so the script was removed as dead code
   (Amendment 18, executed 2026-08-13); the scenario now relies solely on
   the framework's generic post-trial reset.
+- Multi-step decomposition: this scenario is why `steps:` exists
+  (`SCHEMA.md` §2.6). Its original single prompt narrated both days *and*
+  named its own trap; `DECISIONS.md` Amendment 27 and
+  `docs/prompt-decomposition-audit.md` record what was removed, why the
+  agent — not the harness — still runs both deploys, and why its single-step
+  results must never be pooled with multi-step-form ones.
 - Holdout: `specs/split.yaml` places `apigw-redeploy` in `holdout` — an
   orthogonal fact from its current NOT-YET-trial-runnable status (§4's IAM
   path-prefix gap, `specs/apigw-redeploy.yaml`'s own `gating` comment) —

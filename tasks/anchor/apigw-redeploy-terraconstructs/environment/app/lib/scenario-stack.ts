@@ -1,4 +1,4 @@
-// API Gateway REST API: deploy, confirm, modify, re-deploy (day-2 iteration)
+// API Gateway REST API (live)
 //
 // Generated skeleton -- generator/gen.py, from specs/apigw-redeploy.yaml.
 // This is YOUR file -- the App/provider bootstrap (imports this

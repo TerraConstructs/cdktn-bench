@@ -26,6 +26,7 @@ contract, the falsified-catch lesson).
 ```yaml
 id: <kebab-case scenario id>
 title: <string>
+workspace_title: <string>         # §0.1, required iff `steps:` is set, else forbidden
 difficulty: <1|2|3>
 services: [<string>, ...]        # boto3 service ids, matches aws_services convention
 arms: {...}                       # §1
@@ -40,9 +41,47 @@ provenance: {...}                 # §6
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `id` | string | yes | Kebab-case, matches `^[a-z][a-z0-9-]*$`. Becomes the directory name under `tasks/`, `oracles/rego/`, `oracles/cfn-guard/`, and `oracles/<id>/` (§8). Must equal the spec's own filename stem (`specs/<id>.yaml`), enforced by the generator at load time — this is what lets the generator refuse to run against a renamed-but-not-moved file. |
-| `title` | string | yes | Short human title, shown in any results viewer. Not used in `instruction.md` — the instruction body is `instruction.shared_body`, not `title`. |
+| `title` | string | yes | Short human title, shown in any results viewer and written to `task.toml [task] description` (host-side metadata; the task dir itself is never uploaded to the agent). Not used in `instruction.md` — the instruction body is `instruction.shared_body`, not `title`. **Is** used as the skeleton header for a single-step spec — see §0.1. |
+| `workspace_title` | string | **required iff `steps:` is set**; forbidden otherwise | The header comment stamped into each arm's skeleton entry file under `environment/`. §0.1. |
 | `difficulty` | int, `1`–`3` | yes | 1 = single-resource, 2 = multi-resource wiring, 3 = cross-service (prereg §5 difficulty gradient). The generator maps this to `task.toml [metadata] complexity`: `1→Atomic, 2→Sequential, 3→Orchestrated` — a generator convention, not a spec field; do not add a `complexity` field to the spec. |
 | `services` | list[string] | yes, ≥1 | boto3 service client ids (e.g. `ssm`, `iam`, `lambda`), lower-case. Written into every generated `task.toml [metadata] aws_services`. Purely descriptive in v1 (no live boto3 call ever validates against it — that upstream `test/aws_service_catalog.ts` check is aws-bench-datasets' own CI, not ours), but keep it accurate; a later live-check phase (§5) will care. |
+
+### 0.1 `title` vs `workspace_title` — the skeleton header is agent-visible
+
+The generator stamps a one-line header comment into every arm's generated
+skeleton entry file, and into the awscdk app's CloudFormation stack
+`description`:
+
+| Arm | File | Site |
+|---|---|---|
+| awscdk | `environment/workspace/lib/scenario-stack.ts` | `generator/gen.py` `awscdk_stack_skeleton()` |
+| awscdk | `environment/workspace/bin/app.ts` (`description:`) | `generator/gen.py` `awscdk_app_ts()` |
+| hcl_raw | `environment/workspace/main.tf` | `generator/gen.py` `hcl_raw_main_tf()` |
+| terraconstructs | `environment/app/main.ts`, `environment/app/lib/scenario-stack.ts` | `generator/gen.py` `terraconstructs_main_ts()` / `terraconstructs_stack_skeleton()` |
+
+Everything under `environment/` is `COPY`'d into the agent image by the arm
+Dockerfile, so **the header is the first thing the step-1 agent reads** — it is
+prompt surface, not metadata. A scenario `title` legitimately describes the
+whole arc (`"…: deploy, confirm, modify, re-deploy (day-2 iteration)"`); putting
+that arc in the skeleton foreshadows step 2 exactly as loudly as the prompt
+would, which Amendment 26 §7 rule 2 and
+`docs/design/multistep-trial-investigation.md` §5 rule 2 forbid ("never place
+later-step material in `environment/` — that IS the image the agent lives in").
+
+Therefore:
+
+- **Single-step spec:** `workspace_title` is *forbidden*; the header is `title`,
+  byte-for-byte as before this field existed.
+- **Multi-step spec:** `workspace_title` is *required* and is used instead. It
+  must be terminal — describing only what step 1 is asked to build, implying no
+  future change. Making it required rather than defaulting (to `title`, or to
+  `id`) forces the author to choose a step-1-safe header instead of inheriting a
+  foreshadowing one by omission.
+
+Enforced by `Spec._multi_step_requires_workspace_title` (spec load time) and,
+against the real emitted bytes, by
+`generator/tests/test_multistep_emission.py::test_step_one_environment_leaks_nothing_about_step_two`,
+which deny-list-scans every file under each multi-step task's `environment/`.
 
 ---
 
@@ -248,6 +287,16 @@ equivalent (`static_tiers.sh`) will treat as a `output_contract` criterion
 (mirroring `create-eks-cluster`'s `output_contract` criterion), and a missing
 key fails the tier unconditionally.
 
+`deploy_command` (optional, default `null`): the arm's REAL deploy command
+(e.g. `terraform apply -input=false -auto-approve`). Used by **exactly one**
+thing: a multi-step step declaring `pre_invoke.deploy_prior: true` (§2.6),
+where the harness deploys the previous step's work before this step's agent
+runs. It is spec-declared per arm rather than inferred from an arm→command
+map in the generator, because guessing a deploy command is how a credentialed
+harness action silently deploys the wrong tree. Setting it with no
+`deploy_prior` step anywhere is a hard spec error — a real deploy command that
+nothing ever runs is a trap for the next reader.
+
 ### 2.5 `seeded_files` (optional, top-level, default `[]`)
 
 ```yaml
@@ -319,6 +368,140 @@ it does not threaten prompt parity even though it is technically part of
 the per-arm `own_note` (which is itself allowed to vary per arm, since it
 sits after the language line in the assembly template — §2.1's ordering
 note).
+
+
+### 2.6 `steps` (optional, **TOP-LEVEL** — a sibling of `instruction`, default `null`)
+
+Added 2026-08-20 by the prompt-decomposition pass
+(`docs/prompt-decomposition-audit.md`; `DECISIONS.md` Amendments 26/27). It is
+listed here, inside §2, because it is primarily an **instruction**
+decomposition — but it is a top-level key, not a child of `instruction`.
+
+```yaml
+steps:                                   # omit entirely for a single-step scenario
+  - name: "01-initial-deploy"            # ^[0-9]{2}-[a-z][a-z0-9-]*$ ; consecutive, ascending
+    min_reward: 1.0                      # optional; see "the hard gate" below
+    instruction:
+      shared_body: |                     # THIS STEP's work
+        ...
+      per_arm:                           # optional; per-arm language line for THIS step
+        awscdk:        { language_line: "..." }
+        hcl_raw:       { language_line: "..." }
+        terraconstructs: { language_line: "..." }
+    oracle:
+      structural_asserts:                # NAMES from oracle.structural_asserts
+        - rest-api-exists                # required on every step but the last;
+        - deployment-exists              # MUST be omitted on the last step
+      live_check:                        # optional; inherits verifier.live_check
+        enabled: true
+        gating: true
+    pre_invoke:                          # optional harness action, see below
+      deploy_prior: true
+      timeout_sec: 1800.0
+```
+
+**Why it exists.** A single prompt that says *"build X, then change it to Y"*
+measures day-1 authoring **with perfect foreknowledge**, which is the one
+condition a real day-2 change never has. An agent told about Y up front
+designs X so Y is trivial, or authors the final shape in one pass — and a trap
+that only fires on a *second* apply against an *existing* deployment never
+fires at all. `steps` reveals the second intent only when it is due:
+`steps/<name>/instruction.md` lives host-side and is read on demand at that
+step's agent invocation, and the task directory is never uploaded to the
+container. That is what makes the guarantee mechanical rather than a
+convention.
+
+**Minimum 2 steps.** A 1-step "multi-step" task is refused: it moves every
+task checksum and equipping hash for no measurement gain (`DECISIONS.md`
+Amendment 26 §6 explicitly declines to normalize single-step tasks).
+
+**Prompt assembly.** Each step's prompt is
+`step.instruction.shared_body` → the spec-level `instruction.shared_body` →
+the language line → the ownership note → the live-credentials note → the
+trailer → the JSON fence. Both bodies, because **sessions are fresh per step**
+(Amendment 26 §1): constraints stated only at step 1 would be invisible to
+every later step's agent. Step-work first, because it is what the agent is
+being asked to *do*; the spec-level body reads as standing constraints that
+qualify it — write it that way.
+
+The spec-level `instruction.shared_body` of a multi-step scenario is therefore
+**never delivered on its own**, and must not name a route, an integration
+type, a revision, or anything else that belongs to one particular step.
+
+**Per-arm language lines.** `steps[].instruction.per_arm.<arm>.language_line`
+overrides `instruction.per_arm.<arm>.language_line` for that step only. This
+is not cosmetic: `apigw-redeploy`'s spec-level awscdk line named
+`MockIntegration` — the *day-2* integration type — which leaked the step-2
+intent into the step-1 prompt on **one arm only**, a foreshadowing defect and
+an arm-parity defect at once. Declare the line explicitly on every arm at
+every step; the inheritance fallback exists for scenarios where no step
+differs, not as the normal shape.
+
+**Parity** (§8.2 point 2) is checked **per step**: everything before the
+language line must be byte-identical across arms *for the same step*. Arms may
+carry different per-step language lines; they may not carry different bodies.
+
+**The oracle is a projection, never a second definition.**
+`steps[].oracle.structural_asserts` is a list of **names** drawn from the one
+spec-level `oracle.structural_asserts`. The generator emits one
+`steps/<name>/tests/static_tiers.sh` per step running that projection.
+
+- Every step but the last **must** name its subset. Inheriting the full suite
+  would grade an intermediate state against the FINAL state's asserts, which
+  no correct intermediate solution can satisfy.
+- The last step **must omit** the key, i.e. run the **full** suite. That is
+  what makes a multi-step scenario's terminal grading identical to what its
+  single-step form graded, and what lets the reference solution and every
+  `solution/broken/<catch>/` fixture keep proving exactly what they proved.
+- An assert whose own `description` describes the later change (e.g.
+  *"backing the day-2 /status route"*) is **step-N-only oracle text** and must
+  live only in that step's projection.
+
+**The `min_reward` hard gate.** Omitted, it defaults to `1.0` on every
+non-final step: the next step's prompt never fires unless this one verified
+green (`harbor/trial/multi_step.py::_should_stop_after_step`). A change
+request whose starting state was never actually built is not a measurement of
+anything. The final step gets no `min_reward` (there are no remaining steps to
+gate). An author who genuinely wants an ungated intermediate step writes
+`min_reward: 0.0` — always satisfied, and explicit, so "no gate" is never the
+result of forgetting a key.
+
+**`live_check` per step.** Omitted, a step inherits
+`verifier.live_check.{enabled,gating}`. A step may only **narrow** the
+spec-level check, never introduce one: `module`/`hand_authored`/
+`agent_role_name`/`concurrency_mode` are spec-level facts (one container, one
+account, one reset), and a step-level live check without them would ship the
+generated not-implemented stub as that step's oracle. Each live-checked step
+carries its **own hand-authored** `steps/<name>/tests/live_check.py` —
+step 01's must not mention anything from step 02.
+
+**`pre_invoke` — the declarative harness action.** `deploy_prior: true` emits
+`steps/<name>/pre_invoke/pre_invoke.sh`, run before that step's agent with
+`[scenario].pre_invoke_role_name` credentials staged
+(`cdktn_bench/trial.py::CdktnMultiStepTrial._run_step_pre_invoke`). It runs
+that arm's `output_contract.deploy_command`, which the spec must declare per
+arm (§2.4) — the generator refuses to guess a real deploy command. It cannot
+be declared on the first step (there is no prior work to deploy). `timeout_sec`
+(default `1800.0`) is emitted as the task-level `[pre_invoke] timeout_sec`,
+sized to the **largest** value any step declares, because that one value
+applies to every step and aws-bench's own default of 600 s is far too short
+for a real deploy (`DECISIONS.md` Amendment 26 draft addendum (a)).
+
+**Opting out — the agent deploys instead.** Amendment 26 §2 makes the harness
+the *default* deployer, and explicitly allows a spec to declare no
+`pre_invoke` at all where the deploy loop **is** the measurement.
+`apigw-redeploy` does exactly that, in both steps: its headline catch is
+`predicted_tier_caught: "live"` and is discriminated only by *the agent's own*
+second apply producing no new deployment. That opt-in works because Harbor
+keeps ONE container alive across every step and uploads a step workdir only if
+`steps/<n>/workdir/` exists (which the generator never emits), so a later
+step's agent opens the very workspace, state and deployed stack its own
+earlier self left behind. Full rationale:
+`docs/prompt-decomposition-audit.md` §3.
+
+**Regression guarantee.** A spec **without** `steps` generates byte-identically
+to before this field existed. Every branch the generator grows for steps is
+`if spec.steps:`-guarded.
 
 ---
 
@@ -1049,6 +1232,69 @@ if the flat grouping was actually intended.
    `tests/static_tiers.sh` the real trial runs — this is what the build
    plan's Phase 2 exit criterion ("reference solutions score 1.0 in all
    cells") checks.
+9. A spec declaring `steps` (§2.6) emits §8.3's layout instead of a root
+   `instruction.md` + `tests/` oracle. Every other rule above is unchanged —
+   in particular rule 3 (`environment/` is still a byte-copy; a step never
+   gets its own workspace) and rule 4 (the `[metadata].id` UUID is still
+   reused).
+
+---
+
+### 8.3 Multi-step generated layout (`steps:`, §2.6)
+
+```
+tasks/anchor/<scenario-id>-<arm>/
+    task.toml                       # + multi_step_reward_strategy = "final"
+                                     # + [[steps]] (name, min_reward, [steps.agent],
+                                     #   [steps.verifier] incl. its own env)
+                                     # + [pre_invoke] timeout_sec, iff any step declares one
+    environment/                    # UNCHANGED — one workspace, shared by every step
+    steps/
+        01-<slug>/
+            instruction.md          # this step's prompt (per arm)
+            tests/                  # this step's oracle: _assert_lib.sh, static_tiers.sh
+                                     # (that step's assert projection), test.sh,
+                                     # policy.{rego,guard}, live_check.py if live-checked
+            pre_invoke/pre_invoke.sh # iff the step declares pre_invoke (never on step 01)
+            solution/solve.sh        # reference solution for THIS step (non-final steps only)
+        02-<slug>/
+            instruction.md
+            tests/
+    tests/
+        README.md                   # the ONLY file here — see below
+    solution/                       # UNCHANGED, task-root: the whole-scenario reference
+        solve.sh                     #   solution (= the FINAL step's reference) and every
+        broken/<catch>/solve.sh      #   negative fixture, graded against the FINAL oracle
+    (no root instruction.md)
+```
+
+**No root `instruction.md`.** Harbor sets `Task.instruction = ""` whenever
+`[[steps]]` is present, and `gates/equipping.py` folds `steps/*/instruction.md`
+into the equipping hash *only in the absence of a root one*. A leftover root
+`instruction.md` would silently revert the hash to the single-step key while
+the agent never saw that text, so the generator **deletes** it rather than
+tolerating it.
+
+**The shared root `tests/` holds no oracle.** Harbor uploads it during **every**
+step's verification and only empties `/tests` at the start of the **next**
+step's verification — i.e. after that step's agent has already run
+(`harbor/verifier/verifier.py::_resolve_tests`,
+`harbor/trial/multi_step.py::_reset_shared_step_verifier_dirs`). Anything
+step-specific placed there is readable inside a later step's agent phase. The
+generator writes a single step-agnostic `README.md` saying so, and **hard-errors**
+rather than deleting a hand-authored `live_check.py` it finds there — that is
+answer-key material, and only the author can say which step owns it.
+
+**Reference solutions.** The task-root `solution/` tree is unchanged and stays
+the whole-scenario reference: `gates/oracle_falsifiability.py` runs it and every
+`solution/broken/<catch>/` fixture against the **final** step's oracle, which
+§2.6 guarantees is the full tier suite — so those rows prove byte-for-byte what
+they proved before the decomposition. Each **non-final** step additionally gets
+`steps/<name>/solution/solve.sh`, required to score 1.0 against its own subset
+oracle; that is the new obligation the decomposition creates (an unsatisfiable
+intermediate oracle would abort every trial at the `min_reward` gate before the
+next prompt ever fired). The final step has no `steps/<name>/solution/` — its
+reference is the task-root one.
 
 ---
 

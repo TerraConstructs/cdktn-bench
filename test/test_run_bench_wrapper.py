@@ -1,8 +1,17 @@
 """Unit tests for scripts/run-bench.sh's argument assembly and model/token
 wiring, exercised entirely via --dry-run (AWS_BENCH_DRY_RUN=1): the script
-prints the argv it would pass to `uv run aws-bench` and a
-CLAUDE_CODE_OAUTH_TOKEN_SET flag, then exits — no `uv`, `aws-bench`, AWS
+prints the argv it would pass to `uv run cdktn-bench` and a
+CLAUDE_CODE_OAUTH_TOKEN_SET flag, then exits — no `uv`, `cdktn-bench`, AWS
 account, or Claude Code call is ever touched by these tests.
+
+The runner was flipped `aws-bench` -> `cdktn-bench` on 2026-08-20
+(DECISIONS.md Amendment 27): the CLI is a strict superset (same `start`
+function object, same flags), and only the trial factory differs —
+`cdktn_bench.trial.CdktnTrial.create` sends a stepless task down the
+untouched upstream single-step path and a `[[steps]]` task down
+`CdktnMultiStepTrial`. `test_exec_target_is_cdktn_bench` below pins the flip
+so a silent revert to `aws-bench` (which refuses every multi-step task with
+NotImplementedError) fails here rather than at the next live run.
 """
 
 from __future__ import annotations
@@ -106,7 +115,7 @@ class TestJobsDirDefaulting:
 
 class TestLocalRegistryFlagsSurfaced:
     """The flags local-registry.md's documented invocations need must all
-    reach `uv run aws-bench run` unchanged."""
+    reach `uv run cdktn-bench run` unchanged."""
 
     def test_scenario_path_and_task_path(self, tmp_path: Path) -> None:
         proc = run_dry(
@@ -456,3 +465,36 @@ class TestHelp:
         assert "Usage: scripts/run-bench.sh" in proc.stdout
         assert "fake-help-path-token" not in proc.stdout
         assert "fake-help-path-token" not in proc.stderr
+
+
+class TestExecTarget:
+    """The runner must exec `cdktn-bench`, not `aws-bench`.
+
+    Pinned because the difference is invisible for every task that exists
+    today and fatal for the ones that don't: upstream's
+    `AwsBenchTrial.create` raises `NotImplementedError("multi-step AWS tasks
+    are not yet supported ...")` the moment a task.toml declares `[[steps]]`,
+    so a silent revert to `aws-bench` would leave every single-step scenario
+    passing and refuse `apigw-redeploy` (the only multi-step scenario)
+    outright — at the start of a live, billed run.
+    """
+
+    def test_exec_target_is_cdktn_bench(self, tmp_path: Path) -> None:
+        proc = run_dry([], env={}, tmp_path=tmp_path)
+
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.startswith("uv run cdktn-bench run "), proc.stdout
+        assert "uv run aws-bench" not in proc.stdout
+
+    def test_flags_are_unchanged_by_the_flip(self, tmp_path: Path) -> None:
+        """cdktn_bench/cli.py registers aws-bench's own `start` function
+        object, so flag parity is total by construction -- assert the full
+        default argv, not just the binary name."""
+        proc = run_dry(["--yes", "-k", "2"], env={}, tmp_path=tmp_path)
+
+        assert proc.returncode == 0, proc.stderr
+        argv = proc.stdout.splitlines()[0]
+        assert argv == (
+            "uv run cdktn-bench run -a claude-code -m claude-sonnet-5 "
+            "-o jobs/claude-sonnet-5 -k 2 --yes --ak max_turns=100"
+        ), argv

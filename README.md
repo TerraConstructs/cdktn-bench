@@ -96,7 +96,9 @@ failure to a cheaper tier is the mechanism under test.
 ## Setup
 
 ```bash
-make setup       # uv sync (installs the pinned aws-bench runner)
+make setup       # uv sync (installs the pinned aws-bench runner + this repo's
+                 #          own `cdktn-bench` CLI, a superset that adds multi-step
+                 #          trials — DECISIONS.md Amendments 26/27)
 make build-arms  # docker build each arm's environment/Dockerfile
 make preflight   # confirm each arm's toolchain works offline in its container
 make check       # schema checks, gate tests, drift checks

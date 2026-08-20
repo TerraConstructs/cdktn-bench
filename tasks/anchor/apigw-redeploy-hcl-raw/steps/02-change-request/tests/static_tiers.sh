@@ -2,6 +2,15 @@
 # Generated -- generator/gen.py, from ../../../../specs/apigw-redeploy.yaml.
 # Tier-0/1 static verifier for the hcl_raw arm. Do not hand-edit;
 # regenerate instead (`make gen SPEC=specs/apigw-redeploy.yaml`).
+# STEP '02-change-request' oracle (SCHEMA.md §2.6): the FULL tier suite
+# -- this is the final step, so its grading is identical to what the
+# single-step form of this scenario graded.
+# It lives in steps/02-change-request/tests/, never in the shared
+# tests/: Harbor uploads the shared tests dir during EVERY step's
+# verification and only empties /tests at the start of the NEXT step's
+# verification, so step-specific oracle text placed there is readable
+# inside a later step's agent phase (DECISIONS.md Amendment 26 §7 rule
+# 1).
 #
 # Reward contract (reused from tasks/anchor/smoke/tests/test.sh):
 # writes a bare float to /logs/verifier/reward.txt

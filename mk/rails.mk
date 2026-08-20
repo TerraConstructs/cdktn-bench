@@ -120,8 +120,11 @@ MODEL ?= claude-sonnet-5
 # REQUIRES, neither of which this repo/slice provisions:
 #   - A real AWS account with scenarios/anchor already deployed into it
 #     (`aws-bench env init` + `env setup` against --env-name cdktn-anchor —
-#     see local-registry.md steps 1-2). Without that, `aws-bench run` fails
+#     see local-registry.md steps 1-2). Without that, `cdktn-bench run` fails
 #     at the environment-lookup step before ever invoking the agent.
+#     (run-bench.sh execs `cdktn-bench`, not `aws-bench`, as of DECISIONS.md
+#     Amendment 27 — a superset CLI, same flags; `env init`/`env setup` are
+#     the same command objects under either name.)
 #   - A real Claude Code credential: either $CLAUDE_CODE_OAUTH_TOKEN, a
 #     token file at $AWS_BENCH_CLAUDE_TOKEN_FILE (default ~/.anthropic — an
 #     operator-created convention, not a verified `claude setup-token`

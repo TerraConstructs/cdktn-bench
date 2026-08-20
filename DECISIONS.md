@@ -5237,3 +5237,272 @@ died before its agent ever ran is exactly the case that produces it, and it is
 visible on the record as `steps.n_llm_calls_per_step[<name>] == null` alongside
 `steps.aborted_early`. Passing `censored=` explicitly (the caller-knows-best path)
 also bypasses the blindness entirely.
+
+---
+
+## Amendment 27 (2026-08-20) — scenario-form change: `apigw-redeploy` is now MULTI-STEP (no foreshadowing); the runner flips to `cdktn-bench`
+
+**Operator directive (verbatim, 2026-08-20):** *"extend the trial to allow multi
+step first - we also need a pass on the existing scenarios to break down the
+prompts (no foreshadowing, first step prompt should not know the future)"*.
+Amendment 26 built the engine. This amendment records the **scenario-form
+change** — the generator now emits multi-step tasks, and the one offending
+scenario is decomposed.
+
+### 1. The audit: one offender in six
+
+Every spec's full instruction body (`shared_body` **and** every
+`per_arm.<arm>.language_line`) was read and classified. Evidence, with verbatim
+quotes of the offending sentences: `docs/prompt-decomposition-audit.md`.
+
+| Spec | Class | Verdict |
+|---|---|---|
+| `apigw-openapi` | (a) genuinely single-step | unchanged |
+| **`apigw-redeploy`** | **(b) foreshadowing** | **decomposed, 2 steps** |
+| `ecs-swappiness` | (a) | unchanged |
+| `s3-lambda-log-retention` | (a) | unchanged |
+| `sfn-jsonata` | (a) | unchanged |
+| `_toy/toy-ssm-parameter` | (a) | unchanged |
+
+The rule applied: *"then modify/update/add X"* in a first prompt is
+foreshadowing, full stop. Realistic day-1 context that does not name a specific
+future change is fine — **realism is fine, prophecy is not**. No spec used the
+acceptable form; the distinction is recorded for the next author.
+
+`apigw-redeploy` leaked in four places, all quoted in the audit doc: the
+opening sentence ("*apply a prescribed configuration change, and re-deploy
+it*"), an entire "Step 2" paragraph specifying the route, the integration type
+and the exact JSON body the step-2 oracle asserts on, and — on **one arm only**
+— the awscdk `language_line` naming `MockIntegration`, which was an arm-parity
+defect as well as a foreshadowing one.
+
+A fifth finding is **answer-key leakage, not foreshadowing**, and is deleted
+rather than relocated: the old prompt named the trap outright ("*A second
+deploy that does not actually create a new, live-serving deployment behind the
+stage … is exactly the mistake this task exists to test for*"). A prompt that
+says "the mistake is X, don't make X" measures instruction-following, not the
+abstraction's ability to prevent X by construction. It appears in **neither**
+step.
+
+### 2. THE COMPARABILITY RULE — single-step results must never be pooled
+
+**The single-step and multi-step forms of `apigw-redeploy` are different
+scenarios.** The three-arm live results of 2026-08-13 (`docs/live-results.md`:
+awscdk 9,403 / terraconstructs 24,218 / hcl-raw 45,535 output tokens, all
+reward 1.0, first recorded in Amendment 23) were produced under the
+**single-step** form. They:
+
+- **remain valid** as pilot evidence *for the single-step form* — nothing about
+  them is retracted;
+- **must not be pooled** with any multi-step-form result, in any estimator, at
+  any n.
+
+This is not a judgement call to be made later from the data. It follows
+mechanically from Amendment 26 §4's already-registered rule ("*an N-step task
+and a 1-step task are not equipping-comparable on tokens-to-green by
+construction — more prompts means more authoring. Cross-shape comparisons are
+refused, not adjusted*") plus the fact that the *content* of the prompts
+changed too. A multi-step-form run of this scenario is a **new pre-registered
+comparison** with its own census, whose headline metric is
+**tokens-to-green-across-steps** (Amendment 26 §4: the cumulative sum of
+per-step agent OUTPUT tokens up to and including the step at which the final
+oracle first passes).
+
+Two mechanical consequences worth stating so nobody has to rediscover them:
+the task checksum moved (it is a dirhash of the whole task dir), and the
+equipping hash moved (a multi-step task has no root `instruction.md`, so
+`gates/equipping.py` hashes `step_instructions` instead —  Amendment 26 §8).
+Neither is a regression; both are exactly the mechanisms that make an
+accidental pooling impossible to do silently.
+
+### 3. WHO DEPLOYS: `apigw-redeploy` opts into agent-deploys in BOTH steps
+
+Amendment 26 §2 makes the harness the **default** deployer
+(`steps/<name>/pre_invoke/pre_invoke.sh`) and explicitly allows a spec to opt
+into agent-deploys where the deploy loop *is* the measurement. This spec takes
+that opt-in, and declares **no `pre_invoke` at all**. Reasoning
+(`docs/prompt-decomposition-audit.md` §3):
+
+1. **The discriminating event is the agent's own second apply.** The headline
+   catch `triggers-incomplete-hash` is `predicted_tier_caught: "live"` by
+   construction. If the harness ran the apply, the harness — not the agent —
+   would own the exact action under measurement, and a config missing
+   `triggers` would be indistinguishable from a correct one: both would have
+   "a deploy the harness ran".
+2. **It preserves the pilot's construct**, so the only thing this slice changes
+   is *when the second intent is revealed* — the cleanest comparison available.
+3. **Agent-side deploy failures should count against the agent here**, which is
+   the stated consequence of the opt-in.
+
+**Workspace carry-over was verified, not assumed** — it is what makes the
+opt-in work at all. `MultiStepTrial._run` stops the agent environment **once,
+after** the whole step loop, so the container and its filesystem survive every
+step boundary; `_prepare_step` uploads `steps/<n>/workdir/` and runs `setup.sh`
+**only if they exist**, and the generator emits neither. Only `/logs/agent` is
+relocated between steps (which is what gives clean per-step token attribution,
+Amendment 26 §1/§4). So step 02's agent opens the very workspace, terraform
+state and deployed stack its own step-01 self left behind. Had this not held it
+would have been a blocker, not something to paper over.
+
+### 4. The spec-schema surface (`specs/SCHEMA.md` §2.6, §8.3)
+
+Optional, top-level `steps:` — a sibling of `instruction`, not a child. Per
+step: `name` (`NN-slug`, consecutive), `instruction` (`shared_body` + optional
+per-arm `language_line`), `oracle` (assert-name projection + optional
+`live_check` narrowing), optional `pre_invoke` (`deploy_prior` + `timeout_sec`),
+optional `min_reward`.
+
+Decisions inside that surface worth recording:
+
+- **A spec WITHOUT `steps` emits byte-identically to before the field existed.**
+  Proven, not asserted: `make gen-all` after the generator refactor produced a
+  zero-line diff across all five stepless specs' task dirs (§7 below).
+- **Minimum 2 steps.** A 1-step "multi-step" task is refused — it moves every
+  checksum and hash for no measurement gain (Amendment 26 §6 already declined
+  to normalize single-step tasks).
+- **The final step MUST omit its assert projection**, i.e. runs the FULL tier
+  suite. That is what keeps a multi-step scenario's terminal grading identical
+  to what its single-step form graded, and what lets the existing reference and
+  negative fixtures keep proving what they proved. Enforced in `spec_model`.
+- **Every non-final step MUST name its subset.** Inheriting the full suite would
+  grade an intermediate state against the FINAL state's asserts, which no
+  correct intermediate solution can satisfy — every trial would abort at the
+  `min_reward` gate.
+- **`min_reward` defaults to 1.0 on every non-final step** (Amendment 26 §3's
+  hard gate) and is omitted on the final one. "No gate" must be written
+  explicitly (`min_reward: 0.0`), never be the result of forgetting a key.
+- **Per-step, per-arm language lines exist because the spec-level line
+  foreshadowed.** Declare them on every arm at every step; the inheritance
+  fallback is not the normal shape.
+- **`deploy_prior` runs a SPEC-DECLARED `output_contract.deploy_command`.** The
+  generator refuses to infer a deploy command from an arm→command map: guessing
+  is how a credentialed harness action silently deploys the wrong tree. A
+  `deploy_command` declared with no `deploy_prior` step is a hard error too — a
+  real deploy command nothing runs is a trap for the next reader. No current
+  spec uses either (see §3), so the path is covered by a synthetic-spec test
+  rather than shipping unexercised.
+- **`[pre_invoke] timeout_sec` is emitted explicitly**, sized to the largest
+  value any step declares — Amendment 26's draft addendum (a): the per-step
+  hook inherits the single task-level timeout, whose aws-bench default of 600 s
+  a real deploy exceeds, and a timeout there surfaces as a scored-ZERO trial
+  rather than as a slow deploy.
+
+### 5. Task-directory rules the generator now obeys (Amendment 26 §7, made real)
+
+- **No root `instruction.md`** on a multi-step task; the generator deletes one
+  if it finds it. `gates/equipping.py` folds `steps/*/instruction.md` into the
+  equipping hash *only in the absence of a root one*, so a leftover would
+  silently revert the hash to the single-step key for text no agent ever saw.
+- **The shared root `tests/` carries exactly one file: a step-agnostic
+  `README.md`.** Harbor uploads it during EVERY step's verification and only
+  empties `/tests` at the start of the NEXT step's verification, so anything
+  step-specific there is readable inside a later step's agent phase. Every
+  oracle lives in `steps/<name>/tests/`.
+- The generator **hard-errors rather than deleting** a hand-authored
+  `live_check.py` found in a multi-step task's root `tests/`, and rather than
+  deleting a stale step directory that still contains hand-authored material.
+  gen.py does not destroy content it did not write.
+- **`multi_step_reward_strategy = "final"` is written into `task.toml`**, not
+  left to `CdktnMultiStepTrial`'s default, so the file itself records the
+  scoring rule a published row was produced under.
+- **Parity (§8.2 point 2) is now checked PER STEP**, in both `gen.py`'s own
+  self-check and the standalone `check_parity.py`: everything before the
+  language line must be byte-identical across arms *for the same step*.
+- **`environment/` is prompt surface, and the scenario `title` may not appear
+  in it.** New required-for-multi-step spec field `workspace_title`
+  (`specs/SCHEMA.md` §0.1) supplies the header stamped into each arm's skeleton
+  entry file; `title` stays host-side metadata. See §5.1.
+
+### 5.1 The `environment/` leak — found by a verifier, fixed at the schema
+
+Recorded because the *rule* existed (Amendment 26 §7 rule 2: "never place
+later-step material in `environment/` — that IS the image the agent lives in")
+and was still violated: it had no mechanism behind it, only prose.
+
+`generator/gen.py` interpolated `spec.title` into five skeleton headers, and
+this spec's title is *"API Gateway REST API: deploy, confirm, modify,
+re-deploy (day-2 iteration)"*. So while the step-1 **prompt** was clean, line 1
+of the very file that prompt says the agent owns announced the day-2 iteration
+— and each arm's Dockerfile `COPY`s that file into the agent image, so it
+reached the container. An agent reading it anticipates a second apply, which is
+the exact anticipation the redeploy-trigger trap exists to defeat.
+
+Fixed in three layers so the rule is now enforced rather than asserted:
+`workspace_title` is **required** on a multi-step spec and **forbidden** on a
+stepless one (`Spec._multi_step_requires_workspace_title` — required rather
+than defaulted so the author must choose a step-1-safe header, forbidden on
+stepless specs so the other five specs' byte-identity guarantee cannot be
+traded away for a rename); the five emitter sites call
+`spec.workspace_header()`; and
+`generator/tests/test_multistep_emission.py::test_step_one_environment_leaks_nothing_about_step_two`
+runs the deny-list over every file under a multi-step task's `environment/`.
+`apigw-redeploy` declares `workspace_title: "API Gateway REST API (live)"`.
+Full write-up, including the falsification of the new test:
+`docs/prompt-decomposition-audit.md` §6.1.
+
+**General lesson for the next multi-step spec:** the no-foreshadowing check has
+*two* surfaces, not one — the step-1 prompt and everything under
+`environment/`. Auditing only the prompt is how this shipped.
+
+### 6. Falsifiability under the stepped form — what moved and what did not
+
+The task-root `solution/` tree is **unchanged**: `solution/solve.sh` and every
+`solution/broken/<catch>/solve.sh` stay where they were, and
+`gates/oracle_falsifiability.py` runs them against the **final** step's oracle —
+which §4 guarantees is the full tier suite. Those rows therefore check
+byte-for-byte what they checked before the decomposition (the final step's
+`static_tiers.sh` differs from the pre-change `tests/static_tiers.sh` by a
+generated comment header naming which step's oracle it is, and nothing else —
+proven both ways: against git history at landing time, and continuously by
+`generator/tests/test_multistep_emission.py::test_final_step_oracle_is_byte_identical_to_the_full_suite`,
+which re-renders the stepless script and compares). `gates/grading_proof.py`
+needed no change, because those rows kept their labels.
+
+**One obligation was ADDED, not removed:** every non-final step now needs its
+own `steps/<name>/solution/solve.sh` scoring 1.0 against its own subset oracle.
+Without it, nothing shows an intermediate oracle is *satisfiable* — and an
+unsatisfiable step-01 oracle would abort every trial at the `min_reward` gate
+before step 02's prompt ever fired, quietly (Harbor records a step abort on the
+`StepResult`, never on the trial).
+
+Those step-01 reference solutions are **thin `STEP=01` wrappers around the
+arm's existing whole-scenario `solve.sh`**, whose `write_rev1()` already
+defines revision 1. Copying the heredoc would give each arm two definitions of
+revision 1 that drift apart the first time either is edited — and a step-01
+oracle validated against a stale revision 1 proves nothing.
+
+**Result (offline, all three arms, 2026-08-20):** 15/15 rows PASS —
+reference 1.0 and step-01 reference 1.0 on every arm; every catch caught at its
+predicted tier; `triggers-incomplete-hash` still reward 1.0 + the
+`CDKTN_BENCH_LIVE_ONLY_CONFIRMED` marker on hcl-raw, N/A elsewhere.
+
+### 7. `scripts/run-bench.sh` now execs `cdktn-bench`
+
+`exec uv run aws-bench` → `exec uv run cdktn-bench`. This is a superset, not a
+replacement: `cdktn_bench/cli.py` registers aws-bench's own `start` **function
+object** on its own Typer app, so flag parity is total by construction, and
+`cdktn_bench/trial.py::CdktnTrial.create` dispatches on `task.has_steps` — a
+stepless task returns the **untouched** upstream `AwsBenchSingleStepTrial`, a
+`[[steps]]` task returns `CdktnMultiStepTrial`. Every existing single-step
+scenario runs the byte-identical path it ran before; the multi-step tasks the
+generator now emits stop being refused with upstream's
+`NotImplementedError("multi-step AWS tasks are not yet supported")`.
+`aws-bench` stays installed and working, and `aws-bench env init/setup/cleanup`
+are unaffected. Pinned by `test/test_run_bench_wrapper.py::TestExecTarget`, so a
+silent revert fails there rather than at the start of a live, billed run.
+
+### 8. Regeneration + proof
+
+`make gen-all` is idempotent (second full run is a byte-for-byte no-op). Scoped
+byte-identity of the five untouched scenarios was proven with
+`git diff --stat` restricted to their task directories: **zero** changed files.
+The only task dirs that moved are the three `apigw-redeploy-*` ones.
+
+**Pre-registration status.** A **scenario-form change**, registered before any
+multi-step-form result exists. It changes what `apigw-redeploy` measures (day-2
+iteration without foreknowledge, instead of day-1 authoring with it), which is
+why §2's no-pooling rule is stated here rather than inferred later. Nothing in
+Amendments 22–25 changes. Amendment 26's semantics are unchanged and are now
+exercised by a real generated task rather than only by a hand-authored fixture;
+Amendment 26 remains **DRAFT** until the first live multi-step run, and no
+multi-step result may be published while it is.

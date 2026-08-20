@@ -17,6 +17,14 @@ Usage:
 Exit 0 + "PARITY OK" iff every enabled arm's instruction.md shares an
 identical prefix (everything before its own per-arm language line). Exit 1
 with a unified diff otherwise.
+
+Multi-step (SCHEMA.md §2.6, 2026-08-20): a spec with `steps:` has no root
+instruction.md -- it has one prompt PER STEP, at
+`steps/<name>/instruction.md`. Every check below then runs once per step,
+over that step's own file. Parity is a WITHIN-step property: arms may carry
+different per-step language lines, but everything before the language line
+must be byte-identical across arms for the same step, or one arm's agent is
+being told something another's is not.
 """
 
 from __future__ import annotations
@@ -29,72 +37,75 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gen import (  # noqa: E402
     REPO_ROOT,
     build_instruction_md,
+    instruction_rel_paths,
     shared_prefix,
+    step_language_line,
     substitute_literals,
     task_dir,
 )
 from spec_model import Arm, load_spec  # noqa: E402
 
 
-def check(spec_path: Path) -> int:
-    spec = load_spec(spec_path)
-    arms: list[Arm] = spec.arms.enabled_arms()
+def check_one_prompt(spec, arms, rel: str, step) -> int:
+    """Both parity checks for ONE prompt file (`rel`, relative to a task dir).
 
+    `step` is None for the single-step shape and a `Step` for a multi-step
+    one; it only selects which language line is expected at the split point.
+    """
     # --- full-file re-derivation check -----------------------------------
-    # This is the load-bearing check: it re-renders each arm's
-    # instruction.md from the spec (build_instruction_md -- the exact same
-    # function gen.py used to write it) and requires the on-disk file to
-    # match BYTE-FOR-BYTE. Comparing only the shared prefix (below) leaves
-    # everything from the language line onward -- the language line itself,
-    # the trailer, any per-arm output_contract fence -- completely
-    # unchecked, which is exactly the gap a hand-inserted, arm-advantaging
-    # paragraph after the language line exploited (append an "AWS CDK HINT:
-    # use ssm.StringParameter..." paragraph to one arm's instruction.md and
-    # the old prefix-only check still reported "PARITY OK"). Since
-    # build_instruction_md is a pure function of (spec, arm) with no
-    # arm-specific free text ever entering it outside the declared
-    # shared_body/per_arm.language_line/output_contract.json_fields fields,
-    # "file on disk == re-derived from spec" is a stronger, structural
-    # guarantee than "arms agree with each other": it also catches a
-    # generated file that drifted from ITS OWN spec (e.g. a stale
-    # regeneration), not just cross-arm divergence.
+    # This is the load-bearing check: it re-renders each arm's prompt from
+    # the spec (build_instruction_md -- the exact same function gen.py used
+    # to write it) and requires the on-disk file to match BYTE-FOR-BYTE.
+    # Comparing only the shared prefix (below) leaves everything from the
+    # language line onward -- the language line itself, the trailer, any
+    # per-arm output_contract fence -- completely unchecked, which is exactly
+    # the gap a hand-inserted, arm-advantaging paragraph after the language
+    # line exploited (append an "AWS CDK HINT: use ssm.StringParameter..."
+    # paragraph to one arm's instruction.md and the old prefix-only check
+    # still reported "PARITY OK"). Since build_instruction_md is a pure
+    # function of (spec, arm, step) with no arm-specific free text ever
+    # entering it outside the declared shared_body/language_line/
+    # output_contract.json_fields fields, "file on disk == re-derived from
+    # spec" is a stronger, structural guarantee than "arms agree with each
+    # other": it also catches a generated file that drifted from ITS OWN spec
+    # (e.g. a stale regeneration), not just cross-arm divergence.
     missing: list[Arm] = []
     mismatched: list[Arm] = []
     on_disk: dict[Arm, str] = {}
     for arm in arms:
-        instr_path = task_dir(spec, arm) / "instruction.md"
+        instr_path = task_dir(spec, arm) / rel
         if not instr_path.exists():
             missing.append(arm)
             continue
         on_disk[arm] = instr_path.read_text()
-        expected = build_instruction_md(spec, arm)
+        expected = build_instruction_md(spec, arm, step)
         if on_disk[arm] != expected:
             mismatched.append(arm)
             diff = "\n".join(
                 difflib.unified_diff(
                     expected.splitlines(keepends=True),
                     on_disk[arm].splitlines(keepends=True),
-                    fromfile=f"{arm}/instruction.md (re-derived from spec)",
-                    tofile=f"{arm}/instruction.md (on disk)",
+                    fromfile=f"{arm}/{rel} (re-derived from spec)",
+                    tofile=f"{arm}/{rel} (on disk)",
                 )
             )
-            print(f"PARITY VIOLATION: {arm!r}'s instruction.md does not match its spec:\n{diff}")
+            print(f"PARITY VIOLATION: {arm!r}'s {rel} does not match its spec:\n{diff}")
 
     if missing:
         print(
-            f"PARITY CHECK ERROR: instruction.md missing for arm(s) {missing} "
-            f"-- run `make gen SPEC={spec_path}` first",
+            f"PARITY CHECK ERROR: {rel} missing for arm(s) {missing} "
+            f"-- run `make gen SPEC=specs/{spec.id}.yaml` first",
             file=sys.stderr,
         )
         return 1
     if mismatched:
-        print(f"\nPARITY FAILED for {spec.id!r}: on-disk instruction.md != spec-derived render "
+        print(f"\nPARITY FAILED for {spec.id!r}: on-disk {rel} != spec-derived render "
               f"for arm(s) {mismatched}", file=sys.stderr)
         return 1
 
     # --- cross-arm shared-prefix check -------------------------------------
     # Secondary/redundant given the full-file check above (since every
-    # on_disk[arm] is now known to equal build_instruction_md(spec, arm),
+    # on_disk[arm] is now known to equal build_instruction_md(spec, arm, step),
     # and shared_body_resolved is arm-independent by construction), but
     # kept as an explicit, human-readable assertion of prereg §6's actual
     # requirement ("identical natural-language instruction body across
@@ -103,12 +114,11 @@ def check(spec_path: Path) -> int:
     # invariant while still being self-consistent per-arm.
     prefixes: dict[Arm, str] = {}
     for arm in arms:
-        per_arm = getattr(spec.instruction.per_arm, arm)
-        lang_line = substitute_literals(per_arm.language_line.strip(), spec)
+        lang_line = substitute_literals(step_language_line(spec, arm, step).strip(), spec)
         try:
             prefixes[arm] = shared_prefix(on_disk[arm], lang_line)
         except ValueError as e:
-            print(f"PARITY CHECK ERROR [{arm}]: {e}", file=sys.stderr)
+            print(f"PARITY CHECK ERROR [{arm}/{rel}]: {e}", file=sys.stderr)
             return 1
 
     baseline_arm = arms[0]
@@ -121,23 +131,38 @@ def check(spec_path: Path) -> int:
                 difflib.unified_diff(
                     baseline.splitlines(keepends=True),
                     prefixes[arm].splitlines(keepends=True),
-                    fromfile=f"{baseline_arm}/instruction.md (shared prefix)",
-                    tofile=f"{arm}/instruction.md (shared prefix)",
+                    fromfile=f"{baseline_arm}/{rel} (shared prefix)",
+                    tofile=f"{arm}/{rel} (shared prefix)",
                 )
             )
-            print(f"PARITY VIOLATION between {baseline_arm!r} and {arm!r}:\n{diff}")
+            print(f"PARITY VIOLATION between {baseline_arm!r} and {arm!r} on {rel}:\n{diff}")
 
     if not ok:
-        print(f"\nPARITY FAILED for {spec.id!r}", file=sys.stderr)
+        print(f"\nPARITY FAILED for {spec.id!r} ({rel})", file=sys.stderr)
         return 1
+    return 0
 
+
+def check(spec_path: Path) -> int:
+    spec = load_spec(spec_path)
+    arms: list[Arm] = spec.arms.enabled_arms()
+
+    prompts = instruction_rel_paths(spec)
+    for rel, step in prompts:
+        rc = check_one_prompt(spec, arms, rel, step)
+        if rc != 0:
+            return rc
+
+    shape = "single-step" if len(prompts) == 1 else f"{len(prompts)}-step"
     print(
-        f"PARITY OK for {spec.id!r}: instruction.md matches its spec-derived render, "
-        f"and the shared prefix is identical, across {len(arms)} arm(s): {arms}"
+        f"PARITY OK for {spec.id!r} ({shape}): every prompt matches its "
+        f"spec-derived render, and the shared prefix is identical, across "
+        f"{len(arms)} arm(s): {arms}"
     )
-    for arm in arms:
-        rel = (task_dir(spec, arm) / "instruction.md").relative_to(REPO_ROOT)
-        print(f"  checked: {rel}")
+    for rel, _step in prompts:
+        for arm in arms:
+            path = (task_dir(spec, arm) / rel).relative_to(REPO_ROOT)
+            print(f"  checked: {path}")
     return 0
 
 

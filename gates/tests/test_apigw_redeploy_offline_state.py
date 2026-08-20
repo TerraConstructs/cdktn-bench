@@ -224,6 +224,32 @@ output "api_url" {
 """
 
 
+def _grading_tests_dir(task: Path, spec) -> Path:
+    """The task's SCORING oracle directory.
+
+    Single-step: `tests/`. Multi-step (SCHEMA.md §2.6, which `apigw-redeploy`
+    became on 2026-08-20): `steps/<final>/tests/` -- the final step runs the
+    full tier suite, so it is the same oracle this test always exercised, just
+    relocated. Derived from the spec rather than hardcoded so this keeps
+    tracking the scenario's shape instead of pinning one.
+    """
+    if not spec.is_multi_step():
+        return task / "tests"
+    return task / "steps" / (spec.steps or [])[-1].name / "tests"
+
+
+def _stage_grading_tests(task: Path, spec, project: Path) -> None:
+    """Materialize the sandbox's `tests/` the way Harbor materializes `/tests`
+    for the scoring step: the shared root `tests/` (README only, on a
+    multi-step task) then the step's own, over the top."""
+    shared = task / "tests"
+    if shared.is_dir():
+        shutil.copytree(shared, project / "tests", dirs_exist_ok=True)
+    grading = _grading_tests_dir(task, spec)
+    if grading != shared:
+        shutil.copytree(grading, project / "tests", dirs_exist_ok=True)
+
+
 def _stage_hcl_raw_sandbox(tmp: Path, spec) -> Path:
     """Build a `<tmp>/project` sandbox: this spec's hcl_raw workspace +
     tests/, the fixture rev2 main.tf, and real (tiny, valid) Lambda zips --
@@ -234,7 +260,7 @@ def _stage_hcl_raw_sandbox(tmp: Path, spec) -> Path:
     logs = tmp / "logs" / "verifier"
     logs.mkdir(parents=True)
     shutil.copytree(task / "environment" / ARM_WORKSPACE_SUBDIR["hcl_raw"], project, dirs_exist_ok=True)
-    shutil.copytree(task / "tests", project / "tests", dirs_exist_ok=True)
+    _stage_grading_tests(task, spec, project)
 
     (project / "main.tf").write_text(_REV2_MAIN_TF)
     lambda_dir = project / "lambda"
@@ -413,7 +439,7 @@ def test_terraconstructs_static_tiers_sh_has_refresh_false() -> None:
     hand-crafted-state proof above is hcl_raw-only."""
     spec = load_spec(SPEC_PATH)
     task = task_dir(spec, "terraconstructs")
-    static_tiers_text = (task / "tests" / "static_tiers.sh").read_text()
+    static_tiers_text = (_grading_tests_dir(task, spec) / "static_tiers.sh").read_text()
     assert "-refresh=false" in static_tiers_text, (
         "expected apigw-redeploy's generated terraconstructs static_tiers.sh "
         "tf-plan step to carry -refresh=false (B3 fix) -- see gen.py's "
@@ -426,7 +452,7 @@ def test_terraconstructs_static_tiers_sh_has_refresh_false() -> None:
         logs = tmp / "logs" / "verifier"
         logs.mkdir(parents=True)
         shutil.copytree(task / "environment" / ARM_WORKSPACE_SUBDIR["terraconstructs"], project, dirs_exist_ok=True)
-        shutil.copytree(task / "tests", project / "tests", dirs_exist_ok=True)
+        _stage_grading_tests(task, spec, project)
         shutil.copytree(task / "solution", project / "solution", dirs_exist_ok=True)
 
         (project / "lib").mkdir(exist_ok=True)

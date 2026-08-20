@@ -107,6 +107,19 @@ class OutputContract(BaseModel):
     build_command: str | None = None
     synth_command: str | None = None
     plan_command: str | None = None
+    # SCHEMA.md §2.6: the REAL deploy command for this arm, used ONLY by a
+    # multi-step spec whose step declares `pre_invoke.deploy_prior: true`
+    # (the harness deploys the previous step's work with staged credentials
+    # before this step's agent runs -- DECISIONS.md Amendment 26 §2's
+    # DEFAULT). Deliberately spec-declared per arm rather than inferred by
+    # the generator from a hardcoded arm->command map: guessing a deploy
+    # command is how a harness action silently deploys the wrong tree or the
+    # wrong stack. gen.py hard-errors if a step asks for deploy_prior and any
+    # enabled arm leaves this unset. `apigw-redeploy` -- the only multi-step
+    # spec today -- deliberately does NOT use it (the AGENT deploys in both
+    # steps; see docs/prompt-decomposition-audit.md §3), so this field is
+    # unset on every arm of every current spec.
+    deploy_command: str | None = None
     json_fields: list[dict] = Field(default_factory=list)
 
     @model_validator(mode="after")
@@ -165,27 +178,31 @@ class Instruction(BaseModel):
                     )
         return self
 
-    @model_validator(mode="after")
-    def _placeholder_usage_closes(self) -> "Instruction":
-        declared = {p.name for p in self.placeholders}
-        if len(declared) != len(self.placeholders):
-            raise ValueError("instruction.placeholders has duplicate names")
-
-        used: set[str] = set()
-        used |= set(PLACEHOLDER_TOKEN_RE.findall(self.shared_body))
+    def _tokens_used(self) -> set[str]:
+        used: set[str] = set(PLACEHOLDER_TOKEN_RE.findall(self.shared_body))
         for arm_name in ("awscdk", "hcl_raw", "terraconstructs"):
             per_arm = getattr(self.per_arm, arm_name)
             if per_arm is not None:
                 used |= set(PLACEHOLDER_TOKEN_RE.findall(per_arm.language_line))
+        return used
 
-        unused = declared - used
-        if unused:
-            raise ValueError(
-                f"instruction.placeholders declares unused token(s): {sorted(unused)} "
-                "— SCHEMA.md §2.2 requires every declared placeholder to be "
-                "referenced at least once"
-            )
-        unresolvable = used - declared
+    @model_validator(mode="after")
+    def _placeholder_usage_closes(self) -> "Instruction":
+        """Every `{{token}}` used here must be declared.
+
+        NOTE the other half of §2.2's rule -- "every DECLARED placeholder must
+        be referenced at least once" -- lives on `Spec` (see
+        `Spec._every_declared_placeholder_is_used`), not here: with `steps`
+        (§2.6) a placeholder may legitimately be referenced only from a STEP's
+        instruction body, which this model cannot see. Keeping the
+        undeclared-token half here means an unresolvable `{{...}}` in the
+        shared instruction still fails at the narrowest possible scope.
+        """
+        declared = {p.name for p in self.placeholders}
+        if len(declared) != len(self.placeholders):
+            raise ValueError("instruction.placeholders has duplicate names")
+
+        unresolvable = self._tokens_used() - declared
         if unresolvable:
             raise ValueError(
                 f"shared_body/language_line references undeclared {{token}}(s): "
@@ -504,6 +521,217 @@ class Verifier(BaseModel):
 
 
 # --------------------------------------------------------------------------
+# §2.6 steps -- multi-step decomposition (top-level, sibling of `instruction`)
+#
+# Added 2026-08-20 by the prompt-decomposition slice
+# (docs/prompt-decomposition-audit.md; DECISIONS.md Amendments 26/27). A spec
+# with NO `steps` key generates byte-identically to before this field existed
+# -- that regression guarantee is the whole reason every branch gen.py grows
+# for steps is `if spec.steps:`-guarded rather than a refactor of the
+# single-step path.
+#
+# What a step is FOR: revealing the second intent only when it is due. A
+# single prompt that says "build X, then change it to Y" measures day-1
+# authoring with perfect foreknowledge, which is the one condition a real
+# day-2 change never has -- see the audit doc's §0 for the rule and §2 for
+# the worked evidence.
+# --------------------------------------------------------------------------
+
+STEP_NAME_RE = re.compile(r"^[0-9]{2}-[a-z][a-z0-9-]*$")
+
+
+@_strict
+class StepPerArm(BaseModel):
+    """Per-arm, per-STEP override of `instruction.per_arm.<arm>.language_line`.
+
+    Exists because the spec-level language line can itself foreshadow: this
+    scenario's awscdk line named `MockIntegration` -- the day-2 integration
+    type -- which would have leaked the step-2 intent into the step-1 prompt
+    on exactly ONE arm (an arm-PARITY defect on top of a foreshadowing one).
+    See docs/prompt-decomposition-audit.md §2 "Leak 4".
+    """
+
+    language_line: str
+
+
+@_strict
+class StepPerArmMap(BaseModel):
+    awscdk: StepPerArm | None = None
+    hcl_raw: StepPerArm | None = None
+    terraconstructs: StepPerArm | None = None
+
+
+@_strict
+class StepInstruction(BaseModel):
+    """This step's prompt body. Assembled by gen.py exactly like the
+    single-step one (§2.1): shared_body -> language line -> ownership note ->
+    live-credentials note -> trailer -> JSON fence, so the shared prefix stays
+    identical across arms WITHIN a step and gen.py's parity self-check extends
+    to steps unchanged."""
+
+    shared_body: str
+    per_arm: StepPerArmMap | None = None
+
+    @model_validator(mode="after")
+    def _no_injected_content_in_shared_body(self) -> "StepInstruction":
+        # Same ban as Instruction's: the generator injects the trailer, so a
+        # spec that also writes it produces it twice.
+        banned = ["/logs/agent/agent-output.txt", "IMPORTANT: Write your final"]
+        for phrase in banned:
+            if phrase in self.shared_body:
+                raise ValueError(
+                    "steps[].instruction.shared_body must not itself contain "
+                    f"the generator-injected trailer text ({phrase!r} found) — "
+                    "see SCHEMA.md §2.1/§2.6"
+                )
+            for arm_name in ("awscdk", "hcl_raw", "terraconstructs"):
+                per_arm = getattr(self.per_arm, arm_name, None) if self.per_arm else None
+                if per_arm is not None and phrase in per_arm.language_line:
+                    raise ValueError(
+                        f"steps[].instruction.per_arm.{arm_name}.language_line "
+                        f"must not contain the generator-injected trailer text "
+                        f"({phrase!r})"
+                    )
+        return self
+
+    def tokens_used(self) -> set[str]:
+        used: set[str] = set(PLACEHOLDER_TOKEN_RE.findall(self.shared_body))
+        for arm_name in ("awscdk", "hcl_raw", "terraconstructs"):
+            per_arm = getattr(self.per_arm, arm_name, None) if self.per_arm else None
+            if per_arm is not None:
+                used |= set(PLACEHOLDER_TOKEN_RE.findall(per_arm.language_line))
+        return used
+
+
+@_strict
+class StepLiveCheck(BaseModel):
+    """Per-step override of `verifier.live_check.{enabled,gating}`.
+
+    Omitted (the default) means "inherit the spec-level values" -- so a
+    live-checked scenario's every step is live-checked unless it says
+    otherwise. `module`/`hand_authored`/`agent_role_name`/`concurrency_mode`
+    are NOT per-step: the role and the concurrency mode are properties of the
+    whole trial (one container, one account, one reset), and the module path
+    is fixed by the step layout (`steps/<name>/tests/live_check.py`).
+    """
+
+    enabled: bool
+    gating: bool = False
+
+    @model_validator(mode="after")
+    def _gating_requires_enabled(self) -> "StepLiveCheck":
+        if self.gating and not self.enabled:
+            raise ValueError(
+                "steps[].oracle.live_check.gating=true requires enabled=true — "
+                "a live check that never runs cannot gate reward"
+            )
+        return self
+
+
+@_strict
+class StepOracle(BaseModel):
+    """Which of the spec's own `oracle.structural_asserts` this step grades.
+
+    `structural_asserts` is a list of assert NAMES -- a projection of the one
+    spec-level oracle, never a second, independently-drifting oracle
+    definition. Omitted means "every assert", which the LAST step is REQUIRED
+    to use (DECISIONS.md Amendment 26: the final step runs the full tier
+    suite, so a multi-step task's terminal grading is identical to what the
+    single-step form graded).
+    """
+
+    structural_asserts: list[str] | None = None
+    live_check: StepLiveCheck | None = None
+
+    @model_validator(mode="after")
+    def _assert_names_nonempty_and_unique(self) -> "StepOracle":
+        if self.structural_asserts is None:
+            return self
+        if not self.structural_asserts:
+            raise ValueError(
+                "steps[].oracle.structural_asserts, when present, must be "
+                "non-empty — omit the key entirely to mean 'every assert'"
+            )
+        if len(set(self.structural_asserts)) != len(self.structural_asserts):
+            raise ValueError(
+                "steps[].oracle.structural_asserts has duplicate names: "
+                f"{sorted(self.structural_asserts)}"
+            )
+        return self
+
+
+@_strict
+class StepPreInvoke(BaseModel):
+    """Declarative harness actions run BEFORE this step's agent, with
+    `[scenario].pre_invoke_role_name` credentials staged
+    (cdktn_bench/trial.py::CdktnMultiStepTrial._run_step_pre_invoke).
+
+    `deploy_prior: true` is DECISIONS.md Amendment 26 §2's DEFAULT shape --
+    the harness deploys the previous step's IaC so this step's prompt lands on
+    an account that really is in the state the prompt assumes. It emits
+    `steps/<name>/pre_invoke/pre_invoke.sh` running the arm's own
+    `output_contract.deploy_command` (spec-declared per arm; the generator
+    refuses to guess one).
+
+    `apigw-redeploy` deliberately declares NO pre_invoke at all: it opts into
+    agent-deploys in both steps because the deploy loop IS the measurement
+    (Amendment 26 §2's explicit opt-out; rationale in
+    docs/prompt-decomposition-audit.md §3).
+
+    `timeout_sec` is REQUIRED reading of Amendment 26's draft addendum (a):
+    the per-step pre_invoke inherits the TASK-level `[pre_invoke].timeout_sec`
+    (aws-bench's default is 600 s) and a real deploy comfortably exceeds it,
+    so gen.py emits `[pre_invoke] timeout_sec` explicitly, sized to the
+    LARGEST value any step declares.
+    """
+
+    deploy_prior: bool = False
+    timeout_sec: float = 1800.0
+
+    @model_validator(mode="after")
+    def _declares_an_action(self) -> "StepPreInvoke":
+        if not self.deploy_prior:
+            raise ValueError(
+                "steps[].pre_invoke declares no action (deploy_prior is false) "
+                "— omit the whole `pre_invoke` key instead of emitting an "
+                "empty harness script"
+            )
+        if self.timeout_sec <= 0:
+            raise ValueError("steps[].pre_invoke.timeout_sec must be > 0")
+        return self
+
+
+@_strict
+class Step(BaseModel):
+    name: str
+    instruction: StepInstruction
+    oracle: StepOracle = Field(default_factory=StepOracle)
+    pre_invoke: StepPreInvoke | None = None
+    # None -> gen.py's default: 1.0 on every NON-final step (Amendment 26 §3's
+    # hard gate: step N+1's prompt never fires unless step N verified green),
+    # omitted entirely on the final step (there are no remaining steps for it
+    # to gate). An author who genuinely wants an ungated intermediate step
+    # writes `min_reward: 0.0`, which is always satisfied -- deliberately
+    # explicit, so "no gate" is never the result of forgetting a key.
+    min_reward: float | None = None
+
+    @model_validator(mode="after")
+    def _name_and_reward_wellformed(self) -> "Step":
+        if not STEP_NAME_RE.match(self.name):
+            raise ValueError(
+                f"steps[].name {self.name!r} must match {STEP_NAME_RE.pattern} "
+                "(NN-slug, e.g. '01-deploy-two-route-api') — the NN prefix is "
+                "what makes the on-disk steps/ listing order match execution "
+                "order (SCHEMA.md §2.6)"
+            )
+        if self.min_reward is not None and not (0.0 <= self.min_reward <= 1.0):
+            raise ValueError(
+                f"steps[].min_reward must be within [0.0, 1.0], got {self.min_reward!r}"
+            )
+        return self
+
+
+# --------------------------------------------------------------------------
 # §6 provenance
 # --------------------------------------------------------------------------
 
@@ -532,6 +760,18 @@ class Provenance(BaseModel):
 class Spec(BaseModel):
     id: str
     title: str
+    # §0.1, optional. The header comment stamped into the arm SKELETON files
+    # (main.tf / lib/scenario-stack.ts / bin/app.ts / main.ts) -- i.e. into
+    # `environment/`, which IS the image the agent lives in from step 1
+    # onward. Absent = `title` (every single-step spec: byte-identical
+    # emission). REQUIRED for a multi-step spec, because a scenario `title`
+    # legitimately describes the WHOLE arc ("deploy, confirm, modify,
+    # re-deploy (day-2 iteration)") and stamping that arc into the first file
+    # the step-1 agent opens foreshadows step 2 just as loudly as the prompt
+    # would -- DECISIONS.md Amendment 26 §7 rule 2 /
+    # docs/multistep-trial-investigation.md §5 rule 2 ("never place
+    # later-step material in environment/").
+    workspace_title: str | None = None
     difficulty: Annotated[int, Field(ge=1, le=3)]
     services: Annotated[list[str], Field(min_length=1)]
     arms: Arms
@@ -540,7 +780,37 @@ class Spec(BaseModel):
     catches: Annotated[list[Catch], Field(min_length=1)]
     oracle: Oracle
     verifier: Verifier
+    # §2.6, optional. None/absent (every spec but `apigw-redeploy`) = the
+    # single-step shape, generated byte-identically to before this field
+    # existed. A non-empty list makes this a MULTI-STEP task
+    # (`[[steps]]` in task.toml, run by cdktn_bench.trial.CdktnMultiStepTrial).
+    steps: list[Step] | None = None
     provenance: Provenance
+
+    def is_multi_step(self) -> bool:
+        return bool(self.steps)
+
+    def workspace_header(self) -> str:
+        """The one-line title stamped into the arm skeleton files under
+        `environment/`. See the `workspace_title` field comment: single-step
+        specs keep `title` verbatim (byte-identity), multi-step specs must
+        declare a step-1-safe alternative."""
+        return self.workspace_title or self.title
+
+    def step_assert_names(self, step: Step) -> list[str]:
+        """This step's assert names in the spec's own declaration order.
+
+        Omitting `oracle.structural_asserts` means every assert (the final
+        step's required shape), and the spec's own order is preserved rather
+        than the step's listing order so the generated tests/static_tiers.sh
+        emits its checks in one canonical order regardless of how a step
+        happened to list them.
+        """
+        declared = [a.name for a in self.oracle.structural_asserts]
+        if step.oracle.structural_asserts is None:
+            return declared
+        selected = set(step.oracle.structural_asserts)
+        return [name for name in declared if name in selected]
 
     @model_validator(mode="after")
     def _id_format(self) -> "Spec":
@@ -598,6 +868,189 @@ class Spec(BaseModel):
                     f"structural_assert {a.name!r}: applies_to includes "
                     f"disabled/unknown arm(s) {sorted(extra)}"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _every_declared_placeholder_is_used(self) -> "Spec":
+        """SCHEMA.md §2.2's "no unused placeholder" half.
+
+        Lives here rather than on `Instruction` because a step's own
+        instruction body (§2.6) is a legitimate usage site that `Instruction`
+        cannot see. The undeclared-token half stays on `Instruction`.
+        """
+        declared = {p.name for p in self.instruction.placeholders}
+        used = self.instruction._tokens_used()
+        for step in self.steps or []:
+            used |= step.instruction.tokens_used()
+        unused = declared - used
+        if unused:
+            raise ValueError(
+                f"instruction.placeholders declares unused token(s): {sorted(unused)} "
+                "— SCHEMA.md §2.2 requires every declared placeholder to be "
+                "referenced at least once"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _steps_wellformed(self) -> "Spec":
+        """Everything §2.6 requires of a `steps:` list, checked in one place."""
+        if self.steps is None:
+            return self
+        if len(self.steps) < 2:
+            raise ValueError(
+                "steps must declare at least 2 entries — a 1-step 'multi-step' "
+                "task is pure churn (it moves every task checksum and equipping "
+                "hash for no measurement gain; DECISIONS.md Amendment 26 §6 "
+                "explicitly refuses normalizing single-step tasks). Omit `steps` "
+                "entirely for a single-step scenario."
+            )
+
+        names = [s.name for s in self.steps]
+        if len(set(names)) != len(names):
+            raise ValueError(f"steps have duplicate name(s): {sorted(names)}")
+        prefixes = [int(n[:2]) for n in names]
+        if prefixes != sorted(prefixes) or prefixes != list(
+            range(prefixes[0], prefixes[0] + len(prefixes))
+        ):
+            raise ValueError(
+                f"steps[].name NN prefixes {prefixes} must be consecutive and "
+                "ascending in declaration order (01, 02, ...) — the prefix is "
+                "the only thing that makes an on-disk `steps/` listing read in "
+                "execution order"
+            )
+
+        enabled = set(self.arms.enabled_arms())
+        declared_asserts = {a.name for a in self.oracle.structural_asserts}
+        for index, step in enumerate(self.steps):
+            is_final = index == len(self.steps) - 1
+
+            unknown = set(step.oracle.structural_asserts or []) - declared_asserts
+            if unknown:
+                raise ValueError(
+                    f"step {step.name!r}: oracle.structural_asserts names "
+                    f"{sorted(unknown)} that oracle.structural_asserts does not "
+                    "declare — a step's oracle is a PROJECTION of the one "
+                    "spec-level oracle, never a second definition"
+                )
+            if is_final and step.oracle.structural_asserts is not None:
+                raise ValueError(
+                    f"final step {step.name!r} must OMIT "
+                    "oracle.structural_asserts: the last step runs the FULL "
+                    "tier suite, so a multi-step task's terminal grading is "
+                    "identical to what the single-step form graded "
+                    "(DECISIONS.md Amendment 26 §7 / SCHEMA.md §2.6)"
+                )
+            if not is_final and step.oracle.structural_asserts is None:
+                raise ValueError(
+                    f"step {step.name!r} is not the final step and must name "
+                    "its own oracle.structural_asserts subset — inheriting the "
+                    "full suite would grade an intermediate state against the "
+                    "FINAL state's asserts, which no correct intermediate "
+                    "solution can satisfy"
+                )
+
+            if (
+                step.oracle.live_check is not None
+                and step.oracle.live_check.enabled
+                and not self.verifier.live_check.enabled
+            ):
+                raise ValueError(
+                    f"step {step.name!r}: oracle.live_check.enabled=true but "
+                    "verifier.live_check.enabled is false at the spec level. A "
+                    "step can only ever narrow the spec-level live check, never "
+                    "introduce one — the spec level is what carries "
+                    "hand_authored/agent_role_name/concurrency_mode, and a live "
+                    "check without those would ship the generated "
+                    "not-implemented stub as this step's oracle (SCHEMA.md §5)"
+                )
+
+            if step.instruction.per_arm is not None:
+                for arm_name in ("awscdk", "hcl_raw", "terraconstructs"):
+                    if (
+                        getattr(step.instruction.per_arm, arm_name) is not None
+                        and arm_name not in enabled
+                    ):
+                        raise ValueError(
+                            f"step {step.name!r}: instruction.per_arm.{arm_name} "
+                            "is set but that arm is not enabled"
+                        )
+
+            if step.pre_invoke is not None and step.pre_invoke.deploy_prior:
+                if index == 0:
+                    raise ValueError(
+                        f"step {step.name!r} is the FIRST step and cannot "
+                        "declare pre_invoke.deploy_prior — there is no prior "
+                        "step's work to deploy"
+                    )
+                missing = [
+                    arm
+                    for arm in sorted(enabled)
+                    if getattr(
+                        self.instruction.per_arm, arm
+                    ).output_contract.deploy_command
+                    is None
+                ]
+                if missing:
+                    raise ValueError(
+                        f"step {step.name!r} declares pre_invoke.deploy_prior "
+                        f"but arm(s) {missing} leave "
+                        "instruction.per_arm.<arm>.output_contract.deploy_command "
+                        "unset — the generator refuses to guess a real deploy "
+                        "command (SCHEMA.md §2.4/§2.6)"
+                    )
+        return self
+
+    @model_validator(mode="after")
+    def _deploy_command_only_with_steps(self) -> "Spec":
+        """`deploy_command` is inert without a `deploy_prior` step — reject it
+        rather than let a spec carry a real deploy command nothing ever runs."""
+        used_by_a_step = any(
+            s.pre_invoke is not None and s.pre_invoke.deploy_prior
+            for s in self.steps or []
+        )
+        if used_by_a_step:
+            return self
+        declared_on = [
+            arm
+            for arm in ("awscdk", "hcl_raw", "terraconstructs")
+            if getattr(self.instruction.per_arm, arm) is not None
+            and getattr(self.instruction.per_arm, arm).output_contract.deploy_command
+        ]
+        if declared_on:
+            raise ValueError(
+                f"output_contract.deploy_command is set on arm(s) {declared_on} "
+                "but no step declares pre_invoke.deploy_prior — nothing would "
+                "ever run it (SCHEMA.md §2.6)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _multi_step_requires_workspace_title(self) -> "Spec":
+        """A multi-step spec must declare its own `workspace_title` (§0.1).
+
+        `title` describes the whole arc and is stamped into the arm skeletons
+        under `environment/` — the image the step-1 agent lives in. Making the
+        field required (rather than silently defaulting to `title`, or to
+        `id`) forces the spec author to *choose* a step-1-safe header instead
+        of inheriting a foreshadowing one by omission. `workspace_title` is
+        rejected on a single-step spec so the byte-identity guarantee for
+        existing specs can never be quietly traded away for a rename.
+        """
+        if self.is_multi_step():
+            if not (self.workspace_title or "").strip():
+                raise ValueError(
+                    "a spec with `steps:` must declare `workspace_title` "
+                    "(SCHEMA.md §0.1): `title` is stamped into every arm's "
+                    "skeleton file under environment/, which the step-1 agent "
+                    "reads, so a whole-arc title there foreshadows step 2 "
+                    "(Amendment 26 §7 rule 2)"
+                )
+        elif self.workspace_title is not None:
+            raise ValueError(
+                "workspace_title is only meaningful on a multi-step spec "
+                "(SCHEMA.md §0.1) — a single-step spec stamps `title` "
+                "verbatim into its skeletons"
+            )
         return self
 
     @model_validator(mode="after")

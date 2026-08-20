@@ -12,21 +12,66 @@
 # by gates/oracle_falsifiability.py's LIVE_ONLY_CONFIRMED_MARKER check --
 # see that module's "live" branch).
 #
-# UNLIKE every other v1 scenario, this one tests a DAY-2 iteration inside
-# one trial: the agent must author, LIVE-deploy, confirm, MODIFY, and
-# LIVE-redeploy a real API Gateway REST API in ONE trial, against the
-# dedicated benchmark account (886312446417, us-east-1 only -- see
-# DECISIONS.md "Slice G" / CONTEXT). The static tiers below grade the
-# FINAL delivered file's structural shape (the only artifact a real
-# trial's verifier ever sees) exactly like every other scenario; the live
-# behavioral fact -- did the SECOND deploy actually serve the modification,
-# or does the stage keep serving stale content -- is graded by
-# tests/live_check.py (hand-authored, non-gating per SCHEMA.md §5, but
-# genuinely exercised here for the first time; see verifier.live_check
-# below).
+# UNLIKE every other v1 scenario, this one tests a DAY-2 iteration: the
+# agent must author + LIVE-deploy a real API Gateway REST API, and then --
+# in a SECOND, separately-prompted step -- apply a change request and
+# LIVE-redeploy it, against the dedicated benchmark account (886312446417,
+# us-east-1 only -- see DECISIONS.md "Slice G" / CONTEXT). Each step's
+# static tiers grade that step's delivered file; the live behavioral fact
+# -- did the deploy actually serve? did the SECOND deploy actually serve
+# the modification, or does the stage keep serving stale content -- is
+# graded by each step's own hand-authored tests/live_check.py (GATING for
+# this scenario, SCHEMA.md §5).
+#
+# MULTI-STEP as of 2026-08-20 (DECISIONS.md Amendment 27,
+# docs/prompt-decomposition-audit.md). It used to be ONE prompt that
+# narrated both days -- "Step 1 ... Step 2 -- apply the prescribed
+# modification ... add ONE more route, `GET /status`, using a MOCK
+# integration whose response is the fixed JSON body {...}". That is
+# foreshadowing: an agent told about the change up front authors the
+# three-route API in one pass and never performs a second deploy at all,
+# so the redeploy-trigger trap this scenario exists for never fires. The
+# instruction is now decomposed into `steps:` below -- step 01 has ZERO
+# knowledge of /status, and step 02's prompt is delivered only after step
+# 01 has verified green (min_reward hard gate, Amendment 26 §3).
+#
+# The old prompt ALSO named the trap outright ("A second deploy that does
+# not actually create a new, live-serving deployment behind the stage ...
+# is exactly the mistake this task exists to test for"). That paragraph is
+# DELETED, not relocated: it is answer-key material, and it appears in
+# neither step.
+#
+# STEP NAMES are deliberately generic ("01-initial-deploy",
+# "02-change-request") rather than descriptive ("02-add-status-route").
+# Step names live in task.toml and on disk -- host-side only, never
+# uploaded to the agent's container -- but a name that spells out the
+# day-2 change is one accidental log line or future feature away from
+# being a leak, and costs nothing to avoid.
+#
+# WHO DEPLOYS: the AGENT, in BOTH steps. DECISIONS.md Amendment 26 §2
+# makes the harness the default deployer (steps/<n>/pre_invoke), and this
+# spec explicitly opts out -- no step declares `pre_invoke`. The deploy
+# loop IS the measurement here (`triggers-incomplete-hash` is a
+# predicted_tier_caught: "live" catch: only the AGENT's own second apply
+# producing no new deployment discriminates it). Step 02 needs no harness
+# action at all: Harbor keeps ONE container alive across every step
+# (harbor/trial/multi_step.py::_run stops the environment once, after the
+# loop) and uploads a step workdir only if steps/<n>/workdir/ exists,
+# which the generator does not emit -- so step 02's agent opens the very
+# workspace, terraform state and deployed stack its own step-01 self left
+# behind. Full justification: docs/prompt-decomposition-audit.md §3.
 
 id: apigw-redeploy
 title: "API Gateway REST API: deploy, confirm, modify, re-deploy (day-2 iteration)"
+# SCHEMA.md §0.1 -- REQUIRED on a multi-step spec. `title` above describes the
+# whole two-step arc and is correct for the registry/task.toml metadata (host
+# side, never uploaded to the agent). It must NOT be the header stamped into
+# the arm skeletons, because environment/ IS the image the step-1 agent lives
+# in: its very first `main.tf` / `scenario-stack.ts` would otherwise open with
+# "modify, re-deploy (day-2 iteration)" and hand the agent the foreknowledge
+# the redeploy-trigger trap exists to deny it (Amendment 26 §7 rule 2).
+# Deliberately terminal: nothing here implies a second change is coming.
+workspace_title: "API Gateway REST API (live)"
 difficulty: 3
 services: [apigateway, lambda, iam, logs]
 
@@ -48,44 +93,27 @@ arms:
       the same way as on awscdk.
 
 instruction:
+  # SHARED across every step (SCHEMA.md §2.6): the parts of the prompt that
+  # are true at every point in this scenario's life. The DAY-SPECIFIC work
+  # lives in `steps:` below -- that split is the whole point of the
+  # decomposition, so nothing here may name a route, an integration type, or
+  # a revision.
+  #
+  # Note this body is NEVER delivered on its own: a multi-step task has no
+  # root instruction.md (harbor/models/task/task.py sets Task.instruction=""
+  # when [[steps]] is present). gen.py prepends each step's own shared_body
+  # to it, so every step's prompt carries these standing constraints -- which
+  # it must, because sessions are FRESH per step (Amendment 26 §1) and the
+  # agent cannot be assumed to remember them.
   shared_body: |
-    Build a REST API on Amazon API Gateway, deploy it for REAL to this AWS
-    account, confirm it serves, apply a prescribed configuration change,
-    and re-deploy it -- all inside this one task.
-
-    Step 1 -- author and deploy revision 1: a REST API named EXACTLY
-    `apigw-redeploy-api`, with two routes: `GET /hello` and `GET /version`,
-    each backed by its own Lambda function via a Lambda proxy integration
-    (any inline/trivial handler body is fine -- its exact response content
-    is not graded, only that it returns HTTP 200). Deploy the API to a
-    stage named `prod`. Actually run your toolchain's real deploy command
-    against this account (not just synth/plan) and confirm, by making a
-    real HTTP request to the deployed stage, that both `GET /hello` and
-    `GET /version` return HTTP 200.
-
-    Step 2 -- apply the prescribed modification and re-deploy: add ONE
-    more route, `GET /status`, using a MOCK integration (no Lambda) whose
-    response is the fixed JSON body `{"status": "ok", "routes": 3}` for
-    every request. Re-run your toolchain's real deploy command so the
-    SAME stage (`prod`, same REST API) now serves this new route too. Then
-    confirm, by making real HTTP requests to the same deployed stage, that
-    (a) `GET /status` now returns HTTP 200 with exactly that JSON body,
-    AND (b) `GET /hello` and `GET /version` still return HTTP 200 (the
-    modification must not regress the routes that already worked).
-
-    A second deploy that does not actually create a new, live-serving
-    deployment behind the stage -- so the stage keeps serving stale
-    content despite your deploy command exiting successfully -- is exactly
-    the mistake this task exists to test for; make sure your redeploy
-    genuinely takes effect, not just that the command you ran returned
-    success.
+    Standing constraints, in force for everything you do in this workspace:
 
     Write `/logs/agent/agent-output.json` (see the JSON contract below)
     recording the deployed stage's real invoke URL, so it can be
     independently re-checked afterward.
 
     Environment constraint: any IAM role your solution creates (for
-    example, the Lambda functions' execution role) must be created under
+    example, a Lambda function's execution role) must be created under
     the path `/cdktn-bench-task/` (e.g. `path = "/cdktn-bench-task/"` on a
     Terraform `aws_iam_role`, or `path: "/cdktn-bench-task/"` on a CDK/
     terraconstructs `iam.Role`) -- this account's deploy credentials only
@@ -94,15 +122,22 @@ instruction:
     Do NOT delete the REST API, the Lambda functions, their execution
     role, or any CloudWatch Logs log groups when you are done -- leave
     every resource you created running and deployed. This task's grading
-    depends on re-checking your SECOND deployment against the live stage
-    after your work ends, so tearing anything down yourself would erase
-    the only evidence that the redeploy took effect. Cleanup of this
-    account is handled automatically by the benchmark itself once grading
-    is complete; it is not part of your task.
+    depends on re-checking your work against the live stage after your
+    work ends, so tearing anything down yourself would erase the only
+    evidence that your deploy took effect. Cleanup of this account is
+    handled automatically by the benchmark itself once grading is
+    complete; it is not part of your task.
   placeholders: []
   per_arm:
     awscdk:
-      language_line: "Author this as an AWS CDK (TypeScript) app using aws-cdk-lib L2 constructs (apigateway.RestApi, LambdaIntegration, MockIntegration). Deploy for real with `npx cdk deploy`."
+      # NOTE the missing `MockIntegration`: this SPEC-level line used to
+      # name it, which leaked the day-2 integration type into the day-1
+      # prompt on this arm ALONE -- a foreshadowing defect AND an arm-parity
+      # one (docs/prompt-decomposition-audit.md §2 "Leak 4"). Every step
+      # below declares its own per-arm language line, so this one is only a
+      # fallback; it is kept non-foreshadowing so it can never become the
+      # leak again by a step forgetting to override it.
+      language_line: "Author this as an AWS CDK (TypeScript) app using aws-cdk-lib L2 constructs (apigateway.RestApi, LambdaIntegration). Deploy for real with `npx cdk deploy`."
       output_contract:
         entry_file: lib/scenario-stack.ts
         artifact_path: cdk.out/ScenarioStack.template.json
@@ -387,6 +422,107 @@ verifier:
     # re-run `aws-bench env setup` before the next trial so the role set in
     # the account matches this source.
     gating: true
+
+# --------------------------------------------------------------------------
+# steps (SCHEMA.md §2.6) -- the no-foreshadowing decomposition.
+#
+# Read docs/prompt-decomposition-audit.md before editing either body. The
+# ONE rule: step 01's prompt must contain no hint of step 02's intent. Not
+# "/status", not "MOCK", not "you will later", not "for now", not a route
+# COUNT that only makes sense if a third is coming.
+# --------------------------------------------------------------------------
+steps:
+  - name: "01-initial-deploy"
+    # HARD GATE (Amendment 26 §3) -- gen.py's default for a non-final step,
+    # stated here anyway because it is load-bearing for this scenario
+    # specifically: step 02 is a change request against a RUNNING API, and a
+    # change request whose starting state was never actually deployed is not
+    # a measurement of anything.
+    min_reward: 1.0
+    instruction:
+      shared_body: |
+        Build and deploy a REST API on Amazon API Gateway, for REAL, in
+        this AWS account: named EXACTLY
+        `apigw-redeploy-api`, with two routes -- `GET /hello` and
+        `GET /version` -- each backed by its own Lambda function via a
+        Lambda proxy integration (any inline/trivial handler body is fine;
+        its exact response content is not graded, only that it returns
+        HTTP 200). Deploy the API to a stage named `prod`.
+
+        Actually run your toolchain's real deploy command against this
+        account (not just synth/plan), and confirm by making real HTTP
+        requests to the deployed stage that both `GET /hello` and
+        `GET /version` return HTTP 200.
+      per_arm:
+        # Per-step, per-arm language lines (SCHEMA.md §2.6). Declared for
+        # every arm at every step -- even where the text is identical to the
+        # spec-level fallback -- so a reader auditing "what was this arm's
+        # agent told at this step" reads it here rather than reconstructing
+        # an inheritance chain.
+        awscdk:
+          language_line: "Author this as an AWS CDK (TypeScript) app using aws-cdk-lib L2 constructs (apigateway.RestApi, LambdaIntegration). Deploy for real with `npx cdk deploy`."
+        hcl_raw:
+          language_line: "Author this as hand-written Terraform HCL (no modules). Deploy for real with `terraform apply`."
+        terraconstructs:
+          language_line: "Author this using terraconstructs (TypeScript) L2 constructs, synthesized via cdktn. Deploy for real with `terraform apply` against the synthesized stack."
+    oracle:
+      # Every FINAL-state assert that is already true of revision 1. The one
+      # deliberate omission is `mock-integration-wired`, whose own
+      # description reads "backing the day-2 /status route" -- step-2 oracle
+      # text by construction, so it lives ONLY in
+      # steps/02-change-request/tests/ (Amendment 26 §7 rule 1).
+      #
+      # `deployment-triggers-present` IS included: a correct revision 1 on
+      # the TF-shaped arms already carries triggers.redeployment (verified
+      # against this scenario's own reference solutions' write_rev1), and
+      # requiring it here is what makes step 01 a real gate rather than a
+      # formality.
+      structural_asserts:
+        - rest-api-exists
+        - deployment-exists
+        - lambda-function-exists
+        - proxy-integration-wired
+        - deployment-triggers-present
+        - deployment-depends-on-all-methods
+      # Inherits verifier.live_check.{enabled,gating} = true/true. Step 01's
+      # own tests/live_check.py (hand-authored, 2-route contract) is what
+      # makes "deployed and serving" a gate rather than a claim -- without
+      # it an agent could write perfect IaC, never deploy, pass step 01, and
+      # reach a step-02 change request against an API that does not exist.
+  - name: "02-change-request"
+    instruction:
+      shared_body: |
+        This account already runs the REST API `apigw-redeploy-api`,
+        deployed to its `prod` stage, serving `GET /hello` and
+        `GET /version`. The source that produced it is in your workspace,
+        exactly as it was left; read it before changing anything.
+
+        Change request: add ONE more route, `GET /status`, using a MOCK
+        integration (no Lambda) whose response is the fixed JSON body
+        `{"status": "ok", "routes": 3}` for every request.
+
+        Re-run your toolchain's real deploy command so the SAME stage
+        (`prod`, same REST API) serves this new route too. Then confirm, by
+        making real HTTP requests to that same deployed stage, that
+        (a) `GET /status` returns HTTP 200 with exactly that JSON body,
+        AND (b) `GET /hello` and `GET /version` still return HTTP 200 --
+        the change must not regress the routes that already worked.
+      per_arm:
+        awscdk:
+          language_line: "Author this as an AWS CDK (TypeScript) app using aws-cdk-lib L2 constructs (apigateway.RestApi, LambdaIntegration, MockIntegration). Deploy for real with `npx cdk deploy`."
+        hcl_raw:
+          language_line: "Author this as hand-written Terraform HCL (no modules). Deploy for real with `terraform apply`."
+        terraconstructs:
+          language_line: "Author this using terraconstructs (TypeScript) L2 constructs, synthesized via cdktn. Deploy for real with `terraform apply` against the synthesized stack."
+    # FINAL step: `oracle.structural_asserts` is OMITTED, which SCHEMA.md
+    # §2.6 requires -- the last step runs the FULL tier suite, so this
+    # scenario's terminal grading is byte-identical to what its single-step
+    # form graded (docs/prompt-decomposition-audit.md §7).
+    #
+    # No `pre_invoke`: the AGENT deploys, in both steps. See this file's own
+    # header and the audit doc §3 for why, and for the verified workspace
+    # carry-over that makes it work.
+
 
 provenance:
   author: "Slice G (apigw-redeploy fix pass)"

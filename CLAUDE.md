@@ -22,6 +22,32 @@ for the append-only amendment log (the pre-registration discipline), and
   blanket cut.
 - Override per run: `MAX_ITERS=<n> ./scripts/run-bench.sh …` or `--max-iters <n>`.
 
+## Multi-step scenarios (quick reference)
+
+- The runner is **`cdktn-bench`**, not `aws-bench` (`scripts/run-bench.sh`
+  execs it; Amendment 27). Superset CLI — same flags — whose only difference is
+  that a `task.toml` declaring `[[steps]]` builds a `CdktnMultiStepTrial`
+  instead of hitting upstream's `NotImplementedError`. Stepless tasks take the
+  untouched single-step path.
+- A scenario decomposes into steps via a spec-level `steps:` list
+  (`specs/SCHEMA.md` §2.6). **The rule: a step-1 prompt must contain no hint of
+  step 2's intent** — no "then modify", no route/arg the later step introduces,
+  not even in a per-arm `language_line`. See
+  `docs/prompt-decomposition-audit.md`; the deny-list is enforced by
+  `generator/tests/test_multistep_emission.py`.
+- **The rule has two surfaces, not one.** `environment/` is `COPY`'d into the
+  agent image, so the skeleton files are prompt surface too. A multi-step spec
+  must declare `workspace_title` (`specs/SCHEMA.md` §0.1) — a step-1-safe
+  header — because the scenario `title` describes the whole arc and used to be
+  stamped into the agent's own `main.tf` line 1 (Amendment 27 §5.1).
+- Every step's oracle lives in `steps/<name>/tests/`. The **shared root
+  `tests/` must stay oracle-free** (Harbor uploads it at every step's
+  verification, so step-specific material there is readable in a later step's
+  agent phase). A multi-step task has **no root `instruction.md`**.
+- `apigw-redeploy` is multi-step. Its single-step results (2026-08-13,
+  `docs/live-results.md`) are a **different scenario form** and must never be
+  pooled with multi-step-form results (Amendment 27 §2).
+
 ## Live runs (quick reference)
 
 - Credentials: `aws-vault exec --no-session tcons-mgmt -- …` (management account;
@@ -52,3 +78,8 @@ for the append-only amendment log (the pre-registration discipline), and
   tokens to logs). Pipe assume-role output directly into the process env.
 - Touch account `694710432912` (production website) or mutate `489592802338`.
 - Hand-edit generated `tasks/**` — regenerate with `make gen` / `make gen-all`.
+  The only hand-authored files under a task dir are `solution/**/solve.sh` and
+  (when the spec declares `hand_authored`) `tests/live_check.py` — including
+  their per-step `steps/<name>/…` equivalents. The generator is
+  destructive-safe for exactly those and will hard-error rather than delete
+  hand-authored content it finds somewhere it must not be.

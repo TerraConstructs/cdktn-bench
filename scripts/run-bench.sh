@@ -1,5 +1,20 @@
 #!/usr/bin/env bash
-# run-bench.sh — wrapper around `uv run aws-bench run` that:
+# run-bench.sh — wrapper around `uv run cdktn-bench run` that:
+#
+# (Flipped from `aws-bench` to `cdktn-bench` on 2026-08-20, DECISIONS.md
+#  Amendment 27. `cdktn-bench` is a strict SUPERSET of `aws-bench`, not a
+#  replacement: it registers aws-bench's own `start` function object on its own
+#  Typer app — `app.command(name="run", ...)(start)` in cdktn_bench/cli.py — so
+#  every flag below reaches exactly the same parser it always did. The only
+#  behavioural difference is the trial factory:
+#      cdktn_bench/trial.py::CdktnTrial.create dispatches on `task.has_steps`;
+#      a STEPLESS task returns the UNTOUCHED upstream AwsBenchSingleStepTrial,
+#      a [[steps]] task returns CdktnMultiStepTrial.
+#  So every existing single-step task runs the byte-identical code path it ran
+#  before this flip, and the multi-step tasks the generator now emits stop being
+#  refused with upstream's NotImplementedError("multi-step AWS tasks are not yet
+#  supported"). `aws-bench` itself stays installed and working; `aws-bench env
+#  init/setup/cleanup` are unaffected — cdktn-bench re-exports the same env_app.)
 #
 #   1. Authenticates Claude Code from an OAuth token file (default
 #      ~/.anthropic — an operator-created convention for this repo, NOT an
@@ -86,14 +101,14 @@
 #      is skipped entirely on the dry-run path, same as every other real-run
 #      side effect this script has).
 #
-# This script makes a real (billed) Claude Code call and, via aws-bench,
+# This script makes a real (billed) Claude Code call and, via cdktn-bench,
 # expects a real AWS account for the scenario side — it does not run
 # anything on its own. See mk/rails.mk's `run-smoke` target for the intended
 # invocation, and its docstring for why that target is not run as part of
 # this slice's verification.
 #
 # Dry-run: set AWS_BENCH_DRY_RUN=1 (or pass --dry-run) to print the argv
-# that would be passed to `uv run aws-bench` — with no exec, no token
+# that would be passed to `uv run cdktn-bench` — with no exec, no token
 # resolution side effects visible, and no AWS/Claude calls made — instead of
 # running it. Used by test/test_run_bench_wrapper.py to exercise the
 # argument-assembly and default logic without a live trial.
@@ -106,22 +121,22 @@ source "$REPO_ROOT/scripts/lib/resolve-claude-token.sh"
 
 usage() {
   cat <<'EOF'
-Usage: scripts/run-bench.sh [options] [-- extra aws-bench run args]
+Usage: scripts/run-bench.sh [options] [-- extra cdktn-bench run args]
 
 Options (env var alternatives in parentheses; all optional):
   -m, --model MODEL         Model name. Default: claude-sonnet-5. Documented
                              alternative: claude-haiku-4-5-20251001. (MODEL)
-  -k, --n-attempts N        Attempts per trial -> aws-bench run -k.
-  -o, --jobs-dir DIR        Results dir -> aws-bench run -o.
+  -k, --n-attempts N        Attempts per trial -> cdktn-bench run -k.
+  -o, --jobs-dir DIR        Results dir -> cdktn-bench run -o.
                              Default: jobs/<model>.
-      --path DIR             Task directory -> aws-bench run --path.
-      --scenario-path DIR    Scenario directory -> aws-bench run --scenario-path.
-      --registry-path FILE   Local registry file -> aws-bench run --registry-path.
-  -d, --dataset NAME[@VER]  Dataset name[@version] -> aws-bench run -d.
-      --env-name NAME        aws-bench env name -> aws-bench run --env-name.
-  -l, --n-tasks N            Max tasks -> aws-bench run -l.
-  -a, --agent NAME           Agent name -> aws-bench run -a. Default: claude-code.
-      --yes                  Skip aws-bench's confirmation prompt.
+      --path DIR             Task directory -> cdktn-bench run --path.
+      --scenario-path DIR    Scenario directory -> cdktn-bench run --scenario-path.
+      --registry-path FILE   Local registry file -> cdktn-bench run --registry-path.
+  -d, --dataset NAME[@VER]  Dataset name[@version] -> cdktn-bench run -d.
+      --env-name NAME        aws-bench env name -> cdktn-bench run --env-name.
+  -l, --n-tasks N            Max tasks -> cdktn-bench run -l.
+  -a, --agent NAME           Agent name -> cdktn-bench run -a. Default: claude-code.
+      --yes                  Skip cdktn-bench's confirmation prompt.
       --max-iters N          Budget cap: feedback cycles before censoring.
                               Maps to `--ak max_turns=N` (Claude Code's real
                               `--max-turns` flag). Default: 8 (prereg §4).
@@ -139,12 +154,12 @@ Options (env var alternatives in parentheses; all optional):
                               provenance only. Default: unset (pilot-set per
                               the build plan — no numeric default is baked
                               in until Phase 3's pilot sets one). (MAX_TOKENS)
-      --dry-run              Print the assembled `uv run aws-bench` argv and
+      --dry-run              Print the assembled `uv run cdktn-bench` argv and
                               exit, instead of running it. (AWS_BENCH_DRY_RUN=1)
   -h, --help                 Show this help.
 
 Any other argument, or anything after `--`, is forwarded verbatim to
-`uv run aws-bench run`.
+`uv run cdktn-bench run`.
 
 Token resolution: CLAUDE_CODE_OAUTH_TOKEN env (if already set) takes
 precedence over $AWS_BENCH_CLAUDE_TOKEN_FILE (default ~/.anthropic — an
@@ -262,7 +277,7 @@ fi
 # generator/gen.py::enforce_no_holdout_equipping only ever sees equipping
 # material physically shipped inside a GENERATED task directory -- it has
 # no visibility into --skill/--mcp-config passed straight through on the
-# aws-bench CLI (harbor's real equipping knobs, gates/equipping.py's own
+# cdktn-bench CLI (harbor's real equipping knobs, gates/equipping.py's own
 # docstring: "take a file/dir of any name"), which this script's own EXTRA
 # catch-all forwards verbatim. This is the CLI-argument counterpart of that
 # same rule (prereg §7.1 / DECISIONS.md Amendment 10): refuse outright if
@@ -342,7 +357,7 @@ if [ "$DRY_RUN" = "1" ]; then
   # One arg per line so tests can assert on exact tokens without a shell
   # re-parse. No budget.json is written on this path -- dry-run has no file
   # side effects, full stop (see this script's header).
-  printf 'uv run aws-bench'
+  printf 'uv run cdktn-bench'
   printf ' %s' "${ARGS[@]}"
   printf '\n'
   printf 'CLAUDE_CODE_OAUTH_TOKEN_SET=%s\n' "$([ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && echo 1 || echo 0)"
@@ -387,4 +402,4 @@ fi
 printf '{\n  "max_iters": %s,\n  "max_tokens": %s,\n  "cli_equipping": %s\n}\n' \
   "${MAX_ITERS:-null}" "$MAX_TOKENS_JSON" "$CLI_EQUIPPING_JSON" > "$JOBS_DIR/budget.json"
 
-exec uv run aws-bench "${ARGS[@]}"
+exec uv run cdktn-bench "${ARGS[@]}"
