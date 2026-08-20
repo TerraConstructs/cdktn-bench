@@ -395,3 +395,11 @@ header; summary:
   the injected `--ak max_turns=N` (and that a user's own later `--ak`
   still overrides it), `--max-iters 0` skipping injection, and
   `--ae CDKTN_BENCH_MAX_TOKENS=N` only appearing when `MAX_TOKENS` is set.
+
+## Post-hoc signal extraction
+
+ pulls deterministic per-trial signals (read-before-write,
+escape-hatch incidence, turns, tool calls, cost) out of a completed job dir, plus
+a per-arm rollup. See **** for usage, the quick
+recipes for reward/cost tables and failure triage, and the message-id
+deduplication gotcha that makes naive token sums double-count.
