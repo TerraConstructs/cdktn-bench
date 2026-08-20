@@ -940,6 +940,19 @@ class Spec(BaseModel):
                     "identical to what the single-step form graded "
                     "(DECISIONS.md Amendment 26 §7 / SCHEMA.md §2.6)"
                 )
+            if is_final and step.min_reward is not None:
+                raise ValueError(
+                    f"final step {step.name!r} must OMIT min_reward — the "
+                    "trial-level oracle is the gate. `min_reward` gates the "
+                    "NEXT step's prompt (Amendment 26 §3), and the last step "
+                    "has no successor to gate, so gen.py's emitter drops the "
+                    "value silently (build_steps_toml only writes min_reward "
+                    "for non-final steps). Rejected here rather than dropped, "
+                    "for the same reason oracle.structural_asserts is "
+                    "rejected on the final step: a schema-accepted key with "
+                    "no effect reads as a gate that exists "
+                    "(DECISIONS.md Amendment 26 §3 / SCHEMA.md §2.6)"
+                )
             if not is_final and step.oracle.structural_asserts is None:
                 raise ValueError(
                     f"step {step.name!r} is not the final step and must name "

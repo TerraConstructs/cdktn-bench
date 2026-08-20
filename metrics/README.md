@@ -287,7 +287,8 @@ test still pass unmodified:
 
 ## Budget enforcement (`scripts/run-bench.sh`)
 
-`MAX_ITERS` (default 8) and `MAX_TOKENS` (default unset — pilot-set, per
+`MAX_ITERS` (default 100 — the prereg's 8, raised by DECISIONS.md Amendment
+22) and `MAX_TOKENS` (default unset — pilot-set, per
 the build plan) are documented in full in `scripts/run-bench.sh`'s own
 header; summary:
 

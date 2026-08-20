@@ -466,6 +466,37 @@ class TestHelp:
         assert "fake-help-path-token" not in proc.stdout
         assert "fake-help-path-token" not in proc.stderr
 
+    def test_usage_advertises_the_default_the_code_actually_uses(
+        self, tmp_path: Path
+    ) -> None:
+        """Doc-drift guard: `--help` said "Default: 8" for a week after
+        DECISIONS.md Amendment 22 raised MAX_ITERS 8 -> 100, so an operator
+        reading the usage text budgeted for the wrong cap. Ties the advertised
+        default to the one `--dry-run` reports, so the two can't drift again.
+        """
+        help_proc = subprocess.run(
+            ["bash", str(RUN_BENCH), "--help"],
+            cwd=REPO_ROOT,
+            env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(tmp_path)},
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        assert help_proc.returncode == 0, help_proc.stderr
+
+        dry = run_dry([], env={}, tmp_path=tmp_path)
+        assert dry.returncode == 0, dry.stderr
+        (default,) = [
+            line.split("=", 1)[1]
+            for line in dry.stdout.splitlines()
+            if line.startswith("MAX_ITERS=")
+        ]
+
+        assert f"Default: {default}" in help_proc.stdout, (
+            f"--help does not advertise the real MAX_ITERS default ({default})"
+        )
+        assert "Default: 8 (prereg §4)" not in help_proc.stdout
+
 
 class TestExecTarget:
     """The runner must exec `cdktn-bench`, not `aws-bench`.

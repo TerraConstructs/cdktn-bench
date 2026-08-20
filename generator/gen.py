@@ -1016,10 +1016,21 @@ def verification_explanation(spec: Spec, arm: Arm) -> str:
             "not yet hand-authored)"
         )
     if spec.verifier.live_check.enabled:
+        # A multi-step task has NO tests/live_check.py and NO tests/test.sh at
+        # the task ROOT -- the shared root tests/ holds only README.md
+        # (SCHEMA.md §8.3) -- so an unqualified path here sends a reader of
+        # task.toml alone looking for files that do not exist. Path-qualified
+        # only for a multi-step spec, so every stepless task.toml's
+        # verification_explanation stays byte-identical.
+        test_sh_where = (
+            "tests/test.sh"
+            if not spec.is_multi_step()
+            else "that step's steps/<name>/tests/test.sh"
+        )
         if spec.verifier.live_check.gating:
             gating_note = (
                 "and IS GATING (verifier.live_check.gating is true): "
-                "tests/test.sh reads live_check.py's own JSON `.outcome` field "
+                f"{test_sh_where} reads live_check.py's own JSON `.outcome` field "
                 "and ANDs it into /logs/verifier/reward.txt -- the final reward "
                 "is 1.0 only if the static tiers above already say 1.0 AND "
                 "`.outcome` is \"pass\"; a `.outcome` of \"fail_stale\" or "
@@ -1040,11 +1051,19 @@ def verification_explanation(spec: Spec, arm: Arm) -> str:
             if not spec.is_multi_step()
             else "each live-checked step's own steps/<name>/tests/live_check.py"
         )
+        runner_where = (
+            "tests/live_check.py, run by tests/test.sh"
+            if not spec.is_multi_step()
+            else (
+                "each live-checked step's steps/<name>/tests/live_check.py, run "
+                f"by {test_sh_where}"
+            )
+        )
         live_note = (
             "Live AWS calls ARE part of this scenario (verifier.live_check.enabled "
             f"is true -- {module_where}, hand-authored). Real "
             "resources are deployed/modified/re-deployed by the AGENT during the "
-            "agent phase; tests/live_check.py, run by tests/test.sh, makes "
+            f"agent phase; {runner_where}, makes "
             "read-only/behavioral live AWS calls (curl the deployed API, "
             "apigateway describe calls) to confirm the modification actually "
             f"served, {gating_note}"
@@ -1122,24 +1141,48 @@ def build_task_toml(spec: Spec, arm: Arm, task_uuid: str) -> str:
     multi_step_header: list[str] = (
         ['multi_step_reward_strategy = "final"'] if spec.is_multi_step() else []
     )
+    # The whole-arc `title`, parked in [metadata] (free-form -- harbor/models/
+    # task/config.py types it `dict[str, Any]`) because [task] description now
+    # carries the step-1-safe `workspace_header()` instead. Emitted ONLY for a
+    # multi-step spec, where the two genuinely differ, so every stepless
+    # task.toml stays byte-identical (SCHEMA.md §2.6's regression guarantee).
+    # Host-side reporting only; nothing uploads [metadata] to the agent.
+    scenario_title: list[str] = (
+        [
+            "# The WHOLE-ARC scenario title. [task] description deliberately",
+            "# carries the step-1-safe workspace_title instead (SCHEMA.md §0.1,",
+            "# DECISIONS.md Amendment 27 §5.1) -- this key is where the full",
+            "# arc wording lives, for host-side reporting only.",
+            f"scenario_title = {toml_str(spec.title)}",
+        ]
+        if spec.is_multi_step()
+        else []
+    )
     lines = [
         'schema_version = "1.1"',
         *multi_step_header,
         "",
         "[task]",
         f'name = "iac-abstraction/{spec.id}-{ARM_DIRNAME[arm]}"',
-        # Deliberately the FULL `title`, whole-arc wording and all: task.toml
-        # is host-side metadata that Harbor never uploads into the agent
-        # environment (only environment/ is baked into the image, and
-        # instruction + tests are pushed at their own phases -- see
-        # harbor/trial/trial.py, which uploads no task file). The
-        # agent-visible skeleton header uses `workspace_header()` instead;
-        # SCHEMA.md §0.1.
+        # `workspace_header()` -- the step-1-safe header -- not the whole-arc
+        # `title`, on a MULTI-STEP spec (SCHEMA.md §0.1). task.toml is
+        # host-side metadata Harbor never uploads into the agent environment
+        # (only environment/ is baked into the image, and instruction + tests
+        # are pushed at their own phases -- harbor/trial/trial.py uploads no
+        # task file), so this is defence in depth, not a live leak. It is done
+        # anyway because task.toml is the LAST generator-stamped copy of the
+        # whole arc left inside the task dir, and Amendment 27 §5.1's lesson is
+        # precisely that "it's only metadata" is how the arc got into the
+        # agent's own main.tf. The full title is not lost -- it is kept below
+        # in [metadata] scenario_title, which is host-side reporting only.
+        # A stepless spec has no `workspace_title` and `workspace_header()`
+        # returns `title`, so every single-step task.toml stays byte-identical.
         "description = "
         + toml_str(
-            f"{spec.title} -- {arm} arm. Generated from specs/{spec.id}.yaml "
-            f"by generator/gen.py; see oracles/{spec.id}/intent.md for the "
-            "grading intent. Do not hand-edit."
+            f"{spec.workspace_header()} -- {arm} arm. Generated from "
+            f"specs/{spec.id}.yaml by generator/gen.py; see "
+            f"oracles/{spec.id}/intent.md for the grading intent. "
+            "Do not hand-edit."
         ),
         "authors = []",
         "keywords = []",
@@ -1157,6 +1200,7 @@ def build_task_toml(spec: Spec, arm: Arm, task_uuid: str) -> str:
         "[metadata]",
         f"id = {toml_str(task_uuid)}",
         f"canary = {toml_str(CANARY)}",
+        *scenario_title,
         'category = "iac-abstraction"',
         'request_type = "mutation"',
         f"aws_services = {toml_str_array(spec.services)}",
@@ -2446,7 +2490,30 @@ def write_tests_dir(spec: Spec, arm: Arm, tests_dir: Path, step: Step | None = N
         written.append("live_check.py")
     elif live_check_path.exists():
         # This step opted OUT of the spec-level live check; a leftover
-        # live_check.py would still be picked up by test.sh's own file guard.
+        # live_check.py would still be picked up by test.sh's own file guard,
+        # so it has to go -- UNLESS it is hand-authored, in which case it is
+        # answer-key material a human wrote and gen.py must not destroy. Same
+        # shape (and same reason) as _clear_generated_tests_files() and
+        # write_multi_step_layout()'s stale-step-dir guard: the generator
+        # hard-errors and makes the author move the file, rather than silently
+        # deleting it on the next `make gen`. `live` here is
+        # step_live_check(spec, step), a model_copy of the SPEC-level
+        # LiveCheck, so `.hand_authored` is the spec-level value even when the
+        # step overrode `enabled` (hand_authored is never per-step; SCHEMA.md
+        # §2.6, StepLiveCheck's own docstring).
+        if live.hand_authored:
+            raise RuntimeError(
+                f"{live_check_path}: step {step.name!r} declares "
+                "`oracle.live_check.enabled: false` (specs/"
+                f"{spec.id}.yaml), so this step runs no live check — but a "
+                "HAND-AUTHORED live_check.py is sitting in its tests/ "
+                "(verifier.live_check.hand_authored is true). test.sh's own "
+                "`[ -f live_check.py ]` guard would still pick it up, so it "
+                "cannot stay; and it is hand-written oracle material, so the "
+                "generator will not delete it for you. Move it to the step "
+                "whose oracle it is (tasks/.../steps/<name>/tests/"
+                "live_check.py), or turn this step's live check back on."
+            )
         live_check_path.unlink()
     for f in written:
         make_executable(tests_dir / f)

@@ -5,8 +5,9 @@ Design decision (memo §7 Q7, answered "route everything through the new CLI"):
 door. A stepless task runs through the identical single-step path
 (``AwsBenchSingleStepTrial``); a ``[[steps]]`` task runs through
 ``CdktnMultiStepTrial``. Gates and equipping therefore have exactly one command
-to reason about. ``aws-bench`` itself keeps working, unchanged and unaffected —
-``scripts/run-bench.sh`` still calls it.
+to reason about. ``aws-bench`` stays installed and importable and its own CLI is
+unchanged; ``scripts/run-bench.sh`` execs ``cdktn-bench`` as of DECISIONS.md
+Amendment 27 §7.
 
 **How the commands are reused.** ``aws_bench.cli.jobs.start`` is ~500 lines of
 flag declarations, config-file loading, dataset resolution, preflight, ledger

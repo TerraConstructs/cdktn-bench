@@ -41,7 +41,7 @@ provenance: {...}                 # §6
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `id` | string | yes | Kebab-case, matches `^[a-z][a-z0-9-]*$`. Becomes the directory name under `tasks/`, `oracles/rego/`, `oracles/cfn-guard/`, and `oracles/<id>/` (§8). Must equal the spec's own filename stem (`specs/<id>.yaml`), enforced by the generator at load time — this is what lets the generator refuse to run against a renamed-but-not-moved file. |
-| `title` | string | yes | Short human title, shown in any results viewer and written to `task.toml [task] description` (host-side metadata; the task dir itself is never uploaded to the agent). Not used in `instruction.md` — the instruction body is `instruction.shared_body`, not `title`. **Is** used as the skeleton header for a single-step spec — see §0.1. |
+| `title` | string | yes | Short human title, shown in any results viewer. Written to `task.toml [task] description` on a **single-step** spec; on a multi-step spec that slot carries `workspace_title` instead and the full arc title moves to `task.toml [metadata] scenario_title` (both host-side metadata; the task dir itself is never uploaded to the agent). Not used in `instruction.md` — the instruction body is `instruction.shared_body`, not `title`. **Is** used as the skeleton header for a single-step spec — see §0.1. |
 | `workspace_title` | string | **required iff `steps:` is set**; forbidden otherwise | The header comment stamped into each arm's skeleton entry file under `environment/`. §0.1. |
 | `difficulty` | int, `1`–`3` | yes | 1 = single-resource, 2 = multi-resource wiring, 3 = cross-service (prereg §5 difficulty gradient). The generator maps this to `task.toml [metadata] complexity`: `1→Atomic, 2→Sequential, 3→Orchestrated` — a generator convention, not a spec field; do not add a `complexity` field to the spec. |
 | `services` | list[string] | yes, ≥1 | boto3 service client ids (e.g. `ssm`, `iam`, `lambda`), lower-case. Written into every generated `task.toml [metadata] aws_services`. Purely descriptive in v1 (no live boto3 call ever validates against it — that upstream `test/aws_service_catalog.ts` check is aws-bench-datasets' own CI, not ours), but keep it accurate; a later live-check phase (§5) will care. |
@@ -55,9 +55,10 @@ skeleton entry file, and into the awscdk app's CloudFormation stack
 | Arm | File | Site |
 |---|---|---|
 | awscdk | `environment/workspace/lib/scenario-stack.ts` | `generator/gen.py` `awscdk_stack_skeleton()` |
-| awscdk | `environment/workspace/bin/app.ts` (`description:`) | `generator/gen.py` `awscdk_app_ts()` |
+| awscdk | `environment/workspace/bin/app.ts` (`description:`) | `generator/gen.py` `awscdk_bin_app_ts()` |
 | hcl_raw | `environment/workspace/main.tf` | `generator/gen.py` `hcl_raw_main_tf()` |
 | terraconstructs | `environment/app/main.ts`, `environment/app/lib/scenario-stack.ts` | `generator/gen.py` `terraconstructs_main_ts()` / `terraconstructs_stack_skeleton()` |
+| *(all arms)* | `task.toml [task] description` — **host-side only** | `generator/gen.py` `build_task_toml()` |
 
 Everything under `environment/` is `COPY`'d into the agent image by the arm
 Dockerfile, so **the header is the first thing the step-1 agent reads** — it is
@@ -77,6 +78,16 @@ Therefore:
   future change. Making it required rather than defaulting (to `title`, or to
   `id`) forces the author to choose a step-1-safe header instead of inheriting a
   foreshadowing one by omission.
+
+`task.toml [task] description` is the one **non**-`environment/` row in that
+table, and it is defence in depth rather than a live leak: Harbor uploads no
+task file into the agent environment (`harbor/trial/trial.py`), so `task.toml`
+is host-side metadata read only by the publisher/registry. It uses
+`workspace_header()` anyway, because it is the last generator-stamped copy of
+the whole arc left inside the task dir and "it's only metadata" is exactly the
+reasoning that put the arc into the agent's own `main.tf` (Amendment 27 §5.1).
+The full arc title is not lost — a multi-step task.toml carries it as
+`[metadata] scenario_title`.
 
 Enforced by `Spec._multi_step_requires_workspace_title` (spec load time) and,
 against the real emitted bytes, by
@@ -380,7 +391,9 @@ decomposition — but it is a top-level key, not a child of `instruction`.
 ```yaml
 steps:                                   # omit entirely for a single-step scenario
   - name: "01-initial-deploy"            # ^[0-9]{2}-[a-z][a-z0-9-]*$ ; consecutive, ascending
-    min_reward: 1.0                      # optional; see "the hard gate" below
+    min_reward: 1.0                      # optional on a non-final step (default 1.0);
+                                         # MUST be omitted on the last step — see
+                                         # "the hard gate" below
     instruction:
       shared_body: |                     # THIS STEP's work
         ...
@@ -461,8 +474,11 @@ spec-level `oracle.structural_asserts`. The generator emits one
 non-final step: the next step's prompt never fires unless this one verified
 green (`harbor/trial/multi_step.py::_should_stop_after_step`). A change
 request whose starting state was never actually built is not a measurement of
-anything. The final step gets no `min_reward` (there are no remaining steps to
-gate). An author who genuinely wants an ungated intermediate step writes
+anything. The final step **must omit** `min_reward` — there are no remaining
+steps to gate, so the trial-level oracle is the gate; declaring it there is
+**rejected at spec load** (`Spec._steps_wellformed`) rather than silently
+dropped by the emitter, exactly as `oracle.structural_asserts` is rejected on
+the final step. An author who genuinely wants an ungated intermediate step writes
 `min_reward: 0.0` — always satisfied, and explicit, so "no gate" is never the
 result of forgetting a key.
 
@@ -1245,9 +1261,11 @@ if the flat grouping was actually intended.
 ```
 tasks/anchor/<scenario-id>-<arm>/
     task.toml                       # + multi_step_reward_strategy = "final"
-                                     # + [[steps]] (name, min_reward, [steps.agent],
-                                     #   [steps.verifier] incl. its own env)
+                                     # + [[steps]] (name, min_reward on non-final steps
+                                     #   only, [steps.agent], [steps.verifier] incl. env)
                                      # + [pre_invoke] timeout_sec, iff any step declares one
+                                     # + [metadata] scenario_title (the whole-arc title;
+                                     #   [task] description carries workspace_title, §0.1)
     environment/                    # UNCHANGED — one workspace, shared by every step
     steps/
         01-<slug>/

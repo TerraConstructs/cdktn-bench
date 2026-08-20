@@ -12,7 +12,16 @@ All trials: `claude-code` / `claude-sonnet-5`, env `cdktn-anchor`, account
 pilot), mutating scenarios run the agent as `QALocalInvocationApplicationAdmin`
 (Amendment 24).
 
-## apigw-redeploy (live: apply → add /status route → re-apply → verify)
+## apigw-redeploy — SINGLE-STEP form (live: apply → add /status route → re-apply → verify)
+
+**FORM: single-step (pre-Amendment-27).** Every row in this table was produced
+under the **single-step** form of `apigw-redeploy`, whose one prompt named the
+day-2 change up front. **DECISIONS.md Amendment 27 §2 forbids pooling these with
+any multi-step-form result, in any estimator, at any n** — the two forms are
+different scenarios (different prompt content, and Amendment 26 §4 already
+refuses cross-shape tokens-to-green comparisons). They remain valid pilot
+evidence *for the single-step form*; nothing here is retracted. Multi-step-form
+rows go in the separate table below — never in this one.
 
 | date | arm | reward | output tok | num_turns | cost $ | live_check | job |
 |------|-----|-------:|-----------:|----------:|-------:|:----------:|-----|
@@ -48,3 +57,23 @@ Next: repeat trials for variance; more scenarios for generality.
 - The very first live trial (`apigw-redeploy-hcl-raw`, 8-turn budget) was
   right-censored by a config bug (`error_max_turns` at 8 turns), reward 0.0 —
   NOT a real failure. Motivated the turn-budget fix (Amendment 22). Excluded.
+
+## apigw-redeploy (multi-step form, 2026-08-20+)
+
+**FORM: multi-step (Amendment 27).** Two steps, `01-initial-deploy` →
+`02-change-request`, with no foreshadowing in step 1. This is a **new
+pre-registered comparison with its own census** (Amendment 27 §2): rows here
+start at n=0 and must never be pooled with the single-step table above.
+Headline metric is **tokens-to-green-across-steps** (Amendment 26 §4: the
+cumulative sum of per-step agent OUTPUT tokens up to and including the step at
+which the final oracle first passes), so the token column is cumulative across
+steps, not per-step.
+
+Amendment 26 is **DRAFT until the first live multi-step run**, and no
+multi-step result may be published while it is — record rows here, publish
+nothing from them yet.
+
+*(No trials yet.)*
+
+| date | arm | reward | output tok (cum.) | num_turns | cost $ | live_check | job |
+|------|-----|-------:|------------------:|----------:|-------:|:----------:|-----|

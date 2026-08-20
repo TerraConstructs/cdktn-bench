@@ -36,8 +36,10 @@ from gen import (  # noqa: E402
     build_step_pre_invoke_sh,
     build_static_tiers_sh,
     build_steps_toml,
+    build_task_toml,
     instruction_rel_paths,
     task_dir,
+    write_tests_dir,
 )
 from spec_model import Spec, load_spec  # noqa: E402
 
@@ -517,6 +519,29 @@ def test_one_step_is_refused() -> None:
         Spec.model_validate(raw)
 
 
+def test_min_reward_is_refused_on_the_final_step() -> None:
+    """Same treatment `oracle.structural_asserts` already gets.
+
+    `min_reward` gates the NEXT step's prompt, so on the last step it has no
+    successor to gate and `build_steps_toml` drops it (`if not is_final`). A
+    schema that ACCEPTS a key the emitter silently discards reads, to the next
+    spec author, as a gate that exists. Rejected at load instead.
+    """
+    raw = copy.deepcopy(yaml.safe_load(SPEC_PATH.read_text()))
+    raw["steps"][-1]["min_reward"] = 1.0
+    with pytest.raises(ValueError, match="must OMIT min_reward"):
+        Spec.model_validate(raw)
+
+
+def test_min_reward_is_still_accepted_on_a_non_final_step() -> None:
+    """The rejection above must not have swallowed the legitimate case."""
+    raw = copy.deepcopy(yaml.safe_load(SPEC_PATH.read_text()))
+    raw["steps"][0]["min_reward"] = 0.0
+    spec = Spec.model_validate(raw)
+    rendered = "\n".join(build_steps_toml(spec, spec.verifier.live_check))
+    assert "min_reward = 0.0" in rendered
+
+
 def test_step_names_must_be_consecutive() -> None:
     raw = copy.deepcopy(yaml.safe_load(SPEC_PATH.read_text()))
     raw["steps"][1]["name"] = "05-change-request"
@@ -587,6 +612,133 @@ def test_skeletons_use_workspace_title_not_title(spec: Spec) -> None:
             f"{fn.__name__} still stamps the whole-arc `title` into "
             "environment/ — see SCHEMA.md §0.1"
         )
+
+
+def _spec_with_step_one_live_check_off(*, hand_authored: bool) -> Spec:
+    """apigw-redeploy with step 01 opting OUT of the spec-level live check.
+
+    No real spec reaches this today (both apigw-redeploy steps are
+    live-checked), which is exactly why the emitter branch it exercises needs a
+    test of its own.
+    """
+    raw = copy.deepcopy(yaml.safe_load(SPEC_PATH.read_text()))
+    raw["steps"][0]["oracle"]["live_check"] = {"enabled": False}
+    spec = Spec.model_validate(raw)
+    if not hand_authored:
+        # `hand_authored: false` alongside a spec-level `enabled: true` is
+        # refused at the schema level (it would ship the generated
+        # not-implemented stub as the scenario's live oracle), so the
+        # generator-written case is built by mutating the loaded model rather
+        # than the YAML.
+        spec.verifier.live_check.hand_authored = False
+    return spec
+
+
+def test_opted_out_step_deletes_a_GENERATED_live_check(tmp_path) -> None:
+    """The legitimate half of the cleanup: a leftover generated live_check.py
+    must go, because `test.sh`'s own `[ -f live_check.py ]` guard would still
+    run it for a step that declared no live check."""
+    spec = _spec_with_step_one_live_check_off(hand_authored=False)
+    step = (spec.steps or [])[0]
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    stale = tests_dir / "live_check.py"
+    stale.write_text("# generator-written stub\n")
+
+    write_tests_dir(spec, "hcl_raw", tests_dir, step)
+
+    assert not stale.exists(), "a generator-written live_check.py must be cleaned up"
+    assert (tests_dir / "static_tiers.sh").is_file()
+    assert (tests_dir / "policy.rego").is_file()
+
+
+def test_opted_out_step_REFUSES_to_delete_a_hand_authored_live_check(
+    tmp_path,
+) -> None:
+    """The guard this test exists for: gen.py must never delete hand-written
+    oracle material.
+
+    Matches the two sibling paths (`_clear_generated_tests_files` and
+    `write_multi_step_layout`'s stale-step-dir sweep), which already hard-error
+    rather than unlink. Latent today — no shipped spec sets a step's
+    `live_check.enabled: false` — but `make gen` is run on every spec edit, so
+    the first spec that does would have silently destroyed the file.
+    """
+    spec = _spec_with_step_one_live_check_off(hand_authored=True)
+    assert spec.verifier.live_check.hand_authored
+    step = (spec.steps or [])[0]
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    precious = tests_dir / "live_check.py"
+    precious.write_text("# hand-written, hours of work\n")
+
+    with pytest.raises(RuntimeError, match="HAND-AUTHORED live_check.py"):
+        write_tests_dir(spec, "hcl_raw", tests_dir, step)
+
+    assert precious.read_text() == "# hand-written, hours of work\n", (
+        "the generator raised but deleted the file anyway"
+    )
+
+
+def test_task_toml_description_carries_the_step_one_safe_title(spec: Spec) -> None:
+    """Amendment 27 §5.1's lesson, applied to the last generator-stamped copy
+    of the arc left in the task dir.
+
+    task.toml is host-side only (harbor/trial/trial.py uploads no task file),
+    so this is defence in depth — but "it's only metadata" is exactly how the
+    whole-arc title got into the step-1 agent's own main.tf. The full title is
+    kept in [metadata] scenario_title.
+    """
+    for arm in ARMS:
+        cfg = tomllib.loads((task_dir(spec, arm) / "task.toml").read_text())
+        description = cfg["task"]["description"]
+        assert spec.workspace_header() in description
+        assert spec.title not in description
+        assert not _leaks(description, CONTENT_TOKENS + TEMPORAL_TOKENS)
+        assert cfg["metadata"]["scenario_title"] == spec.title
+
+
+def test_stepless_task_toml_description_is_unchanged() -> None:
+    """The byte-identity guarantee: `workspace_header()` returns `title`
+    verbatim for a stepless spec, and no `scenario_title` key appears."""
+    control = load_spec(REPO_ROOT / "specs" / "sfn-jsonata.yaml")
+    assert not control.is_multi_step()
+    for arm in control.arms.enabled_arms():
+        cfg = tomllib.loads((task_dir(control, arm) / "task.toml").read_text())
+        assert cfg["task"]["description"].startswith(f"{control.title} -- {arm} arm.")
+        assert "scenario_title" not in cfg["metadata"]
+
+
+def test_multi_step_verification_explanation_qualifies_its_paths(spec: Spec) -> None:
+    """A multi-step task has no tests/live_check.py and no tests/test.sh at the
+    root — the shared tests/ holds only README.md — so an unqualified mention
+    sends a reader of task.toml alone after two files that do not exist."""
+    for arm in ARMS:
+        cfg = tomllib.loads((task_dir(spec, arm) / "task.toml").read_text())
+        explanation = cfg["metadata"]["verification_explanation"]
+        assert "steps/<name>/tests/live_check.py" in explanation
+        assert "steps/<name>/tests/test.sh" in explanation
+        # No mention of either file at the task ROOT survives. Both are
+        # checked as whole path tokens, so the step-qualified spellings
+        # (".../steps/<name>/tests/test.sh") do not match.
+        for orphan in ("tests/live_check.py, run by tests/test.sh",):
+            assert orphan not in explanation
+        for root_path in ("tests/test.sh", "tests/live_check.py"):
+            assert explanation.count(root_path) == explanation.count(
+                f"steps/<name>/{root_path}"
+            ), f"{root_path} is still referenced at the task root"
+        # ...and the claim is true of the real task dir.
+        root_tests = task_dir(spec, arm) / "tests"
+        assert not (root_tests / "live_check.py").exists()
+        assert not (root_tests / "test.sh").exists()
+
+
+def test_build_task_toml_is_deterministic(spec: Spec) -> None:
+    """Cheap idempotence proof for the two emitter edits above: the same spec
+    and uuid render byte-identically, so `make gen-all` stays a no-op."""
+    for arm in ARMS:
+        first = build_task_toml(spec, arm, "fixed-uuid")
+        assert first == build_task_toml(spec, arm, "fixed-uuid")
 
 
 def test_stepless_specs_are_untouched() -> None:

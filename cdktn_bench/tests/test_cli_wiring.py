@@ -64,10 +64,14 @@ def test_install_refuses_a_non_aws_bench_job_class() -> None:
 
 
 def test_the_aws_bench_console_script_is_not_affected() -> None:
-    """``aws-bench`` must keep working unchanged — scripts/run-bench.sh calls it.
+    """``aws-bench`` stays installed and importable, its own CLI unchanged.
 
-    The rebind is process-local, and importing ``aws_bench.cli.main`` never
-    imports ``cdktn_bench``, so an ``aws-bench`` process never sees it.
+    ``scripts/run-bench.sh`` execs ``cdktn-bench`` as of DECISIONS.md Amendment
+    27 §7, so this is no longer about protecting the runner's own entrypoint —
+    it is about keeping the rebind process-local. Importing
+    ``aws_bench.cli.main`` never imports ``cdktn_bench``, so an ``aws-bench``
+    process (anything else on this machine, `aws-bench env init/setup/cleanup`
+    included) never sees it.
     """
     source = __import__("inspect").getsource(aws_main)
     assert "cdktn" not in source.lower()

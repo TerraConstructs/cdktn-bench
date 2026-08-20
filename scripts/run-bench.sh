@@ -51,7 +51,9 @@
 #   4. Wires the pre-registered budget cap (docs/iac-abstraction-aws-bench-plan.md
 #      Phase 2 item 2 / iac-abstraction-benchmark-prereg.md §4: "MAX_ITERS = 8
 #      feedback cycles or MAX_TOKENS per trajectory, whichever first"):
-#        - MAX_ITERS (default 8, --max-iters) maps to Claude Code's real
+#        - MAX_ITERS (default 100, --max-iters; raised from the prereg's 8 on
+#          2026-08-13 by DECISIONS.md Amendment 22 — `--max-turns` counts agent
+#          STEPS, not the prereg's feedback CYCLES) maps to Claude Code's real
 #          `--max-turns` CLI flag via `--ak max_turns=N` (verified against
 #          the installed harbor package,
 #          .venv/lib/python*/site-packages/harbor/agents/installed/claude_code.py
@@ -139,7 +141,8 @@ Options (env var alternatives in parentheses; all optional):
       --yes                  Skip cdktn-bench's confirmation prompt.
       --max-iters N          Budget cap: feedback cycles before censoring.
                               Maps to `--ak max_turns=N` (Claude Code's real
-                              `--max-turns` flag). Default: 8 (prereg §4).
+                              `--max-turns` flag). Default: 100 (prereg §4's
+                              8, raised by DECISIONS.md Amendment 22).
                               Pass 0 or an empty string to skip injecting it
                               entirely (falls back to Claude Code's own
                               default / an explicit --ak you pass yourself).
@@ -187,7 +190,8 @@ ENV_NAME=""
 N_TASKS=""
 YES=0
 DRY_RUN="${AWS_BENCH_DRY_RUN:-0}"
-# Budget cap (prereg §4): MAX_ITERS defaults to 8 per the pre-registration;
+# Budget cap (prereg §4): MAX_ITERS defaults to 100 (the pre-registration's own
+# 8, raised by DECISIONS.md Amendment 22 — see the note below);
 # MAX_TOKENS has deliberately no numeric default (pilot-set, see this
 # script's own header) — an unset/empty value means "no MAX_TOKENS recorded
 # for this job", not "0".

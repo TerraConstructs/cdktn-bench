@@ -13,8 +13,8 @@ dependencies = [
 [project.scripts]
 # The extended CLI (task #14 / docs/design/multistep-trial-investigation.md
 # Seam A). A superset of `aws-bench`: identical flags, plus multi-step tasks
-# instead of `NotImplementedError`. `aws-bench` itself stays installed and
-# unchanged — scripts/run-bench.sh still calls it.
+# instead of `NotImplementedError`. `aws-bench` stays installed and its own CLI
+# unchanged; scripts/run-bench.sh execs cdktn-bench (DECISIONS.md Amendment 27 §7).
 cdktn-bench = "cdktn_bench.cli:app"
 
 [dependency-groups]
