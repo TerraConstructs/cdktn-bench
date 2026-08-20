@@ -97,8 +97,8 @@ def scan_session(path, arm):
 
 def main(job_dirs):
     print(f"{'trial':44s} {'step':18s} {'rw':>4s} {'out_tok':>8s} {'msgs':>5s} "
-          f"{'calls':>6s} {'rbw_tok':>8s} {'rbw%':>5s} {'esc':>4s}")
-    print("-" * 112)
+          f"{'calls':>6s} {'rbw_tok':>8s} {'rbw%':>5s} {'esc':>4s} {'cost':>7s}")
+    print("-" * 120)
     agg = []
     for jd in job_dirs:
         for d in sorted(glob.glob(os.path.join(jd, "*"))):
@@ -115,14 +115,36 @@ def main(job_dirs):
             if exc:
                 print(f"{name[:44]:44s} {'-':18s} {'INFRA-FAIL: ' + exc[:40]}")
                 continue
+            steps_meta = {st.get("step_name"): st for st in (res.get("step_results") or [])}
             for step, sp in sessions_for(d):
                 s = scan_session(sp, arm)
+                meta = steps_meta.get(step) or {}
+                s["cost"] = ((meta.get("agent_result") or {}).get("cost_usd")
+                             if meta else (res.get("agent_result") or {}).get("cost_usd")) or 0.0
+                if meta:
+                    reward = (meta.get("verifier_result") or {}).get("rewards", {}).get("reward")
                 pct = (100.0 * s["rbw_tok"] / s["out_tok"]) if s["rbw_tok"] and s["out_tok"] else None
                 print(f"{name[:44]:44s} {step[:18]:18s} {str(reward):>4s} {s['out_tok']:8d} "
                       f"{s['msgs']:5d} {s['calls']:6d} {str(s['rbw_tok'] if s['rbw_tok'] is not None else '-'):>8s} "
-                      f"{(f'{pct:.0f}%' if pct else '-'):>5s} {s['escape']:>4s}")
+                      f"{(f'{pct:.0f}%' if pct else '-'):>5s} {s['escape']:>4s} {s['cost']:7.2f}")
                 agg.append(dict(trial=name, arm=arm, step=step, reward=reward, **s, rbw_pct=pct))
-    json.dump(agg, open("/tmp/signals.json", "w"), indent=1)
+    if agg:
+        print()
+        print(f"{'PER-ARM ROLLUP (valid rows only)':44s} {'n':>3s} {'out_tok':>8s} "
+              f"{'rbw%':>6s} {'green':>6s} {'esc':>4s}")
+        print("-" * 80)
+        for arm in ("awscdk", "terraconstructs", "hcl-raw"):
+            rows = [r for r in agg if r["arm"] == arm and r["reward"] is not None]
+            if not rows:
+                continue
+            pcts = [r["rbw_pct"] for r in rows if r["rbw_pct"] is not None]
+            green = sum(1 for r in rows if r["reward"] == 1.0)
+            esc = sum(1 for r in rows if r["escape"] == "YES")
+            print(f"{arm:44s} {len(rows):3d} {sum(r['out_tok'] for r in rows) / len(rows):8.0f} "
+                  f"{(sum(pcts) / len(pcts) if pcts else 0):5.0f}% {green:3d}/{len(rows):<2d} {esc:4d}")
+    out = os.environ.get("SIGNALS_OUT", "signals.json")
+    json.dump(agg, open(out, "w"), indent=1)
+    print(f"\n[rows written to {out}]")
     return agg
 
 
