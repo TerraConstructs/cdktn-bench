@@ -124,6 +124,58 @@ Fill in, in this order (each corresponds to a `SCHEMA.md` section):
    explicit language about whether the agent should clean up after itself
    (see `specs/apigw-redeploy.yaml`'s own instruction for the pattern: "Do
    NOT delete... leave every resource you created running").
+3a. **Prompt-writing rules (the ticket test).** The `shared_body` is a
+   *work request*, not a specification of the solution. Before freezing it,
+   read it as if you were the engineer receiving the ticket, and apply:
+
+   - **Write the goal the way a real ticket would.** State what the business
+     needs and what "done" looks like. Nothing else.
+   - **No oracle-defensive spec-ese.** Never add a constraint whose only
+     purpose is to force the implementation shape your asserts happen to
+     expect. `apigw-openapi`'s original prompt is the cautionary example: it
+     said "each route is its own API Gateway resource and method,
+     individually reachable and individually wired -- not an API whose routes
+     exist only inside an imported OpenAPI document body." That sentence
+     existed solely because the asserts counted per-route resources; it told
+     the agent the answer and it measured nothing. **Forbidden.**
+   - **Resolve alternative shapes oracle-side, not prompt-side.** If a
+     competent engineer could satisfy the ticket two ways (e.g. API Gateway
+     body-import vs per-route resources), you have exactly two legitimate
+     options: (a) **behavioralize** the asserts so any working shape scores
+     1.0, or (b) add **at most one in-world sentence** that motivates the
+     shape the way a real ticket would ("the platform team needs per-route
+     metrics"). Never enumerate what not to do.
+   - **Never mention grading.** No "its contents are not graded", no
+     "the verifier checks…", no tier vocabulary. The agent is doing a job,
+     not sitting an exam.
+   - **Never coach around toolchain differences.** "…if your toolchain
+     requires an existing code archive rather than inline source" hands the
+     hcl-raw agent the discovery that *is the measurement*: that Terraform
+     makes you solve packaging yourself while CDK bundles for free. Coaching
+     it away deletes the arm differential the scenario exists to measure.
+   - **Seeded files: path + one line, no usage instructions.** "A `<what>` is
+     at `<path>`." Stop there. What it is for is the agent's problem.
+
+   **Seed-artifact neutrality.** A seeded input must not bias an
+   implementation shape. If the artifact is the idiomatic input for exactly
+   one shape — a machine-readable `openapi.json` all but *demands*
+   body-import — then either that shape is oracle-accepted, or the artifact
+   is replaced with a shape-neutral one (e.g. a PRD-voice markdown API design
+   doc: routes, purposes, expected responses, written for a human). For every
+   seeded file, state in the spec's comments **what shape it nudges toward
+   and whether the oracle tolerates that shape**. A trap worth keeping is
+   usually shape-invariant anyway (`apigw-redeploy`'s deployment-consistency
+   trap fires under body-import *and* per-resource authoring).
+
+   **The cost this rule buys, stated honestly.** Tolerating N shapes means
+   proving the oracle in N shapes: each accepted shape needs its own
+   reference solution scoring 1.0 and its own broken fixtures proving each
+   catch still fires, so falsifiability cost scales with the number of
+   shapes. That cost is the price of measuring authoring, not compliance.
+   Where it becomes unaffordable, prefer a **behavioural** oracle (does the
+   deployed thing do what the ticket asked?) over widening structural asserts
+   shape by shape — see §5.
+
 4. **`catches`** and **`oracle.structural_asserts`** — the planted-mistake
    taxonomy (prereg §5) and the tiered checks that catch them. Write
    `oracle.intent` (the natural-language ground truth) FIRST, then derive

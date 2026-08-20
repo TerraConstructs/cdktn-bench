@@ -22,6 +22,26 @@ for the append-only amendment log (the pre-registration discipline), and
   blanket cut.
 - Override per run: `MAX_ITERS=<n> ./scripts/run-bench.sh …` or `--max-iters <n>`.
 
+## Writing agent prompts (quick reference)
+
+Full rules: `docs/adding-scenarios.md` §1 item 3a. The short form:
+
+- A prompt is a **ticket**, not a spec. Goal + what "done" means. Nothing else.
+- **Never** add a constraint that exists only to force the shape the oracle
+  expects ("each route is its own resource and method..." — the
+  `apigw-openapi` cautionary example). If two working shapes exist, fix the
+  **oracle** (behavioralize it) or add at most **one in-world sentence** —
+  never a list of what not to do.
+- **Never** mention grading, tiers, or the verifier. **Never** coach around a
+  toolchain's gaps ("if your toolchain requires a code archive...") — that
+  discovery *is* the arm differential being measured.
+- Seeded files get **path + one line**, no usage instructions — and must not
+  bias an implementation shape (a machine-readable `openapi.json` demands
+  body-import; a PRD-voice markdown design doc does not). Either the nudged
+  shape is oracle-accepted, or the artifact changes.
+- Every accepted shape costs a reference solution + broken fixtures. Prefer a
+  **behavioural** oracle over widening structural asserts shape by shape.
+
 ## Multi-step scenarios (quick reference)
 
 - The runner is **`cdktn-bench`**, not `aws-bench` (`scripts/run-bench.sh`
