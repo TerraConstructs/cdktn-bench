@@ -10,6 +10,11 @@
 #                     diff -- see gen_sync_check's own docstring; NOT a git
 #                     comparison) -- proves generated/ is not silently
 #                     drifted from specs/.
+#   2a. seed-parity    -- `make seed-parity SPEC=...` (BROWNFIELD only,
+#                          specs/SCHEMA.md §2.7). PASS/FAIL for a spec with a
+#                          `workspace_seed` block; SKIP (rc=3) for every
+#                          greenfield spec, which is all of them but
+#                          `named-resource-replacement`.
 #   2. check-paths     -- `make check-paths SPEC=...`. Reports PASS/FAIL
 #                          when the spec has a reference fixture authored
 #                          (generator/tests/fixtures/<id>/), or SKIP
@@ -198,6 +203,16 @@ check_paths_check() {
   uv run python generator/check_reference_paths.py "$1"
 }
 
+# BROWNFIELD seed parity (specs/SCHEMA.md §2.7, DECISIONS.md Amendment 28):
+# every arm's generated, UN-OVERLAID workspace must build/synth/plan green and
+# satisfy every declared `workspace_seed.seed_asserts` entry. rc=3 (this spec
+# is greenfield, i.e. declares no workspace_seed) is handled by run_check's
+# existing SKIP branch -- which is exactly why this check reuses that
+# convention instead of inventing one.
+seed_parity_check() {
+  uv run python generator/check_reference_paths.py "$1" --seed
+}
+
 tier1_coverage_check() {
   uv run python generator/check_tier1_coverage.py "$1"
 }
@@ -266,6 +281,7 @@ for spec in specs/*.yaml; do
   echo "=== scenario: $id ($spec) ==="
   run_check "$id" "gen-sync" -- gen_sync_check "$spec"
   run_check "$id" "check-paths" -- check_paths_check "$spec"
+  run_check "$id" "seed-parity" -- seed_parity_check "$spec"
   run_check "$id" "tier1-coverage" -- tier1_coverage_check "$spec"
   run_check "$id" "falsifiability" -- falsifiability_check "$spec"
   run_check "$id" "grading-proof" -- grading_proof_check "$spec"

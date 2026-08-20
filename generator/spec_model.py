@@ -250,6 +250,261 @@ class SeededFile(BaseModel):
 
 
 # --------------------------------------------------------------------------
+# §2.7 workspace_seed -- the BROWNFIELD (poisoned-workspace) starting state
+#
+# Added 2026-08-20 (task #15, docs/design/poisoned-workspace-design.md;
+# DECISIONS.md Amendment 28). A spec with NO `workspace_seed` key generates
+# byte-identically to before this field existed -- that regression guarantee is
+# why every branch gen.py grows for it is `if spec.workspace_seed:`-guarded.
+#
+# What it IS: the per-arm body shipped **as** `output_contract.entry_file`'s
+# content, replacing §2.4's empty `TODO(agent)` skeleton. Working, green,
+# semantically-equivalent-across-arms IaC that already carries a latent
+# pitfall. AGENT-WRITABLE (0o644) -- it is the file the agent is being asked to
+# change. That is the exact opposite of `seeded_files` (§2.5), which are 0o444
+# read-only reference inputs; the two blocks stay separate because their
+# permissions and semantics are opposites.
+#
+# What it is NOT: a hint. The seed must synth/plan GREEN (proved per arm by
+# `make seed-parity`, generator/check_reference_paths.py --seed) and must carry
+# no comment, name or structure that signposts the trap. The mechanical half of
+# that rule is `_SEED_COMMENT_BANNED_TOKENS` below; the real rule is a
+# review-time obligation (SCHEMA.md §2.7, Amendment 28 §3).
+# --------------------------------------------------------------------------
+
+# Tokens that must never appear in a COMMENT line of a seed body. Two families:
+#   (a) editorial markers a real production config would not carry and that
+#       tell the agent this file is bench scaffolding, inviting meta-reasoning
+#       about planted traps ("TODO", "FIXME", ... ) -- including the
+#       generator's own skeleton banner text, which is also how this validator
+#       enforces "a workspace_seed spec must not ALSO ship the empty stub";
+#   (b) the generator-side tripwire for the most common way a seed leaks its
+#       own answer: naming the Terraform lifecycle meta-argument that fixes it.
+# Matched case-insensitively, comment lines only -- a seed legitimately
+# contains e.g. `description` text, and a REFERENCE SOLUTION legitimately
+# contains `create_before_destroy` in real code (this list never sees one).
+_SEED_COMMENT_BANNED_TOKENS = (
+    "TODO",
+    "FIXME",
+    "XXX",
+    "HACK",
+    "NOTE:",
+    "CAREFUL",
+    "GOTCHA",
+    "CREATE_BEFORE_DESTROY",
+    "CREATEBEFOREDESTROY",
+    "EMPTY ON PURPOSE",
+    "GENERATED SKELETON",
+)
+
+# A comment line, for the three languages a seed body can be written in
+# (HCL `#`, TS `//`, and the inside of a TS/JSDoc block comment `*` or `/*`).
+_COMMENT_LINE_RE = re.compile(r"^\s*(#|//|/\*|\*)")
+
+
+def _seed_comment_violations(body: str) -> list[str]:
+    """Every banned token found in a COMMENT line of `body`, in order."""
+    found: list[str] = []
+    for line in body.splitlines():
+        if not _COMMENT_LINE_RE.match(line):
+            continue
+        upper = line.upper()
+        for token in _SEED_COMMENT_BANNED_TOKENS:
+            if token in upper and token not in found:
+                found.append(token)
+    return found
+
+
+@_strict
+class SeedAssert(BaseModel):
+    """One behavioural fact the seed must satisfy on every arm it applies to.
+
+    Deliberately reuses `StructuralAssert`'s vocabulary verbatim -- same
+    `op`/`expected` table (§4.2), same `{cfn,tf}_jsonpath` split, same
+    `generator/jsonpath_jq.py` compilation, resolved by the SAME
+    `_assert_lib.sh::assert_check` bash function a real trial's tier-0 runs. A
+    second, differently-behaving path language would be a new drift surface for
+    zero gain. The one field `StructuralAssert` has that this does not is
+    `tier`: a seed assert is never graded during a trial -- it is a
+    GENERATION-TIME parity gate (§4 of the design memo), run by
+    `make seed-parity`, never by `tests/static_tiers.sh`.
+    """
+
+    name: str
+    description: str
+    applies_to: list[Arm] = Field(
+        default_factory=lambda: ["awscdk", "hcl_raw", "terraconstructs"]
+    )
+    # Back-reference to `catches[].name`. At least one seed assert per spec must
+    # set it (see `Spec._workspace_seed_wellformed`): without it a seed could
+    # silently drift into being NON-poisoned -- still green, still parity-clean,
+    # but no longer carrying the pitfall the scenario exists to measure -- and
+    # nothing would notice.
+    pins_catch: str | None = None
+    cfn_jsonpath: str | None = None
+    tf_jsonpath: str | None = None
+    op: Literal[
+        "exists", "not_exists", "eq", "in", "contains", "regex", "set_eq",
+        "absent_or_eq", "not_regex",
+    ]
+    expected: object = None
+
+    @model_validator(mode="after")
+    def _jsonpaths_required_per_applies_to(self) -> "SeedAssert":
+        if not self.applies_to:
+            raise ValueError(f"seed_assert {self.name!r}: applies_to must be non-empty")
+        if "awscdk" in self.applies_to and not self.cfn_jsonpath:
+            raise ValueError(
+                f"seed_assert {self.name!r}: cfn_jsonpath required because "
+                "'awscdk' is in applies_to"
+            )
+        if (
+            "hcl_raw" in self.applies_to or "terraconstructs" in self.applies_to
+        ) and not self.tf_jsonpath:
+            raise ValueError(
+                f"seed_assert {self.name!r}: tf_jsonpath required because a "
+                "TF-shaped arm is in applies_to"
+            )
+        needs_expected = self.op in {
+            "eq", "in", "contains", "regex", "set_eq", "absent_or_eq", "not_regex"
+        }
+        if needs_expected and self.expected is None:
+            raise ValueError(
+                f"seed_assert {self.name!r}: op={self.op!r} requires 'expected'"
+            )
+        if not needs_expected and self.expected is not None:
+            raise ValueError(
+                f"seed_assert {self.name!r}: op={self.op!r} must not set 'expected'"
+            )
+        return self
+
+
+@_strict
+class SeedExtraFile(BaseModel):
+    """An additional WRITABLE (0o644) file the seed ships alongside `entry_file`.
+
+    Same path rules as `SeededFile` (§2.5) -- the difference is only the
+    permission and the ownership story: a `seeded_files` entry is a read-only
+    reference input, a `workspace_seed.extra_files` entry is part of the
+    existing configuration the agent may legitimately edit. Per-arm, because a
+    multi-file layout is an arm-specific authoring choice (a `variables.tf`
+    exists only on hcl_raw).
+    """
+
+    path: str
+    content: str
+
+    @model_validator(mode="after")
+    def _path_and_content_sane(self) -> "SeedExtraFile":
+        if not self.content.strip():
+            raise ValueError(
+                f"workspace_seed.extra_files entry {self.path!r}: content must be non-empty"
+            )
+        if self.path.startswith("/"):
+            raise ValueError(
+                f"workspace_seed.extra_files entry {self.path!r}: path must be "
+                "relative (no leading '/') -- SCHEMA.md §2.7"
+            )
+        if any(part == ".." for part in self.path.split("/")):
+            raise ValueError(
+                f"workspace_seed.extra_files entry {self.path!r}: path must not "
+                "contain '..' segments (workspace escape) -- SCHEMA.md §2.7"
+            )
+        if self.path in _KNOWN_BOOTSTRAP_FILES:
+            raise ValueError(
+                f"workspace_seed.extra_files entry {self.path!r}: collides with a "
+                f"known non-agent-owned bootstrap filename "
+                f"{sorted(_KNOWN_BOOTSTRAP_FILES)} -- SCHEMA.md §2.7"
+            )
+        if _seed_comment_violations(self.content):
+            raise ValueError(
+                f"workspace_seed.extra_files entry {self.path!r}: comment line(s) "
+                f"contain {_seed_comment_violations(self.content)} -- a seeded file "
+                "is presented to the agent as ordinary existing configuration and "
+                "must read like one (SCHEMA.md §2.7)"
+            )
+        return self
+
+
+@_strict
+class PerArmSeedBodies(BaseModel):
+    """`workspace_seed.entry_file` -- one hand-authored body per ENABLED arm.
+
+    A per-arm map, not one document: there is no derivation path between the
+    three (docs/scenario-candidates.md:169-176 -- aws-cdk-rfcs #217 closed
+    `not_planned`, `hashicorp/terraform-cdk` archived, no public CDK->TF
+    synthesizer exists). Hand-authoring per arm is the SAME discipline this repo
+    already applies to `solution/solve.sh` (§8.2 point 8) and to
+    `generator/tests/fixtures/<id>/<arm>/<entry_file>`.
+
+    Each body is written VERBATIM as that arm's `output_contract.entry_file` --
+    no generator header, no wrapper. The generator therefore checks the body
+    still satisfies its arm's structural contract (`export class ScenarioStack`
+    on the TS arms, no second `provider "aws"` block on hcl_raw) at generation
+    time; see gen.py::seed_entry_body.
+    """
+
+    awscdk: str | None = None
+    hcl_raw: str | None = None
+    terraconstructs: str | None = None
+
+
+@_strict
+class PerArmSeedExtraFiles(BaseModel):
+    awscdk: list[SeedExtraFile] = Field(default_factory=list)
+    hcl_raw: list[SeedExtraFile] = Field(default_factory=list)
+    terraconstructs: list[SeedExtraFile] = Field(default_factory=list)
+
+
+@_strict
+class WorkspaceSeed(BaseModel):
+    premise: str
+    entry_file: PerArmSeedBodies
+    extra_files: PerArmSeedExtraFiles = Field(default_factory=PerArmSeedExtraFiles)
+    seed_asserts: Annotated[list[SeedAssert], Field(min_length=1)]
+
+    def body_for(self, arm: Arm) -> str | None:
+        return getattr(self.entry_file, arm)
+
+    def extras_for(self, arm: Arm) -> list[SeedExtraFile]:
+        return getattr(self.extra_files, arm)
+
+    @model_validator(mode="after")
+    def _premise_and_bodies_nonempty(self) -> "WorkspaceSeed":
+        if not self.premise.strip():
+            raise ValueError(
+                "workspace_seed.premise must be non-empty -- it is the "
+                "arm-agnostic, human-readable equivalence claim for the three "
+                "seeds AND the sentence the agent reads (SCHEMA.md §2.7)"
+            )
+        for arm in ("awscdk", "hcl_raw", "terraconstructs"):
+            body = getattr(self.entry_file, arm)
+            if body is None:
+                continue
+            if not body.strip():
+                raise ValueError(
+                    f"workspace_seed.entry_file.{arm}: seed body must be non-empty "
+                    "-- an empty seed is the greenfield skeleton, which is what "
+                    "this block exists to replace (SCHEMA.md §2.7)"
+                )
+            violations = _seed_comment_violations(body)
+            if violations:
+                raise ValueError(
+                    f"workspace_seed.entry_file.{arm}: comment line(s) contain "
+                    f"{violations}. A seed is presented to the agent as ordinary "
+                    "existing team configuration: it must carry no editorial "
+                    "marker a real production file would not have, no generator "
+                    "skeleton banner, and above all no mention of the mechanism "
+                    "that fixes the pitfall (SCHEMA.md §2.7, DECISIONS.md "
+                    "Amendment 28 §3)"
+                )
+        names = [a.name for a in self.seed_asserts]
+        if len(names) != len(set(names)):
+            raise ValueError("workspace_seed.seed_asserts has duplicate names")
+        return self
+
+
+# --------------------------------------------------------------------------
 # §3 catches
 # --------------------------------------------------------------------------
 
@@ -515,9 +770,53 @@ class LiveCheck(BaseModel):
 
 
 @_strict
+class Idempotence(BaseModel):
+    """§5.1 -- the IDEMPOTENCE tier: "after the agent's solution is green, does
+    the agent's own toolchain still report a pending change?"
+
+    A **live** tier, not a static one, and that is a blocking fact rather than a
+    design preference: `terraform plan -detailed-exitcode` returns 2 (changes
+    present) for ANY plan against empty state, so the generated static tier --
+    which plans an empty working directory -- can never produce a meaningful
+    second-plan signal offline (docs/design/poisoned-workspace-design.md §5.1).
+    Hence `enabled: true` REQUIRES `live_check.enabled: true` (Spec-level
+    validator): no apply => no state => nothing to be idempotent about.
+
+    Per-arm commands are injected UNCONDITIONALLY by the generator, never read
+    from a spec key -- the same "cannot go missing because a spec author forgot
+    a YAML key" discipline `TERRACONSTRUCTS_BUILD_COMMAND` already uses. On the
+    awscdk arm the command is `cdk diff --fail` against the DEPLOYED stack, not
+    a second synth: CDK synth is deterministic, so a synth/template self-diff is
+    vacuous by construction and would silently hand that arm a free pass (memo
+    §5.2).
+
+    `gating` copies `live_check.gating`'s contract byte-for-byte: fail-closed AND
+    semantics -- final reward is 1.0 iff the static tiers say 1.0 AND the live
+    check passes AND this tier's outcome is "converged". `pending_changes` and
+    `not_verifiable` both downgrade to 0.0; the tier is never silently skipped
+    into a pass (SCHEMA.md §5.1).
+    """
+
+    enabled: bool = False
+    gating: bool = False
+
+    @model_validator(mode="after")
+    def _gating_requires_enabled(self) -> "Idempotence":
+        if self.gating and not self.enabled:
+            raise ValueError(
+                "verifier.idempotence.gating=true requires enabled=true -- a "
+                "tier that never runs cannot gate reward"
+            )
+        return self
+
+
+@_strict
 class Verifier(BaseModel):
     budget: VerifierBudget = Field(default_factory=VerifierBudget)
     live_check: LiveCheck
+    # Optional, default disabled -> byte-identical generation for every spec
+    # that predates this field (SCHEMA.md §5.1).
+    idempotence: Idempotence = Field(default_factory=Idempotence)
 
 
 # --------------------------------------------------------------------------
@@ -763,20 +1062,32 @@ class Spec(BaseModel):
     # §0.1, optional. The header comment stamped into the arm SKELETON files
     # (main.tf / lib/scenario-stack.ts / bin/app.ts / main.ts) -- i.e. into
     # `environment/`, which IS the image the agent lives in from step 1
-    # onward. Absent = `title` (every single-step spec: byte-identical
-    # emission). REQUIRED for a multi-step spec, because a scenario `title`
-    # legitimately describes the WHOLE arc ("deploy, confirm, modify,
-    # re-deploy (day-2 iteration)") and stamping that arc into the first file
-    # the step-1 agent opens foreshadows step 2 just as loudly as the prompt
-    # would -- DECISIONS.md Amendment 26 §7 rule 2 /
+    # onward. Absent = `title` (every single-step GREENFIELD spec:
+    # byte-identical emission). REQUIRED for a multi-step spec, because a
+    # scenario `title` legitimately describes the WHOLE arc ("deploy, confirm,
+    # modify, re-deploy (day-2 iteration)") and stamping that arc into the
+    # first file the step-1 agent opens foreshadows step 2 just as loudly as
+    # the prompt would -- DECISIONS.md Amendment 26 §7 rule 2 /
     # docs/multistep-trial-investigation.md §5 rule 2 ("never place
-    # later-step material in environment/").
+    # later-step material in environment/"). ALSO REQUIRED for a BROWNFIELD
+    # spec (§2.7) for the same reason with a different cause: a brownfield
+    # `title` describes the CHANGE and typically names the trapped property of
+    # the existing config, and on the arms whose entry file is NOT the seed
+    # (awscdk's bin/app.ts, terraconstructs' main.ts) it still reaches the
+    # agent -- arm-asymmetrically, which is worse than uniformly. See
+    # `_workspace_title_required_where_header_is_prompt_surface`.
     workspace_title: str | None = None
     difficulty: Annotated[int, Field(ge=1, le=3)]
     services: Annotated[list[str], Field(min_length=1)]
     arms: Arms
     instruction: Instruction
     seeded_files: list[SeededFile] = Field(default_factory=list)
+    # §2.7, optional. None/absent (every spec but `named-resource-replacement`)
+    # = the GREENFIELD shape: `entry_file` ships §2.4's empty `TODO(agent)`
+    # skeleton, generated byte-identically to before this field existed. Set =
+    # the BROWNFIELD shape: `entry_file` ships this block's per-arm seed body,
+    # writable, and the prompt is a change request against it.
+    workspace_seed: WorkspaceSeed | None = None
     catches: Annotated[list[Catch], Field(min_length=1)]
     oracle: Oracle
     verifier: Verifier
@@ -790,11 +1101,18 @@ class Spec(BaseModel):
     def is_multi_step(self) -> bool:
         return bool(self.steps)
 
+    def is_brownfield(self) -> bool:
+        """True iff this scenario's workspace starts from working config that
+        already carries a latent pitfall (§2.7), rather than §2.4's empty
+        skeleton. Brownfield tokens-to-green is a SEPARATE metric stratum from
+        greenfield -- never pooled (DECISIONS.md Amendment 28 §6)."""
+        return self.workspace_seed is not None
+
     def workspace_header(self) -> str:
         """The one-line title stamped into the arm skeleton files under
         `environment/`. See the `workspace_title` field comment: single-step
-        specs keep `title` verbatim (byte-identity), multi-step specs must
-        declare a step-1-safe alternative."""
+        greenfield specs keep `title` verbatim (byte-identity); multi-step and
+        brownfield specs must declare a safe alternative."""
         return self.workspace_title or self.title
 
     def step_assert_names(self, step: Step) -> list[str]:
@@ -855,6 +1173,108 @@ class Spec(BaseModel):
             raise ValueError(
                 f"seeded_files path(s) {sorted(collisions)} collide with an "
                 "enabled arm's output_contract.entry_file -- SCHEMA.md §2.5"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _workspace_seed_wellformed(self) -> "Spec":
+        """Everything §2.7 requires of a `workspace_seed:` block, in one place."""
+        seed = self.workspace_seed
+        if seed is None:
+            return self
+
+        enabled = set(self.arms.enabled_arms())
+        declared_bodies = {
+            arm
+            for arm in ("awscdk", "hcl_raw", "terraconstructs")
+            if getattr(seed.entry_file, arm) is not None
+        }
+        if declared_bodies != enabled:
+            missing = sorted(enabled - declared_bodies)
+            extra = sorted(declared_bodies - enabled)
+            raise ValueError(
+                "workspace_seed.entry_file must declare exactly one seed body per "
+                f"ENABLED arm (enabled={sorted(enabled)}): missing {missing}, "
+                f"declared-but-disabled {extra}. A disabled arm carrying a seed is "
+                "a spec error, not a silent skip -- and an enabled arm without one "
+                "would start from the empty greenfield skeleton while its siblings "
+                "start from working config, which is not a comparable trial "
+                "(SCHEMA.md §2.7)"
+            )
+
+        entry_files = {
+            arm: getattr(self.instruction.per_arm, arm).output_contract.entry_file
+            for arm in enabled
+        }
+        seeded_paths = {f.path for f in self.seeded_files}
+        for arm in sorted(enabled):
+            for extra_file in seed.extras_for(arm):
+                if extra_file.path == entry_files[arm]:
+                    raise ValueError(
+                        f"workspace_seed.extra_files.{arm} entry {extra_file.path!r} "
+                        "is that arm's own output_contract.entry_file -- the seed "
+                        "body already owns it (SCHEMA.md §2.7)"
+                    )
+                if extra_file.path in seeded_paths:
+                    raise ValueError(
+                        f"workspace_seed.extra_files.{arm} entry {extra_file.path!r} "
+                        "collides with a seeded_files path: one is written 0o644 "
+                        "(writable task content) and the other 0o444 (read-only "
+                        "reference input), so a collision is a silent permission "
+                        "fight (SCHEMA.md §2.7)"
+                    )
+        for arm in ("awscdk", "hcl_raw", "terraconstructs"):
+            if arm not in enabled and seed.extras_for(arm):
+                raise ValueError(
+                    f"workspace_seed.extra_files.{arm} is set but that arm is not enabled"
+                )
+            paths = [f.path for f in seed.extras_for(arm)]
+            if len(paths) != len(set(paths)):
+                raise ValueError(
+                    f"workspace_seed.extra_files.{arm} has duplicate path values"
+                )
+
+        catch_names = {c.name for c in self.catches}
+        pinned: set[str] = set()
+        for a in seed.seed_asserts:
+            unknown_arms = set(a.applies_to) - enabled
+            if unknown_arms:
+                raise ValueError(
+                    f"seed_assert {a.name!r}: applies_to includes disabled/unknown "
+                    f"arm(s) {sorted(unknown_arms)}"
+                )
+            if a.pins_catch is not None:
+                if a.pins_catch not in catch_names:
+                    raise ValueError(
+                        f"seed_assert {a.name!r}: pins_catch={a.pins_catch!r} names "
+                        f"no declared catch (have {sorted(catch_names)})"
+                    )
+                pinned.add(a.pins_catch)
+        if not pinned:
+            raise ValueError(
+                "workspace_seed.seed_asserts: at least one entry must set "
+                "`pins_catch` naming the catch whose MECHANISM lives in the seed. "
+                "Without that back-reference the seed can drift into being "
+                "non-poisoned -- still green, still parity-clean, no longer "
+                "carrying the pitfall the scenario exists to measure -- and no "
+                "gate would notice (SCHEMA.md §2.7, design memo §4.1 point 3)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _idempotence_requires_live_check(self) -> "Spec":
+        """§5.1: no apply => no state => nothing to be idempotent about.
+
+        `terraform plan -detailed-exitcode` is 2 against empty state, always, so
+        an idempotence tier on a synth/plan-only spec could only ever report
+        `pending_changes` -- i.e. fail every trial, including a perfect one.
+        """
+        if self.verifier.idempotence.enabled and not self.verifier.live_check.enabled:
+            raise ValueError(
+                "verifier.idempotence.enabled=true requires "
+                "verifier.live_check.enabled=true -- the idempotence tier reads "
+                "the state the agent's own deploy left behind, and a spec with no "
+                "live phase never produces one (SCHEMA.md §5.1)"
             )
         return self
 
@@ -1038,31 +1458,60 @@ class Spec(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _multi_step_requires_workspace_title(self) -> "Spec":
-        """A multi-step spec must declare its own `workspace_title` (§0.1).
+    def _workspace_title_required_where_header_is_prompt_surface(self) -> "Spec":
+        """`workspace_title` is REQUIRED on a multi-step spec AND on a
+        brownfield one; forbidden on a plain single-step greenfield spec (§0.1).
 
-        `title` describes the whole arc and is stamped into the arm skeletons
-        under `environment/` — the image the step-1 agent lives in. Making the
-        field required (rather than silently defaulting to `title`, or to
-        `id`) forces the spec author to *choose* a step-1-safe header instead
-        of inheriting a foreshadowing one by omission. `workspace_title` is
-        rejected on a single-step spec so the byte-identity guarantee for
-        existing specs can never be quietly traded away for a rename.
+        Both required cases are the same failure with two causes: `title` is
+        stamped into the arm skeletons under `environment/` — the image the
+        agent lives in from turn one — and in both forms a natural `title`
+        describes something the agent is not supposed to already know.
+
+          * MULTI-STEP: `title` describes the whole arc, so it foreshadows
+            step 2 (Amendment 26 §7 rule 2, Amendment 27 §5.1).
+          * BROWNFIELD (§2.7): `title` describes the CHANGE and, in practice,
+            names the very property of the existing config that carries the
+            pitfall — the pilot's own first draft, "Rename an explicitly-named,
+            in-use security group and roll it out", stamped *both* halves of
+            its poison ("explicitly-named", "in-use") into
+            `bin/app.ts`'s CFN `description` and `main.ts`'s header comment on
+            two of three arms, while the third arm's workspace (whose entry
+            file IS the seed) stayed clean — an arm-asymmetric hint inside the
+            comparison the scenario exists to measure. A brownfield header must
+            therefore describe only what the workspace ALREADY IS (e.g.
+            "Internal services network"), never what is about to change about
+            it or why it is interesting.
+
+        Making the field required rather than silently defaulting to `title`
+        forces the author to *choose* a safe header instead of inheriting a
+        leaking one by omission. It stays rejected on a plain single-step
+        greenfield spec so the byte-identity guarantee for the existing corpus
+        can never be quietly traded away for a rename.
         """
-        if self.is_multi_step():
+        if self.is_multi_step() or self.is_brownfield():
             if not (self.workspace_title or "").strip():
-                raise ValueError(
-                    "a spec with `steps:` must declare `workspace_title` "
-                    "(SCHEMA.md §0.1): `title` is stamped into every arm's "
-                    "skeleton file under environment/, which the step-1 agent "
-                    "reads, so a whole-arc title there foreshadows step 2 "
+                why = (
+                    "`title` is stamped into every arm's skeleton file under "
+                    "environment/, which the step-1 agent reads, so a "
+                    "whole-arc title there foreshadows step 2 "
                     "(Amendment 26 §7 rule 2)"
+                    if self.is_multi_step()
+                    else "`title` is stamped into every arm's non-seed skeleton "
+                    "file under environment/ (bin/app.ts's CFN description, "
+                    "main.ts's header), which the agent reads on turn one, and "
+                    "a brownfield title names the change — and usually the "
+                    "trapped property with it (Amendment 28 §3.3)"
+                )
+                kind = "`steps:`" if self.is_multi_step() else "`workspace_seed:`"
+                raise ValueError(
+                    f"a spec with {kind} must declare `workspace_title` "
+                    f"(SCHEMA.md §0.1): {why}"
                 )
         elif self.workspace_title is not None:
             raise ValueError(
-                "workspace_title is only meaningful on a multi-step spec "
-                "(SCHEMA.md §0.1) — a single-step spec stamps `title` "
-                "verbatim into its skeletons"
+                "workspace_title is only meaningful on a multi-step or "
+                "brownfield spec (SCHEMA.md §0.1) — a single-step greenfield "
+                "spec stamps `title` verbatim into its skeletons"
             )
         return self
 

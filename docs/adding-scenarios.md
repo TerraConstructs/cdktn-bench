@@ -67,6 +67,17 @@ Fill in, in this order (each corresponds to a `SCHEMA.md` section):
    reads the day-2 plan on line 1 of its own `main.tf` (that is exactly what
    happened once — Amendment 27 §5.1).
 
+   **A brownfield spec (`workspace_seed:`, §2.7) must declare it too**, and
+   this bit the pilot: a brownfield `title` describes the *change*, and the
+   natural way to write it names the property carrying the pitfall. `"Rename an
+   explicitly-named, in-use security group and roll it out"` put both halves of
+   that scenario's poison into the awscdk arm's CFN description and the
+   terraconstructs arm's `main.ts` header — and *not* into hcl-raw's, whose
+   entry file is the seed itself. Arm-asymmetric hints do not just make a task
+   easier, they bias the cross-arm number. A brownfield `workspace_title` says
+   only what the workspace already **is** ("Internal services network"). See
+   Amendment 28 §3 rule 7.
+
 3. **`instruction`** — one `shared_body` (identical prose across arms; the
    generator diffs it post-placeholder-substitution and fails the build if
    arms' instructions diverge outside the language line, `SCHEMA.md` §2/
@@ -351,6 +362,69 @@ that don't actually reproduce the catch they're named after, will show up
 as a gate failure here — that's the point; do not hand-wave past a red
 `make falsifiability`/`make grading-proof` by editing the oracle to be
 lenient instead of fixing the fixture.
+
+---
+
+## 6.5 Brownfield scenarios (`workspace_seed`)
+
+A **brownfield** scenario's workspace does not start empty: `entry_file` ships
+hand-authored, plan-green, already-deployed configuration that carries a latent
+pitfall, and the prompt is a change request against it (`specs/SCHEMA.md` §2.7,
+`DECISIONS.md` Amendment 28, `docs/design/poisoned-workspace-design.md`).
+Worked example: `specs/named-resource-replacement.yaml`.
+
+Everything in §§1–6 still applies. These are the **additional** obligations:
+
+1. **Write one seed per enabled arm, and prove each one green.**
+   `make seed-parity SPEC=specs/<id>.yaml` runs the arm's real toolchain
+   against the generated, **un-overlaid** workspace and resolves every declared
+   `seed_asserts` entry against the artifact it produces. A seed that does not
+   build/synth/plan is a generation failure, not a hard scenario — it would
+   score every trial on that arm 0.0 before the agent typed anything.
+   Equivalence across arms is **behavioural** (declared facts + green), never a
+   resource census.
+
+2. **Read every seed as a hostile reader before freezing the spec.** The seed is
+   `COPY`'d into the agent image, so it is prompt surface. Ask, for each comment,
+   name and premise sentence: *does this hint at the trap?* A comment near the
+   poisoned property, an editorial marker (`TODO`/`NOTE:`/`careful`), the
+   generator's own skeleton banner, or any mention of the fixing mechanism all
+   fail. `spec_model` tripwires the mechanical subset; the judgement is yours.
+
+3. **State facts in `premise`, never warnings.** "It is already deployed in this
+   account" is a fact. "Careful, this group is in use" is a hint — the
+   in-use-ness must be discoverable from the configuration, which is what a
+   `seed_assert` pins.
+
+4. **Frame the prompt as a change request or an incident symptom.** Never "find
+   the bug", "fix the mistake" or "review this config" — those measure code
+   review, not day-2 change. An incident prompt states a symptom and a desired
+   end state, never a diagnosis.
+
+5. **Expect the do-nothing negative to be generated for you.**
+   `solution/broken/seed-unchanged/solve.sh` is written (and overwritten) by
+   `make gen` for every seeded spec, and `make falsifiability` requires it to
+   score **< 1.0**. If it scores 1.0, your change request is already satisfied
+   by your own seed: the scenario rewards doing nothing. Move the change
+   request or the oracle — never the fixture.
+
+6. **Decide the tier honestly, and measure it.** A brownfield trap is often
+   invisible to the graded artifact. Before writing a static assert for it,
+   *check that the artifact actually carries the property* — the pilot's own
+   `create_before_destroy` fact does not survive `terraform show -json`, so a
+   `not_exists` assert on it would have been a dead path that passes on a
+   broken solution and a fixed one alike. If it is invisible, tier the catch
+   `"live"` and make its negative fixture **mechanically demonstrate** the
+   indistinguishability offline (print `CDKTN_BENCH_LIVE_ONLY_CONFIRMED` only
+   after proving it), so a future toolchain release that changes the answer
+   turns the gate red instead of letting the claim rot.
+
+7. **Consider `verifier.idempotence`** (`SCHEMA.md` §5.1) when the failure mode
+   is "the change appears to deploy but does not converge". It is live-only,
+   gating and fail-closed, and it requires `live_check.enabled`.
+
+8. **Never pool brownfield rows with greenfield rows.** Separate metric
+   stratum, Amendment 28 §6.
 
 ---
 

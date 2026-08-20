@@ -401,6 +401,16 @@ describes the whole arc.
    header instead of inheriting a foreshadowing one by omission; forbidden on
    stepless specs so the byte-identity guarantee for the other five specs
    cannot be traded away for a rename.
+
+   > **Superseded 2026-08-20 (Amendment 28 §3 rule 7).** Scoping the field to
+   > `steps:` turned out to be too narrow, and the narrowness was itself a leak:
+   > a **stepless BROWNFIELD** spec (`workspace_seed:`, `SCHEMA.md` §2.7) has a
+   > `title` that names the change — and in the pilot's case both halves of its
+   > own pitfall — with no way to override the header. `workspace_title` is now
+   > required on multi-step **or** brownfield specs and the validator is called
+   > `Spec._workspace_title_required_where_header_is_prompt_surface`. The
+   > forbidden-on-plain-greenfield half is unchanged, and so is the
+   > byte-identity guarantee it protects.
 2. **Generator** — the five sites now call `spec.workspace_header()`
    (`workspace_title or title`), and `specs/apigw-redeploy.yaml` declares
    `workspace_title: "API Gateway REST API (live)"` — terminal, implying no

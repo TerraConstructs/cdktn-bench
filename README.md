@@ -46,6 +46,13 @@ failure to a cheaper tier is the mechanism under test.
   classes that refuse to score infrastructure failures or tool-bypass runs, and an
   equipping hash (instruction + skills/MCP config + image digest) stamped into every
   result row.
+- **Brownfield scenarios** (`specs/SCHEMA.md` §2.7): a scenario may ship a working,
+  plan-green, already-deployed configuration as its starting workspace instead of an
+  empty skeleton, and ask for one ordinary change to it — measuring tokens-to-green on
+  *a change to code the agent did not write*, which is where the interesting traps
+  actually fire. The three arms' starting configurations are proved equivalent by
+  declared behavioural facts, never by resource census (`make seed-parity`), and every
+  such scenario must prove that doing nothing scores less than full marks.
 - A **Tier 0.5** oracle evaluates embedded JSONata `{% ... %}` expressions in Step
   Functions ASL against real sample inputs — the catch class that sails through every
   compiler and synth step on every arm alike.

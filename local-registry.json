@@ -51,6 +51,18 @@
         "path": "tasks/anchor/ecs-swappiness-terraconstructs"
       },
       {
+        "name": "named-resource-replacement-awscdk",
+        "path": "tasks/anchor/named-resource-replacement-awscdk"
+      },
+      {
+        "name": "named-resource-replacement-hcl-raw",
+        "path": "tasks/anchor/named-resource-replacement-hcl-raw"
+      },
+      {
+        "name": "named-resource-replacement-terraconstructs",
+        "path": "tasks/anchor/named-resource-replacement-terraconstructs"
+      },
+      {
         "name": "s3-lambda-log-retention-awscdk",
         "path": "tasks/anchor/s3-lambda-log-retention-awscdk"
       },

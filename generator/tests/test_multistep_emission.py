@@ -698,6 +698,28 @@ def test_task_toml_description_carries_the_step_one_safe_title(spec: Spec) -> No
         assert cfg["metadata"]["scenario_title"] == spec.title
 
 
+def test_multi_step_scenario_title_comment_is_frozen(spec: Spec) -> None:
+    """The COMMENT above `scenario_title`, pinned byte-for-byte.
+
+    Not pedantry. `[metadata] scenario_title` was later reused by the brownfield
+    form (Amendment 28 §3 rule 7), and generalising this comment's prose to
+    cover both forms silently rewrote three already-published `apigw-redeploy`
+    task.toml files -- a regeneration diff on task dirs nobody had touched.
+    `gen.py::build_task_toml` now emits form-specific wording, and this freezes
+    the multi-step half so the next author to widen a shared key has to notice.
+    """
+    expected = (
+        "# The WHOLE-ARC scenario title. [task] description deliberately\n"
+        "# carries the step-1-safe workspace_title instead (SCHEMA.md §0.1,\n"
+        "# DECISIONS.md Amendment 27 §5.1) -- this key is where the full\n"
+        "# arc wording lives, for host-side reporting only.\n"
+        "scenario_title = "
+    )
+    for arm in ARMS:
+        raw = (task_dir(spec, arm) / "task.toml").read_text()
+        assert expected in raw, f"{arm}: multi-step scenario_title comment drifted"
+
+
 def test_stepless_task_toml_description_is_unchanged() -> None:
     """The byte-identity guarantee: `workspace_header()` returns `title`
     verbatim for a stepless spec, and no `scenario_title` key appears."""

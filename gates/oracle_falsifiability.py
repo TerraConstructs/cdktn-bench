@@ -86,6 +86,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "generator"))
 from gen import (  # noqa: E402
     ARM_DIRNAME,
     ARM_WORKSPACE_SUBDIR,
+    SEED_UNCHANGED_FIXTURE,
     SOLVE_STUB_MARKER,
     task_dir,
 )
@@ -491,6 +492,89 @@ def _check_non_final_steps(spec: Spec, arm: Arm, task: Path) -> list[RunResult]:
     return results
 
 
+def _check_seed_unchanged(
+    spec: Spec, arm: Arm, task: Path, step: Step | None
+) -> list[RunResult]:
+    """THE MANDATORY BROWNFIELD DO-NOTHING CATCH (SCHEMA.md §2.7,
+    DECISIONS.md Amendment 28 §5).
+
+    A brownfield workspace does not start empty — it starts from working,
+    green configuration. That creates one failure mode no other check in this
+    repo can see: if the change request the prompt asks for is *already
+    satisfied by the seed*, an agent that edits nothing at all scores 1.0, and
+    every gate stays green. `solution/solve.sh` scoring 1.0 proves the oracle
+    ACCEPTS a correct change; it never proves the oracle REJECTS the absence of
+    one.
+
+    So: every `workspace_seed` spec must ship
+    `solution/broken/seed-unchanged/solve.sh` (a no-op — generator-OWNED, see
+    gen.py::build_seed_unchanged_solve_sh) and it must score **< 1.0**. Missing
+    is a hard FAIL, not a skip: the fixture is generator-written, so its absence
+    means either a stale task dir or a deliberate deletion, and both must be
+    loud.
+
+    `< 1.0` rather than `== 0.0` on purpose. 0.0 is what today's reward contract
+    produces and is what this pilot observes, but the *claim* being falsified is
+    "doing nothing does not earn full marks" — pinning it to an exact 0.0 would
+    couple this gate to the reward scale rather than to the property.
+    """
+    if spec.workspace_seed is None:
+        return []
+    label = f"{arm}/solution/broken/{SEED_UNCHANGED_FIXTURE}/solve.sh (DO-NOTHING)"
+    solve = task / "solution" / "broken" / SEED_UNCHANGED_FIXTURE / "solve.sh"
+    if not solve.exists():
+        return [
+            RunResult(
+                label,
+                None,
+                False,
+                "MISSING -- every workspace_seed spec must ship the do-nothing "
+                "negative (SCHEMA.md §2.7). It is generator-owned: run "
+                f"`make gen SPEC=specs/{spec.id}.yaml`.",
+            )
+        ]
+    artifact_rel = getattr(spec.instruction.per_arm, arm).output_contract.artifact_path
+    run = _run_solve(task, arm, solve, label, artifact_rel=artifact_rel, step=step)
+    scored = run.reward is not None and run.reward < 1.0
+    # A reward BELOW 1.0 is necessary but NOT sufficient, and this is the one
+    # fixture where that distinction bites. `tests/static_tiers.sh` writes 0.0
+    # for a toolchain failure too -- `TF-PLAN FAILED`, `MISSING ARTIFACT`, the
+    # mock-STS `tf-plan-mock-sts-unavailable` bail-out -- and each of those is a
+    # RUN-INVALIDATING condition that static_tiers.sh itself labels "NOT a bad
+    # solution". Accepting those 0.0s would let this gate report "doing nothing
+    # is rejected" on a run where nothing was ever graded, which is exactly the
+    # vacuous pass the do-nothing catch exists to prevent (and it is not
+    # hypothetical: a batch run on 2026-08-20 produced `TF-PLAN FAILED` on the
+    # terraconstructs arm from mock-STS port contention between back-to-back
+    # fixtures, while the same fixture run in isolation failed honestly on
+    # `security-group-uses-the-new-team-prefixed-name`).
+    #
+    # So the tier-0 summary marker must be present: it is printed only after the
+    # arm's toolchain actually produced a graded artifact and ran the asserts.
+    # Fail-closed -- an unprovable claim fails rather than passes.
+    graded = "tier0_pass=" in run.detail
+    if run.ok and scored and not graded:
+        run.detail = (
+            "the do-nothing fixture scored < 1.0 but the arm's toolchain never "
+            "produced a graded artifact (no tier-0 summary in its output), so "
+            "this run proves NOTHING about whether the oracle rejects doing "
+            "nothing -- static_tiers.sh writes 0.0 for a broken toolchain too. "
+            "This is a run-invalidating infrastructure condition, not a "
+            "verdict: fix the toolchain (or re-run -- mock-STS port contention "
+            "between back-to-back fixtures is a known cause) and try again.\n"
+            + run.detail
+        )
+    if run.ok and not scored:
+        run.detail = (
+            f"submitting the SEED UNCHANGED scored reward={run.reward} -- this "
+            "scenario's change request is already satisfied by its own starting "
+            "workspace, so it rewards doing nothing and measures nothing. Either "
+            "the change request or the oracle must move.\n" + run.detail
+        )
+    run.ok = run.ok and scored and graded
+    return [run]
+
+
 def check_arm(spec: Spec, arm: Arm) -> list[RunResult]:
     task = task_dir(spec, arm)
     solve_sh = task / "solution" / "solve.sh"
@@ -508,6 +592,7 @@ def check_arm(spec: Spec, arm: Arm) -> list[RunResult]:
         return results
 
     results.extend(_check_non_final_steps(spec, arm, task))
+    results.extend(_check_seed_unchanged(spec, arm, task, final_step))
 
     # Tier-0.5-aware plumbing (SCHEMA.md §4.4, DECISIONS.md "Tier-0.5 runs
     # host-side, non-gating"): a catch whose predicted_tier_caught is "0.5"
@@ -644,6 +729,13 @@ def check_arm(spec: Spec, arm: Arm) -> list[RunResult]:
     if broken_dir.is_dir():
         for extra_dir in sorted(broken_dir.iterdir()):
             if not extra_dir.is_dir() or extra_dir.name in catch_names:
+                continue
+            # The brownfield do-nothing fixture already ran, under its own
+            # dedicated, differently-worded check (_check_seed_unchanged above:
+            # required verdict `< 1.0`, missing = FAIL). Running it a second
+            # time here would double the slowest step in this gate and report
+            # the same fact under a vaguer label.
+            if spec.workspace_seed is not None and extra_dir.name == SEED_UNCHANGED_FIXTURE:
                 continue
             extra_solve = extra_dir / "solve.sh"
             label = f"{arm}/solution/broken/{extra_dir.name}/solve.sh"

@@ -15,14 +15,25 @@ instruction.md told the agent to read them.
 
 The invariant, stated once and enforced over every environment/ in the repo:
 
-    every git-tracked file under an environment's workspace dir must be
+    every TASK-CONTENT file under an environment's workspace dir must be
     carried into the image by that environment's own Dockerfile.
 
-"git-tracked" is the build-artifact filter: `.gitignore` already excludes the
-tsc/synth emit (`**/environment/workspace/lib/*.js`, `cdktf.out/`,
-`node_modules/`, ...), which is precisely the set that must NOT be baked into an
-image. Using git's own answer keeps this test from re-deriving (and drifting
-from) that list.
+"task content" is normally read off `git ls-files`, because `.gitignore`
+already excludes the tsc/synth emit (`**/environment/workspace/lib/*.js`,
+`cdktf.out/`, `node_modules/`, ...) — precisely the set that must NOT be baked
+into an image — so git's own answer keeps this test from re-deriving (and
+drifting from) that list.
+
+**Fallback for an uncommitted task dir** (added 2026-08-20 alongside the first
+brownfield scenario): a freshly generated, not-yet-committed task has zero
+git-tracked files, and the old `assert tracked` turned that into a FAILURE —
+which is backwards. The invariant matters most while a scenario is being
+authored: an uncovered COPY written today is exactly what this test exists to
+catch, and skipping it until after the commit is how such a COPY would ship.
+When git reports nothing, the check falls back to walking the tree through
+gen.py's OWN `_ARTIFACT_DIRS`/`_ARTIFACT_SUFFIXES`/`_JS_ALLOWLIST` filter — the
+same one `workspace_files_missing_from_dockerfile` uses to decide which COPYs to
+append — so the two can never disagree about what counts as task content.
 
 Covers the ARM environments too, not just generated tasks: an arm-level
 workspace file added without its COPY is the same bug one level up, and the
@@ -37,6 +48,9 @@ from pathlib import Path
 
 import pytest
 from gen import (
+    _ARTIFACT_DIRS,
+    _ARTIFACT_SUFFIXES,
+    _JS_ALLOWLIST,
     ARM_WORKSPACE_SUBDIR,
     ARMS_DIR,
     REPO_ROOT,
@@ -76,6 +90,26 @@ def _git_tracked(paths: list[str]) -> list[str]:
     except (OSError, subprocess.CalledProcessError) as exc:  # pragma: no cover
         pytest.skip(f"git unavailable / not a work tree: {exc}")
     return [p for p in out.stdout.split("\0") if p]
+
+
+def _workspace_content_files(env_dir: Path, workspace_subdir: str) -> list[str]:
+    """Workspace-relative paths of every file under `env_dir/<workspace_subdir>`
+    that gen.py itself considers TASK CONTENT (i.e. everything its own
+    build-artifact filter does not exclude). Used only as the fallback for an
+    uncommitted, freshly-generated task dir — see the caller."""
+    workspace = env_dir / workspace_subdir
+    found: list[str] = []
+    for path in sorted(workspace.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(workspace).as_posix()
+        parts = rel.split("/")
+        if any(p in _ARTIFACT_DIRS for p in parts[:-1]):
+            continue
+        if parts[-1].endswith(_ARTIFACT_SUFFIXES) and parts[-1] not in _JS_ALLOWLIST:
+            continue
+        found.append(rel)
+    return found
 
 
 def _environment_dirs() -> list[Path]:
@@ -119,8 +153,30 @@ def test_every_tracked_workspace_file_is_copied_into_the_image(
     env_rel = env_dir.relative_to(REPO_ROOT).as_posix()
     sources = dockerfile_context_sources((env_dir / "Dockerfile").read_text())
 
-    tracked = _git_tracked([workspace.relative_to(REPO_ROOT).as_posix()])
-    assert tracked, f"{workspace} has no git-tracked files — is it generated but uncommitted?"
+    ws_repo_rel = workspace.relative_to(REPO_ROOT).as_posix()
+    tracked = _git_tracked([ws_repo_rel])
+    if not tracked:
+        # A task dir that was JUST generated and not yet committed (the normal
+        # state while a new scenario is being authored) has zero git-tracked
+        # files, and the invariant matters MORE there, not less — an uncovered
+        # COPY authored today is exactly what this test exists to catch, and
+        # deferring the check until after the commit is how it would ship.
+        # Falls back to gen.py's OWN build-artifact filter
+        # (workspace_files_missing_from_dockerfile walks the same tree with the
+        # same _ARTIFACT_SUFFIXES/_ARTIFACT_DIRS/_JS_ALLOWLIST rules the
+        # generator uses when deciding which COPYs to append), so the two can
+        # never disagree about what counts as task content vs. emitted build
+        # output — which is the only reason `git ls-files` was used as the
+        # filter in the first place.
+        on_disk = [
+            f"{ws_repo_rel}/{rel}"
+            for rel in _workspace_content_files(env_dir, workspace_subdir)
+        ]
+        assert on_disk, (
+            f"{workspace} contains no task content at all — neither git-tracked "
+            f"nor on disk. Did generation fail?"
+        )
+        tracked = on_disk
 
     missing = []
     for repo_rel in tracked:

@@ -48,6 +48,39 @@ for the append-only amendment log (the pre-registration discipline), and
   `docs/live-results.md`) are a **different scenario form** and must never be
   pooled with multi-step-form results (Amendment 27 §2).
 
+## Brownfield / poisoned workspaces (quick reference)
+
+- A spec with a `workspace_seed` block (`specs/SCHEMA.md` §2.7, DECISIONS.md
+  Amendment 28) is **brownfield**: its `entry_file` ships hand-authored,
+  plan-green, already-deployed config instead of §2.4's empty skeleton, and the
+  prompt is a change request against it. `named-resource-replacement` is the
+  only one.
+- **A brownfield spec must declare `workspace_title` too** (`SCHEMA.md` §0.1) —
+  the *same* requirement as multi-step, for the same reason. A brownfield
+  `title` names the change and usually the trapped property with it; stamped
+  into `bin/app.ts`/`main.ts` it leaked on two arms and not on the third, whose
+  entry file IS the seed. Header must say only what the workspace already *is*
+  ("Internal services network"). Scanned as emitted bytes by
+  `test_workspace_seed.py::TestBrownfieldPromptSurface`.
+- **Read every byte the Dockerfile COPYs, not just the files you wrote.** The
+  leak above survived a hostile self-check scoped to "the seed and the
+  instruction" (Amendment 28 §3 rule 7).
+- **The seed is prompt surface** — same rule, same reason as the skeleton header
+  (Amendment 27 §5.1). No `TODO`/`NOTE:`/`careful`, no generator banner, and
+  above all no comment naming the mechanism that fixes the trap. Tripwired by
+  `spec_model._seed_comment_violations`; the real rule is review-time.
+- The seed is **writable** (`0o644`) — it is the file the agent is asked to
+  change. `seeded_files` (§2.5) are the opposite: `0o444` reference inputs.
+- `make seed-parity SPEC=…` runs the real toolchain against the generated,
+  **un-overlaid** workspace on every arm and resolves `seed_asserts` against
+  what it produces. Equivalence = declared behavioural facts + seed-plans-green,
+  explicitly **not** resource-count parity. Wired per spec into `make ci`.
+- **Brownfield tokens-to-green is a separate stratum** — never pooled with
+  greenfield rows (Amendment 28 §6, extending Amendments 23/26/27).
+- `NODE_OPTIONS` is set in some shells and breaks `npm ci` inside the gates —
+  run the toolchain gates as `env -u NODE_OPTIONS uv run python …` if `npm ci`
+  dies with `Cannot find module '…/restore-node-options.cjs'`.
+
 ## Live runs (quick reference)
 
 - Credentials: `aws-vault exec --no-session tcons-mgmt -- …` (management account;
@@ -83,3 +116,8 @@ for the append-only amendment log (the pre-registration discipline), and
   their per-step `steps/<name>/…` equivalents. The generator is
   destructive-safe for exactly those and will hard-error rather than delete
   hand-authored content it finds somewhere it must not be.
+  **One documented exception:** for a `workspace_seed` spec,
+  `solution/broken/seed-unchanged/solve.sh` is **generator-owned** and is
+  overwritten on every run (SCHEMA.md §2.7 / Amendment 28 §5). Its content is
+  entirely mechanical — it writes nothing — and the one negative whose purpose
+  is to be un-weakenable must not be hand-editable into a passing no-op.

@@ -1,7 +1,42 @@
 # Poisoned-workspace generation — design investigation (task #15)
 
-Status: **design memo, nothing implemented.** Read-only investigation against
-the tree at 2026-08-20. Requirements source: `docs/scenario-grades/2026-08-20-summary.md`
+Status: **IMPLEMENTED 2026-08-20 — see `DECISIONS.md` Amendment 28 (DRAFT) and
+`specs/SCHEMA.md` §2.7/§5.1 for what actually shipped, which is the authority
+where the two disagree.** This file is kept as the investigation record, not as
+the contract. Deltas the implementation found and the memo could not:
+
+- **§2.2's `sg-has-no-create-before-destroy` seed assert is a DEAD PATH and was
+  not shipped.** `terraform show -json` emits no `lifecycle` key anywhere in its
+  configuration representation (verified: terraform 1.15.8 + hashicorp/aws
+  6.58.0 produce byte-identical `.configuration.root_module.resources[]` nodes
+  with and without `create_before_destroy`), so that assert would have passed
+  vacuously on a poisoned seed and a fixed solution alike. The catch is
+  `live`-tier instead, and its negative fixture proves the indistinguishability
+  mechanically before claiming it.
+- **§2.2's `endpoint-consumes-the-sg` cannot be one three-arm assert.** On CFN
+  the edge is an `Fn::GetAtt` map, not a reference string; a `regex` op resolves
+  to a map and fails. Split into a TF-shaped graph-edge assert and a weaker
+  awscdk `exists` assert, with the weakness recorded in the spec. The `--seed`
+  gate caught this on its first run.
+- **§5.3's `not_verifiable` ("exit 1 / tool missing / no state found") does not
+  survive contact with the awscdk arm.** `cdk diff --fail` uses exit `1` for
+  BOTH "found changes" and "could not run", and — as §6(a) already observes for
+  a different reason — there is no CloudFormation analogue of a state file to
+  probe. Measured on the arm's exact pin (aws-cdk 2.1135.0) with credentials
+  unresolvable: exit `1`, `no credentials have been configured`, and none of
+  the toolkit's own `Number of stacks with differences:` output. Shipped fix:
+  the TF arms keep the pre-flight state-file probe the memo assumes; awscdk
+  gets a post-flight completion-marker check instead. Same guarantee (offline
+  ⇒ skipped with a reason, never fake-passed), two mechanisms. `SCHEMA.md`
+  §5.1 and Amendment 28 §4 carry the detail.
+- **Open questions resolved:** Q1 → gating/fail-closed; Q3 → drop provenance
+  headers entirely; Q5 → keep `workspace_seed` and `seeded_files` separate;
+  Q6 → yes, the do-nothing negative is mandatory (and generator-owned).
+  Q4 (trial-time `seed_asserts`) is explicitly **deferred**; Q2
+  (`lambda-alias-tracks-unpublished-latest`) is untouched. B2 is answered by
+  Amendment 28 §1/§6.
+
+Original header: Read-only investigation against the tree at 2026-08-20. Requirements source: `docs/scenario-grades/2026-08-20-summary.md`
 lines 39–50 (the "Poisoned workspace" bucket) and the "Immediate implications"
 item 2. Companion memo: `docs/design/multistep-trial-investigation.md`
 (the other new capability; §8 below covers composition).

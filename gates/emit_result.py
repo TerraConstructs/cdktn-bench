@@ -912,7 +912,12 @@ def build_result_record(
     try:
         equipping_hash: str | None = compute_equipping_hash(task_dir, image_ref, extra_cfg or {})
         equipping_hash_error = None
-    except (FileNotFoundError, TypeError) as exc:
+    # ValueError added 2026-08-20 (§2.7): compute_equipping_hash now refuses a
+    # caller-supplied `workspace_seed_sha256` that contradicts the one this
+    # task.toml declares. Recorded like every other equipping-input failure --
+    # `equipping_hash: null` + an error string -- so a contradictory brownfield
+    # seed never masquerades as "gate didn't run", and never as a valid hash.
+    except (FileNotFoundError, TypeError, ValueError) as exc:
         equipping_hash = None
         equipping_hash_error = str(exc)
 

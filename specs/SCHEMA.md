@@ -26,12 +26,14 @@ contract, the falsified-catch lesson).
 ```yaml
 id: <kebab-case scenario id>
 title: <string>
-workspace_title: <string>         # §0.1, required iff `steps:` is set, else forbidden
+workspace_title: <string>         # §0.1, required iff `steps:` or `workspace_seed:`
+                                  #       is set, else forbidden
 difficulty: <1|2|3>
 services: [<string>, ...]        # boto3 service ids, matches aws_services convention
 arms: {...}                       # §1
 instruction: {...}                # §2
 seeded_files: [{...}, ...]        # §2.5, optional, default []
+workspace_seed: {...}             # §2.7, optional, default null (BROWNFIELD)
 catches: [{...}, ...]             # §3
 oracle: {...}                     # §4
 verifier: {...}                   # §5
@@ -41,8 +43,8 @@ provenance: {...}                 # §6
 | Field | Type | Required | Notes |
 |---|---|---|---|
 | `id` | string | yes | Kebab-case, matches `^[a-z][a-z0-9-]*$`. Becomes the directory name under `tasks/`, `oracles/rego/`, `oracles/cfn-guard/`, and `oracles/<id>/` (§8). Must equal the spec's own filename stem (`specs/<id>.yaml`), enforced by the generator at load time — this is what lets the generator refuse to run against a renamed-but-not-moved file. |
-| `title` | string | yes | Short human title, shown in any results viewer. Written to `task.toml [task] description` on a **single-step** spec; on a multi-step spec that slot carries `workspace_title` instead and the full arc title moves to `task.toml [metadata] scenario_title` (both host-side metadata; the task dir itself is never uploaded to the agent). Not used in `instruction.md` — the instruction body is `instruction.shared_body`, not `title`. **Is** used as the skeleton header for a single-step spec — see §0.1. |
-| `workspace_title` | string | **required iff `steps:` is set**; forbidden otherwise | The header comment stamped into each arm's skeleton entry file under `environment/`. §0.1. |
+| `title` | string | yes | Short human title, shown in any results viewer. Written to `task.toml [task] description` on a **single-step greenfield** spec; on a multi-step *or brownfield* spec that slot carries `workspace_title` instead and the full title moves to `task.toml [metadata] scenario_title` (both host-side metadata; the task dir itself is never uploaded to the agent). Not used in `instruction.md` — the instruction body is `instruction.shared_body`, not `title`. **Is** used as the skeleton header for a single-step greenfield spec — see §0.1. |
+| `workspace_title` | string | **required iff `steps:` or `workspace_seed:` is set**; forbidden otherwise | The header comment stamped into each arm's skeleton entry file under `environment/`. §0.1. |
 | `difficulty` | int, `1`–`3` | yes | 1 = single-resource, 2 = multi-resource wiring, 3 = cross-service (prereg §5 difficulty gradient). The generator maps this to `task.toml [metadata] complexity`: `1→Atomic, 2→Sequential, 3→Orchestrated` — a generator convention, not a spec field; do not add a `complexity` field to the spec. |
 | `services` | list[string] | yes, ≥1 | boto3 service client ids (e.g. `ssm`, `iam`, `lambda`), lower-case. Written into every generated `task.toml [metadata] aws_services`. Purely descriptive in v1 (no live boto3 call ever validates against it — that upstream `test/aws_service_catalog.ts` check is aws-bench-datasets' own CI, not ours), but keep it accurate; a later live-check phase (§5) will care. |
 
@@ -61,7 +63,7 @@ skeleton entry file, and into the awscdk app's CloudFormation stack
 | *(all arms)* | `task.toml [task] description` — **host-side only** | `generator/gen.py` `build_task_toml()` |
 
 Everything under `environment/` is `COPY`'d into the agent image by the arm
-Dockerfile, so **the header is the first thing the step-1 agent reads** — it is
+Dockerfile, so **the header is the first thing the agent reads** — it is
 prompt surface, not metadata. A scenario `title` legitimately describes the
 whole arc (`"…: deploy, confirm, modify, re-deploy (day-2 iteration)"`); putting
 that arc in the skeleton foreshadows step 2 exactly as loudly as the prompt
@@ -69,15 +71,38 @@ would, which Amendment 26 §7 rule 2 and
 `docs/design/multistep-trial-investigation.md` §5 rule 2 forbid ("never place
 later-step material in `environment/` — that IS the image the agent lives in").
 
+**Two spec forms hit this, for the same reason with different content.**
+A multi-step `title` describes the *arc*; a brownfield (§2.7) `title` describes
+the *change*, and in practice names the very property of the shipped config that
+carries the pitfall. The pilot's own first draft is the worked example — and it
+shipped, and a verifier caught it:
+
+> `title: "Rename an explicitly-named, in-use security group and roll it out"`
+
+`explicitly-named` and `in-use` are exactly the two facts that
+`named-resource-replacement`'s `seed_asserts` declare to be THE POISON, and
+which §2.7 prompt rule 4 requires the agent to *discover from the configuration*.
+Stamped through `workspace_header()` they landed in `bin/app.ts`'s CFN
+`description` and `main.ts`'s header comment — two of three arms, because the
+third arm's entry file *is* the seed and carries no generator header at all. So
+the leak was also **arm-asymmetric**: two arms were handed a hint inside the
+cross-arm comparison the scenario exists to measure.
+
 Therefore:
 
-- **Single-step spec:** `workspace_title` is *forbidden*; the header is `title`,
-  byte-for-byte as before this field existed.
+- **Single-step greenfield spec:** `workspace_title` is *forbidden*; the header
+  is `title`, byte-for-byte as before this field existed.
 - **Multi-step spec:** `workspace_title` is *required* and is used instead. It
   must be terminal — describing only what step 1 is asked to build, implying no
-  future change. Making it required rather than defaulting (to `title`, or to
-  `id`) forces the author to choose a step-1-safe header instead of inheriting a
-  foreshadowing one by omission.
+  future change.
+- **Brownfield spec (`workspace_seed:`, §2.7):** `workspace_title` is *required*
+  and is used instead. It must describe only **what the workspace already is**
+  (`"Internal services network"`), never what is about to change about it, why
+  it is interesting, or any property of it the prompt is not allowed to state.
+
+Making it required rather than defaulting (to `title`, or to `id`) forces the
+author to *choose* a safe header instead of inheriting a leaking one by
+omission — which is precisely how the brownfield leak above happened.
 
 `task.toml [task] description` is the one **non**-`environment/` row in that
 table, and it is defence in depth rather than a live leak: Harbor uploads no
@@ -86,13 +111,22 @@ is host-side metadata read only by the publisher/registry. It uses
 `workspace_header()` anyway, because it is the last generator-stamped copy of
 the whole arc left inside the task dir and "it's only metadata" is exactly the
 reasoning that put the arc into the agent's own `main.tf` (Amendment 27 §5.1).
-The full arc title is not lost — a multi-step task.toml carries it as
+The full title is not lost — a multi-step *or brownfield* task.toml carries it as
 `[metadata] scenario_title`.
 
-Enforced by `Spec._multi_step_requires_workspace_title` (spec load time) and,
-against the real emitted bytes, by
-`generator/tests/test_multistep_emission.py::test_step_one_environment_leaks_nothing_about_step_two`,
-which deny-list-scans every file under each multi-step task's `environment/`.
+Enforced by `Spec._workspace_title_required_where_header_is_prompt_surface`
+(spec load time) and, against the real emitted bytes, by two deny-list scans of
+every file under a task's `environment/`:
+
+- `generator/tests/test_multistep_emission.py::test_step_one_environment_leaks_nothing_about_step_two`
+  — step-2 vocabulary, over each multi-step task;
+- `generator/tests/test_workspace_seed.py::TestBrownfieldPromptSurface`
+  — pitfall-mechanism vocabulary **plus a verbatim-`title` pin**, over *every*
+  brownfield task and its `instruction.md`. The verbatim pin is the direct
+  regression guard for the leak quoted above: it fails on the literal `title`
+  string appearing anywhere the agent can read, independent of which words that
+  title happens to contain, so it cannot rot as future brownfield specs invent
+  new ways to describe their change.
 
 ---
 
@@ -518,6 +552,192 @@ earlier self left behind. Full rationale:
 **Regression guarantee.** A spec **without** `steps` generates byte-identically
 to before this field existed. Every branch the generator grows for steps is
 `if spec.steps:`-guarded.
+
+---
+
+### 2.7 `workspace_seed` (optional, **TOP-LEVEL**, default `null`) — BROWNFIELD
+
+Added 2026-08-20 by the poisoned-workspace pass
+(`docs/design/poisoned-workspace-design.md`; `DECISIONS.md` Amendment 28).
+
+Every scenario before this one is **greenfield**: §2.4's empty `entry_file`
+skeleton, a `TODO(agent)` comment, "create X". `workspace_seed` makes a
+scenario **brownfield** — the workspace starts from working, plan-green,
+already-deployed configuration that carries a latent pitfall, and the prompt is
+a change request (or an observed incident symptom) against it.
+
+| | Greenfield | Brownfield (`workspace_seed`) |
+|---|---|---|
+| starting `entry_file` | empty skeleton + `TODO(agent)` | working config with a latent pitfall |
+| starting state | plan-green, resource-**free** | plan-green, resource-**bearing** |
+| prompt | "create X" imperative | change request or incident symptom |
+| agent's job | author from scratch | modify existing config |
+| what is measured | tokens-to-green on greenfield | **tokens-to-green on brownfield** |
+| where the trap fires | the agent's own authoring | the agent's *change* to code it did not write |
+
+```yaml
+workspace_seed:
+  premise: |                     # REQUIRED. NL, arm-agnostic. See "prompt rules".
+    …what already exists, stated as fact, never as a warning…
+  entry_file:                    # REQUIRED. Exactly one body per ENABLED arm.
+    awscdk: |                    #   written VERBATIM as that arm's entry_file
+      …
+    hcl_raw: |
+      …
+    terraconstructs: |
+      …
+  extra_files:                   # OPTIONAL, per arm, WRITABLE (0o644)
+    hcl_raw:
+      - path: variables.tf
+        content: |
+          …
+  seed_asserts:                  # REQUIRED, >=1. The parity gate. Same
+    - name: …                    # {op, expected, cfn_jsonpath, tf_jsonpath}
+      description: …             # vocabulary as oracle.structural_asserts (§4.2).
+      pins_catch: <catch-name>    # optional per entry; >=1 entry MUST set it
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: …
+      tf_jsonpath: …
+      op: exists | not_exists | eq | in | contains | regex | set_eq | absent_or_eq | not_regex
+      expected: …
+```
+
+**`entry_file` is a per-arm map, and each body is the WHOLE file.** There is no
+derivation path between the three (`docs/scenario-candidates.md:169-176`: no
+public CDK→TF synthesizer exists), so the three seeds are hand-authored under
+the same discipline as `solution/solve.sh` (§8.2 point 8). The generator writes
+each body verbatim — **no header of any kind** — so the spec author owns the
+imports and the class/blocks. `gen.py::seed_entry_body` checks the per-arm
+structural contract at generation time instead (`export class ScenarioStack` on
+the TS arms; no `provider "aws"`/`terraform {}` block on hcl_raw, which
+`provider.tf` owns — finding G1).
+
+**The seed is AGENT-WRITABLE (`0o644`).** This is the exact opposite of
+`seeded_files` (§2.5), which are `0o444` read-only reference inputs. The two
+blocks stay separate because their permissions and semantics are opposites; a
+path may not appear in both (rejected by `spec_model`, since one would silently
+overwrite the other's permission). `write_environment` asserts the writability
+after every workspace write, and `--seed` re-checks it from the gate side: a
+`0o444` regression here would make a legitimate agent edit fail with `EACCES`
+and score a **correct** solution 0.0.
+
+**The seed reaches the container for free.** `gen.py::patch_dockerfile_workspace_copies`
+already appends a named `COPY` for every workspace file the arm's own COPY set
+does not cover (§2.5). A seed lands at `entry_file`, which every arm Dockerfile
+already COPYs, so a seeded task's Dockerfile stays byte-identical to its arm's;
+`extra_files` at new paths pick up COPYs automatically. The repo-wide invariant
+is enforced by `generator/tests/test_dockerfile_workspace_coverage.py`.
+
+**Prompt rules** (the review-time obligation; `DECISIONS.md` Amendment 28 §3):
+
+1. Two legal framings: **change request** ("our naming convention changed —
+   rename X to Y and roll it out") or **incident** ("since this morning `/foo`
+   returns the previous version's response; get the deployed service serving
+   the current code"). An incident prompt states an observed symptom and a
+   desired end state — never a diagnosis.
+2. **Never** "find the bug", "fix the mistake", "review this config". Those turn
+   a brownfield task into a code-review task and measure something else.
+3. **The premise states facts, not warnings.** "This is deployed in this
+   account" is a fact. "Careful, this group is in use" is a warning and a hint —
+   the in-use-ness must be discoverable from the config, which is what a
+   `seed_assert` pins.
+4. **No mechanism naming**, extending §2.1's `instruction_concision` rule: never
+   name the pitfall's mechanism (`create_before_destroy`, "replacement",
+   "perpetual diff"), never name the property that carries it, never say the
+   workspace contains a problem.
+5. **The seed carries no comment a real production file would not.** Mechanically
+   tripwired by `spec_model._seed_comment_violations`, which rejects
+   `TODO`/`FIXME`/`XXX`/`HACK`/`NOTE:`/`careful`/`gotcha`, the generator's own
+   skeleton banners (`Empty on purpose`, `Generated skeleton` — which is also how
+   "a workspace_seed spec must not also ship the empty stub" is enforced), and
+   `create_before_destroy` **in a comment line**. A tripwire, not a proof.
+6. **The ownership note changes.** Greenfield says "you own only `<entry_file>` —
+   write your entire solution there"; brownfield says "`<entry_file>` holds this
+   project's existing configuration — change it as needed". The don't-touch
+   clause for `provider.tf`/`bin/app.ts`/`main.ts` is unchanged and still
+   load-bearing (finding G1).
+
+**Parity is preserved by construction.** `premise` is spec-level and
+arm-agnostic, and the generator inserts it *before* the per-arm language line —
+i.e. inside the parity-checked shared prefix (`gen.py::shared_prefix`,
+`check_parity.py`). It cannot break prompt parity even in principle.
+
+**`seed_asserts` — what "the three seeds are equivalent" means.** **Not**
+resource-count or resource-type parity: the whole thesis of this benchmark is
+that one L2 construct decomposes into N Terraform resources, so a census check
+would fail every honest seed. Equivalence is defined **behaviourally**:
+
+1. every arm's seed **synth/plans green**, with no overlay — a seed that does not
+   is a generation failure, not a hard scenario;
+2. every `seed_assert` holds on every arm it declares `applies_to`, resolved
+   through the same `jsonpath_jq` compilation and the same
+   `_assert_lib.sh::assert_check` a real trial's tier-0 runs;
+3. **coverage**: at least one entry must set `pins_catch`, naming the catch whose
+   mechanism lives in the seed. Without that back-reference a seed can drift into
+   being non-poisoned — still green, still parity-clean, no longer carrying the
+   pitfall — and nothing would notice.
+
+Run it with `make seed-parity SPEC=specs/<id>.yaml`
+(`generator/check_reference_paths.py --seed`; exit 3 = greenfield/NOT_AUTHORED,
+non-gating). Wired per spec into `make ci`. An `applies_to` that differs per arm
+is expected and legal — CFN expresses a graph edge as an `Fn::GetAtt` intrinsic
+where Terraform expresses it as a reference string, and CFN has no `lifecycle`
+meta-argument at all. Do not perform `applies_to` gymnastics to make the arms
+look identical: **the asymmetry is the artifact families', not the seeds'.**
+
+The residual, human half is `premise` itself: a mechanical gate can prove "these
+three configurations satisfy the same declared facts", never "these three
+describe the same system". That is exactly the status `oracle.intent` already
+has (§4.1), and `premise` is reviewed the same way.
+
+**The mandatory do-nothing negative.** Every `workspace_seed` spec ships
+`solution/broken/seed-unchanged/solve.sh` — a no-op that submits the seed
+exactly as found — and `gates/oracle_falsifiability.py` requires it to score
+**< 1.0**. This closes the one failure mode unique to brownfield: a change
+request the seed already satisfies rewards doing nothing, and no other gate can
+see it (`solution/solve.sh` scoring 1.0 proves the oracle *accepts* a correct
+change, never that it *rejects* the absence of one). The fixture is
+**generator-owned and overwritten on every run** — a deliberate, documented
+exception to §8.2 point 8, because its content is entirely mechanical and the
+one fixture whose purpose is to be un-weakenable must not be hand-editable.
+
+`< 1.0` is **necessary but not sufficient**, and the gate enforces the second
+half too: the run must also have produced a *graded artifact* (a tier-0 summary
+in its output). `tests/static_tiers.sh` writes `0.0` for a broken toolchain as
+well as for a rejected solution — `TF-PLAN FAILED`, `MISSING ARTIFACT`, the
+mock-STS `tf-plan-mock-sts-unavailable` bail-out that script itself labels *"a
+run-invalidating test-infrastructure condition, NOT a bad solution"*. Counting
+those as proof would make the one un-fakeable check pass vacuously. Observed
+for real (2026-08-20): a batch `make falsifiability` run reported `TF-PLAN
+FAILED` for the terraconstructs do-nothing fixture from mock-STS port
+contention between back-to-back fixtures, while the same fixture in isolation
+failed honestly on `security-group-uses-the-new-team-prefixed-name`. Such a run
+is now a loud FAIL telling the operator to re-run, not a quiet pass.
+
+**Composition with `steps` (§2.6).** Allowed, and the two features occupy
+disjoint parts of the task dir: the seed lives in `environment/` (step-1
+material by definition — the agent is *supposed* to see it from turn one),
+steps live in `steps/`. The seed is written once, never per step. The
+no-foreshadowing rules apply to the seed exactly as to a step-1 prompt.
+
+**Equipping.** `task.toml [metadata] workspace_seed_sha256` carries a sha256
+over every arm's seed body + extra files (spec-wide: the three seeds are one
+equivalence claim, so editing any one invalidates every arm's rows).
+`gates/equipping.py::compute_equipping_hash` reads it back and folds it into the
+existing `extra_cfg` manifest slot — no `HASH_SCHEME_VERSION` bump, and no
+greenfield task's already-published hash moves. It is not redundant with
+`image_digest`: that fallback-resolves to a bare tag string whenever docker is
+offline or the image isn't built locally, at which point two different seeds
+under one tag would hash identically (§3.4 of the design memo).
+
+**Metric rule.** Brownfield tokens-to-green is a **separate stratum**. It is
+never pooled with greenfield rows — the same refusal Amendment 26 §4 applies to
+N-step vs 1-step and Amendment 27 §2 applies to `apigw-redeploy`'s two forms.
+
+**Regression guarantee.** A spec **without** `workspace_seed` generates
+byte-identically to before this field existed. Every branch the generator grows
+for it is `if spec.workspace_seed:`-guarded, and this was verified by
+regenerating every pre-existing spec and diffing (zero changed files).
 
 ---
 
@@ -1073,6 +1293,106 @@ verifier:
   by `solution/solve.sh`/`solution/broken/*/solve.sh`) was, and remains, a
   SEPARATE, always-gating call shape independent of this flag — see that
   module's own docstring.
+
+### 5.1 `verifier.idempotence` (optional, default disabled)
+
+```yaml
+verifier:
+  live_check: { enabled: true, hand_authored: true, gating: true, … }
+  idempotence:
+    enabled: true      # default false
+    gating: true       # default false; requires enabled
+```
+
+Added 2026-08-20 alongside §2.7 (`docs/design/poisoned-workspace-design.md` §5;
+`DECISIONS.md` Amendment 28 §4). The question it answers is one no static tier
+can: **after the agent's solution is green, does the agent's own toolchain
+still report a pending change against what it just deployed?**
+
+**It is a LIVE tier, and that is a blocking fact rather than a preference.**
+`terraform plan -detailed-exitcode` returns `2` (changes present) for *any* plan
+against empty state, and the generated static tier plans an empty working
+directory — so a "second plan" is meaningless offline. Hence
+`idempotence.enabled: true` **requires** `live_check.enabled: true`
+(`spec_model.Spec._idempotence_requires_live_check`): no apply ⇒ no state ⇒
+nothing to be idempotent about.
+
+**Per-arm commands are injected unconditionally by the generator**, never read
+from a spec key — the same "cannot go missing because a spec author forgot a
+YAML key" discipline `TERRACONSTRUCTS_BUILD_COMMAND` uses
+(`gen.py::IDEMPOTENCE_COMMAND`):
+
+| Arm | Command | Converged | Pending |
+|---|---|---|---|
+| `hcl_raw` | `terraform plan -input=false -refresh=false -detailed-exitcode` | exit 0 | exit 2 |
+| `terraconstructs` | `npx cdktn synth`, then the same plan inside `cdktf.out/stacks/<id>/` | exit 0 | exit 2 |
+| `awscdk` | `npx cdk diff --fail --no-lookups ScenarioStack` | exit 0 | exit 1 |
+
+`cdk diff --fail` is the honest analogue for CloudFormation: "the toolchain's own
+converged-state check reports no pending change against what is actually
+deployed". A second synth + template self-diff is **not** an analogue — CDK
+synth is deterministic, so that check is vacuous by construction and would
+silently hand the awscdk arm a free pass.
+
+`-refresh=false` on the TF arms for the same reason `build_static_tiers_sh`
+already uses it on a post-apply working tree: a refreshing plan re-contacts AWS
+through the arm's *offline* dummy-credential provider config and 403s, which
+would report `pending_changes` for a reason unrelated to convergence.
+
+**Three outcomes, mirroring `live_check`'s own contract**, written to
+`/logs/verifier/idempotence-result.json` (plus the raw command output in
+`/logs/verifier/idempotence.log`) whether gating or not:
+
+- `converged` — exit 0;
+- `pending_changes` — the arm's pending exit code;
+- `not_verifiable` — anything else, **including the never-deployed case**
+  (offline, or an agent that never applied). This case is caught by a
+  **different mechanism per arm**, because the arms keep their converged state
+  in different places, and getting it wrong would fake a `pending_changes`
+  verdict for a run that never reached AWS:
+
+  - **`hcl_raw` / `terraconstructs` — pre-flight file probe.** Before running
+    anything the block probes for the arm's local state file
+    (`terraform.tfstate`, resp. the synthesized stack's); absent ⇒
+    `not_verifiable` with a reason, and no plan is run at all. Needed because
+    an offline `terraform plan` with no state is *always* exit `2` — the same
+    code as a genuine pending change.
+  - **`awscdk` — post-flight completion marker.** This arm keeps no local state
+    (`cdk diff` reads the deployed CFN stack), so no local file can answer the
+    question and a pre-flight probe is impossible. Instead, exit `1` is believed
+    as `pending_changes` **only if** `idempotence.log` also contains
+    `Number of stacks with differences:`. Needed because `cdk diff --fail`
+    exits `1` both for "the diff found changes" and for "the CLI failed before
+    diffing anything". MEASURED on this arm's exact pin (`aws-cdk 2.1135.0`,
+    no range) with credentials unresolvable: exit `1`,
+    `no credentials have been configured`, and **no marker** — and dropping
+    `--fail` gives the same exit `1`, so a `--fail`-less pre-flight does not
+    discriminate either. `cdk-toolkit.js` prints that marker unconditionally on
+    the line before `return diffs && options.fail ? 1 : 0`, so it is present on
+    every *completed* diff and absent on every early error exit.
+
+  Both mechanisms deliver the same guarantee, and it is the guarantee, not the
+  mechanism, that is the contract: **offline this tier is skipped with a
+  reason, never fake-passed, on all three arms.** See
+  `gen.py::IDEMPOTENCE_STATE_PROBE` / `IDEMPOTENCE_COMPLETION_MARKER`
+  (the empty string in either map means "this arm uses the other mechanism").
+
+**`gating: true` is fail-closed and AND-composed** with `live_check.gating`, byte
+for byte the same contract: final reward is 1.0 iff the static tiers say 1.0 AND
+the live check's `.outcome` is `"pass"` AND this tier's outcome is `"converged"`.
+Both `pending_changes` and `not_verifiable` downgrade to 0.0.
+
+**Emission is generation-conditional, not a runtime-gated branch.** Unlike
+`live_check`'s gating (a dead runtime branch every task carries), the idempotence
+block is emitted into `tests/test.sh` **only** for a spec that opts in — because
+`build_test_sh` is otherwise one static template shared by every task, and an
+always-emitted block would move every existing task's bytes. Verified: with
+`idempotence` disabled, every pre-existing task's `tests/test.sh` is byte-identical.
+
+Multi-step composition: the block rides the **final** step's `[steps.verifier] env`
+only. An intermediate step is expected to leave pending changes (the next step is
+what applies them), and gating it there would abort every trial at the
+`min_reward` gate.
 
 ---
 

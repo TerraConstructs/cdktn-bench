@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
+import tomllib
 import warnings
 from pathlib import Path
 from typing import Any
@@ -101,6 +102,45 @@ def _discover_step_instructions(task_dir: Path) -> list[dict[str, str]]:
         }
         for p in sorted(found, key=lambda p: p.relative_to(task_dir).as_posix())
     ]
+
+
+WORKSPACE_SEED_KEY = "workspace_seed_sha256"
+
+
+def _workspace_seed_sha256(task_dir: Path) -> str | None:
+    """``task.toml [metadata] workspace_seed_sha256``, or None.
+
+    A BROWNFIELD task (``specs/SCHEMA.md`` §2.7) does not start from the empty
+    ``entry_file`` skeleton — its starting workspace is a hand-authored,
+    per-arm seed baked into the image. Two trials whose seed differs are not
+    comparable, and nothing else in this manifest would notice: the hash covers
+    ``instruction.md``, equipping files, the image digest and ``extra_cfg``, and
+    it deliberately does **not** walk ``environment/``. The image digest *would*
+    cover it — the seed is baked into the image — except that
+    ``_resolve_image_digest`` falls back to the bare tag string whenever docker
+    is unavailable/offline or the image isn't built locally (and only
+    ``warnings.warn``s), at which point two different seeds under one tag hash
+    identically.
+
+    Reading it here rather than making every caller remember to pass it is the
+    point: a channel a caller can forget is a channel that will be forgotten.
+    Folded into the EXISTING ``extra_cfg`` slot (design memo §3.4), so no
+    ``HASH_SCHEME_VERSION`` bump is needed and no greenfield task's already-
+    published hash moves — greenfield ``task.toml``s simply have no such key.
+
+    A malformed/absent ``task.toml`` is not an error here: ``task_dir`` is only
+    contractually required to hold an instruction, and every failure mode of
+    this lookup is "no seed declared", which is the greenfield default.
+    """
+    task_toml = task_dir / "task.toml"
+    if not task_toml.is_file():
+        return None
+    try:
+        data = tomllib.loads(task_toml.read_text())
+    except (tomllib.TOMLDecodeError, OSError, UnicodeDecodeError):
+        return None
+    value = (data.get("metadata") or {}).get(WORKSPACE_SEED_KEY)
+    return value if isinstance(value, str) and value else None
 
 
 def _resolve_image_digest(image_ref: str) -> tuple[str, bool]:
@@ -198,6 +238,18 @@ def compute_equipping_hash(
     ]
 
     image_digest, _resolved = _resolve_image_digest(image_ref)
+
+    seed_sha = _workspace_seed_sha256(task_dir)
+    if seed_sha is not None:
+        declared = extra_cfg.get(WORKSPACE_SEED_KEY)
+        if declared is not None and declared != seed_sha:
+            raise ValueError(
+                f"compute_equipping_hash: extra_cfg[{WORKSPACE_SEED_KEY!r}] is "
+                f"{declared!r} but {task_dir / 'task.toml'} declares {seed_sha!r} "
+                "— refusing to guess which starting workspace this trial ran "
+                "against"
+            )
+        extra_cfg = {**extra_cfg, WORKSPACE_SEED_KEY: seed_sha}
 
     try:
         # Round-trip through json to (a) prove extra_cfg is JSON-serializable

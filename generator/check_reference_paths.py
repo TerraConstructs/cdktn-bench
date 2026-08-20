@@ -97,7 +97,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from gen import ARM_WORKSPACE_SUBDIR, task_dir  # noqa: E402
 from jsonpath_jq import jsonpath_to_jq  # noqa: E402
-from spec_model import Arm, Spec, StructuralAssert, load_spec  # noqa: E402
+from spec_model import Arm, SeedAssert, Spec, StructuralAssert, load_spec  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FIXTURES_DIR = Path(__file__).resolve().parent / "tests" / "fixtures"
@@ -114,7 +114,7 @@ def _is_authored(fixture_dir: Path) -> bool:
     return fixture_dir.exists() and any(fixture_dir.rglob("*"))
 
 
-def _prepare_project(spec: Spec, arm: Arm, fixture_file: Path, tmp: Path) -> Path:
+def _prepare_project(spec: Spec, arm: Arm, fixture_file: Path | None, tmp: Path) -> Path:
     """Build a scratch /app/project equivalent: a copy of the GENERATED
     task's own environment/<workspace-subdir> (the exact tree the arm's own
     Dockerfile COPYs into WORKDIR /app/project -- flattened, no
@@ -127,9 +127,29 @@ def _prepare_project(spec: Spec, arm: Arm, fixture_file: Path, tmp: Path) -> Pat
 
     per_arm = getattr(spec.instruction.per_arm, arm)
     entry_rel = per_arm.output_contract.entry_file
-    dest = project / entry_rel
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(fixture_file, dest)
+    # `fixture_file=None` is --seed mode: NO overlay at all. The project is the
+    # generated task's workspace exactly as it stands, i.e. exactly what the
+    # agent opens on turn one -- which is the whole point of the seed gate
+    # (design memo §4.2: "the same procedure with the fixture overlay omitted").
+    if fixture_file is not None:
+        dest = project / entry_rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(fixture_file, dest)
+    else:
+        seed = project / entry_rel
+        if not seed.is_file() or not seed.read_text().strip():
+            raise FileNotFoundError(
+                f"--seed: the generated task's {entry_rel} is missing or empty for "
+                f"arm {arm!r} -- run `make gen SPEC=specs/{spec.id}.yaml` first"
+            )
+        # The seed is the file the agent is asked to CHANGE. copytree preserves
+        # the source mode; assert it here so a 0o444 regression is caught by the
+        # gate that reads the workspace rather than by a failed agent edit.
+        if not seed.stat().st_mode & 0o200:
+            raise PermissionError(
+                f"--seed: {entry_rel} is not writable on arm {arm!r} -- a "
+                "brownfield seed must be agent-editable (SCHEMA.md §2.7)"
+            )
 
     if (project / "package.json").exists():
         subprocess.run(
@@ -297,12 +317,146 @@ def check_arm(spec: Spec, arm: Arm) -> list[PathCheckResult]:
     return results
 
 
+# ---------------------------------------------------------------------------
+# --seed mode: the BROWNFIELD seed-parity gate (SCHEMA.md §2.7)
+# ---------------------------------------------------------------------------
+#
+# What "the three seeds are equivalent" must and must not mean (design memo
+# §4.1). NOT resource-count or resource-type parity: the whole thesis of this
+# benchmark is that one L2 construct decomposes into N Terraform resources, so a
+# census check would fail every honest seed. Equivalence is defined
+# BEHAVIOURALLY, by declared facts:
+#
+#   1. every arm's seed synth/plans GREEN, with no overlay -- a workspace that
+#      doesn't is not "existing infrastructure", it is a generation failure;
+#   2. every `seed_assert` holds on every arm it declares applies_to, resolved
+#      through the SAME jq compiler + `_assert_lib.sh::assert_check` a real
+#      trial's tier-0 runs.
+#
+# The residual, human half is `workspace_seed.premise`: a mechanical gate can
+# prove "these three configurations satisfy the same declared facts", never
+# "these three describe the same system". That is exactly the status `oracle.
+# intent` already has, and the premise is reviewed the same way.
+
+
+def check_seed_arm(spec: Spec, arm: Arm) -> list[PathCheckResult]:
+    """Run the arm's REAL toolchain against the generated, UN-OVERLAID task
+    workspace, then resolve every applicable `seed_assert` against the artifact
+    it produced."""
+    results: list[PathCheckResult] = []
+    seed = spec.workspace_seed
+    assert seed is not None
+    per_arm = getattr(spec.instruction.per_arm, arm)
+
+    with tempfile.TemporaryDirectory(prefix="check-seed-") as tmp_s:
+        tmp = Path(tmp_s)
+        try:
+            project = _prepare_project(spec, arm, None, tmp)
+        except (FileNotFoundError, PermissionError) as exc:
+            results.append(PathCheckResult(f"{arm}/seed", False, str(exc)))
+            return results
+        log = _run_toolchain(project)
+
+        artifact = project / per_arm.output_contract.artifact_path
+        if not artifact.exists() or artifact.stat().st_size == 0:
+            results.append(
+                PathCheckResult(
+                    f"{arm}/seed-plans-green",
+                    False,
+                    "the seeded workspace did NOT build/synth/plan -- a seed that "
+                    "is not green is not existing infrastructure, it is a "
+                    f"generation failure. No artifact at {artifact}. Toolchain "
+                    f"output:\n{log[-4000:]}",
+                )
+            )
+            return results
+        results.append(
+            PathCheckResult(
+                f"{arm}/seed-plans-green",
+                True,
+                f"artifact produced at {per_arm.output_contract.artifact_path}",
+            )
+        )
+
+        applicable = [a for a in seed.seed_asserts if arm in a.applies_to]
+        if not applicable:
+            results.append(
+                PathCheckResult(
+                    f"{arm}/seed-asserts",
+                    True,
+                    "no seed_assert declares this arm in applies_to (an "
+                    "arm-shaped asymmetry is legal -- CFN has no `lifecycle` "
+                    "meta-argument, for instance -- but a seed with NO pinned "
+                    "fact at all on an arm is worth a second look)",
+                )
+            )
+        for a in applicable:
+            jsonpath = a.cfn_jsonpath if arm == "awscdk" else a.tf_jsonpath
+            assert jsonpath is not None
+            ok, detail = _assert_check_via_bash(
+                project, a.name, jsonpath, a.op, a.expected, artifact
+            )
+            pin = f" pins_catch={a.pins_catch}" if a.pins_catch else ""
+            results.append(PathCheckResult(f"{arm}/seed:{a.name}{pin}", ok, detail))
+
+    return results
+
+
+def run_seed_mode(spec: Spec) -> int:
+    if spec.workspace_seed is None:
+        print(
+            f"seed-parity: NOT_AUTHORED for {spec.id!r} -- this spec declares no "
+            "`workspace_seed` block, i.e. it is a GREENFIELD scenario whose "
+            "workspace starts from the empty entry_file skeleton (SCHEMA.md "
+            "§2.4). Nothing to check; non-gating.",
+            file=sys.stderr,
+        )
+        return 3
+
+    all_ok = True
+    matrix: list[tuple[str, str, bool]] = []
+    for arm in spec.arms.enabled_arms():
+        for r in check_seed_arm(spec, arm):
+            status = "PASS" if r.ok else "FAIL"
+            first_line = r.detail.splitlines()[0] if r.detail else ""
+            print(f"[{status}] {r.label}: {first_line}")
+            matrix.append((arm, r.label, r.ok))
+            if not r.ok:
+                all_ok = False
+                for line in r.detail.splitlines()[1:]:
+                    print(f"    {line}")
+
+    print("\nseed-parity matrix (arm x fact):")
+    for arm, label, ok in matrix:
+        print(f"  {'PASS' if ok else 'FAIL'}  {arm:16s} {label}")
+
+    if not all_ok:
+        print(f"\nseed-parity FAILED for {spec.id!r}", file=sys.stderr)
+        return 1
+    print(
+        f"\nseed-parity OK for {spec.id!r} -- every arm's seed builds/plans green "
+        "offline and satisfies every seed_assert it declares"
+    )
+    return 0
+
+
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("spec_path", type=Path)
+    parser.add_argument(
+        "--seed",
+        action="store_true",
+        help="BROWNFIELD seed-parity mode (SCHEMA.md §2.7): resolve "
+        "`workspace_seed.seed_asserts` against the GENERATED, UN-OVERLAID task "
+        "workspace, and require that workspace to build/synth/plan green on "
+        "every enabled arm. Exit 3 (NOT_AUTHORED, non-gating) for a spec with "
+        "no workspace_seed block.",
+    )
     args = parser.parse_args(argv[1:])
 
     spec = load_spec(args.spec_path)
+    if args.seed:
+        return run_seed_mode(spec)
     all_ok = True
     any_authored = False
     for arm in spec.arms.enabled_arms():

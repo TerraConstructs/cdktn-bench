@@ -70,6 +70,46 @@ test-gates:
 	@echo "==> pytest: gates/ metrics/ oracles/ generator/ test/ cdktn_bench/"
 	uv run pytest gates metrics oracles generator test cdktn_bench -q
 
+# --- Seed parity (BROWNFIELD workspaces, specs/SCHEMA.md §2.7) ---------------
+#
+# `make seed-parity SPEC=specs/named-resource-replacement.yaml`
+#
+# Task #15 / DECISIONS.md Amendment 28. A brownfield scenario ships a
+# hand-authored `workspace_seed` body per arm AS that arm's entry_file, so the
+# agent opens working configuration rather than an empty skeleton. Two things
+# then need proving that nothing else in this repo proves:
+#
+#   1. THE SEED IS GREEN. Every arm's generated, un-overlaid workspace must
+#      build/synth/plan with that arm's REAL toolchain. A seed that doesn't is
+#      not "existing infrastructure" -- it is a generation failure that would
+#      hand every trial on that arm a reward of 0.0 before the agent typed
+#      anything.
+#   2. THE THREE SEEDS ARE EQUIVALENT. Not by resource census -- the whole
+#      thesis of this benchmark is that one L2 construct decomposes into N
+#      Terraform resources, so a census would fail every honest seed. By
+#      DECLARED BEHAVIOURAL FACTS: each `workspace_seed.seed_asserts` entry is
+#      resolved against the artifact that arm's own toolchain just produced,
+#      through the SAME generator/jsonpath_jq.py compilation and the SAME
+#      `_assert_lib.sh::assert_check` bash function a real trial's tier-0 runs.
+#
+# Implemented as a MODE of generator/check_reference_paths.py rather than a new
+# gate, because that script already does exactly this job for the post-agent
+# artifact (drop a fixture at entry_file, run the real toolchain, resolve
+# declared paths). --seed is the same procedure with the overlay omitted.
+#
+# Exit-code convention matches its sibling checks: 0 pass, 1 fail, 3 =
+# NOT_AUTHORED (this spec declares no workspace_seed, i.e. it is greenfield) so
+# ci/run-ci.sh's existing SKIP handling works unchanged.
+#
+# NOT added to CHECKS / `make check`, for exactly the reason gate-preflight
+# below is not: it needs terraform/node/npm/jq on PATH and (first run) network
+# for `npm ci`, which `make check` must not assume. `make ci` runs it per spec.
+.PHONY: seed-parity
+
+seed-parity:
+	@if [ -z "$(SPEC)" ]; then echo "usage: make seed-parity SPEC=specs/foo.yaml" >&2; exit 2; fi
+	uv run python generator/check_reference_paths.py $(SPEC) --seed
+
 # --- Gate 1 (preflight) wiring ----------------------------------------------
 #
 # gates/preflight.py's run_preflight() was orphaned: nothing in the repo

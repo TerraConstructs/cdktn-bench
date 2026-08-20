@@ -1,0 +1,562 @@
+# specs/named-resource-replacement.yaml
+#
+# THE FIRST BROWNFIELD (poisoned-workspace) SCENARIO — specs/SCHEMA.md §2.7,
+# docs/design/poisoned-workspace-design.md, DECISIONS.md Amendment 28.
+#
+# Every other spec in this directory is GREENFIELD: the agent opens an empty
+# `entry_file` skeleton and authors from scratch. This one opens a working,
+# deployed, plan-green configuration someone else wrote, and is asked to make
+# one ordinary change to it. What is measured is tokens-to-green on
+# BROWNFIELD — a separate metric stratum, never pooled with greenfield rows
+# (Amendment 28 §6).
+#
+# The pitfall is not planted sabotage. It is the single most common shape of
+# real production Terraform: a resource with an operator-chosen literal `name`.
+# Renaming it forces replacement; Terraform's DEFAULT replacement order is
+# destroy-then-create; the group is attached to a live interface-endpoint ENI,
+# so the destroy fails and the apply leaves the change half-applied. Every step
+# of that is documented provider/engine behaviour:
+#   * `aws_security_group.name` is ForceNew (hashicorp/aws resource docs).
+#   * "By default ... Terraform will destroy the existing object and then
+#     create a new replacement object. The create_before_destroy meta-argument
+#     changes this behavior so that the new replacement object is created
+#     first" (Terraform `lifecycle` meta-argument docs).
+#   * EC2 refuses to delete a security group still attached to an ENI
+#     (`DependencyViolation`).
+# CloudFormation's engine differs, and that difference IS the measurement: a
+# changed `GroupName` is an Update-requires-Replacement, and CFN's replacement
+# is create-new-then-delete-old, so the awscdk arm converges on the naive edit.
+# The asymmetry is recorded here rather than engineered away (design memo §5.2).
+#
+# WHY THE TRAP IS live-TIER AND NOT tier-0 (measured, not assumed —
+# 2026-08-20): `terraform show -json` does NOT emit `lifecycle` anywhere in its
+# configuration representation. Verified directly against terraform 1.15.8 +
+# hashicorp/aws 6.58.0: planning the same configuration with and without
+# `lifecycle { create_before_destroy = true }` produces byte-identical
+# `.configuration.root_module.resources[]` nodes for the security group. So NO
+# static tier reading the graded artifact can see the fix, on either TF arm.
+# The design memo's own sketched seed assert for this
+# (`...aws_security_group...lifecycle`, op `not_exists`) would have been a dead
+# path that passes vacuously on a seed AND on a fixed solution alike — this
+# spec deliberately does not carry it, and the `seed-parity` gate would have
+# caught it if it did.
+
+id: named-resource-replacement
+# HOST-SIDE ONLY. `title` is never stamped into `environment/` for this spec --
+# `workspace_title` below is (SCHEMA.md §0.1). That split is load-bearing here,
+# not cosmetic: this title names both halves of the poison ("explicitly-named",
+# "in-use"), and the earlier draft that let it reach the skeletons put those two
+# words into the awscdk arm's `bin/app.ts` CFN description and the
+# terraconstructs arm's `main.ts` header -- while the hcl-raw arm, whose entry
+# file IS the seed, stayed clean. An arm-asymmetric hint inside the very
+# cross-arm comparison this scenario exists to measure.
+title: "Rename an explicitly-named, in-use security group and roll it out"
+# AGENT-VISIBLE. Describes only what the workspace ALREADY IS -- the same words
+# an ops team would put at the top of this directory's README. It must not say
+# what is about to change about it, nor why it is interesting: no rename, no
+# replacement, no lifecycle, no "in use". Scanned as real emitted bytes by
+# generator/tests/test_workspace_seed.py::TestBrownfieldPromptSurface, which
+# checks every file under every arm's environment/ plus instruction.md for the
+# verbatim `title` above AND for pitfall-mechanism vocabulary, and separately
+# asserts that whatever it finds is the SAME on all three arms.
+workspace_title: "Internal services network"
+difficulty: 2
+services: [ec2]
+
+arms:
+  awscdk: true
+  hcl_raw: true
+  terraconstructs:
+    enabled: true
+    reason: >
+      SUPPORTED. compute.Vpc / compute.SecurityGroup / compute.InterfaceVpcEndpoint
+      are all present (arms/terraconstructs/README.md §3, "compute: EC2/VPC (VPC,
+      subnets, security groups ...)"), source-verified at spec time against
+      terraconstructs 0.2.13 in this arm's own pinned node_modules. Two arm-specific
+      facts were established empirically rather than assumed, and both are load-bearing
+      for this scenario: (1) the L2 SecurityGroup ALWAYS emits a literal `name` — when
+      `securityGroupName` is omitted it substitutes `stack.uniqueResourceName(...)`,
+      so this arm has no "let the engine generate a unique physical name" default the
+      way awscdk/CFN does; (2) the L2 exposes no `lifecycle` passthrough at all (its
+      underlying L1 is a `private readonly` field), so expressing the fix needs the
+      standard CDK escape hatch, `(sg.node.defaultChild as TerraformResource).lifecycle`.
+      Both were reproduced against a real `cdktn synth` + offline `terraform plan`
+      before this spec was frozen. Also verified: the L2 Vpc emits a
+      `data "aws_availability_zones"` lookup unless `availabilityZones` is given
+      explicitly, which cannot resolve under this arm's offline dummy credentials —
+      hence the pinned AZ in the seed.
+
+# ---------------------------------------------------------------------------
+# §2.7 workspace_seed — THE BROWNFIELD STARTING STATE
+# ---------------------------------------------------------------------------
+#
+# Each body below is written VERBATIM as that arm's `output_contract.entry_file`,
+# writable (0o644), with NO generator header of any kind. Read each one as a
+# hostile reader before touching it: no comment, name, or structure may signpost
+# the trap. There is no mention of lifecycle, replacement, ordering, or
+# dependency anywhere below — the security group looks like what it is, an
+# ordinary named group a team created and an endpoint consumes.
+#
+# All three were proved green with the arm's REAL toolchain, offline, before
+# this spec was frozen; `make seed-parity SPEC=specs/named-resource-replacement.yaml`
+# re-proves it on every CI run.
+workspace_seed:
+  premise: |
+    This workspace holds the network configuration for one internal service: a
+    small VPC with a single private subnet, a security group, and an interface
+    VPC endpoint for AWS Systems Manager. It is already deployed in this
+    account.
+
+  entry_file:
+    hcl_raw: |
+      resource "aws_vpc" "internal_services" {
+        cidr_block           = "10.20.0.0/16"
+        enable_dns_support   = true
+        enable_dns_hostnames = true
+
+        tags = {
+          Name = "internal-services"
+        }
+      }
+
+      resource "aws_subnet" "internal_services_a" {
+        vpc_id            = aws_vpc.internal_services.id
+        cidr_block        = "10.20.1.0/24"
+        availability_zone = "us-east-1a"
+
+        tags = {
+          Name = "internal-services-a"
+        }
+      }
+
+      resource "aws_security_group" "ssm_endpoint" {
+        name        = "internal-services-ssm-endpoint"
+        description = "HTTPS from the internal services subnet to the SSM interface endpoint"
+        vpc_id      = aws_vpc.internal_services.id
+
+        ingress {
+          description = "HTTPS from the internal services VPC"
+          from_port   = 443
+          to_port     = 443
+          protocol    = "tcp"
+          cidr_blocks = ["10.20.0.0/16"]
+        }
+
+        egress {
+          from_port   = 0
+          to_port     = 0
+          protocol    = "-1"
+          cidr_blocks = ["0.0.0.0/0"]
+        }
+
+        tags = {
+          Name = "internal-services-ssm-endpoint"
+        }
+      }
+
+      resource "aws_vpc_endpoint" "ssm" {
+        vpc_id              = aws_vpc.internal_services.id
+        service_name        = "com.amazonaws.us-east-1.ssm"
+        vpc_endpoint_type   = "Interface"
+        subnet_ids          = [aws_subnet.internal_services_a.id]
+        security_group_ids  = [aws_security_group.ssm_endpoint.id]
+        private_dns_enabled = true
+
+        tags = {
+          Name = "internal-services-ssm"
+        }
+      }
+
+    awscdk: |
+      import * as cdk from "aws-cdk-lib";
+      import * as ec2 from "aws-cdk-lib/aws-ec2";
+      import { Construct } from "constructs";
+
+      export class ScenarioStack extends cdk.Stack {
+        constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+          super(scope, id, props);
+
+          const vpc = new ec2.Vpc(this, "InternalServices", {
+            ipAddresses: ec2.IpAddresses.cidr("10.20.0.0/16"),
+            maxAzs: 1,
+            natGateways: 0,
+            restrictDefaultSecurityGroup: false,
+            subnetConfiguration: [
+              {
+                name: "isolated",
+                subnetType: ec2.SubnetType.PRIVATE_ISOLATED,
+                cidrMask: 24,
+              },
+            ],
+          });
+
+          const ssmEndpointSg = new ec2.SecurityGroup(this, "SsmEndpointSg", {
+            vpc,
+            securityGroupName: "internal-services-ssm-endpoint",
+            description:
+              "HTTPS from the internal services subnet to the SSM interface endpoint",
+            allowAllOutbound: true,
+          });
+          ssmEndpointSg.addIngressRule(
+            ec2.Peer.ipv4("10.20.0.0/16"),
+            ec2.Port.tcp(443),
+            "HTTPS from the internal services VPC",
+          );
+
+          new ec2.InterfaceVpcEndpoint(this, "SsmEndpoint", {
+            vpc,
+            service: ec2.InterfaceVpcEndpointAwsService.SSM,
+            subnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
+            securityGroups: [ssmEndpointSg],
+            privateDnsEnabled: true,
+            open: false,
+          });
+        }
+      }
+
+    terraconstructs: |
+      import { Construct } from "constructs";
+      import { AwsStack, AwsStackProps } from "terraconstructs/lib/aws";
+      import {
+        InterfaceVpcEndpoint,
+        InterfaceVpcEndpointAwsService,
+        IpAddresses,
+        Peer,
+        Port,
+        SecurityGroup,
+        SubnetType,
+        Vpc,
+      } from "terraconstructs/lib/aws/compute";
+
+      export class ScenarioStack extends AwsStack {
+        constructor(scope: Construct, id: string, props: AwsStackProps) {
+          super(scope, id, props);
+
+          const vpc = new Vpc(this, "InternalServices", {
+            ipAddresses: IpAddresses.cidr("10.20.0.0/16"),
+            availabilityZones: ["us-east-1a"],
+            natGateways: 0,
+            subnetConfiguration: [
+              {
+                name: "isolated",
+                subnetType: SubnetType.PRIVATE_ISOLATED,
+                cidrMask: 24,
+              },
+            ],
+          });
+
+          const ssmEndpointSg = new SecurityGroup(this, "SsmEndpointSg", {
+            vpc,
+            securityGroupName: "internal-services-ssm-endpoint",
+            description:
+              "HTTPS from the internal services subnet to the SSM interface endpoint",
+            allowAllOutbound: true,
+          });
+          ssmEndpointSg.addIngressRule(
+            Peer.ipv4("10.20.0.0/16"),
+            Port.tcp(443),
+            "HTTPS from the internal services VPC",
+          );
+
+          new InterfaceVpcEndpoint(this, "SsmEndpoint", {
+            vpc,
+            service: InterfaceVpcEndpointAwsService.SSM,
+            subnets: { subnetType: SubnetType.PRIVATE_ISOLATED },
+            securityGroups: [ssmEndpointSg],
+            privateDnsEnabled: true,
+            open: false,
+          });
+        }
+      }
+
+  # The behavioural facts every arm's seed must satisfy. NOT a resource census
+  # (design memo §4.1) — the terraconstructs and awscdk L2s each expand into
+  # more resources than the hand-written HCL, which is the benchmark's whole
+  # thesis, not a parity failure.
+  seed_asserts:
+    - name: security-group-carries-an-operator-chosen-literal-name
+      description: >
+        THE POISON. The security group is pinned to a literal, operator-chosen
+        name on every arm — the property that turns the requested rename into a
+        replacement, and (on the TF arms) a replacement into a destroy of a
+        group that something else is holding.
+      pins_catch: rename-replaces-an-in-use-security-group
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::EC2::SecurityGroup')].Properties.GroupName"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_security_group')].values.name"
+      op: eq
+      expected: "internal-services-ssm-endpoint"
+
+    - name: interface-endpoint-consumes-the-security-group
+      description: >
+        The group is genuinely IN USE — the fact that turns a replacement into a
+        DependencyViolation instead of a no-op, and the fact the prompt never
+        states (it must be discoverable from the configuration, not announced).
+        Graph-edge shaped, so it reads `.configuration ... references`, never
+        `.planned_values ... values` (SCHEMA.md §4.2.1's plan-time-unknown rule:
+        the group id does not exist at plan time). TF-shaped arms only — see the
+        awscdk twin below for why the CFN form of this fact is a separate,
+        deliberately weaker assert rather than one `applies_to: [all]` entry.
+      pins_catch: rename-replaces-an-in-use-security-group
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_vpc_endpoint')].expressions.security_group_ids.references[*]"
+      op: regex
+      expected: "^aws_security_group\\."
+
+    - name: interface-endpoint-declares-security-groups
+      description: >
+        The awscdk twin of `interface-endpoint-consumes-the-security-group`, and
+        DELIBERATELY WEAKER — recorded rather than papered over. In a CFN
+        template the edge is an intrinsic, not a string:
+        `SecurityGroupIds: [{"Fn::GetAtt": ["SsmEndpointSg…", "GroupId"]}]`. A
+        regex over it resolves to a MAP and fails (which is exactly what
+        `make seed-parity` reported when this was first written as one
+        three-arm assert), and generator/jsonpath_jq.py cannot address the
+        `Fn::GetAtt` key at all — it has no bracket-quoted-key segment. Pinning
+        the referenced CDK logical id instead would couple this spec to CDK's
+        own id hashing. So this arm pins the weaker, honest fact: the endpoint
+        declares at least one security-group reference. The asymmetry is the
+        artifact families', not the seeds'.
+      pins_catch: rename-replaces-an-in-use-security-group
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::EC2::VPCEndpoint')].Properties.SecurityGroupIds[*]"
+      op: exists
+
+    - name: interface-endpoint-present
+      description: >
+        There is exactly the interface VPC endpoint the premise describes — the
+        thing whose ENI holds the group.
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::EC2::VPCEndpoint')]"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_vpc_endpoint')]"
+      op: exists
+
+    - name: seed-ingress-is-already-scoped-to-the-vpc
+      description: >
+        The starting configuration already satisfies this scenario's tier-1
+        policy family. Pinned so a future edit to the seed cannot quietly hand
+        the `ingress-widened-to-the-internet` catch a starting state that
+        already violates it — which would make that catch unfalsifiable (its
+        negative fixture and its seed would be indistinguishable).
+      pins_catch: ingress-widened-to-the-internet
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::EC2::SecurityGroup')].Properties.SecurityGroupIngress[*].CidrIp"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_security_group')].values.ingress[*].cidr_blocks[*]"
+      op: set_eq
+      expected: ["10.20.0.0/16"]
+
+instruction:
+  shared_body: |
+    Our security-group naming convention changed: every security group must now
+    be prefixed with the name of the team that owns it. This service is owned by
+    the `platform` team.
+
+    Rename the security group in this workspace to
+    `platform-internal-services-ssm-endpoint`, then roll the change out to this
+    account with your toolchain's real deploy command. The interface VPC
+    endpoint must still be reachable on port 443 from inside the VPC when you
+    are done, and must not become reachable from anywhere else.
+
+  per_arm:
+    awscdk:
+      language_line: "This workspace is an AWS CDK (TypeScript) app using aws-cdk-lib L2 constructs."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdk.out/ScenarioStack.template.json
+        build_command: npm run build
+        synth_command: npx cdk synth --no-lookups --quiet -o cdk.out
+    hcl_raw:
+      language_line: "This workspace is hand-written Terraform HCL (no modules)."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate &&
+          terraform plan -input=false -out=plan.tfplan &&
+          terraform show -json plan.tfplan > plan.json
+    terraconstructs:
+      language_line: "This workspace is a terraconstructs (TypeScript) app using its AWS L2 constructs."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdktf.out/stacks/named-resource-replacement/plan.json
+        synth_command: npx cdktn synth
+
+catches:
+  - name: rename-replaces-an-in-use-security-group
+    taxonomy: graph-dependency
+    description: >
+      Changing `name` on an `aws_security_group` forces replacement, and
+      Terraform's default replacement order is destroy-then-create. The group is
+      attached to the interface endpoint's ENI, so EC2 refuses the delete with
+      `DependencyViolation` and the apply aborts with the rename half-applied —
+      the endpoint still on the old group, the configuration already naming the
+      new one. Re-running does not converge: the same destroy is attempted
+      again. The fix is `lifecycle { create_before_destroy = true }` on the
+      group (terraconstructs: via the escape hatch, since its L2 exposes no
+      lifecycle passthrough); the new name differs from the old one, so the two
+      groups coexist for the duration of the replacement without colliding.
+      IMPOSSIBLE on awscdk: CloudFormation's Update-requires-Replacement path is
+      already create-new-then-delete-old, so the naive edit converges there.
+      That asymmetry is the measurement, not a gap to engineer away.
+    applies_to: [hcl_raw, terraconstructs]
+    predicted_tier_caught:
+      # INVISIBLE TO EVERY STATIC TIER BY CONSTRUCTION, measured not assumed:
+      # `terraform show -json` emits no `lifecycle` key at all, so the graded
+      # artifact for a CBD-correct solution and a CBD-less one are identical on
+      # the point at issue. The negative fixture proves exactly that
+      # mechanically, offline, before printing the live-only marker.
+      # `.awscdk` is required by the schema but never read for this catch:
+      # `applies_to` excludes that arm, so gates/oracle_falsifiability.py
+      # reports it N/A there.
+      awscdk: "live"
+      hcl: "live"
+
+  - name: ingress-widened-to-the-internet
+    taxonomy: nested-attribute
+    description: >
+      Re-authoring the security group is exactly where an ingress rule gets
+      "simplified". A group that is renamed correctly but whose 443 ingress is
+      widened from the VPC CIDR to 0.0.0.0/0 satisfies the rename and exposes
+      the endpoint to the internet. Caught by this scenario's tier-1
+      Rego/cfn-guard policy family, on every arm, in each engine's own artifact
+      shape.
+    applies_to: [awscdk, hcl_raw, terraconstructs]
+    predicted_tier_caught:
+      awscdk: "1"
+      hcl: "1"
+
+oracle:
+  intent: |
+    A correct solution leaves this workspace deploying the same system it
+    described before, with exactly one thing changed: the security group's name
+    is now `platform-internal-services-ssm-endpoint`.
+
+    Three things are graded, in three different places, and the split is
+    deliberate:
+
+    1. TIER 0 (static, every arm). The group carries the new name; the interface
+       endpoint still exists and is still wired to that group. This is what
+       makes the DO-NOTHING answer fail: the seed already deploys green, so
+       without a name assert an agent that changes nothing would score 1.0. See
+       `solution/broken/seed-unchanged/`, which exists precisely to keep proving
+       that.
+
+    2. TIER 1 (Rego / cfn-guard, every arm). The group's 443 ingress stays
+       scoped to the VPC CIDR — no 0.0.0.0/0. A policy-family fact rather than a
+       tier-0 assert because "no rule anywhere in this group may be open to the
+       world" is a quantified statement over a collection, which is what the
+       policy engines are for; a jq path can pin one value, not the absence of a
+       shape across all of them.
+
+    3. LIVE (`tests/live_check.py`, gating) and IDEMPOTENCE (gating). Whether
+       the rename ACTUALLY LANDED. On the TF arms the naive edit plans and
+       synthesizes perfectly and then fails at apply, leaving the account with
+       the old group still attached and the configuration naming a new one. No
+       static tier can see that — `terraform show -json` does not emit
+       `lifecycle`, verified directly — so the live check reads the deployed
+       group's real name from EC2, and the idempotence tier then requires the
+       agent's own toolchain to report a converged state against what it
+       deployed. A half-applied rename fails both.
+
+    What is deliberately NOT graded: how many resources each arm's expansion
+    produced, and whether the group is expressed as an L2 or as raw HCL. The
+    arms are compared on the declared behavioural facts only.
+
+  structural_asserts:
+    - name: security-group-uses-the-new-team-prefixed-name
+      description: >
+        The requested change actually happened. This is the assert the
+        do-nothing answer fails.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::EC2::SecurityGroup')].Properties.GroupName"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_security_group')].values.name"
+      op: eq
+      expected: "platform-internal-services-ssm-endpoint"
+
+    - name: interface-endpoint-still-present
+      description: >
+        The endpoint the group protects was not deleted on the way past. A
+        rename that "works" by dropping the consumer is not a rename.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::EC2::VPCEndpoint')]"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_vpc_endpoint')]"
+      op: exists
+
+    - name: interface-endpoint-still-uses-the-security-group
+      description: >
+        The endpoint is still wired to the group. Graph-edge shaped
+        (`.configuration ... references`), because the group id is
+        plan-time-unknown for a resource being replaced (SCHEMA.md §4.2.1).
+        TF-shaped arms only; the awscdk twin below is a separate, deliberately
+        weaker assert for the same reason its seed_assert twin is — see
+        `interface-endpoint-declares-security-groups` in workspace_seed.
+      tier: "0"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_vpc_endpoint')].expressions.security_group_ids.references[*]"
+      op: regex
+      expected: "^aws_security_group\\."
+
+    - name: interface-endpoint-still-declares-security-groups
+      description: >
+        The awscdk form of the same fact, weaker by artifact shape rather than
+        by choice: a CFN template expresses the edge as an `Fn::GetAtt`
+        intrinsic (a map), which no regex can match and which
+        generator/jsonpath_jq.py cannot address by key. Asserts that the
+        endpoint still declares at least one security-group reference — enough
+        to fail a solution that detaches or deletes the group, not enough to
+        prove WHICH group. Recorded as a residual asymmetry rather than closed.
+      tier: "0"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::EC2::VPCEndpoint')].Properties.SecurityGroupIds[*]"
+      op: exists
+
+    - name: security-group-ingress-stays-scoped-to-the-vpc
+      description: >
+        TIER 1. No ingress rule on the security group may allow 0.0.0.0/0.
+        Graded by oracles/rego/named-resource-replacement/policy.rego (TF arms)
+        and oracles/cfn-guard/named-resource-replacement/policy.guard (awscdk).
+        Egress is deliberately out of scope — the seed allows all outbound, as
+        an L2 default and as ordinary practice.
+      tier: "1"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::EC2::SecurityGroup')].Properties.SecurityGroupIngress[*].CidrIp"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_security_group')].values.ingress[*].cidr_blocks[*]"
+      op: not_regex
+      expected: "^0\\.0\\.0\\.0/0$"
+
+  rego_hints:
+    - "deny when any aws_security_group ingress rule lists 0.0.0.0/0 in cidr_blocks"
+  cfn_guard_hints:
+    - "deny when any AWS::EC2::SecurityGroup SecurityGroupIngress entry has CidrIp == 0.0.0.0/0"
+
+verifier:
+  budget:
+    max_iters: 8
+  live_check:
+    enabled: true
+    hand_authored: true
+    gating: true
+    # AdministratorAccess, per DECISIONS.md Amendment 24's arm-parity rule: both
+    # TF arms apply with terraform and awscdk deploys through the standard
+    # `cdk deploy` bootstrap path, with equal authority.
+    agent_role_name: "QALocalInvocationApplicationAdmin"
+    concurrency_mode: "mutating"
+  idempotence:
+    # SCHEMA.md §5.1. The half-applied rename this scenario's main catch
+    # produces is *precisely* a non-converged state: re-planning still shows the
+    # pending replacement. Gating, because a rename that has to be re-run is not
+    # a rename that landed — and because leaving it non-gating would mean the
+    # catch this scenario exists to motivate cannot cost a trial any reward
+    # (the same argument SCHEMA.md §5 makes for live_check.gating).
+    enabled: true
+    gating: true
+
+provenance:
+  author: "cdktn-bench task #15 (poisoned-workspace generation)"
+  date: "2026-08-20"
+  prereg_section_refs:
+    - "§2.2 empty-vs-tuned harness axis (this scenario changes what 'empty' MEANS: a brownfield workspace, DECISIONS.md Amendment 28 §1)"
+    - "§5 difficulty gradient + falsifiability instruments"
+    - "§6 prompt parity across arms"

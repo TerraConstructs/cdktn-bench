@@ -1,0 +1,73 @@
+#
+# oracles/cfn-guard/named-resource-replacement/policy.guard -- HAND-AUTHORED
+# (SCHEMA.md §8.2 rule 7). Encodes specs/named-resource-replacement.yaml's one
+# tier-"1" structural_assert (security-group-ingress-stays-scoped-to-the-vpc) +
+# oracle.cfn_guard_hints. Graded against the awscdk arm's synthesized
+# CloudFormation template (cdk.out/ScenarioStack.template.json) --
+# specs/SCHEMA.md §4.2/§8.
+#
+# Intent doc: oracles/named-resource-replacement/intent.md
+#
+# ARM-SHAPE NOTE (not an asymmetry in strictness -- read before "fixing" it).
+# CDK emits security-group ingress in TWO places, and both are covered below:
+#   * inline, as `AWS::EC2::SecurityGroup.Properties.SecurityGroupIngress`,
+#     which is what `SecurityGroup.addIngressRule` produces for a peer that is
+#     not itself a security group; and
+#   * as a standalone `AWS::EC2::SecurityGroupIngress` resource, which is what
+#     it produces for cross-stack / SG-to-SG peers and for rules added after
+#     the group is referenced elsewhere.
+# A rule that checked only the inline form would be silently bypassed by an
+# otherwise-idiomatic `Peer.anyIpv4()` added through the second shape. The
+# Rego side has the exact same two-shape coverage (inline `ingress` blocks plus
+# `aws_security_group_rule` / `aws_vpc_security_group_ingress_rule`), so the two
+# engines are checking the same fact over the same set of expressible shapes --
+# unlike apigw-openapi's documented cardinality-proxy gap, there is no identity
+# join needed here, only a value test, which cfn-guard expresses exactly.
+#
+# EGRESS IS DELIBERATELY OUT OF SCOPE -- see policy.rego's own header for why
+# (the seed itself allows all outbound; denying it would make the seed violate
+# this policy and the `ingress-widened-to-the-internet` catch unfalsifiable).
+#
+# `when ... !empty` guards are used ONLY where the collection genuinely may not
+# exist in a correct template (a template with no standalone ingress resources
+# at all is correct). The inline rule below carries no such guard on the CidrIp
+# test itself -- the guard is on the resource collection, not on the property --
+# so a security group whose ingress list is missing cannot vacuously pass.
+#
+
+let security_groups = Resources.*[ Type == "AWS::EC2::SecurityGroup" ]
+let ingress_resources = Resources.*[ Type == "AWS::EC2::SecurityGroupIngress" ]
+
+# security-group-ingress-stays-scoped-to-the-vpc (inline form).
+rule inline_ingress_not_open_to_the_world when %security_groups !empty {
+	%security_groups {
+		Properties.SecurityGroupIngress[*] {
+			CidrIp not exists or CidrIp != "0.0.0.0/0"
+			<<
+				Violation: an AWS::EC2::SecurityGroup inline ingress rule allows 0.0.0.0/0 -- this security group fronts an interface VPC endpoint and its ingress must stay scoped to the VPC
+			>>
+			CidrIpv6 not exists or CidrIpv6 != "::/0"
+			<<
+				Violation: an AWS::EC2::SecurityGroup inline ingress rule allows ::/0 -- this security group fronts an interface VPC endpoint and its ingress must stay scoped to the VPC
+			>>
+		}
+	}
+}
+
+# The same fact for the standalone-resource form CDK emits for SG-to-SG and
+# late-added rules. Guarded on the collection because a correct template may
+# legitimately have none.
+rule standalone_ingress_not_open_to_the_world when %ingress_resources !empty {
+	%ingress_resources {
+		Properties {
+			CidrIp not exists or CidrIp != "0.0.0.0/0"
+			<<
+				Violation: an AWS::EC2::SecurityGroupIngress resource allows 0.0.0.0/0 -- this security group fronts an interface VPC endpoint and its ingress must stay scoped to the VPC
+			>>
+			CidrIpv6 not exists or CidrIpv6 != "::/0"
+			<<
+				Violation: an AWS::EC2::SecurityGroupIngress resource allows ::/0 -- this security group fronts an interface VPC endpoint and its ingress must stay scoped to the VPC
+			>>
+		}
+	}
+}
