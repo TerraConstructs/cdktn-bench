@@ -35,6 +35,136 @@ Arm = Literal["awscdk", "hcl_raw", "terraconstructs"]
 ID_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 PLACEHOLDER_TOKEN_RE = re.compile(r"\{\{([A-Za-z0-9_.\-]+)\}\}")
 
+# --------------------------------------------------------------------------
+# §0.1 AGENT-VISIBLE IDENTITY — the deny-list (DECISIONS.md Amendment 28
+# addendum, "identity separation").
+#
+# THE RULE: the spec `id` is OPERATOR-FACING and may name the pitfall; every
+# name the AGENT can see must be named for the CURRENT-STEP GOAL only. The
+# leak test is one question: *does this name reveal more than the step's own
+# prompt does?*
+#
+# These patterns are the mechanical half of that question. They are the union
+# of two deny-lists that used to live only in test modules -- the BROWNFIELD
+# mechanism vocabulary (test_workspace_seed.py::MECHANISM_PATTERNS, Amendment
+# 28 §3) and the MULTI-STEP foreshadowing grammar
+# (test_multistep_emission.py::TEMPORAL_TOKENS, Amendment 27 §5.1) -- promoted
+# here so a VALIDATOR can refuse a leaking `workspace_id`/`workspace_title` at
+# spec-load time instead of a test noticing it three regenerations later.
+#
+# UNHYPHENATED VARIANTS ARE DELIBERATE. Amendment 27's sweep grepped
+# `re-deploy` only, so `apigw-redeploy` -- whose id IS the step-2 trap verb --
+# was stamped into every step-1 skeleton header and into the terraconstructs
+# arm's `ScenarioStack` id and `gridUUID` without any test seeing it. Every
+# separator-bearing pattern below therefore matches `-`, `_`, a space, or
+# nothing at all.
+#
+# WHAT IS DELIBERATELY ABSENT: ordinary change-request and domain vocabulary --
+# "rename", "deploy", "security group", "retention", "route". Those are what a
+# prompt legitimately asks for. Banning them would ban the scenarios.
+#
+# TWO CLASSES, because they have genuinely different SCOPES -- and collapsing
+# them is how a sweep either goes blind or cries wolf.
+#
+#   MECHANISM/META  names the fix, the diagnosis, or the benchmark's own
+#                   machinery. Banned on EVERY agent-visible surface, at every
+#                   point in a scenario's life. Even the last prompt of a
+#                   multi-step scenario may not say `create_before_destroy`:
+#                   that is the answer, not the request.
+#
+#   FORESHADOWING   names something a LATER step introduces. Banned on the
+#                   surfaces the FIRST step can read -- `environment/` (the
+#                   image, present from turn one) and the first prompt -- and
+#                   legitimate afterwards. Step 02's own prompt IS a change
+#                   request and does ask for a re-deploy; banning those words
+#                   there would ban the scenario, and a sweep that has to be
+#                   switched off for the file where the words are correct is a
+#                   sweep nobody keeps running.
+AGENT_MECHANISM_DENY_PATTERNS: tuple[str, ...] = (
+    # --- mechanism: names the fix instead of the request (brownfield) --------
+    r"create[ _-]?before[ _-]?destroy",
+    r"\blifecycle\b",
+    r"\bperpetual\b",
+    r"flip[ _-]?flop",
+    r"\breplacements?\b",
+    r"\breplaced?\b",
+    r"\breplacing\b",
+    r"\bre[ _-]?creat(e|es|ed|ing|ion)\b",
+    r"\bin[ _-]?use\b",
+    r"\bexplicitly[ _-]?named\b",
+    r"\bname[ _-]?(collision|conflict)\b",
+    r"\balready exists\b",
+    r"\bdrift(s|ed|ing)?\b",
+    r"\bidempoten(t|ce|cy)\b",
+    r"\bstale\b",
+    # --- meta: names the benchmark's own machinery to its subject -----------
+    r"\bpitfalls?\b",
+    r"\bgotchas?\b",
+    r"\btraps?\b",
+    r"\blatent\b",
+    r"\bpoisoned?\b",
+    r"\bbrownfield\b",
+    r"\bfind the bug\b",
+    r"\bfix the (bug|mistake)\b",
+    r"\breview this (config|configuration)\b",
+    r"\bworkspace[ _-]?seed\b",
+    r"\bseed[ _-]?asserts?\b",
+    r"\banswer[ _-]?key\b",
+)
+
+AGENT_FORESHADOW_DENY_PATTERNS: tuple[str, ...] = (
+    # names a LATER step from a surface an EARLIER step's agent can read
+    r"\bre[ _-]?deploy(s|ed|ing|ment|ments)?\b",
+    r"\bre[ _-]?appl(y|ies|ied)\b",
+    r"\bstep[ _-]?(2|two|02)\b",
+    r"\bday[ _-]?(2|two)\b",
+    r"\bsecond[ _-]?(deploy|apply|pass|step|prompt)\b",
+    r"\bnext[ _-]?step\b",
+    r"\blater[ _-]?step\b",
+    r"\bfollow[ _-]?up\b",
+    r"\bsubsequent\b",
+    r"\bchange[ _-]?request\b",
+    r"\biteration\b",
+)
+
+# The union -- what an agent-visible IDENTITY (`workspace_id`,
+# `workspace_title`) is validated against. Both are stamped into
+# `environment/`, i.e. into the first-step surface, so both classes apply.
+AGENT_IDENTITY_DENY_PATTERNS: tuple[str, ...] = (
+    AGENT_MECHANISM_DENY_PATTERNS + AGENT_FORESHADOW_DENY_PATTERNS
+)
+
+
+def identity_deny_hits(
+    text: str,
+    extra_vocab: tuple[str, ...] | list[str] = (),
+    *,
+    foreshadowing: bool = True,
+) -> list[str]:
+    """Every deny-list pattern this piece of AGENT-VISIBLE text matches.
+
+    `foreshadowing=False` scans only the MECHANISM/META class -- for a surface
+    that no earlier step can reach (a final step's own prompt), where naming
+    the work being asked for is not a leak but the point.
+
+    `extra_vocab` carries the scenario's own `agent_deny_vocab` (§0.1): plain
+    substrings, matched case-insensitively, that this particular scenario has
+    declared must not reach its agent before it gets there on its own. Global
+    patterns are regexes; a per-scenario entry is a literal, because a spec
+    author writing down "the words that would give my trap away" should not
+    have to write a regex. It is scoped with the foreshadowing class, since
+    that is what a scenario's own reserved vocabulary always is: material a
+    later step (or the agent's own investigation) is supposed to introduce.
+    """
+    low = text.lower()
+    patterns = AGENT_MECHANISM_DENY_PATTERNS + (
+        AGENT_FORESHADOW_DENY_PATTERNS if foreshadowing else ()
+    )
+    hits = [p for p in patterns if re.search(p, low)]
+    if foreshadowing:
+        hits += [v for v in extra_vocab if v.lower() in low]
+    return hits
+
 
 def _strict(cls):
     """Shared model_config: unknown fields are a spec bug, not silently ignored."""
@@ -295,6 +425,13 @@ _SEED_COMMENT_BANNED_TOKENS = (
     "CREATEBEFOREDESTROY",
     "EMPTY ON PURPOSE",
     "GENERATED SKELETON",
+    "GENERATED ENTRYPOINT",
+    # The regenerate hint the skeleton banners close with. Kept as the bare
+    # `MAKE GEN` rather than the old `MAKE GEN SPEC=`: §0.1 dropped the spec
+    # filename from every agent-visible stamp, so a seed copied from a skeleton
+    # would now carry the shorter form and the longer token would miss it.
+    "MAKE GEN",
+    "GENERATOR/GEN.PY",
 )
 
 # A comment line, for the three languages a seed body can be written in
@@ -1077,6 +1214,38 @@ class Spec(BaseModel):
     # agent -- arm-asymmetrically, which is worse than uniformly. See
     # `_workspace_title_required_where_header_is_prompt_surface`.
     workspace_title: str | None = None
+    # §0.1, optional. The AGENT-VISIBLE scenario identity -- the sibling of
+    # `workspace_title` for every place the generator stamps a NAME rather than
+    # a sentence: the terraconstructs `ScenarioStack` construct id and
+    # `gridUUID` (and therefore `cdktf.out/stacks/<id>/`, which the agent sees
+    # in its own `npx cdktn synth` output and in `preflight.sh`).
+    #
+    # `id` is OPERATOR-FACING and MAY name the pitfall -- that is what makes it
+    # a useful name in `specs/`, `oracles/`, `task.toml [metadata]` and a
+    # results table. `workspace_id` is what the agent is allowed to know: the
+    # name of the workspace it has been asked to work in, describing the
+    # CURRENT step's goal and nothing beyond it.
+    #
+    # Absent = `id` (every scenario whose id names only the open goal of its
+    # own prompt: byte-identical emission). REQUIRED for a multi-step spec and
+    # for a brownfield one -- the same two forms `workspace_title` is required
+    # on, for the same reason and after the same failure: `apigw-redeploy`'s id
+    # is the step-2 trap verb and `named-resource-replacement`'s id is the
+    # diagnosis the agent is supposed to reach from the configuration, and both
+    # were stamped into `environment/`. The deny-list
+    # (`_agent_visible_identity_is_deny_list_clean`) runs against the RESOLVED
+    # value either way, so a greenfield spec whose id would leak is refused
+    # until it declares an explicit `workspace_id`.
+    workspace_id: str | None = None
+    # §0.1, optional. This scenario's OWN trap/foreshadowing vocabulary, on top
+    # of the global `AGENT_IDENTITY_DENY_PATTERNS`: plain substrings that must
+    # never appear on an agent-visible surface of this scenario, and which
+    # `workspace_id`/`workspace_title` are validated against. Declared HERE, in
+    # the spec, rather than in a test module keyed by scenario id, so the words
+    # that would give a trap away are reviewed in the same file as the trap.
+    # `generator/tests/test_scenario_identity.py` sweeps the real emitted bytes
+    # with it.
+    agent_deny_vocab: list[str] = Field(default_factory=list)
     difficulty: Annotated[int, Field(ge=1, le=3)]
     services: Annotated[list[str], Field(min_length=1)]
     arms: Arms
@@ -1114,6 +1283,26 @@ class Spec(BaseModel):
         greenfield specs keep `title` verbatim (byte-identity); multi-step and
         brownfield specs must declare a safe alternative."""
         return self.workspace_title or self.title
+
+    def workspace_identity(self) -> str:
+        """The scenario NAME the agent is allowed to see (§0.1).
+
+        Every generator stamp-site that lands under `environment/` -- or that
+        must agree with one, such as the synthesized stack directory the tier-0
+        artifact is read from -- uses this. `id` stays operator-facing and is
+        free to name the pitfall; nothing derived from it reaches the image.
+        """
+        return self.workspace_id or self.id
+
+    def identity_leaks(self, text: str, *, foreshadowing: bool = True) -> list[str]:
+        """Deny-list hits for a piece of THIS scenario's agent-visible text.
+
+        `foreshadowing=False` for a surface no earlier step can read -- see
+        `identity_deny_hits`.
+        """
+        return identity_deny_hits(
+            text, tuple(self.agent_deny_vocab), foreshadowing=foreshadowing
+        )
 
     def step_assert_names(self, step: Step) -> list[str]:
         """This step's assert names in the spec's own declaration order.
@@ -1512,6 +1701,122 @@ class Spec(BaseModel):
                 "workspace_title is only meaningful on a multi-step or "
                 "brownfield spec (SCHEMA.md §0.1) — a single-step greenfield "
                 "spec stamps `title` verbatim into its skeletons"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _workspace_id_required_where_identity_is_prompt_surface(self) -> "Spec":
+        """`workspace_id` is REQUIRED on a multi-step spec AND on a brownfield
+        one; optional (defaulting to `id`) on a plain single-step greenfield
+        spec (§0.1).
+
+        Exactly the `workspace_title` rule, one field over, and for the same
+        reason: on those two forms the scenario `id` is chosen to name the
+        thing being MEASURED, and the thing being measured is what the agent
+        must not be told.
+
+          * MULTI-STEP: `apigw-redeploy` -- the id IS step 2's verb. It reached
+            `environment/app/main.ts` as the `ScenarioStack` construct id and
+            `gridUUID`, and every arm's skeleton header cited
+            `specs/apigw-redeploy.yaml`. Amendment 27's sweep grepped the
+            hyphenated `re-deploy` only and saw none of it.
+          * BROWNFIELD (§2.7): `named-resource-replacement` -- the id is not
+            the change request ("rename the security group to X"), it is the
+            DIAGNOSIS the agent is supposed to derive from the configuration.
+            It reached two of three arms and not the third, which biases the
+            cross-arm comparison the scenario exists to produce.
+
+        Required rather than defaulted on these forms for the same reason
+        `workspace_title` is: an author must CHOOSE a safe name, not inherit a
+        leaking one by omission. Unlike `workspace_title` it is not REFUSED on
+        a greenfield spec -- an explicit, deny-list-clean `workspace_id` is a
+        legitimate thing to want anywhere -- but the deny-list below runs on
+        the resolved value in every form, so a greenfield id that leaks cannot
+        stay the default.
+        """
+        if (self.is_multi_step() or self.is_brownfield()) and not (
+            self.workspace_id or ""
+        ).strip():
+            kind = "`steps:`" if self.is_multi_step() else "`workspace_seed:`"
+            raise ValueError(
+                f"a spec with {kind} must declare `workspace_id` (SCHEMA.md "
+                "§0.1): the scenario `id` is stamped into the agent's own "
+                "workspace (the terraconstructs ScenarioStack id/gridUUID and "
+                "therefore cdktf.out/stacks/<id>/), and on these two forms the "
+                "id names the pitfall — step 2's verb, or the diagnosis the "
+                "agent is meant to reach on its own"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _workspace_id_format(self) -> "Spec":
+        if self.workspace_id is not None and not ID_RE.match(self.workspace_id):
+            raise ValueError(
+                f"workspace_id {self.workspace_id!r} must match "
+                "^[a-z][a-z0-9-]*$ (SCHEMA.md §0.1) — it becomes a construct "
+                "id and a synthesized stack DIRECTORY name"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _agent_visible_identity_is_deny_list_clean(self) -> "Spec":
+        """The RESOLVED agent-visible identity and header must both survive the
+        deny-list (§0.1, `AGENT_IDENTITY_DENY_PATTERNS` + this spec's own
+        `agent_deny_vocab`).
+
+        Run on the resolved values, not on the declared ones, so that the
+        DEFAULT is checked too: a single-step greenfield spec whose `id` names
+        its own trap is refused here and must declare an explicit
+        `workspace_id`. This is the validator that turns the old exemption
+        ("scrub the spec id before scanning, it's just the id") into an
+        assertion.
+        """
+        for field, value in (
+            ("workspace_id", self.workspace_identity()),
+            ("workspace_title", self.workspace_header()),
+        ):
+            leaked = self.identity_leaks(value)
+            if leaked:
+                declared = getattr(self, field) is not None
+                how = (
+                    f"declared `{field}`"
+                    if declared
+                    else f"`{field}` defaulted from `{'id' if field == 'workspace_id' else 'title'}`"
+                )
+                raise ValueError(
+                    f"{how} is {value!r}, which matches the agent-visible "
+                    f"identity deny-list {leaked} (SCHEMA.md §0.1). This value "
+                    "is stamped into `environment/`, which the agent reads on "
+                    "turn one — name the CURRENT step's goal, not the pitfall. "
+                    f"Keep the leaking name as the operator-facing "
+                    f"`{'id' if field == 'workspace_id' else 'title'}` and "
+                    f"declare a neutral `{field}`."
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _terraconstructs_artifact_path_matches_workspace_identity(self) -> "Spec":
+        """The terraconstructs `artifact_path` names the SYNTHESIZED STACK
+        DIRECTORY, and that directory is named by the construct id
+        `gen.py::terraconstructs_main_ts` stamps -- which is now
+        `workspace_identity()`, not `id` (§0.1).
+
+        Checked here rather than left to a runtime surprise: a mismatch does
+        not fail loudly, it makes every tier-0 assert resolve against a
+        nonexistent plan.json and score a constant 0.0, INCLUDING for the
+        reference solution.
+        """
+        per_arm = self.instruction.per_arm.terraconstructs
+        if per_arm is None:
+            return self
+        expected_dir = f"cdktf.out/stacks/{self.workspace_identity()}/"
+        path = per_arm.output_contract.artifact_path
+        if path.startswith("cdktf.out/stacks/") and not path.startswith(expected_dir):
+            raise ValueError(
+                "instruction.per_arm.terraconstructs.output_contract."
+                f"artifact_path is {path!r}, but the generator synthesizes this "
+                f"stack into {expected_dir!r} (SCHEMA.md §0.1: the stack "
+                "directory is named by `workspace_id`, falling back to `id`)"
             )
         return self
 

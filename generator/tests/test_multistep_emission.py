@@ -111,15 +111,27 @@ TEMPORAL_TOKENS = (
     "second apply",
 )
 
-# KNOWN, ACCEPTED RESIDUAL (docs/prompt-decomposition-audit.md §6): the REST
-# API's own required name is `apigw-redeploy-api`, and the spec id
-# `apigw-redeploy` appears in every generated file's header. Both contain the
-# substring "redeploy". The name is load-bearing -- live_check.py discovers the
-# deployed API by it, and every reference/broken fixture writes it -- and it
-# reveals no step-2 CONTENT (not the route, not the integration type, not that
-# a second prompt is coming; "redeploy" is ordinary API Gateway vocabulary).
-# Stripped before scanning so the scan stays sharp instead of being disabled.
-ACCEPTED_RESIDUALS = ("apigw-redeploy-api", "apigw-redeploy")
+# THE ONE ACCEPTED RESIDUAL, and it is accepted for a reason that is MECHANICALLY
+# CHECKED (`test_the_accepted_residual_is_really_prompt_content` below), not
+# asserted in prose: `apigw-redeploy-api` is the REST API's own required name,
+# and STEP 01'S OWN PROMPT TELLS THE AGENT TO USE IT ("named EXACTLY
+# `apigw-redeploy-api`"). A token the agent is explicitly instructed to type
+# cannot also be a secret kept from it -- the leak test is "does this reveal
+# MORE than this step's prompt does?", and by construction this reveals exactly
+# as much. It is load-bearing besides: live_check.py discovers the deployed API
+# by it, and every reference/broken fixture writes it.
+#
+# WHAT IS NO LONGER HERE, and why this list is a tuple of one: the bare spec id
+# `apigw-redeploy` used to be scrubbed too, "because every generated file's
+# header cites it". That was not a residual, it was a hole. `redeploy` IS this
+# scenario's step-2 verb; the id was stamped into `environment/app/main.ts` as
+# the ScenarioStack construct id and gridUUID and into every arm's skeleton
+# header, and this scrub deleted it before TEMPORAL_TOKENS' own "redeploy"
+# entry could ever match. The generator now stamps `Spec.workspace_identity()`
+# (SCHEMA.md §0.1) -- `hello-version-api`, deny-list-validated at spec-load
+# time -- and the id reaches no agent-visible file at all, which
+# `generator/tests/test_scenario_identity.py` asserts corpus-wide.
+ACCEPTED_RESIDUALS = ("apigw-redeploy-api",)
 
 # ARM BOILERPLATE residuals, scrubbed ONLY from the `environment/` scan below.
 # These phrases live in the shared arm image sources (arms/<arm>/environment/**)
@@ -247,6 +259,36 @@ def test_environment_boilerplate_is_really_boilerplate() -> None:
             f"in the stepless control spec {control.id!r}'s environment/ — it "
             "is scenario-specific text and must not be scrubbed"
         )
+
+
+def test_the_accepted_residual_is_really_prompt_content(spec: Spec) -> None:
+    """Keeps ACCEPTED_RESIDUALS honest, the same way
+    `test_environment_boilerplate_is_really_boilerplate` keeps the other
+    allowlist honest — and it is the check that was missing when the spec id
+    sat on this list.
+
+    An entry may be scrubbed only if THE STEP-1 PROMPT ITSELF hands the token
+    to the agent. That is the whole justification: a name the agent is told to
+    type reveals nothing the prompt does not already reveal. A token that is
+    NOT in the prompt is, by definition, something the agent learns from
+    somewhere else — which is what a leak is — and it must be caught, not
+    scrubbed. `apigw-redeploy` (the bare id) fails this test; running it
+    against the pre-fix list is how the hole shows up as a red test rather than
+    as prose in a review.
+    """
+    first = (spec.steps or [])[0]
+    for residual in ACCEPTED_RESIDUALS:
+        for arm in ARMS:
+            prompt = (
+                task_dir(spec, arm) / "steps" / first.name / "instruction.md"
+            ).read_text()
+            assert residual.lower() in prompt.lower(), (
+                f"{residual!r} is scrubbed before the foreshadowing scan, but "
+                f"step 1's own prompt on arm {arm} never mentions it. The only "
+                "admissible reason to scrub a token is that the agent is TOLD "
+                "it — anything else is a leak being hidden from the deny-list "
+                "(SCHEMA.md §0.1, Amendment 28 addendum)."
+            )
 
 
 def test_step_one_oracle_leaks_nothing_about_step_two(spec: Spec) -> None:
@@ -688,13 +730,25 @@ def test_task_toml_description_carries_the_step_one_safe_title(spec: Spec) -> No
     so this is defence in depth — but "it's only metadata" is exactly how the
     whole-arc title got into the step-1 agent's own main.tf. The full title is
     kept in [metadata] scenario_title.
+
+    WHAT IS CHECKED IS THE SENTENCE, NOT THE FILESYSTEM PATHS. The description
+    ends with a generator-provenance clause (`Generated from specs/<id>.yaml
+    …; see oracles/<id>/intent.md …`) whose two paths necessarily contain the
+    scenario `id`. That id is OPERATOR-FACING by design (SCHEMA.md §0.1) and
+    task.toml is where operator-facing identity BELONGS — it is the host-side
+    half of the split that keeps the agent-visible half neutral. Scrubbing the
+    two paths (and only those two exact strings) keeps this test aimed at what
+    it was written for: the human-readable title text.
     """
     for arm in ARMS:
         cfg = tomllib.loads((task_dir(spec, arm) / "task.toml").read_text())
         description = cfg["task"]["description"]
         assert spec.workspace_header() in description
         assert spec.title not in description
-        assert not _leaks(description, CONTENT_TOKENS + TEMPORAL_TOKENS)
+        sentence = description.replace(f"specs/{spec.id}.yaml", "<spec-path>").replace(
+            f"oracles/{spec.id}/", "<oracle-path>"
+        )
+        assert not _leaks(sentence, CONTENT_TOKENS + TEMPORAL_TOKENS)
         assert cfg["metadata"]["scenario_title"] == spec.title
 
 

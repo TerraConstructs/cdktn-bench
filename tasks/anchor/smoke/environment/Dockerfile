@@ -42,13 +42,13 @@ FROM node:20.20.2-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2
 # (benchmark-integrity review finding G2, 2026-08-07) -- this arm's
 # generated tests/test.sh (generator/gen.py::build_test_sh) invokes
 # `python3 "$DIR/live_check.py"` whenever a spec sets
-# verifier.live_check.enabled: true (currently only apigw-redeploy). Before
+# verifier.live_check.enabled: true. Before
 # this line, python3 did not exist in this image at all: the interpreter
 # invocation failed with "command not found", and that shell error text
 # landed in live_check-result.json (stdout+stderr were merged) where
 # gen.py's own gating logic read it as an innocuous "not_verifiable"
 # outcome -- silently downgrading a PERFECT solution to reward 0.0 on
-# every apigw-redeploy trial on this arm. Amends DECISIONS.md
+# every live-checked trial on this arm. Amends DECISIONS.md
 # "Agent-container baseline contract", which previously (deliberately)
 # excluded python3 from the shared baseline -- see arms/hcl-raw's own
 # Dockerfile comment for that arm's version of this same addition

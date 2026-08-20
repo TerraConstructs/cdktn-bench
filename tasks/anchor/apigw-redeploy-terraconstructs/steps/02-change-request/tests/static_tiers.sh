@@ -37,7 +37,7 @@ if ! ( npx cdktn synth ); then
   exit 0
 fi
 
-echo '== tf-plan: cd cdktf.out/stacks/apigw-redeploy && rm -rf .terraform .terraform.lock.hcl || exit 1
+echo '== tf-plan: cd cdktf.out/stacks/hello-version-api && rm -rf .terraform .terraform.lock.hcl || exit 1
 node /app/project/mock-sts.js 17771 \
   > /tmp/cdktn-bench-mock-sts-apigw-redeploy.log 2>&1 &
 MOCK_STS_PID=$!
@@ -73,7 +73,7 @@ wait "$MOCK_STS_PID" 2>/dev/null
 cd /app/project || true
 exit "$TF_RC"
  =='
-if ! ( cd cdktf.out/stacks/apigw-redeploy && rm -rf .terraform .terraform.lock.hcl || exit 1
+if ! ( cd cdktf.out/stacks/hello-version-api && rm -rf .terraform .terraform.lock.hcl || exit 1
 node /app/project/mock-sts.js 17771 \
   > /tmp/cdktn-bench-mock-sts-apigw-redeploy.log 2>&1 &
 MOCK_STS_PID=$!
@@ -114,7 +114,7 @@ exit "$TF_RC"
   exit 0
 fi
 
-ARTIFACT="/app/project/cdktf.out/stacks/apigw-redeploy/plan.json"
+ARTIFACT="/app/project/cdktf.out/stacks/hello-version-api/plan.json"
 if [ ! -s "$ARTIFACT" ]; then
   echo "MISSING ARTIFACT: $ARTIFACT"
   echo "0.0" > /logs/verifier/reward.txt

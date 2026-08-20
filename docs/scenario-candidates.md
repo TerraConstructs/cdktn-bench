@@ -1,5 +1,27 @@
 # Scenario candidates — three-sweep sourcing synthesis (2026-08-18)
 
+> ## ⚠ POINT-IN-TIME SOURCING SNAPSHOT (2026-08-18)
+>
+> This is the **raw sourcing funnel**, frozen on the date in the title: what the
+> three mining sweeps found, ranked and de-duplicated. It is an input to
+> scenario selection, **not a record of what was selected, graded, or built.**
+> Nothing here is a commitment, and a candidate's presence below says nothing
+> about whether it survived review.
+>
+> **For what actually happened to these candidates, read instead:**
+>
+> - `docs/scenario-grades/` — the grading pass over this funnel
+>   (`2026-08-20-summary.md` is the readable artifact; the JSON files are the
+>   raw and graded payloads). That pass, not this doc, is what fed the
+>   multi-step and brownfield capabilities into existence.
+> - `specs/*.yaml` — the scenarios that actually exist.
+> - `DECISIONS.md` **Amendments 27** (the multi-step scenario form) and **28**
+>   (the brownfield form and its pilot, `named-resource-replacement`) — the
+>   registered decisions the grading pass produced.
+>
+> Evidence links, reaction counts and upstream issue states below were accurate
+> on 2026-08-18 and are not maintained.
+
 Curated from three parallel mining workflows (20 agents, ~2.6M subagent
 tokens, one run resumed across an API outage): **provider-pitfall-mining**
 (wf_559d97b6-c46 — 11 agents over terraform-provider-aws issues by service

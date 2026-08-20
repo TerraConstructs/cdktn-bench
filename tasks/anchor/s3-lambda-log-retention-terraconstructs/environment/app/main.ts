@@ -1,9 +1,9 @@
 // S3 upload triggers Lambda; log group retains 10 days
 //
-// Generated -- generator/gen.py, from specs/s3-lambda-log-retention.yaml. App +
+// Generated entrypoint -- generator/gen.py. App +
 // provider bootstrap ONLY -- NOT the file you edit (see
 // lib/scenario-stack.ts for that). Do not hand-edit; regenerate
-// instead (`make gen SPEC=specs/s3-lambda-log-retention.yaml`).
+// instead (`make gen`).
 import { App } from "cdktn";
 import { ScenarioStack } from "./lib/scenario-stack";
 

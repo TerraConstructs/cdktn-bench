@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # arms/terraconstructs preflight — runs INSIDE the built image.
 #
-# 1. Prints every toolchain version so drift is visible in CI/build logs.
+# 1. Prints every toolchain version so a version change is visible in CI/build logs.
 # 2. Synthesizes the minimal app in /app/project (main.ts) with `cdktn synth`,
 #    fully offline: no terraform binary invocation, no AWS credentials,
 #    no network access needed (provider bindings are prebuilt npm packages).

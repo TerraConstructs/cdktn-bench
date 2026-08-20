@@ -60,6 +60,34 @@ title: "Rename an explicitly-named, in-use security group and roll it out"
 # verbatim `title` above AND for pitfall-mechanism vocabulary, and separately
 # asserts that whatever it finds is the SAME on all three arms.
 workspace_title: "Internal services network"
+# AGENT-VISIBLE (SCHEMA.md §0.1). `id` above is OPERATOR-FACING and deliberately
+# names the pitfall -- that is what makes it a useful name in specs/, oracles/,
+# task.toml [metadata] and a results table. But "named-resource-replacement" is
+# not the change request ("rename the security group to X"); it is the
+# DIAGNOSIS the agent is supposed to reach from the configuration on its own.
+# Stamped as the terraconstructs ScenarioStack construct id and gridUUID -- and
+# therefore as `cdktf.out/stacks/<id>/`, which the agent sees in its own
+# `npx cdktn synth` output and in preflight.sh -- it handed that diagnosis to
+# two of the three arms and not to the third (hcl-raw, whose entry file IS the
+# seed and carries no generator stamp): an arm-asymmetric hint inside the very
+# cross-arm comparison this scenario exists to measure.
+#
+# This value names only what the workspace IS, exactly like `workspace_title`.
+# It is validated against the deny-list by
+# spec_model.Spec._agent_visible_identity_is_deny_list_clean and swept in the
+# real emitted bytes by generator/tests/test_scenario_identity.py.
+workspace_id: internal-services-network
+# This scenario's OWN trap vocabulary, on top of the global deny-list
+# (spec_model.AGENT_IDENTITY_DENY_PATTERNS, which already covers
+# replacement/lifecycle/create_before_destroy/in-use/...). These are the
+# scenario-specific words that would give the mechanism away -- the engine
+# behaviours the agent is supposed to discover by running its own toolchain.
+agent_deny_vocab:
+  - DependencyViolation
+  - destroy-then-create
+  - destroy then create
+  - ForceNew
+  - force-new
 difficulty: 2
 services: [ec2]
 
@@ -378,7 +406,7 @@ instruction:
       language_line: "This workspace is a terraconstructs (TypeScript) app using its AWS L2 constructs."
       output_contract:
         entry_file: lib/scenario-stack.ts
-        artifact_path: cdktf.out/stacks/named-resource-replacement/plan.json
+        artifact_path: cdktf.out/stacks/internal-services-network/plan.json
         synth_command: npx cdktn synth
 
 catches:

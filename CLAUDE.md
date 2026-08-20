@@ -40,6 +40,15 @@ for the append-only amendment log (the pre-registration discipline), and
   must declare `workspace_title` (`specs/SCHEMA.md` §0.1) — a step-1-safe
   header — because the scenario `title` describes the whole arc and used to be
   stamped into the agent's own `main.tf` line 1 (Amendment 27 §5.1).
+- **Identity separation — operator-facing vs agent-visible.** The spec `id`
+  and `title` are operator-facing and **may name the pitfall**; the agent must
+  never see either. `workspace_title` intercepts the header, and
+  **`workspace_id`** intercepts the id where it would otherwise reach the agent
+  through workspace/stack/module naming under `environment/`. Same rule, one
+  layer down; field contract and emitter sites in `specs/SCHEMA.md` §0.1.
+  Trap detail belongs in spec YAML comments, `task.toml [metadata]`,
+  `solution/**`, `DECISIONS.md` and `docs/` — all host-side, never uploaded —
+  and **never** under `environment/` or in any `instruction.md`.
 - Every step's oracle lives in `steps/<name>/tests/`. The **shared root
   `tests/` must stay oracle-free** (Harbor uploads it at every step's
   verification, so step-specific material there is readable in a later step's
@@ -95,7 +104,14 @@ for the append-only amendment log (the pre-registration discipline), and
   hand-write teardown (Amendments 17/18); `scenarios/anchor/reset/reset.sh` was
   removed as redundant.
 - After changing anything under `scenarios/anchor/**`, re-run `env setup` or
-  resets fail with a scenario-source-hash mismatch.
+  resets fail with a scenario-source-hash mismatch. **Currently outstanding:**
+  Amendment 25 changed that tree, so `env setup` MUST be re-run before the next
+  live run. Arm images also need `make build-arms`, which moves the equipping
+  hash — expected, and what that hash exists to record.
+- **Amendments 26/27 (multi-step) and 28 (brownfield) are DRAFT** until their
+  first live runs. Record rows in `docs/live-results.md`; publish nothing from
+  them. The first live multi-step run and the first live brownfield run are
+  what promote them.
 - Mutating scenarios run the agent as **`QALocalInvocationApplicationAdmin`**
   (`AdministratorAccess`) — aws-bench's own mutation-task model (Amendment 24).
   Both arms deploy with equal (admin) authority: hcl-raw via terraform, awscdk

@@ -1,5 +1,27 @@
 # Prompt-decomposition audit — no foreshadowing in a first-step prompt
 
+> ## ⚠ POINT-IN-TIME AUDIT (2026-08-20)
+>
+> This is the **audit record** for the six instruction bodies that existed on
+> the date in the title — the evidence behind `DECISIONS.md` **Amendment 27**,
+> including verbatim quotes of the offending sentences and the falsification of
+> the test that now guards them. The findings are settled and the fixes shipped.
+>
+> Two things follow from that:
+>
+> - **It is not a running inventory.** Specs added after 2026-08-20 are not
+>   covered here. A new spec is audited against the *rule*, not against this
+>   table; the rule and the procedure live in `docs/adding-scenarios.md` §6.4
+>   and §1 item 2b.
+> - **The authority is Amendment 27**, plus `specs/SCHEMA.md` §2.6/§0.1 for the
+>   spec surface. Where this doc and those disagree, they win.
+>
+> The one finding worth carrying forward verbatim is §6.1's: the
+> no-foreshadowing check has **two surfaces, not one** — the step-1 prompt and
+> everything under `environment/`. Auditing only the prompt is how a leak
+> shipped. Amendment 28 §3 rule 7 later widened that same lesson again, to
+> *every byte the Dockerfile `COPY`s*.
+
 **Date:** 2026-08-20
 **Scope:** every spec under `specs/` plus the generator-testing fixture
 `specs/_toy/toy-ssm-parameter.yaml` (6 instruction bodies in total).
@@ -442,6 +464,14 @@ The step-1 prompt must say *"a REST API named EXACTLY `apigw-redeploy-api`"* —
 the name is load-bearing (`live_check.py` discovers the deployed API by it on
 both steps; every reference and broken fixture writes it). That name, and the
 spec id in every generated file header, contain the substring **"redeploy"**.
+
+> **[Updated 2026-08-20, Amendment 28 §10]** The second half of that sentence
+> is no longer true: generated file headers no longer cite the spec id (or any
+> spec filename), and the spec id is no longer stripped before deny-list scans
+> — agent-visible identity now comes from `workspace_id`
+> (`hello-version-api` for this scenario). The API name remains the single
+> accepted residual, and `test_the_accepted_residual_is_really_prompt_content`
+> now checks mechanically that it appears in step 1's own prompt.
 
 Accepted, and stripped before the deny-list scan rather than the scan being
 weakened, because: it reveals no step-2 *content* — not the route, not the

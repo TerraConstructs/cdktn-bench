@@ -4,10 +4,10 @@ import { Construct } from "constructs";
 /**
  * Step Functions order-batch transform (JSONata query language)
  *
- * Generated skeleton -- generator/gen.py, from specs/sfn-jsonata.yaml.
+ * Generated skeleton -- generator/gen.py.
  * Empty on purpose: the agent fills this in per the task
  * instruction. Do not hand-edit; regenerate instead
- * (`make gen SPEC=specs/sfn-jsonata.yaml`).
+ * (`make gen`).
  */
 export class ScenarioStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {

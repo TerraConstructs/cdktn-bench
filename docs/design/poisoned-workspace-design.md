@@ -1,9 +1,22 @@
 # Poisoned-workspace generation — design investigation (task #15)
 
-Status: **IMPLEMENTED 2026-08-20 — see `DECISIONS.md` Amendment 28 (DRAFT) and
-`specs/SCHEMA.md` §2.7/§5.1 for what actually shipped, which is the authority
-where the two disagree.** This file is kept as the investigation record, not as
-the contract. Deltas the implementation found and the memo could not:
+> ## ⚠ HISTORICAL DESIGN RECORD — NOT THE CONTRACT
+>
+> **This memo LANDED on 2026-08-20 and is superseded as an authority.** It is
+> kept as the investigation record — the evidence trail for *why* the brownfield
+> form is shaped the way it is — not as the specification of what shipped.
+>
+> **Where the authority now lives** (these win wherever they disagree with
+> anything below):
+>
+> | For | Read |
+> |---|---|
+> | the brownfield form, seed equivalence, prompt rules, the mandatory do-nothing catch, the idempotence tier, the metric stratum | `DECISIONS.md` **Amendment 28** *(DRAFT until the first live brownfield run)* |
+> | the spec surface (`workspace_seed`, `seed_asserts`, `premise`, `workspace_title`) and the idempotence contract | `specs/SCHEMA.md` **§2.7, §5.1, §0.1** |
+> | the contributor procedure | `docs/adding-scenarios.md` **§6.5** |
+> | the composing capability (multi-step, §8 below) | `DECISIONS.md` Amendments 26/27, `docs/design/multistep-trial-investigation.md` |
+>
+> Deltas the implementation found and the memo could not:
 
 - **§2.2's `sg-has-no-create-before-destroy` seed assert is a DEAD PATH and was
   not shipped.** `terraform show -json` emits no `lifecycle` key anywhere in its
@@ -29,6 +42,25 @@ the contract. Deltas the implementation found and the memo could not:
   gets a post-flight completion-marker check instead. Same guarantee (offline
   ⇒ skipped with a reason, never fake-passed), two mechanisms. `SCHEMA.md`
   §5.1 and Amendment 28 §4 carry the detail.
+- **The memo's prompt-surface analysis was scoped too narrowly, and it cost a
+  real leak.** It reasons about the seed and the instruction; the scenario
+  `title` was neither, and the generator stamped it into the awscdk arm's CFN
+  `description` and the terraconstructs arm's `main.ts` header — naming both
+  halves of the pilot's own poison on **two of three arms**, while hcl-raw
+  (whose entry file *is* the seed) stayed clean. An arm-asymmetric hint inside
+  the comparison the scenario exists to measure does not merely make the task
+  easier, **it biases the number**. Shipped fix: `workspace_title` is REQUIRED
+  on a brownfield spec (widening the field Amendment 27 §5.1 introduced for
+  multi-step), and the emitted bytes are deny-list-scanned with a verbatim
+  `title` pin. The generalised rule: **the unit that must be read hostilely is
+  every byte the Dockerfile `COPY`s, not the files the author happened to
+  write** (Amendment 28 §3 rule 7; `docs/adding-scenarios.md` §6.5 rule 2).
+- **A metric rule the memo does not state:** brownfield tokens-to-green is a
+  **separate stratum**, never pooled with greenfield. Partly mechanical (the
+  seed hash rides the `equipping_hash`) and partly a standing manual
+  obligation — the aggregator's cell key carries no scenario-form dimension, so
+  `make metrics` must not be run over a mixed results directory (Amendment 28
+  §6).
 - **Open questions resolved:** Q1 → gating/fail-closed; Q3 → drop provenance
   headers entirely; Q5 → keep `workspace_seed` and `seeded_files` separate;
   Q6 → yes, the do-nothing negative is mandatory (and generator-owned).
@@ -36,7 +68,7 @@ the contract. Deltas the implementation found and the memo could not:
   (`lambda-alias-tracks-unpublished-latest`) is untouched. B2 is answered by
   Amendment 28 §1/§6.
 
-Original header: Read-only investigation against the tree at 2026-08-20. Requirements source: `docs/scenario-grades/2026-08-20-summary.md`
+Original header *(as written)*: Read-only investigation against the tree at 2026-08-20. Requirements source: `docs/scenario-grades/2026-08-20-summary.md`
 lines 39–50 (the "Poisoned workspace" bucket) and the "Immediate implications"
 item 2. Companion memo: `docs/design/multistep-trial-investigation.md`
 (the other new capability; §8 below covers composition).
@@ -555,7 +587,7 @@ Per-arm command, injected **unconditionally by the generator** (the same
 | Arm | Idempotence step | Green |
 |---|---|---|
 | `hcl_raw` | `terraform plan -detailed-exitcode -refresh=false` (and a second run **with** refresh when the scenario's drift is provider-side normalisation) | exit `0` |
-| `terraconstructs` | `npx cdktn synth` then, in `cdktf.out/stacks/<id>/`, `terraform plan -detailed-exitcode` | exit `0` |
+| `terraconstructs` | `npx cdktn synth` then, in `cdktf.out/stacks/<id>/`, `terraform plan -detailed-exitcode` | exit `0` | <!-- [Updated, Amdt 28 §10]: the stack dir is now cdktf.out/stacks/<workspace_id>/ -->
 | `awscdk` | `npx cdk diff --fail` against the deployed stack | exit `0` |
 
 `cdk diff --fail` is the honest analogue: "the toolchain's own converged-state

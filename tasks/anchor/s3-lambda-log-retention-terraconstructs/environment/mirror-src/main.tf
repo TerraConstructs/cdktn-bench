@@ -8,8 +8,8 @@
 // TERRAFORM_AWS_PROVIDER_VERSION comment). @cdktn/provider-aws@24.8.0 pins
 // hashicorp/aws 6.52.0 — NOT the same version arms/hcl-raw mirrors (6.58.0).
 //
-// hashicorp/archive 2.8.0 added by the "apigw-openapi / terraconstructs arm
-// -- catch cannot fire at all in the real image" fix (benchmark-integrity
+// hashicorp/archive 2.8.0 added by the "terraconstructs arm -- an archive-
+// using catch cannot fire at all in the real image" fix (benchmark-integrity
 // review, 2026-08-06): `@cdktn/provider-archive@13.1.0` (this arm's own
 // package.json peerDependency) always tracks hashicorp/archive `~> 2.2`,
 // currently `2.8.0` -- verified against the installed package's own

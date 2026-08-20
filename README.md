@@ -5,10 +5,14 @@
 cdktn-bench is a benchmark that measures whether an LLM coding agent (Claude Code, held
 constant) authors AWS infrastructure more reliably and more token-efficiently when the
 substrate is a strongly-typed L2 construct library versus hand-written Terraform HCL.
-The headline metric is **tokens-to-green** (censored, paired with
-success-rate-within-budget); the oracle is a tiered, deployment-free stack
-(compile/synth → structural asserts → plan + policy intent), so a full run costs
-API tokens and ≈ $0 of AWS spend.
+The headline metric is **tokens-to-green** (agent *output* tokens, censored, paired with
+success-rate-within-budget — `DECISIONS.md` Amendment 23); the oracle is a tiered,
+deployment-free stack (compile/synth → structural asserts → plan + policy intent), so
+most scenarios cost API tokens and ≈ $0 of AWS spend. On a multi-step scenario the metric
+is the **cumulative** sum of per-step output tokens up to the step at which the final
+oracle first passes (Amendment 26 §4). Rows from different **scenario forms** —
+single-step vs multi-step, greenfield vs brownfield — are never pooled; each is its own
+pre-registered stratum with its own census (Amendments 26 §4, 27 §2, 28 §6).
 
 ## Authoring arms
 
@@ -22,6 +26,13 @@ API tokens and ≈ $0 of AWS spend.
 limited-coverage third arm running only scenarios its L2 coverage supports (see
 `DECISIONS.md` Amendment 2 — including the dropped `terraform-aws-modules` arm; no
 Pulumi, no chant).
+
+Both TypeScript arms run **one uniform toolchain shape: a real emitting `tsc` compile,
+then plain `node` on the emitted JS**, with the compile *chained into the synth command*
+so an agent can never synthesize stale JS behind a type-broken edit (`DECISIONS.md`
+Amendment 25). Keeping the type check inside the agent's iteration loop is not incidental
+— it is the steering this benchmark exists to measure, which is why every transpile-only
+runner was measured and rejected.
 
 Each scenario embeds **planted catches** (invalid enum values, deeply-nested attribute
 placement, cross-resource dependency edges, and anti-L2 catches the type system *cannot*
@@ -46,13 +57,25 @@ failure to a cheaper tier is the mechanism under test.
   classes that refuse to score infrastructure failures or tool-bypass runs, and an
   equipping hash (instruction + skills/MCP config + image digest) stamped into every
   result row.
-- **Brownfield scenarios** (`specs/SCHEMA.md` §2.7): a scenario may ship a working,
-  plan-green, already-deployed configuration as its starting workspace instead of an
-  empty skeleton, and ask for one ordinary change to it — measuring tokens-to-green on
-  *a change to code the agent did not write*, which is where the interesting traps
-  actually fire. The three arms' starting configurations are proved equivalent by
-  declared behavioural facts, never by resource census (`make seed-parity`), and every
-  such scenario must prove that doing nothing scores less than full marks.
+- **Multi-step scenarios** (`specs/SCHEMA.md` §2.6; `DECISIONS.md` Amendments 26/27): a
+  scenario may decompose into N prompts delivered to N **fresh agent sessions**, so a
+  day-2 change is measured *without foreknowledge of it at day 1* — the condition a real
+  day-2 change actually has. State carries through the workspace, not through
+  conversation; each step is verified by its own oracle behind a hard `min_reward` gate;
+  and the no-foreshadowing rule is enforced against **both** prompt surfaces — the step-1
+  instruction and everything under `environment/`, which the arm Dockerfile copies into
+  the agent image. Trials run through `cdktn-bench`, this repo's superset of the upstream
+  runner (same flags; a stepless task takes the untouched single-step path).
+- **Brownfield scenarios** (`specs/SCHEMA.md` §2.7; Amendment 28, draft): a scenario may
+  ship a working, plan-green, already-deployed configuration as its starting workspace
+  instead of an empty skeleton, and ask for one ordinary change to it — measuring
+  tokens-to-green on *a change to code the agent did not write*, which is where the
+  interesting traps actually fire. The three arms' starting configurations are proved
+  equivalent by declared behavioural facts, never by resource census (`make seed-parity`),
+  every such scenario must prove that doing nothing scores less than full marks, and an
+  optional live **idempotence** tier asks whether the agent's own toolchain reports a
+  converged state after the change (gating, fail-closed, and skipped-with-a-reason rather
+  than fake-passed when it cannot run).
 - A **Tier 0.5** oracle evaluates embedded JSONata `{% ... %}` expressions in Step
   Functions ASL against real sample inputs — the catch class that sails through every
   compiler and synth step on every arm alike.
@@ -94,6 +117,7 @@ failure to a cheaper tier is the mechanism under test.
 | `scenarios/anchor/` | Near-empty scenario satisfying aws-bench's real-AWS-account precondition |
 | `tasks/` | Generated `<scenario>-<arm>` task directories (never hand-edited; `make gen`) |
 | `oracles/{rego,cfn-guard}/` | Static oracle policies + structural / Tier-0.5 libraries |
+| `cdktn_bench/` | The `cdktn-bench` runner — a superset of upstream aws-bench by inheritance, adding multi-step trials; nothing upstream is vendored or modified |
 | `gates/` | preflight / trajectory-audit / result-validity / equipping-hash / falsifiability gates |
 | `metrics/` | Result schema, validation, tokens-to-green + tier-attribution aggregation |
 | `ci/` | Oracle-equivalence CI + drift checks |
@@ -116,8 +140,14 @@ See `DECISIONS.md` for the aws-bench pin, packaging notes, and the full amendmen
 ## Status
 
 Work in progress. Phase 0 (runner substrate + integrity rails) and Phase 1 (generator +
-four seed scenarios, each proven end-to-end gradeable) are built; CI consolidation, the
-train/holdout split, and the first live runs are landing next. No benchmark results are
+seed scenarios, each proven end-to-end gradeable) are built, along with CI consolidation
+and the train/holdout split. The first live single-step trials have run green on all
+three arms (`docs/live-results.md`, pilot data, n=1 per arm — directional only).
+
+The multi-step and brownfield forms are **pre-registered but still DRAFT**: both are
+built, generated and offline-proven, and each is promoted out of draft by its first live
+run, which is the first thing that can falsify it (Amendments 26/27 and 28). No
+multi-step or brownfield result may be published while they are. No benchmark results are
 published yet — when they are, every trajectory, prompt, oracle spec, and equipping hash
 ships with them.
 

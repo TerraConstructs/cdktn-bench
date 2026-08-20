@@ -1,9 +1,9 @@
 // API Gateway REST API (live)
 //
-// Generated -- generator/gen.py, from specs/apigw-redeploy.yaml. App +
+// Generated entrypoint -- generator/gen.py. App +
 // provider bootstrap ONLY -- NOT the file you edit (see
 // lib/scenario-stack.ts for that). Do not hand-edit; regenerate
-// instead (`make gen SPEC=specs/apigw-redeploy.yaml`).
+// instead (`make gen`).
 import { App } from "cdktn";
 import { ScenarioStack } from "./lib/scenario-stack";
 
@@ -16,9 +16,9 @@ import { ScenarioStack } from "./lib/scenario-stack";
 const CDKTN_BENCH_LIVE = process.env.CDKTN_BENCH_LIVE === "1";
 
 const app = new App();
-new ScenarioStack(app, "apigw-redeploy", {
+new ScenarioStack(app, "hello-version-api", {
   environmentName: "cdktn-bench",
-  gridUUID: "apigw-redeploy",
+  gridUUID: "hello-version-api",
   providerConfig: {
     region: "us-east-1",
 

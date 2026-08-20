@@ -1,5 +1,11 @@
 # Slice G IAM proposal: `QADeployApplicationRole` (proposed, NOT deployed)
 
+> **[2026-08-20 note]** Doubly historical: the role below was later RETIRED
+> entirely by Amendment 24 (admin model), and the terraconstructs resource-name
+> prefixes cited in the policy tables (`apigw-redeploy-*` via `gridUUID`) are
+> stale since Amendment 28 §10 — `gridUUID` now carries `workspace_id`
+> (`hello-version-api-*` for that scenario). Kept as an evolution record only.
+
 > **SUPERSEDED (DECISIONS.md "Adding a QADeployApplicationRole" amendment).**
 > The operator explicitly authorized and this repo has since created a REAL
 > `QADeployApplicationRole` in

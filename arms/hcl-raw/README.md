@@ -14,8 +14,12 @@ environment/
 └── preflight.sh        # terraform version -> offline init -> offline validate -> best-effort plan
 ```
 
-Per-scenario generated task dirs land here later (via `generator/`, Slice C/D); they reuse
-this same `Dockerfile` and add their own `instruction.md` + starter HCL.
+Per-scenario generated task dirs (via `generator/`) reuse this same `Dockerfile` and add
+their own instruction text + starter HCL. Note the instruction is not always one root
+file: a **multi-step** task has no root `instruction.md` at all — one per step, under
+`steps/<name>/` (`specs/SCHEMA.md` §8.3, `DECISIONS.md` Amendments 26/27). A
+**brownfield** task's starter HCL is not a skeleton but a hand-authored, plan-green
+`workspace_seed` (§2.7 / Amendment 28).
 
 ## Pinned versions
 
@@ -171,7 +175,8 @@ credentials in the image are real, and the build plan (`docs/iac-abstraction-aws
   {}` block + the four `skip_*` flags + dummy credentials from "What `terraform
   plan` needs" above). **Not** agent-owned: byte-copied unmodified into every
   generated task (never regenerated per scenario, never listed as `entry_file`),
-  and the generated `instruction.md` tells the agent not to modify it.
+  and the generated instruction text tells the agent not to modify it — in every
+  step's `instruction.md` on a multi-step task, which has no root one.
 
 This split exists because the two used to be one file (the provider block at the
 top of `main.tf`). A normal agent solution that fully rewrites `main.tf` from

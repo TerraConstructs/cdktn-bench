@@ -26,11 +26,22 @@ arms/awscdk/
 `environment/` is deliberately the whole self-contained build context — it mirrors
 the aws-bench-datasets convention (`docs/aws-bench-guide.md` §5-7,
 `docs/aws-bench-datasets-guide.md` §2/§6b) where a task's `environment/` directory
-*is* the Docker Compose build context. Slice C's generator will copy
-`environment/` verbatim into each generated `tasks/<scenario>/awscdk/environment/`,
-add a `docker-compose.yaml` (upstream's minimal `services:\n  main: {}` is
-sufficient), and overwrite `workspace/lib/` with the scenario-specific stack —
-nothing else about this Dockerfile should need to change per task.
+*is* the Docker Compose build context. The generator copies `environment/`
+verbatim into each generated `tasks/anchor/<scenario>-awscdk/environment/`, adds a
+`docker-compose.yaml` (upstream's minimal `services:\n  main: {}` is
+sufficient), and overwrites `workspace/lib/` with the scenario-specific stack —
+nothing else about this Dockerfile needs to change per task. (This paragraph was
+written ahead of the generator, in Slice C's future tense; the mechanism it
+describes is what shipped. On a **brownfield** scenario the overwritten content
+is a hand-authored `workspace_seed` rather than a skeleton — `specs/SCHEMA.md`
+§2.7.)
+
+Because everything under `environment/` is `COPY`'d into the agent image, it is
+**prompt surface**: the skeleton header, file names and comments are all read by
+the agent from second zero. That is why generator-stamped headers come from
+`workspace_title` rather than the scenario `title` on any scenario whose title
+could foreshadow (`specs/SCHEMA.md` §0.1, `DECISIONS.md` Amendments 27 §5.1 /
+28 §3).
 
 ## Image contract
 

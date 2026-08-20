@@ -4,7 +4,7 @@ THE OFFLINE STATIC TIER.
 
 The bug: after a real live `terraform apply` (this scenario's whole point --
 see specs/apigw-redeploy.yaml), the working tree's `terraform.tfstate` (or,
-on terraconstructs, `cdktf.out/stacks/apigw-redeploy/terraform.tfstate`)
+on terraconstructs, `cdktf.out/stacks/hello-version-api/terraform.tfstate`)
 names a REAL, previously-applied REST API/Lambda/IAM role. `tests/
 static_tiers.sh` then runs `terraform init && terraform plan` OFFLINE
 (dummy provider credentials, no network) to grade the FINAL delivered file

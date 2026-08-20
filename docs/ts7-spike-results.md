@@ -1,5 +1,25 @@
 # TS7-native (`tsgo`) spike — results (2026-08-13)
 
+> ## ⚠ HISTORICAL EVIDENCE — measurements, not current configuration
+>
+> This is the **measurement record** behind a decision that has since landed.
+> Read it for the evidence and the reasoning; do **not** read it as a
+> description of how the repo is configured today.
+>
+> **What landed:** `DECISIONS.md` **Amendment 25** — one uniform toolchain shape
+> everywhere: a real emitting `tsc` compile, then plain `node` on the emitted
+> JS, with the compile **chained into the synth app command** on both graded
+> arms, and a precompiled `dist/` in the harness `cdk_app`. **`ts-node` is off
+> every execution path.** (Its pins survive in two `package.json` files, on no
+> execution path — dropping them would force a lockfile churn for no behavioural
+> gain.)
+>
+> So this doc's central finding — *"removing ts-node is the fix"* — was adopted;
+> its description of ts-node as *present in 2 of the 3 toolchains* is the
+> **pre-Amendment-25 state** and is no longer true. The follow-up that
+> consolidated the verdict across all three trees is
+> `docs/ts-runtime-spike2-results.md`.
+
 Three parallel Opus agents, one per TypeScript toolchain, strictly offline in
 scratch copies (no repo mutation, no AWS). Question: task #9's "adopt TS7
 native tsc to cut synth memory/OOM risk" — is the OOM risk still live, and is

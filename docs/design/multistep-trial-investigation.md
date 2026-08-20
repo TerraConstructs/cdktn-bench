@@ -1,6 +1,45 @@
 # Multi-step trials in cdktn-bench — architecture investigation
 
-**Status:** investigation memo, not yet a decision. Draft for operator review.
+> ## ⚠ HISTORICAL DESIGN RECORD — NOT THE CONTRACT
+>
+> **This memo has LANDED and is superseded as an authority.** It is kept as the
+> investigation record — the evidence trail for *why* the architecture is what
+> it is — not as the specification of what shipped.
+>
+> **Where the authority now lives** (these win wherever they disagree with
+> anything below):
+>
+> | For | Read |
+> |---|---|
+> | multi-step trial semantics (fresh session per step, who deploys, `min_reward`, reward strategy `final`, cumulative tokens-to-green, trial-level censoring) | `DECISIONS.md` **Amendment 26** *(DRAFT until the first live multi-step run)* |
+> | the scenario-form change, the no-foreshadowing decomposition, and the `environment/` leak fixed at the schema | `DECISIONS.md` **Amendment 27** |
+> | the spec surface (`steps:`, `workspace_title`) and the generated task layout | `specs/SCHEMA.md` **§2.6, §8.3, §0.1** |
+> | the audit this motivated | `docs/prompt-decomposition-audit.md` |
+>
+> **Known deltas between this memo and what shipped**, beyond ordinary detail:
+>
+> - §5's task-directory rules shipped **enforced**, not merely stated. The memo
+>   described rule 2 ("never place later-step material in `environment/`") as
+>   prose, and it was violated anyway by a generator-stamped header — the fix
+>   was a new required spec field, `workspace_title`, plus a deny-list scan over
+>   every emitted byte under `environment/` (Amendment 27 §5.1). The
+>   generalised rule the memo does not carry: **the unit that must be read
+>   hostilely is every byte the Dockerfile `COPY`s, not the files the author
+>   happened to write.**
+> - The memo is silent on scoring strategy; `final` (not Harbor's `mean`
+>   default) is the registered choice, and it is written into `task.toml`
+>   rather than left to a code default (Amendments 26 §3, 27 §5).
+> - Non-final steps acquired an obligation the memo does not mention: each
+>   needs its own reference `solve.sh` proving its subset oracle is
+>   *satisfiable* (Amendment 27 §6).
+> - Two shipped consequences the memo could not know are recorded as Amendment
+>   26's draft addendum: the per-step `pre_invoke` inherits a single
+>   **task-level** timeout, and a step with no trajectory makes the whole
+>   trial's `n_llm_calls` null (turn-censoring blindness).
+>
+> Everything below is preserved as written on 2026-08-20.
+
+**Status *(as written)*:** investigation memo, not yet a decision. Draft for operator review.
 **Date:** 2026-08-20
 **Scope:** how to run `workspace → prompt#1 → agent → harness apply/mutate → prompt#2 → agent → final eval`
 on the aws-bench/Harbor stack, *extending* `aws_bench` rather than wrapping it.

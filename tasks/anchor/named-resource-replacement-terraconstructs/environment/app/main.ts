@@ -1,9 +1,9 @@
 // Internal services network
 //
-// Generated -- generator/gen.py, from specs/named-resource-replacement.yaml. App +
+// Generated entrypoint -- generator/gen.py. App +
 // provider bootstrap ONLY -- NOT the file you edit (see
 // lib/scenario-stack.ts for that). Do not hand-edit; regenerate
-// instead (`make gen SPEC=specs/named-resource-replacement.yaml`).
+// instead (`make gen`).
 import { App } from "cdktn";
 import { ScenarioStack } from "./lib/scenario-stack";
 
@@ -16,9 +16,9 @@ import { ScenarioStack } from "./lib/scenario-stack";
 const CDKTN_BENCH_LIVE = process.env.CDKTN_BENCH_LIVE === "1";
 
 const app = new App();
-new ScenarioStack(app, "named-resource-replacement", {
+new ScenarioStack(app, "internal-services-network", {
   environmentName: "cdktn-bench",
-  gridUUID: "named-resource-replacement",
+  gridUUID: "internal-services-network",
   providerConfig: {
     region: "us-east-1",
 

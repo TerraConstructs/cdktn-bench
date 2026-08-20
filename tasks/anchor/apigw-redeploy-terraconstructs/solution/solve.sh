@@ -249,7 +249,7 @@ stop_mock_sts() {
 synth_and_plan() {
   local outdir="$1"
   npx cdktn synth
-  local stackdir="cdktf.out/stacks/apigw-redeploy"
+  local stackdir="cdktf.out/stacks/hello-version-api"
   ( cd "$stackdir" && terraform init -input=false >/dev/null && terraform plan -input=false -out=plan.tfplan >/dev/null && terraform show -json plan.tfplan > "$PROJECT_DIR/$outdir.json" )
 }
 
@@ -327,21 +327,28 @@ export CDKTN_BENCH_LIVE=1
 # Finding G7 fix (benchmark-integrity review, 2026-08-07): the log-group
 # sweep prefix used to be copy-pasted from awscdk's own cleanup()
 # (`/aws/lambda/ScenarioStack-`) -- wrong on THIS arm, whose stack/grid id
-# is "apigw-redeploy" (see `new ScenarioStack(app, "apigw-redeploy", {
-# gridUUID: "apigw-redeploy", ... })` above), not "ScenarioStack". Every
-# LambdaFunction's default physical name is
+# is the spec's `workspace_id` (see `new ScenarioStack(app,
+# "hello-version-api", { gridUUID: "hello-version-api", ... })` in
+# environment/app/main.ts), not "ScenarioStack". Every LambdaFunction's
+# default physical name is
 # `${gridUUID}-${uniqueResourceNamePrefix(...)}` (terraconstructs
 # lib/aws/compute/function.js's own functionName default, confirmed
 # directly against a local node_modules copy of terraconstructs 0.2.13),
-# so its auto-created log group is `/aws/lambda/apigw-redeploy-...`, never
-# matched by the old prefix -- confirmed as a real residue class, not a
-# theoretical one. Swept by the correct prefix now; the old
-# `ScenarioStack-` prefix is also still swept as a harmless defensive
-# fallback (matches nothing on this arm, but costs nothing either).
+# so its auto-created log group is `/aws/lambda/hello-version-api-...`,
+# never matched by the old prefix -- confirmed as a real residue class, not
+# a theoretical one.
+#
+# THE PREFIX FOLLOWS gridUUID, AND gridUUID IS NOW `workspace_id`
+# (SCHEMA.md §0.1, 2026-08-20). It used to be the scenario `id`
+# ("apigw-redeploy"), which is why the OLD `/aws/lambda/apigw-redeploy`
+# prefix is still swept below alongside the new one: a real deploy made
+# before that change leaves residue under the old name, and this sweep is
+# the only thing that removes it. Both stale prefixes cost nothing when
+# they match nothing.
 cleanup() {
   echo "== cleanup: terraform destroy + residual log groups (finding 7) =="
-  ( cd cdktf.out/stacks/apigw-redeploy && terraform destroy -input=false -auto-approve ) || true
-  for prefix in /aws/lambda/apigw-redeploy /aws/lambda/ScenarioStack-; do
+  ( cd cdktf.out/stacks/hello-version-api && terraform destroy -input=false -auto-approve ) || true
+  for prefix in /aws/lambda/hello-version-api /aws/lambda/apigw-redeploy /aws/lambda/ScenarioStack-; do
     aws logs describe-log-groups --log-group-name-prefix "$prefix" \
         --query 'logGroups[].logGroupName' --output text 2>/dev/null \
       | tr '\t' '\n' \
@@ -353,8 +360,8 @@ trap cleanup EXIT
 
 write_rev1
 npx cdktn synth
-( cd cdktf.out/stacks/apigw-redeploy && terraform init -input=false && terraform apply -input=false -auto-approve )
-API_URL="$(cd cdktf.out/stacks/apigw-redeploy && terraform output -raw ApiUrl)"
+( cd cdktf.out/stacks/hello-version-api && terraform init -input=false && terraform apply -input=false -auto-approve )
+API_URL="$(cd cdktf.out/stacks/hello-version-api && terraform output -raw ApiUrl)"
 echo "revision 1 API URL: $API_URL"
 
 # Finding 1 fix: see the hcl_raw/awscdk reference solutions' identical
@@ -386,8 +393,8 @@ fi
 
 write_rev2
 npx cdktn synth
-( cd cdktf.out/stacks/apigw-redeploy && terraform apply -input=false -auto-approve )
-API_URL="$(cd cdktf.out/stacks/apigw-redeploy && terraform output -raw ApiUrl)"
+( cd cdktf.out/stacks/hello-version-api && terraform apply -input=false -auto-approve )
+API_URL="$(cd cdktf.out/stacks/hello-version-api && terraform output -raw ApiUrl)"
 echo "revision 2 API URL (should be identical -- same stage): $API_URL"
 
 # Finding G6 fix (benchmark-integrity review, 2026-08-07): the identical

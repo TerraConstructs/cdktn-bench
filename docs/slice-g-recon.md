@@ -185,7 +185,8 @@ Confirmed no S3 backend is needed for v1's one-trial-one-container shape.
 **terraconstructs synth→apply**: same story — `arms/terraconstructs/environment`'s
 bootstrap (`main.ts`) wires `cdktn synth`; the actual `terraform apply` step for a
 live deploy would run in the synthesized stack's own output directory
-(`cdktf.out/stacks/<id>/`, per `SCHEMA.md` §2.4's table), same local-state
+(`cdktf.out/stacks/<id>/`, per `SCHEMA.md` §2.4's table — since Amendment 28
+§10 the stack dir key is `workspace_id`, not the spec id), same local-state
 reasoning as hcl-raw applies once synthesized.
 
 ---

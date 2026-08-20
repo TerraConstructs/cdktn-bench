@@ -84,6 +84,34 @@ row counts per group, including `n_unclassified_rows` (a scenario with no
 `specs/split.yaml` entry yet) so those rows are visibly excluded from
 both tables rather than silently dropped or guessed into either side.
 
+**SCENARIO-FORM stratification is NOT mechanical — it is on you.** Train/holdout
+above is enforced by the cell lists; **scenario form is not.** Three poolings are
+refused by pre-registration:
+
+| Do not pool | Rule |
+|---|---|
+| N-step vs 1-step tokens-to-green | `DECISIONS.md` Amendment 26 §4 |
+| single-step-form vs multi-step-form rows of the *same* scenario | Amendment 27 §2 |
+| brownfield vs greenfield | Amendment 28 §6 |
+
+`cell_key` is `(arm, model, harness)` and carries **no form dimension**, so a
+headline cell computed over a mixed row set *will* average the forms together —
+`equipping_hash` notwithstanding, since that field is carried on every row but is
+not part of the cell key. (A brownfield row's `equipping_hash` does move, because
+`task.toml [metadata] workspace_seed_sha256` is folded into it, which makes the
+non-comparability *visible*; it does not make it *enforced*.) Until `cell_key`
+grows a form dimension — a pre-registration change in its own right, deliberately
+deferred to land next to the first real multi-step/brownfield results —
+**do not run `make metrics` over a results directory containing more than one
+scenario form. Aggregate each stratum separately.** `benchmark.json`'s per-cell
+`scenario_coverage`/`by_scenario` breakdown separates them for *reading*, but the
+headline `tokens_to_green` figure does not.
+
+Note also that a multi-step trial's tokens-to-green is **cumulative across
+steps** — the sum of per-step agent output tokens up to and including the step at
+which the final oracle first passes (Amendment 26 §4) — so it is not
+denominator-comparable with a single-step figure even within one arm.
+
 Per **cell** (`arm` × `model` × `harness`, computed identically whichever
 of `cells`/`headline_cells`/`train_cells` it appears in), over that cell's
 `valid` rows only (`validity_class != "valid"` rows are counted under

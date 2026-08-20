@@ -70,7 +70,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # arms/awscdk/environment/Dockerfile's identical addition: this arm's
 # generated tests/test.sh invokes `python3 "$DIR/live_check.py"` for any
 # spec with verifier.live_check.enabled: true, and this image previously
-# had no python3 at all, silently downgrading a perfect apigw-redeploy
+# had no python3 at all, silently downgrading a perfect live-checked
 # solution to reward 0.0 via a shell "command not found" misread as a
 # legitimate not_verifiable live-check outcome. Amends DECISIONS.md
 # "Agent-container baseline contract".
@@ -156,7 +156,7 @@ COPY app/mock-sts.js ./mock-sts.js
 # lib/*.js / *.d.ts next to their sources AND a tsconfig.tsbuildinfo, which
 # means the agent's FIRST in-trial compile is the warm incremental one
 # (~1.9 s / ~989 MB with skipLibCheck) instead of the cold one (~4.4 s /
-# ~1416 MB). Emitted JS is never stale at grading time because every synth
+# ~1416 MB). Emitted JS is never out of date at grading time because every synth
 # recompiles by construction (the chained app string above).
 #
 # Deliberately fatal (no `|| true`): in a generated task this compiles that
@@ -189,7 +189,7 @@ RUN chmod +x /usr/local/bin/preflight.sh
 # cover — spec `seeded_files` (specs/SCHEMA.md §2.5). Without these the files
 # exist only in the build context and on the host (where the host-side gates
 # read them directly), never inside the agent's container, while instruction.md
-# tells the agent to read them: docs/design/poisoned-workspace-design.md §9-B1.
+# tells the agent to read them.
 # Named file-by-file, never a blanket `COPY app/ ./`, to preserve
 # the arm Dockerfiles' deliberate named-COPY discipline. Generated — regenerate
 # with `make gen` / `make gen-all`, never hand-edit (SCHEMA.md §0).

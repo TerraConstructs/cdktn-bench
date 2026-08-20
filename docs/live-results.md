@@ -77,3 +77,29 @@ nothing from them yet.
 
 | date | arm | reward | output tok (cum.) | num_turns | cost $ | live_check | job |
 |------|-----|-------:|------------------:|----------:|-------:|:----------:|-----|
+
+## named-resource-replacement — BROWNFIELD form (2026-08-20+)
+
+**FORM: brownfield (Amendment 28).** Single-step, but the workspace does **not**
+start empty: each arm ships a hand-authored, plan-green, already-deployed
+configuration (`workspace_seed`) and the prompt is a change request against it.
+This is a **third stratum**, and Amendment 28 §6 forbids pooling it with
+greenfield rows — either table above — for the same reason the two tables above
+are separate: a brownfield trial is graded on a change to code the agent did not
+write, a greenfield one on authoring from empty. Averaging them produces a
+number that describes neither.
+
+Note the aggregator does **not** enforce this: its cell key is
+`(arm, model, harness)` and carries no scenario-form dimension, so `make
+metrics` must not be run over a results directory holding more than one form.
+Aggregate each stratum separately until that changes (Amendment 28 §6).
+
+This scenario also carries the gating, fail-closed **idempotence** tier
+(Amendment 28 §4), whose `converged`/`pending_changes` halves no live run has
+yet exercised — the first row below is what promotes Amendment 28 out of DRAFT.
+Until then: record rows here, publish nothing from them.
+
+*(No trials yet.)*
+
+| date | arm | reward | output tok | num_turns | cost $ | live_check | idempotence | job |
+|------|-----|-------:|-----------:|----------:|-------:|:----------:|:-----------:|-----|

@@ -5866,3 +5866,212 @@ only when the corresponding spec key is set.
   needs pre-deployed *state*, not seeded *code*, and the memo's recommendation
   (defer to a single-step `[[steps]]` task with a `pre_invoke`) still stands.
   Nothing in this pass blocks or unblocks it.
+
+### 10. ADDENDUM (2026-08-20, task #15 round 3) — IDENTITY SEPARATION: the spec `id` is operator-facing; `workspace_id` is what the agent may know
+
+*Written into this DRAFT amendment rather than appended as a new one because it
+closes §3's own rule 7 — the generalised lesson this amendment already claims to
+have learned, which it had learned only for the `title` field. Everything below
+is pre-registered; nothing in it has been exercised live.*
+
+#### 10.1 What was still leaking, after §3 rule 7
+
+§3 rule 7 says: *the unit that must be read hostilely is every byte the
+Dockerfile COPYs.* It fixed the SENTENCE (`title` → `workspace_title`,
+§0.1/§3.3). It did not fix the NAME. A round-2 verifier found the scenario `id`
+itself reaching `environment/`:
+
+| Site | Arms | Value |
+|---|---|---|
+| `environment/app/main.ts` — `new ScenarioStack(app, …)` construct id | terraconstructs | `spec.id` |
+| `environment/app/main.ts` — `gridUUID` | terraconstructs | `spec.id` |
+| `environment/preflight.sh` — `cdktf.out/stacks/<id>/` ×3, *also printed by the agent's own `npx cdktn synth`* | terraconstructs | `spec.id` |
+| skeleton/entry headers — `from specs/<id>.yaml`, `` `make gen SPEC=specs/<id>.yaml` `` | **all three** on a greenfield spec; the two with a generator-written entry file on a brownfield one (the seed carries no header) | `spec.id` |
+
+`named-resource-replacement` contains `replacement`, which this amendment's own
+§3 rule 4 names verbatim as banned mechanism vocabulary — and it is not the
+change request ("rename the security group to X"), it is the DIAGNOSIS the agent
+is supposed to reach from the configuration. It reached awscdk and
+terraconstructs and **not** hcl-raw, whose entry file IS the seed and carries no
+generator stamp: arm-asymmetric, inside the cross-arm comparison the scenario
+exists to produce. Confirmed wider on the same read: `apigw-redeploy`'s id is
+**step 2's verb**, stamped into every step-1 surface on all three arms.
+
+**Why every guard missed it, and this is the part worth remembering.** Both
+deny-list scans SCRUBBED THE SCENARIO ID BEFORE SCANNING, on the same
+procedural-sounding reasoning — *"every generated header cites the id, and a
+`make gen` invocation needs it"*:
+
+- `test_workspace_seed.py::_brownfield_scrub` did `text.replace(spec.id, …)`, so
+  its own `\breplacements?\b` pattern could never match, and
+  `test_the_leak_is_symmetric_across_arms` compared three empty sets;
+- `test_multistep_emission.py::ACCEPTED_RESIDUALS` scrubbed the bare
+  `apigw-redeploy`, so its own `redeploy` token could never match.
+
+Two independent guards, written by different passes days apart, with the same
+blind spot in the same place. And Amendment 27's manual sweep grepped the hyphenated `re-deploy`
+only, which is why the unhyphenated id passed it untouched.
+
+#### 10.2 THE RULE
+
+> The spec **`id` is operator-facing and MAY name the pitfall.** Trap detail
+> belongs to operators: spec YAML comments, `task.toml [metadata]`, `solution/`
+> directories, `oracles/`. **Everything the AGENT can see must be named for the
+> CURRENT STEP'S GOAL only.**
+
+**The leak test, in one question:** *does this agent-visible name or word reveal
+more than that step's own prompt does?* If yes, it is a leak — whatever kind of
+thing it is: a title, an id, a construct id, a directory name, a comment citing
+a design memo.
+
+This is deliberately a test about INFORMATION, not about field names. It is what
+catches the next site nobody has thought of yet, in the way that "sanitise the
+title" and then "sanitise the id" each failed to.
+
+#### 10.3 The mechanism: `workspace_id` (SCHEMA.md §0.1)
+
+`workspace_id` is to the NAME what `workspace_title` is to the SENTENCE, on the
+same required/optional rules:
+
+- **Required** on a multi-step or brownfield spec — the author must CHOOSE a
+  safe name, never inherit a leaking one by omission.
+- **Optional elsewhere, defaulting to `id`** — *but the deny-list runs against
+  the resolved value either way*. A single-step greenfield spec whose id would
+  leak is refused at spec-load time until it declares one. An id that names only
+  the open goal of its own prompt is fine as the default, and every such spec
+  regenerates byte-identically.
+
+Declared: `named-resource-replacement` → `internal-services-network`;
+`apigw-redeploy` → `hello-version-api` (step 1 asks for a REST API serving
+`GET /hello` and `GET /version`; nothing in the name implies a second change).
+Both operator-facing ids are KEPT — they are good names for a results table.
+
+The deny-list moved OUT of the test modules and into `generator/spec_model.py`,
+because a *validator* needs it:
+`Spec._agent_visible_identity_is_deny_list_clean` refuses a leaking
+`workspace_id`/`workspace_title` at load time rather than letting a test notice
+three regenerations later. It is split into two classes with different scopes,
+and the split is load-bearing:
+
+| Surface | mechanism/meta | foreshadowing |
+|---|---|---|
+| `environment/**` | banned | banned |
+| every step's prompt **but the last** | banned | banned |
+| the **last** prompt (or a stepless `instruction.md`) | banned | allowed |
+
+Step 02's prompt *is* a change request and *does* ask for a re-deploy; a sweep
+that must be switched off for the file where the words are correct is a sweep
+nobody keeps running. Naming the FIX is never allowed, in any prompt. Every
+separator-bearing pattern now matches `-`, `_`, a space, **or nothing** —
+`redeploy` as well as `re-deploy` — and that is an INVARIANT with its own test
+(`test_no_deny_list_pattern_requires_a_separator`), not a convention: a pattern
+that writes `[ _-]` without the `?` fails the suite. The whole leak was one
+optional quantifier wide. `agent_deny_vocab` extends the foreshadowing
+class per scenario, declared in the spec so the words that would give a trap
+away are reviewed in the same file as the trap.
+
+#### 10.4 No exemption for the id — the scrub is now an assertion
+
+The two exemptions are gone. What is scrubbed before a scan is now only:
+
+1. **`workspace_id`** — whose cleanliness a VALIDATOR guarantees, so scrubbing
+   it removes no information the deny-list could have used. The exemption
+   became an assertion; that is the whole trick.
+2. **Tokens the agent's own prompt hands it** — derived from the emitted prompt,
+   never declared, and re-proven per entry. `apigw-redeploy-api` is the only
+   one: step 01 says "named EXACTLY `apigw-redeploy-api`", so it reveals exactly
+   as much as the prompt does. A bare id can never qualify (the derivation
+   requires a suffix), which is what keeps the id inside the scan.
+3. **Arm boilerplate** — each entry proven to exist under `arms/*/environment/`.
+
+**"Proven boilerplate" is not the same as "carries no information."** Six
+`arms/*/environment/` files explained themselves by naming the scenario that
+first needed them ("python3 … currently only apigw-redeploy"; three such lines
+in `hcl-raw`'s `provider.tf` alone). Byte-copied into every task dir, that
+shipped `redeploy` into the agent image of the very scenario it names — and it would have passed any allowlist-honesty check that
+asks "does this also appear under a greenfield control?", because it appears
+under *every* control. Constant across scenarios is not the same as carrying no
+information about one. All six now describe the PROPERTY the arm needs ("any
+spec with `verifier.live_check.enabled: true`"), pinned by
+`test_arm_image_sources_name_no_scenario`.
+
+#### 10.5 The header stamps cite no spec at all
+
+`from specs/<id>.yaml` and `` `make gen SPEC=specs/<id>.yaml` `` became
+`Generated skeleton -- generator/gen.py.` and `` `make gen` ``, **uniform across
+every scenario and every arm**. Rewriting the citation with `workspace_id` was
+considered and rejected: it would name a spec file that does not exist and lie
+to the next maintainer. These lines address a bench maintainer, who holds the
+repo and gets the usage message from `make gen` anyway. Uniform beats
+scenario-varying: a stamp that is neutral for *some* scenarios would itself
+signal which ones have something to hide. The mapping is not lost — it is
+recorded host-side as `task.toml [metadata] workspace_id`.
+
+**Cost, stated plainly:** every task dir's skeleton headers moved, so this pass
+does NOT preserve §8's byte-identity property for pre-existing task dirs. That
+was traded deliberately for a stamp that carries zero scenario information;
+`task.toml` for the five agent-safe scenarios is still byte-identical (the new
+`[metadata] workspace_id` key is emitted only where the two names differ).
+
+#### 10.6 The sweep is now a permanent test, corpus-wide
+
+`generator/tests/test_scenario_identity.py` — every spec including `_toy`, every
+enabled arm, every byte of `environment/` plus every prompt:
+
+- the operator-facing id appears in no agent-visible file;
+- the vocabulary sweep, in both scopes, with the spec's own `agent_deny_vocab`;
+- **arm symmetry** as set equality (asymmetry is what corrupts the measurement,
+  so it gets its own assertion rather than riding on the scan);
+- the workspace identity is stamped IDENTICALLY on every arm that stamps it;
+- `arms/*/environment/**` names no scenario;
+- both allowlists proven honest;
+- **the pre-fix stamps replayed verbatim and required to FAIL** — a deny-list
+  nobody ever saw fail is a deny-list nobody can trust. Run it against the old
+  `_brownfield_scrub`/`ACCEPTED_RESIDUALS` and it goes red.
+
+#### 10.7 Also in this pass: the terraconstructs idempotence re-probe
+
+The round-2 verifier's note. The terraconstructs idempotence command re-runs
+`npx cdktn synth` AFTER the pre-flight state probe and BEFORE `terraform plan`,
+**in the same directory the probe just checked**. If synth ever cleans
+`cdktf.out/stacks/<id>/`, the probed `terraform.tfstate` is gone by plan time and
+an offline-shaped plan (exit 2) would be recorded as a genuine `pending_changes`
+verdict — precisely the fake verdict the probe exists to prevent, delivered
+through the one window the probe cannot see through.
+
+Fixed by re-probing INSIDE the command, after synth and before terraform is
+believed: a vanished state prints a named marker and exits a reserved rc (`9`,
+distinct from every code terraform and cdk produce), which the generated block
+maps to `not_verifiable` with that reason. Emitted only for the arm whose
+command can raise it, so no other arm's `tests/test.sh` moves a byte. Still
+unexercised live — this remains the promotion gate this amendment already
+designates.
+
+#### 10.8 Falsified, not assumed — and one consequence that is not cosmetic
+
+**The two regression tests were run against the PRE-FIX code and go red.** With
+the old id exemption reintroduced verbatim, all **8** of the stamps that were
+really on disk at HEAD (`new ScenarioStack(app, "…")`, `gridUUID: "…"`,
+`STACK_DIR="cdktf.out/stacks/…"`, `OUT_FILE=…`, and the two skeleton-header
+forms, across both scenarios) are ACCEPTED by the scan; with the shipped scrub
+all 8 are REJECTED. Likewise `_brownfield_scrub`: the pre-fix version reports
+"no leak" on the exact bytes of the pilot's `main.ts` stamping, the shipped one
+reports `\breplacements?\b`.
+
+**`gridUUID` is not decoration — it names real AWS resources.** On the
+terraconstructs arm every L2's default physical name is
+`${gridUUID}-${uniqueResourceNamePrefix(...)}` (terraconstructs 0.2.13
+`lib/aws/compute/function.js`). Changing `gridUUID` therefore changes the
+deployed resource names on that arm, and one hand-authored fixture depended on
+the old value: `apigw-redeploy-terraconstructs/solution/solve.sh`'s residual
+log-group sweep matched `/aws/lambda/apigw-redeploy` (finding G7's own fix).
+That sweep now covers `/aws/lambda/hello-version-api` **and keeps the old
+prefix**, because a real deploy made before this change leaves residue under the
+old name and this sweep is the only thing that removes it. Checked and found
+NOT affected: hcl-raw's Lambda names are explicit literals in the HCL; awscdk's
+stack id is the constant `"ScenarioStack"`, never id-derived; every oracle and
+`live_check.py` lookup for both scenarios keys on a spec-declared literal name,
+not on the grid prefix. The retired scoped-IAM proposal in
+`docs/slice-g-iam-proposal.md` still scopes an ARN to `apigw-redeploy-*` on this
+arm; it is a proposal for a role Amendment 24 already retired, but if it is ever
+revived that pattern must become `hello-version-api-*`.

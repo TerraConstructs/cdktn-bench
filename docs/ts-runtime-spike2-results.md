@@ -1,5 +1,25 @@
 # TS runtime spike 2 — entrypoints, typestripping, and d.ts pruning (2026-08-13)
 
+> ## ⚠ HISTORICAL EVIDENCE — measurements, not current configuration
+>
+> This is the **measurement record** behind a decision that has since landed.
+> Read it for the evidence and the rejected alternatives; do **not** read it as
+> a description of how the repo is configured today.
+>
+> **What landed:** `DECISIONS.md` **Amendment 25** adopted this doc's
+> consolidated verdict as a single package — `tsc` (emitting) → `node`
+> everywhere, the compile **chained into the synth app command** on both graded
+> arms, `skipLibCheck: true` on the terraconstructs tsconfig, an unconditional
+> build-gate injection in the generator, and a precompiled `dist/` in the
+> harness `cdk_app` (which pays its compile once at image build, deliberately
+> *not* chained, because no agent ever edits that tree). Every alternative
+> venue below — bun, tsx, node type-stripping / cdk-terrain #198, deep-import
+> d.ts pruning — was **rejected**, and remains rejected. **`ts-node` is off
+> every execution path.**
+>
+> Amendment 25 is the authority on what shipped and on the exact per-file
+> changes; this doc is why.
+
 Follow-up to `docs/ts7-spike-results.md`, operator-directed. Five parallel
 agents (2 Sonnet confirm/recon, 3 Opus measurement), strictly offline in
 scratch copies. Operator's consolidation rule: **no mixing venues — one

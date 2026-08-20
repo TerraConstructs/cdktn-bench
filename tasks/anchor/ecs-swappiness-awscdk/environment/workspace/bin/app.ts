@@ -4,7 +4,7 @@ import * as cdk from "aws-cdk-lib";
 import { ScenarioStack } from "../lib/scenario-stack";
 
 /**
- * Generated entrypoint -- generator/gen.py, from specs/ecs-swappiness.yaml.
+ * Generated entrypoint -- generator/gen.py.
  * Regenerate, do not hand-edit.
  *
  * No `env: { account, region }` on purpose -- synth-only oracle

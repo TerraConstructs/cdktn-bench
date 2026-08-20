@@ -25,7 +25,7 @@
 # which OUTRANKS every ambient credential source (env vars, shared config,
 # IMDS role) in the AWS provider's own resolution order — making a REAL
 # `terraform apply` against this account impossible for any scenario that
-# needs one (apigw-redeploy, verifier.live_check.enabled=true), even
+# needs one (any spec with verifier.live_check.enabled=true), even
 # though the agent is instructed not to touch this file. The
 # `var.cdktn_bench_live` switch below (default false — BYTE-IDENTICAL
 # offline behavior to before this fix for every scenario that never sets
@@ -38,7 +38,8 @@
 #   - `TF_VAR_cdktn_bench_live=1` (set by whoever is about to run a REAL
 #     `terraform apply` against account 886312446417 -- the reference
 #     solution's own solve.sh LIVE=1 path does this, and a real agent
-#     solving apigw-redeploy needs to do the same, see that scenario's
+#     solving a live-checked scenario needs to do the same, see that
+#     scenario's
 #     instruction.md): `access_key`/`secret_key` become `null` (omitted,
 #     not empty-string -- verified directly against terraform 1.15.8 +
 #     hashicorp/aws 6.58.0 that `null` here correctly falls through to the
@@ -65,7 +66,7 @@
 #     Gateway presents when it calls the Lambda, so every route 500s with
 #     "Internal server error" and the Lambda is NEVER INVOKED (a permission
 #     denial, not a handler bug) -- reproduced live twice in account
-#     886312446417 (docs/apigw-redeploy-mechanics.md's own scenario is the
+#     886312446417 (the first live-checked scenario is the
 #     first consumer of a real apply; see DECISIONS.md Slice G amendment
 #     for the full live-proof transcript). The other three `skip_*` flags
 #     (`skip_credentials_validation`, `skip_region_validation`,

@@ -43,8 +43,8 @@ harmless) and kills it immediately after -- see that file's hcl_raw
 tf-plan-mock-sfn step. arms/hcl-raw/environment/workspace/provider.tf's
 `endpoints { sfn = "http://127.0.0.1:<port>" }` points at the same port.
 
-Harmless no-op for every OTHER hcl_raw scenario (toy-ssm-parameter,
-ecs-swappiness, ...) that never touches `aws_sfn_state_machine` at all --
+Harmless no-op for every OTHER hcl_raw scenario -- i.e. any that never
+touches `aws_sfn_state_machine` at all --
 same "always started regardless of whether THIS scenario needs it" shape as
 terraconstructs' STS mock (see that file's own docstring for the identical
 precedent).

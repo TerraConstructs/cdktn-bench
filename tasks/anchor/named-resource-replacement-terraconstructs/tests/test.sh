@@ -65,16 +65,19 @@ if [ "${SPEC_IDEMPOTENCE_ENABLED:-false}" = "true" ]; then
   idem_outcome="not_verifiable"
   idem_reason="tier did not run"
   idem_rc=""
-  if [ ! -s "/app/project/cdktf.out/stacks/named-resource-replacement/terraform.tfstate" ]; then
+  if [ ! -s "/app/project/cdktf.out/stacks/internal-services-network/terraform.tfstate" ]; then
     idem_outcome="not_verifiable"
-    idem_reason="nothing was applied (no deploy state at /app/project/cdktf.out/stacks/named-resource-replacement/terraform.tfstate), so there is no converged state to re-check. An offline plan with no state ALWAYS reports pending changes, so this is reported as unverifiable rather than as a real pending-changes verdict."
+    idem_reason="nothing was applied (no deploy state at /app/project/cdktf.out/stacks/internal-services-network/terraform.tfstate), so there is no converged state to re-check. An offline plan with no state ALWAYS reports pending changes, so this is reported as unverifiable rather than as a real pending-changes verdict."
   fi
   if [ "$idem_outcome" = "not_verifiable" ] && [ "$idem_reason" = "tier did not run" ]; then
-    ( cd /app/project && npx cdktn synth >/dev/null && cd cdktf.out/stacks/named-resource-replacement && terraform init -input=false >/dev/null && terraform plan -input=false -refresh=false -detailed-exitcode ) > /logs/verifier/idempotence.log 2>&1
+    ( cd /app/project && npx cdktn synth >/dev/null && cd cdktf.out/stacks/internal-services-network && { [ -s terraform.tfstate ] || { echo "IDEMPOTENCE_STATE_VANISHED: cdktf.out/stacks/internal-services-network/terraform.tfstate existed before 'npx cdktn synth' and does not after it -- synth rewrote the stack directory, so there is no converged state left to plan against"; exit 9; }; } && terraform init -input=false >/dev/null && terraform plan -input=false -refresh=false -detailed-exitcode ) > /logs/verifier/idempotence.log 2>&1
     idem_rc=$?
     if [ "$idem_rc" -eq 0 ]; then
       idem_outcome="converged"
       idem_reason="the arm's own converged-state check reported no pending change"
+    elif [ "$idem_rc" -eq 9 ]; then
+      idem_outcome="not_verifiable"
+      idem_reason="the deploy state this tier was about to check disappeared when the command re-synthesized the stack directory, so the plan below it would have run against no state at all (an offline plan with no state ALWAYS reports pending changes) -- see idempotence.log"
     elif [ "$idem_rc" -eq 2 ]; then
       idem_outcome="pending_changes"
       idem_reason="the deployed state still differs from the configuration -- see idempotence.log"

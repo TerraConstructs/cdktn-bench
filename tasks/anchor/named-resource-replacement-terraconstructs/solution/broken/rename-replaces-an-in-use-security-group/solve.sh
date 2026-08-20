@@ -44,7 +44,7 @@
 set -euo pipefail
 
 MARKER="CDKTN_BENCH_LIVE_ONLY_CONFIRMED"
-STACK_DIR="cdktf.out/stacks/named-resource-replacement"
+STACK_DIR="cdktf.out/stacks/internal-services-network"
 MOCK_STS_PORT=17771
 
 write_stack() {

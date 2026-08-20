@@ -1,9 +1,9 @@
 // ECS EC2 task definition: tuned container memory swappiness
 //
-// Generated -- generator/gen.py, from specs/ecs-swappiness.yaml. App +
+// Generated entrypoint -- generator/gen.py. App +
 // provider bootstrap ONLY -- NOT the file you edit (see
 // lib/scenario-stack.ts for that). Do not hand-edit; regenerate
-// instead (`make gen SPEC=specs/ecs-swappiness.yaml`).
+// instead (`make gen`).
 import { App } from "cdktn";
 import { ScenarioStack } from "./lib/scenario-stack";
 

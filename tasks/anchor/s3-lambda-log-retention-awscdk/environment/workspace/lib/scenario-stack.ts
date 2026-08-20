@@ -4,10 +4,10 @@ import { Construct } from "constructs";
 /**
  * S3 upload triggers Lambda; log group retains 10 days
  *
- * Generated skeleton -- generator/gen.py, from specs/s3-lambda-log-retention.yaml.
+ * Generated skeleton -- generator/gen.py.
  * Empty on purpose: the agent fills this in per the task
  * instruction. Do not hand-edit; regenerate instead
- * (`make gen SPEC=specs/s3-lambda-log-retention.yaml`).
+ * (`make gen`).
  */
 export class ScenarioStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {

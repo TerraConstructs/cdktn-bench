@@ -72,6 +72,36 @@ title: "API Gateway REST API: deploy, confirm, modify, re-deploy (day-2 iteratio
 # the redeploy-trigger trap exists to deny it (Amendment 26 §7 rule 2).
 # Deliberately terminal: nothing here implies a second change is coming.
 workspace_title: "API Gateway REST API (live)"
+# AGENT-VISIBLE (SCHEMA.md §0.1), the NAME half of the same split
+# `workspace_title` makes for the SENTENCE half. `id` above is operator-facing
+# and may name the pitfall; this may not, because it is stamped into the
+# terraconstructs arm's `new ScenarioStack(app, ...)` construct id and
+# `gridUUID` -- and therefore into `cdktf.out/stacks/<id>/`, which the STEP-1
+# agent sees in its own `npx cdktn synth` output and in preflight.sh.
+#
+# "apigw-redeploy" is step 2's verb. Amendment 27's foreshadowing sweep grepped
+# the hyphenated "re-deploy" only, so the id sailed through every guard: it was
+# in main.ts on one arm and in every arm's skeleton header
+# ("from specs/apigw-redeploy.yaml"), while the step-1 prompt was clean.
+#
+# This value names the STEP-1 GOAL and nothing beyond it: a REST API serving
+# GET /hello and GET /version, which is exactly what step 01's prompt asks for.
+# Deliberately terminal -- nothing here implies a second change is coming.
+workspace_id: hello-version-api
+# This scenario's OWN foreshadowing vocabulary (SCHEMA.md §0.1), on top of the
+# global deny-list. These are step 02's SUBSTANCE: the route it adds, the
+# integration type it uses, and the resulting route count. None of them may
+# appear on any surface a step-1 agent can read. Previously these lived only in
+# generator/tests/test_multistep_emission.py::CONTENT_TOKENS; declared here they
+# are reviewed in the same file as the decomposition they protect, and the
+# generator-wide sweep (test_scenario_identity.py) picks them up automatically.
+agent_deny_vocab:
+  - /status
+  - mockintegration
+  - mock integration
+  - mock-integration
+  - '"routes": 3'
+  - '"routes":3'
 difficulty: 3
 services: [apigateway, lambda, iam, logs]
 
@@ -179,7 +209,7 @@ instruction:
       language_line: "Author this using terraconstructs (TypeScript) L2 constructs, synthesized via cdktn. Deploy for real with `terraform apply` against the synthesized stack."
       output_contract:
         entry_file: lib/scenario-stack.ts
-        artifact_path: cdktf.out/stacks/apigw-redeploy/plan.json
+        artifact_path: cdktf.out/stacks/hello-version-api/plan.json
         synth_command: "npx cdktn synth"
         json_fields:
           - name: api_url

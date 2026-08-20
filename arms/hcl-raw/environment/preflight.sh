@@ -31,7 +31,7 @@ echo "== provider filesystem mirror contents =="
 find /opt/terraform-plugin-mirror -type f | sort
 
 cd "$FIXTURES_DIR"
-# Fresh working state every run so this script is idempotent when re-run
+# Fresh working state every run so this script gives the same result when re-run
 # inside a persistent container.
 rm -rf .terraform .terraform.lock.hcl
 

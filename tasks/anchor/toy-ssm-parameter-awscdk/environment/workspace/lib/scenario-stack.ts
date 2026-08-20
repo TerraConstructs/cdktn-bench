@@ -4,10 +4,10 @@ import { Construct } from "constructs";
 /**
  * Toy: SSM parameter + read-only IAM role
  *
- * Generated skeleton -- generator/gen.py, from specs/toy-ssm-parameter.yaml.
+ * Generated skeleton -- generator/gen.py.
  * Empty on purpose: the agent fills this in per the task
  * instruction. Do not hand-edit; regenerate instead
- * (`make gen SPEC=specs/toy-ssm-parameter.yaml`).
+ * (`make gen`).
  */
 export class ScenarioStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {

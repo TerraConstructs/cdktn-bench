@@ -162,7 +162,7 @@ COPY workspace/main.tf ./main.tf
 # cover — spec `seeded_files` (specs/SCHEMA.md §2.5). Without these the files
 # exist only in the build context and on the host (where the host-side gates
 # read them directly), never inside the agent's container, while instruction.md
-# tells the agent to read them: docs/design/poisoned-workspace-design.md §9-B1.
+# tells the agent to read them.
 # Named file-by-file, never a blanket `COPY workspace/ ./`, to preserve
 # the arm Dockerfiles' deliberate named-COPY discipline. Generated — regenerate
 # with `make gen` / `make gen-all`, never hand-edit (SCHEMA.md §0).

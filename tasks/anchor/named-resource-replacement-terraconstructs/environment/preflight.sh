@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # arms/terraconstructs preflight — runs INSIDE the built image.
 #
-# 1. Prints every toolchain version so drift is visible in CI/build logs.
+# 1. Prints every toolchain version so a version change is visible in CI/build logs.
 # 2. Synthesizes the minimal app in /app/project (main.ts) with `cdktn synth`,
 #    fully offline: no terraform binary invocation, no AWS credentials,
 #    no network access needed (provider bindings are prebuilt npm packages).
@@ -42,7 +42,7 @@ rm -rf cdktf.out
 npx --no-install cdktn synth
 echo
 
-OUT_FILE="cdktf.out/stacks/named-resource-replacement/cdk.tf.json"
+OUT_FILE="cdktf.out/stacks/internal-services-network/cdk.tf.json"
 if [ ! -f "$OUT_FILE" ]; then
   echo "FAIL: expected synth output not found at $OUT_FILE"
   find cdktf.out -maxdepth 3 -type f || true
@@ -52,7 +52,7 @@ fi
 echo "=== validating synthesized Terraform JSON ==="
 node <<'NODE'
 const fs = require("fs");
-const path = "cdktf.out/stacks/named-resource-replacement/cdk.tf.json";
+const path = "cdktf.out/stacks/internal-services-network/cdk.tf.json";
 const doc = JSON.parse(fs.readFileSync(path, "utf8"));
 
 const resourceTypes = Object.keys(doc.resource || {});
@@ -69,7 +69,7 @@ echo
 echo "=== provider filesystem mirror contents ==="
 find /opt/terraform-plugin-mirror -type f | sort
 
-STACK_DIR="cdktf.out/stacks/named-resource-replacement"
+STACK_DIR="cdktf.out/stacks/internal-services-network"
 echo
 echo "=== terraform init (offline: filesystem_mirror only, no direct{} fallback) ==="
 ( cd "$STACK_DIR" && rm -rf .terraform .terraform.lock.hcl && terraform init -input=false )

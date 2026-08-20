@@ -28,6 +28,9 @@ id: <kebab-case scenario id>
 title: <string>
 workspace_title: <string>         # §0.1, required iff `steps:` or `workspace_seed:`
                                   #       is set, else forbidden
+workspace_id: <kebab-case>        # §0.1, required iff `steps:` or `workspace_seed:`
+                                  #       is set, else optional (defaults to `id`)
+agent_deny_vocab: [<string>, ...] # §0.1, optional, default []
 difficulty: <1|2|3>
 services: [<string>, ...]        # boto3 service ids, matches aws_services convention
 arms: {...}                       # §1
@@ -45,6 +48,8 @@ provenance: {...}                 # §6
 | `id` | string | yes | Kebab-case, matches `^[a-z][a-z0-9-]*$`. Becomes the directory name under `tasks/`, `oracles/rego/`, `oracles/cfn-guard/`, and `oracles/<id>/` (§8). Must equal the spec's own filename stem (`specs/<id>.yaml`), enforced by the generator at load time — this is what lets the generator refuse to run against a renamed-but-not-moved file. |
 | `title` | string | yes | Short human title, shown in any results viewer. Written to `task.toml [task] description` on a **single-step greenfield** spec; on a multi-step *or brownfield* spec that slot carries `workspace_title` instead and the full title moves to `task.toml [metadata] scenario_title` (both host-side metadata; the task dir itself is never uploaded to the agent). Not used in `instruction.md` — the instruction body is `instruction.shared_body`, not `title`. **Is** used as the skeleton header for a single-step greenfield spec — see §0.1. |
 | `workspace_title` | string | **required iff `steps:` or `workspace_seed:` is set**; forbidden otherwise | The header comment stamped into each arm's skeleton entry file under `environment/`. §0.1. |
+| `workspace_id` | string | **required iff `steps:` or `workspace_seed:` is set**; optional otherwise (defaults to `id`) | The agent-visible scenario **name** — the NAME half of what `workspace_title` does for the SENTENCE half. Kebab-case, `^[a-z][a-z0-9-]*$` (it becomes a construct id and a synthesized stack *directory* name). §0.1. |
+| `agent_deny_vocab` | list[string] | no, default `[]` | This scenario's own trap/foreshadowing vocabulary — plain substrings that must not reach its agent before it gets there on its own, checked on top of the global deny-list. §0.1. |
 | `difficulty` | int, `1`–`3` | yes | 1 = single-resource, 2 = multi-resource wiring, 3 = cross-service (prereg §5 difficulty gradient). The generator maps this to `task.toml [metadata] complexity`: `1→Atomic, 2→Sequential, 3→Orchestrated` — a generator convention, not a spec field; do not add a `complexity` field to the spec. |
 | `services` | list[string] | yes, ≥1 | boto3 service client ids (e.g. `ssm`, `iam`, `lambda`), lower-case. Written into every generated `task.toml [metadata] aws_services`. Purely descriptive in v1 (no live boto3 call ever validates against it — that upstream `test/aws_service_catalog.ts` check is aws-bench-datasets' own CI, not ours), but keep it accurate; a later live-check phase (§5) will care. |
 
@@ -127,6 +132,137 @@ every file under a task's `environment/`:
   string appearing anywhere the agent can read, independent of which words that
   title happens to contain, so it cannot rot as future brownfield specs invent
   new ways to describe their change.
+
+#### 0.1.1 `id` vs `workspace_id` — the scenario NAME is agent-visible too
+
+Everything above is about the header *sentence*. The same split is needed for
+the *name*, and for exactly the same reason — a verifier found the second half
+of the leak after the first half was fixed.
+
+**The rule, in one sentence:**
+
+> The spec **`id` is operator-facing and MAY name the pitfall**. Every name the
+> **agent** can see must be named for the **current step's goal** only.
+
+**The leak test, in one question:** *does this name reveal more than this step's
+own prompt does?* If yes, it is a leak — whatever kind of thing it is (a title,
+an id, a construct id, a directory).
+
+`id` is a genuinely useful operator name: it is the spec filename, the `tasks/`
+and `oracles/` directory name, the `task.toml [metadata]` key, the row label in
+a results table. Naming the pitfall there is *correct*. But `id` was also
+stamped into `environment/`, which is the agent's image:
+
+| Site | Arm | Was |
+|---|---|---|
+| `environment/app/main.ts` — `new ScenarioStack(app, …)` construct id | terraconstructs | `spec.id` |
+| `environment/app/main.ts` — `gridUUID` | terraconstructs | `spec.id` |
+| `environment/preflight.sh` — `cdktf.out/stacks/<id>/` (×3), *also visible in the agent's own `npx cdktn synth` output* | terraconstructs | `spec.id` |
+| skeleton/entry headers — `from specs/<id>.yaml`, `` `make gen SPEC=specs/<id>.yaml` `` | **all** | `spec.id` |
+
+Two scenarios were shipping their own answer through those sites:
+
+- **`named-resource-replacement`** — the id is not the change request ("rename
+  the security group to X"); it is the **diagnosis** the agent is supposed to
+  reach from the configuration. It reached awscdk and terraconstructs and *not*
+  hcl-raw (whose entry file IS the seed, so it carries no generator stamp) —
+  arm-asymmetric, inside the cross-arm comparison the scenario exists to
+  produce.
+- **`apigw-redeploy`** — the id **is step 2's verb**. Amendment 27's
+  foreshadowing sweep grepped the hyphenated `re-deploy` only, so the id sailed
+  through every guard while the step-1 prompt itself was clean.
+
+So: `workspace_id` is the agent-visible name, on the same required/optional
+rules as `workspace_title`.
+
+- **Multi-step or brownfield spec:** *required*. An author must choose a safe
+  name rather than inherit a leaking one by omission.
+- **Any other spec:** optional, defaulting to `id` — **but the deny-list runs
+  against the resolved value either way**. A single-step greenfield spec whose
+  id would leak is *refused at spec-load time* until it declares an explicit
+  `workspace_id`. An id that names only the open goal of its own prompt (e.g.
+  `s3-lambda-log-retention`, whose prompt asks for exactly that) is fine as the
+  default, and every such spec generates byte-identically to before this field
+  existed.
+
+The two current declarations:
+
+```yaml
+id: named-resource-replacement          # operator-facing: names the pitfall
+workspace_id: internal-services-network # agent-visible: names the workspace
+
+id: apigw-redeploy                      # operator-facing: names step 2's verb
+workspace_id: hello-version-api         # agent-visible: names step 1's goal
+```
+
+**The deny-list.** `generator/spec_model.py` carries it, not a test module,
+because a *validator* uses it: `AGENT_MECHANISM_DENY_PATTERNS` (names the fix,
+the diagnosis, or the benchmark's own machinery) and
+`AGENT_FORESHADOW_DENY_PATTERNS` (names a later step). Both classes apply to
+`workspace_id` and `workspace_title`, since both are stamped into
+`environment/`, which is present from turn one.
+
+The two classes have different **scopes** when the sweep runs over emitted
+bytes, and collapsing them makes the sweep either blind or useless:
+
+| Surface | Mechanism/meta | Foreshadowing |
+|---|---|---|
+| `environment/**` (every byte the Dockerfile COPYs) | banned | banned |
+| every step's prompt **except the last** | banned | banned |
+| the **last** prompt (or a stepless task's `instruction.md`) | banned | allowed |
+
+Step 02's own prompt *is* a change request and *does* ask for a re-deploy;
+banning those words there would ban the scenario. Naming the *fix* is never
+allowed, in any prompt.
+
+Every separator-bearing pattern matches `-`, `_`, a space, **or nothing** —
+`redeploy` as well as `re-deploy`. That one omission is the entire reason
+`apigw-redeploy` survived Amendment 27's sweep, so it is an invariant with its
+own test (`test_no_deny_list_pattern_requires_a_separator`) rather than a
+convention: no pattern may write `[ _-]` without the `?`.
+
+`agent_deny_vocab` extends the foreshadowing class per scenario, declared in the
+spec so the words that would give a trap away are reviewed in the same file as
+the trap (`apigw-redeploy`: `/status`, `mock integration`, `"routes": 3`;
+`named-resource-replacement`: `DependencyViolation`, `ForceNew`,
+`destroy-then-create`).
+
+**The header stamps no longer cite the spec at all.** `from specs/<id>.yaml`
+and `` `make gen SPEC=specs/<id>.yaml` `` became
+`Generated skeleton -- generator/gen.py.` and `` `make gen` ``, uniform across
+every scenario and arm. Rewriting the citation with `workspace_id` was rejected:
+it would name a spec file that does not exist. These lines address a *bench
+maintainer*, who holds the repo and gets the usage message from `make gen`
+anyway; the id→workspace mapping is recorded host-side in
+`task.toml [metadata] workspace_id`. Uniform beats scenario-varying here — a
+stamp that is neutral for *some* scenarios would itself signal which ones have
+something to hide.
+
+**Enforcement.**
+
+- `Spec._workspace_id_required_where_identity_is_prompt_surface`,
+  `Spec._workspace_id_format`,
+  `Spec._agent_visible_identity_is_deny_list_clean` (runs on the *resolved*
+  value, so defaults are checked too), and
+  `Spec._terraconstructs_artifact_path_matches_workspace_identity` (the
+  synthesized stack directory is named by `workspace_id`; a mismatch would not
+  fail loudly, it would score every solution — including the reference — a
+  constant 0.0 against a nonexistent `plan.json`) — all at spec-load time.
+- `generator/tests/test_scenario_identity.py` — the corpus-wide sweep over real
+  emitted bytes: the id never appears agent-visibly, the vocabulary sweep in
+  both scopes, arm symmetry, `arms/*/environment/**` names no scenario, both
+  allowlists proven honest, and the pre-fix stamps replayed and required to
+  fail.
+
+**No exemption for the id, anywhere.** Both earlier guards scrubbed it before
+scanning ("every header cites it"), and that is precisely why each missed the
+leak its own deny-list already named. The scrub is now an *assertion*: what gets
+scrubbed is `workspace_id`, whose cleanliness a validator guarantees, plus
+tokens the agent's own prompt hands it — and *that* allowlist is derived from
+the emitted prompt and re-proven per entry, so a token stops being scrubbed the
+moment the prompt stops saying it. (`apigw-redeploy-api` is the one such token:
+step 01's prompt says "named EXACTLY `apigw-redeploy-api`", so it reveals
+exactly as much as the prompt does.)
 
 ---
 
@@ -304,7 +440,7 @@ re-type-checks by construction and can never execute stale emitted JS. See
 |---|---|---|---|---|
 | `awscdk` | `lib/scenario-stack.ts` (class `ScenarioStack`, resource logic only) | `bin/app.ts` — `App`/`ScenarioStack` instantiation; the generator rewrites its import/instantiation once per scenario, never per trial | `cdk.out/ScenarioStack.template.json` | `build_command: npm run build`, `synth_command: npx cdk synth --no-lookups --quiet -o cdk.out` |
 | `hcl_raw` | `main.tf` (resource blocks ONLY — no `provider` block; see below) | `provider.tf` — the `terraform{}`/`provider "aws" {}` block + `skip_*`/dummy-credential fixture lines (byte-copied from `arms/hcl-raw/environment/workspace/provider.tf`, never per-scenario content) | `plan.json` | `synth_command` not used; `plan_command: terraform init && terraform validate && terraform plan -out=plan.tfplan && terraform show -json plan.tfplan > plan.json` |
-| `terraconstructs` | `lib/scenario-stack.ts` (class `ScenarioStack extends AwsStack`, resource logic only) | `main.ts` — `App`/`providerConfig` bootstrap (incl. the offline `skip_*`/dummy-credential fixture and the mock-STS `endpoints` pointer), imports and instantiates `ScenarioStack`; regenerated every run, mirroring `awscdk`'s `bin/app.ts` | `cdktf.out/stacks/<id>/plan.json` where `<id>` is the generator-assigned stack id, always equal to `id` (the spec's own scenario id) — **not** `cdk.tf.json`: `generator/gen.py::build_static_tiers_sh` always appends a real `terraform init && terraform plan && terraform show -json` step after `synth_command`, chdir'd into the synthesized stack's own directory, so this arm is graded in the same plan-JSON shape `hcl_raw` is (see §4.2) | `synth_command: npx cdktn synth`; `build_command` **must be unset** — gen.py always injects `npx tsc -p tsconfig.json` as an explicit first toolchain step with its own reward-0.0 branch (see the `build_command` note above §8.3) |
+| `terraconstructs` | `lib/scenario-stack.ts` (class `ScenarioStack extends AwsStack`, resource logic only) | `main.ts` — `App`/`providerConfig` bootstrap (incl. the offline `skip_*`/dummy-credential fixture and the mock-STS `endpoints` pointer), imports and instantiates `ScenarioStack`; regenerated every run, mirroring `awscdk`'s `bin/app.ts` | `cdktf.out/stacks/<id>/plan.json` where `<id>` is the generator-assigned stack id, always equal to **`workspace_id`** (§0.1 — the AGENT-VISIBLE scenario name, which falls back to `id` when a spec declares none; this path is agent-visible in `preflight.sh` and in the agent's own `npx cdktn synth` output, and `Spec._terraconstructs_artifact_path_matches_workspace_identity` refuses a spec whose `artifact_path` disagrees with it) — **not** `cdk.tf.json`: `generator/gen.py::build_static_tiers_sh` always appends a real `terraform init && terraform plan && terraform show -json` step after `synth_command`, chdir'd into the synthesized stack's own directory, so this arm is graded in the same plan-JSON shape `hcl_raw` is (see §4.2) | `synth_command: npx cdktn synth`; `build_command` **must be unset** — gen.py always injects `npx tsc -p tsconfig.json` as an explicit first toolchain step with its own reward-0.0 branch (see the `build_command` note above §8.3) |
 
 **`entry_file` vs. the non-agent-owned bootstrap file (finding G1, fixed
 2026-08-06):** every arm's workspace ships both. `entry_file` is what the
@@ -1216,13 +1352,24 @@ verifier:
   the pre-registered default; a spec may lower it (never raise it without a
   logged amendment — this is a pre-registered budget, not a per-scenario
   knob to tune away a hard scenario).
+
+  > **Not the same number as the runner's `MAX_ITERS`.** `DECISIONS.md`
+  > Amendment 22 exists precisely to unpick this conflation:
+  > `scripts/run-bench.sh` maps `MAX_ITERS` onto Claude Code's `--max-turns`,
+  > which counts **agent steps**, not the pre-registration's feedback
+  > **cycles** — one cycle (author → deploy → read error → amend) is many
+  > steps — and its default is **100**, raised from 8 after the first live
+  > trial hit `error_max_turns` at 8. This field is the prereg's *cycle*
+  > budget; do not read the two as one knob. See `CLAUDE.md` "Turn budget".
 - `live_check.enabled`: **`false` for every v1-shaped (synth/plan-only)
   spec** — the CONTEXT constraint this schema was originally written
   against ("v1 verifier is the STATIC tier stack ... NOT live-AWS
   check.py") still holds for the vast majority of scenarios. Relaxed from a
   hard-pinned `Literal[False]` to `bool` by the Slice G amendment
-  (`DECISIONS.md` "Amendment 12", `apigw-redeploy` — the first, and as of
-  this writing only, spec to set it `true`): a scenario whose entire point
+  (`DECISIONS.md` "Amendment 12", first exercised by `apigw-redeploy`; more
+  than one spec sets it `true` today, so do not read this as an enumeration
+  — `grep -l 'enabled: true' specs/*.yaml` under `live_check` is the answer):
+  a scenario whose entire point
   is a day-2 apply→modify→re-apply→verify loop *inside one trial* cannot be
   meaningfully graded synth/plan-only, since the fact being tested (did the
   second deploy actually take effect) only exists at runtime. Setting this
@@ -1285,8 +1432,10 @@ verifier:
   final reward is 1.0 iff the static tiers already say 1.0 AND `.outcome`
   is `"pass"` — both `"fail_stale"` and `"not_verifiable"` downgrade to 0.0,
   fail-closed (an unverifiable claim must never silently earn reward).
-  `apigw-redeploy` is, as of this writing, the only spec with `gating:
-  true`; every other spec's generated `tests/test.sh` gains the same
+  `gating: true` is set by more than one spec today (it travels with
+  `live_check.enabled`, and every live-checked scenario in the corpus gates
+  on it) — the list is not enumerated here because it goes stale; the specs
+  themselves are the register. Every spec that does NOT set it gains the same
   runtime branch as dead code (never entered, since `SPEC_LIVE_CHECK_GATING`
   is never set for them) — a strict no-op, same convention as `enabled`
   itself. The fixture-invoked shape (`--expect {ok,stale}`, called directly
@@ -1325,7 +1474,7 @@ YAML key" discipline `TERRACONSTRUCTS_BUILD_COMMAND` uses
 | Arm | Command | Converged | Pending |
 |---|---|---|---|
 | `hcl_raw` | `terraform plan -input=false -refresh=false -detailed-exitcode` | exit 0 | exit 2 |
-| `terraconstructs` | `npx cdktn synth`, then the same plan inside `cdktf.out/stacks/<id>/` | exit 0 | exit 2 |
+| `terraconstructs` | `npx cdktn synth`, then a **post-synth re-probe of `terraform.tfstate`** (see below), then the same plan inside `cdktf.out/stacks/<id>/` (`<id>` = `workspace_id`, §0.1) | exit 0 | exit 2 |
 | `awscdk` | `npx cdk diff --fail --no-lookups ScenarioStack` | exit 0 | exit 1 |
 
 `cdk diff --fail` is the honest analogue for CloudFormation: "the toolchain's own
@@ -1371,7 +1520,26 @@ would report `pending_changes` for a reason unrelated to convergence.
     the line before `return diffs && options.fail ? 1 : 0`, so it is present on
     every *completed* diff and absent on every early error exit.
 
-  Both mechanisms deliver the same guarantee, and it is the guarantee, not the
+  - **`terraconstructs` — plus a POST-SYNTH re-probe** (added 2026-08-20, task
+    #15 round 3, from a verifier note). This is the one arm where the
+    pre-flight probe and the plan look at the *same directory* with a
+    `npx cdktn synth` in between: the probe confirms
+    `cdktf.out/stacks/<id>/terraform.tfstate` exists, then synth rewrites that
+    very directory. If synth ever cleans it, the plan runs with **no state**,
+    exits `2`, and would be recorded as a genuine `pending_changes` verdict —
+    precisely the fake verdict the pre-flight probe exists to prevent,
+    delivered through the one window the pre-flight probe cannot see through.
+    So the state file is re-checked **inside** the command, after synth and
+    before terraform is believed; a vanished state prints
+    `IDEMPOTENCE_STATE_VANISHED:` and exits the reserved rc `9`
+    (`gen.py::IDEMPOTENCE_STATE_VANISHED_RC`, distinct from every code
+    terraform and cdk produce), which the generated block maps to
+    `not_verifiable` with that reason. Emitted only for the arm whose command
+    can raise it, so no other arm's `tests/test.sh` moves a byte. **Not yet
+    exercised live** — cdktf's own behaviour toward an existing stack-dir state
+    file is what the first live terraconstructs brownfield run settles.
+
+  All mechanisms deliver the same guarantee, and it is the guarantee, not the
   mechanism, that is the contract: **offline this tier is skipped with a
   reason, never fake-passed, on all three arms.** See
   `gen.py::IDEMPOTENCE_STATE_PROBE` / `IDEMPOTENCE_COMPLETION_MARKER`

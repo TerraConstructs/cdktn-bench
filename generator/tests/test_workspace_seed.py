@@ -509,7 +509,9 @@ class TestIdempotenceEmission:
         assert "SPEC_IDEMPOTENCE_ENABLED" in text
         assert "SPEC_IDEMPOTENCE_GATING" in text
         assert "/logs/verifier/idempotence-result.json" in text
-        assert gen.IDEMPOTENCE_COMMAND[arm].replace("__SPEC_ID__", pilot.id) in text
+        assert gen.IDEMPOTENCE_COMMAND[arm].replace(
+            "__WORKSPACE_ID__", pilot.workspace_identity()
+        ) in text
 
     def test_awscdk_uses_cdk_diff_not_a_second_synth(self, pilot: Spec) -> None:
         """A second synth + template self-diff is vacuous by construction (CDK
@@ -535,7 +537,9 @@ class TestIdempotenceEmission:
         unresolvable AWS environment as a genuine `pending_changes` verdict.
         """
         text = (gen.task_dir(pilot, arm) / "tests" / "test.sh").read_text()
-        probe = gen.IDEMPOTENCE_STATE_PROBE[arm].replace("__SPEC_ID__", pilot.id)
+        probe = gen.IDEMPOTENCE_STATE_PROBE[arm].replace(
+            "__WORKSPACE_ID__", pilot.workspace_identity()
+        )
         assert f'[ ! -s "/app/project/{probe}" ]' in text
         assert "An offline plan with no state ALWAYS reports pending changes" in text
         assert 'idem_outcome="not_verifiable"' in text
@@ -688,11 +692,33 @@ BROWNFIELD_SCAN_EXCLUDE = {"package-lock.json"}
 
 def _brownfield_scrub(text: str, spec: Spec) -> str:
     """Remove the strings that contain a banned substring for reasons unrelated
-    to the trap: the scenario id itself (which every generated header cites and
-    which a `make gen` invocation needs), and proven arm boilerplate."""
+    to the trap.
+
+    THE SPEC ID IS NOT ONE OF THEM -- and used to be. This function opened with
+
+        out = out.replace(spec.id, "<scenario-id>")
+
+    on the reasoning that "every generated header cites the id and a `make gen`
+    invocation needs it", which sounds procedural and is in fact a hole the
+    exact size of the leak this whole module exists to catch: the pilot's id is
+    `named-resource-replacement`, `MECHANISM_PATTERNS` bans `\\breplacements?\\b`,
+    and the id was stamped into `main.ts`'s ScenarioStack id + gridUUID and into
+    `bin/app.ts`'s header on two of three arms. The scrub deleted it before the
+    deny-list ever saw it, and `test_the_leak_is_symmetric_across_arms` then
+    compared three empty sets.
+
+    The exemption is now an ASSERTION instead (Amendment 28 addendum): the
+    agent-visible identity is `Spec.workspace_identity()` (§0.1), it is
+    deny-list-checked by
+    `spec_model.Spec._agent_visible_identity_is_deny_list_clean` at load time,
+    and it -- not `id` -- is what the generator stamps. So the scrub removes
+    `workspace_id`, whose cleanliness is guaranteed by a validator, and lets
+    every `id` byte through to the deny-list.
+    """
     out = text.lower()
-    out = out.replace(spec.id, "<scenario-id>")
-    out = out.replace(spec.id.replace("-", "_"), "<scenario-id>")
+    wid = spec.workspace_identity().lower()
+    out = out.replace(wid, "<workspace-id>")
+    out = out.replace(wid.replace("-", "_"), "<workspace-id>")
     for phrase in BROWNFIELD_BOILERPLATE:
         out = out.replace(phrase, "<arm-boilerplate>")
     return out
@@ -840,6 +866,39 @@ class TestBrownfieldPromptSurface:
             "the mechanism deny-list no longer rejects the leak it was written "
             "for — it has been weakened"
         )
+
+    def test_the_scan_would_have_caught_the_spec_id_stamping(self) -> None:
+        """The SECOND leak of the same shape, and the reason `_brownfield_scrub`
+        no longer exempts the scenario id.
+
+        The first version of this class scrubbed `spec.id` before scanning, so
+        the pilot's `named-resource-replacement` -- which contains the banned
+        `replacement` outright -- was invisible to it even while sitting in the
+        agent's own `main.ts` on two of three arms. Reconstructed here as the
+        exact pre-fix bytes `terraconstructs_main_ts()` used to emit, plus the
+        awscdk header line, and required to FAIL the scan.
+
+        This is the regression test the verifier asked for: it fails against
+        the old scrub and passes against the new one, so the fix cannot be
+        undone silently.
+        """
+        spec = load_spec(BROWNFIELD_SPECS[0])
+        pre_fix_stamping = (
+            f'new ScenarioStack(app, "{spec.id}", {{\n'
+            f'  environmentName: "cdktn-bench",\n'
+            f'  gridUUID: "{spec.id}",\n'
+            f" * Generated entrypoint -- generator/gen.py, from "
+            f"specs/{spec.id}.yaml."
+        )
+        assert _mechanism_leaks(pre_fix_stamping, spec), (
+            "the scan no longer rejects the scenario id stamped into "
+            "environment/. `_brownfield_scrub` has re-acquired an id exemption "
+            "— which is exactly how this leak survived the first fix "
+            "(SCHEMA.md §0.1 workspace_id, Amendment 28 addendum)."
+        )
+        # ...and the identity that REPLACED it must be clean, or the fix merely
+        # moved the leak into a new field.
+        assert not _mechanism_leaks(spec.workspace_identity(), spec)
 
     @pytest.mark.parametrize("path", BROWNFIELD_SPECS, ids=lambda p: p.stem)
     def test_task_toml_splits_the_safe_header_from_the_full_title(

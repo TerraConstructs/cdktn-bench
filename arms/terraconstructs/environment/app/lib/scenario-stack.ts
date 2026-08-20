@@ -10,7 +10,7 @@
 // same two-file shape means `make preflight` exercises the split for real,
 // not just the generated tasks.
 //
-// Exercises the same constructs the s3-lambda-log-retention seed scenario
+// Exercises the same constructs an S3-plus-log-retention seed scenario
 // needs: an S3 Bucket and a CloudWatch LogGroup with a typed `RetentionDays`
 // enum (the same enum-based catch as aws-cdk-lib: ONE_WEEK=7, TWO_WEEKS=14,
 // no literal "10" exists) — see arms/terraconstructs/README.md for the full

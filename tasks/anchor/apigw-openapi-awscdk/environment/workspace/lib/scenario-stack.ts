@@ -4,10 +4,10 @@ import { Construct } from "constructs";
 /**
  * API Gateway REST API from an OpenAPI spec, with per-route Lambda integrations
  *
- * Generated skeleton -- generator/gen.py, from specs/apigw-openapi.yaml.
+ * Generated skeleton -- generator/gen.py.
  * Empty on purpose: the agent fills this in per the task
  * instruction. Do not hand-edit; regenerate instead
- * (`make gen SPEC=specs/apigw-openapi.yaml`).
+ * (`make gen`).
  */
 export class ScenarioStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
