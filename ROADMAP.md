@@ -26,6 +26,11 @@ with `AgentSetupTimeoutError` (infra, not agent — invalid rows, not zeros) and
 must be re-run, and `named-resource-replacement` (the first live brownfield run,
 which takes Amdt 28 out of draft) never started.
 
+Re-run priority: **`ecs-swappiness-awscdk`** first — it is the missing third arm
+of §3 finding 3, the session's strongest thesis evidence; then `apigw-openapi`
+×3 (whose prompt also carries the §1-item-3a quality caveat), then
+`named-resource-replacement` ×3.
+
 ---
 
 ## 2. What we measure — a profile, not a scalar
@@ -85,13 +90,55 @@ run). **n=1 per cell — these are hypotheses, not findings.**
    no type errors on either side. The CDK cost was **front-loaded reading**, not
    failure. This is the L2-lag family: when a service feature is newer than the
    abstraction's ergonomics, pass-through beats abstraction.
-3. **Discovery materializes as code and survives a session reset.** In
+3. **Transparency cuts both ways — `ecs-swappiness` is the mirror of finding 2.**
+   `memorySwappiness` is silently inert unless `maxSwap` is also set; the prompt
+   asks only for swappiness=42 and never names `maxSwap`. **hcl-raw wrote
+   `linuxParameters = { swappiness = 42 }`**, passed all three tier-0 asserts
+   (`taskdef-exists`, `taskdef-ec2-compatible`, `swappiness-value-correct`), and
+   was caught only by tier-1 → **0.0**. **terraconstructs wrote
+   `{ maxSwap: 256, swappiness: 42 }`** and stated the reason unprompted — *"ECS
+   only honors swappiness when maxSwap [is set]"* — which paraphrases the JSDoc
+   on the very property it was typing (`aws-ecs/lib/linux-parameters.d.ts`: *"If
+   a value is not specified for maxSwap then this parameter is ignored"*). The
+   HCL arm had nowhere to receive that: `container_definitions` is a
+   `jsonencode()`'d **string**, an opaque blob the provider passes through with
+   no types, no docs, no validation.
+
+   Set beside finding 2, the same property of Terraform flips sign:
+
+   | | `sfn-jsonata` | `ecs-swappiness` |
+   |---|---|---|
+   | knowledge needed | how the **tool** encodes a feature | how the **service** behaves |
+   | HCL pass-through | **wins** — nothing to learn | **loses** — nothing to teach |
+   | outcome | hcl 7,033 tok vs cdk 15,533, both green | hcl **0.0**, tcons 1.0 |
+
+   Terraform's transparency is an asset when the missing knowledge is about the
+   *tool* and a liability when it is about the *service*. That is a far more
+   defensible claim than "abstractions are better", and it makes both results
+   necessary rather than one of them noise.
+
+   Two corroborating details. hcl-raw spent **41% rbw** here — its highest, and
+   the only failing HCL row — while terraconstructs spent 4%: it *was* looking,
+   but provider docs for an opaque JSON blob do not carry the coupling. That is
+   direct support for treating high rbw in a normally-low-rbw arm as a
+   **lostness signal** rather than diligence. And it failed **cheap** — 1,152
+   output tokens, 8 messages, the smallest trial in the battery — the signature
+   of a *confident* wrong answer, which a pass/fail oracle plus a token count
+   would have scored as "efficient".
+
+   **Unmeasured, and the obvious re-run:** awscdk's row was lost to the infra
+   timeout, and it ships the identical JSDoc. Also unverified whether the
+   terraconstructs agent *read* that `.d.ts` or recalled the coupling from
+   training — only the former proves the abstraction **delivered** the
+   knowledge rather than merely agreeing with it.
+
+4. **Discovery materializes as code and survives a session reset.** In
    multi-step `apigw-redeploy`, CDK's rbw halves from step 1 to step 2
    (43%→18%, 35%→17%) *despite a fresh session with no memory*. The step-1 code
    in the workspace is the cache. Consequence: our fresh-session design does
    not measure un-amortized cost — it measures cost amortized **through the
    artifact**, which is how real maintenance works.
-4. **CDK required an escape hatch on `apigw-redeploy`, both steps** — first
+5. **CDK required an escape hatch on `apigw-redeploy`, both steps** — first
    mechanical escape-hatch evidence, from a scenario not designed to test it.
 
 ---
