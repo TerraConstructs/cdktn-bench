@@ -398,8 +398,12 @@ header; summary:
 
 ## Post-hoc signal extraction
 
- pulls deterministic per-trial signals (read-before-write,
+`extract_signals.py` pulls deterministic per-trial signals (read-before-write,
 escape-hatch incidence, turns, tool calls, cost) out of a completed job dir, plus
-a per-arm rollup. See **** for usage, the quick
-recipes for reward/cost tables and failure triage, and the message-id
-deduplication gotcha that makes naive token sums double-count.
+a per-arm rollup. See **[../docs/signal-extraction.md](../docs/signal-extraction.md)**
+for usage, the quick recipes for reward/cost tables and failure triage, and the
+message-id deduplication gotcha that makes naive token sums double-count.
+
+```bash
+python3 metrics/extract_signals.py jobs/<model>/<job-dir>
+```
