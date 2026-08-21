@@ -66,6 +66,32 @@ than against it: that scenario's signal was never correctness — it is
 oracle does not lose the decomposition signal, because the oracle was never
 carrying it.** It only has to certify "it works."
 
+### 3.0 CORRECTION (2026-08-20): a third category — *knowledge-only* traps
+
+The table above claims every trap but one manifests at runtime. The
+`ecs-swappiness` trial disproves that for at least one important class.
+
+`memorySwappiness` without `maxSwap` is accepted by `terraform plan`, accepted
+by `apply`, and returned intact by `describe-task-definition`. The value is
+ignored only at **container runtime** — observing it empirically means launching
+a task and inspecting cgroup settings inside the running container. The failing
+agent *did* run `init`/`validate`/`plan` and they all passed.
+
+So there are three categories, not two:
+
+| category | example | catchable by |
+|---|---|---|
+| manifests in the plan/API | missing CBD, exclusive attachment, drift | behavioural probe **or** structural assert |
+| manifests only in cost/effort | bucket decomposition | neither — it is the token count |
+| **knowledge-only** | `swappiness`/`maxSwap` | **encoded knowledge only** — no practical probe |
+
+**Consequence for this proposal:** inverting oracle authority to behavioural
+probes must NOT mean deleting tier-1 structural asserts. For knowledge-only
+traps the structural assert *is* the encoded knowledge, and it is the only
+practical oracle. The recommendation in §5 stands, with this amendment: a
+scenario must declare which category its trap falls in, and knowledge-only traps
+keep a structural assert as their authority.
+
 ### 3.1 The one thing a behavioural oracle cannot do alone
 
 It cannot distinguish *"the IaC produced this"* from *"the agent clicked it

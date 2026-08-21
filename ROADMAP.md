@@ -117,11 +117,32 @@ run). **n=1 per cell — these are hypotheses, not findings.**
    defensible claim than "abstractions are better", and it makes both results
    necessary rather than one of them noise.
 
-   Two corroborating details. hcl-raw spent **41% rbw** here — its highest, and
-   the only failing HCL row — while terraconstructs spent 4%: it *was* looking,
-   but provider docs for an opaque JSON blob do not carry the coupling. That is
-   direct support for treating high rbw in a normally-low-rbw arm as a
-   **lostness signal** rather than diligence. And it failed **cheap** — 1,152
+   **A correction to an earlier reading of this row.** hcl-raw's 41% rbw was
+   first written up here as a "lostness signal". Re-reading the trace, that is
+   wrong: its whole run was 7 tool calls — `ls`, `Read main.tf`, `Edit main.tf`,
+   `terraform init`, `validate && plan`, `Read`, write-answer — i.e. two normal
+   orientation calls before editing at step 3, then genuine self-verification.
+   The 41% is a **small-denominator artifact** (477 of just 1,152 output
+   tokens), not confusion. rbw% is only comparable between trials of similar
+   size; report the absolute alongside it and treat sub-2k-token trials as
+   uninformative on this axis. **No lostness claim is supported by this data.**
+
+   **Self-verification could not have saved it — this is a *knowledge-only*
+   trap.** The agent did run `terraform plan`, and it passed, because the config
+   is valid. So would `apply`: ECS accepts the task definition, and
+   `describe-task-definition` returns `memorySwappiness: 42`. The value is
+   ignored only at **container runtime**, so catching it empirically means
+   launching a task and inspecting cgroup settings inside the container. It is
+   therefore invisible to plan, to apply, to API-level behavioural probing —
+   and catchable only by *encoded knowledge*. See
+   `docs/design/oracle-authority-proposal.md` §3.2, which this row corrects.
+
+   This is also the sharpest form of the §3 law: for knowledge-only traps you
+   **cannot test your way to the answer**. No feedback loop the agent can run
+   will reveal it; the knowledge can only be inherited — from the JSDoc, from a
+   module author who was burned, from a colleague.
+
+   It failed **cheap** — 1,152
    output tokens, 8 messages, the smallest trial in the battery — the signature
    of a *confident* wrong answer, which a pass/fail oracle plus a token count
    would have scored as "efficient".
