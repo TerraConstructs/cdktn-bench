@@ -126,11 +126,16 @@ run). **n=1 per cell — these are hypotheses, not findings.**
    of a *confident* wrong answer, which a pass/fail oracle plus a token count
    would have scored as "efficient".
 
-   **Unmeasured, and the obvious re-run:** awscdk's row was lost to the infra
-   timeout, and it ships the identical JSDoc. Also unverified whether the
-   terraconstructs agent *read* that `.d.ts` or recalled the coupling from
-   training — only the former proves the abstraction **delivered** the
-   knowledge rather than merely agreeing with it.
+   **The delivery mechanism is verified, not inferred.** The terraconstructs
+   agent's tool sequence reads: step 5 `grep` for the ECS type files, steps 6-8
+   `Read` `ec2-task-definition.d.ts`, **`linux-parameters.d.ts`** and
+   `container-definition.d.ts`, … step 13 the first `Write` of the solution. It
+   **read the JSDoc carrying the coupling before writing a line**. The
+   abstraction delivered the knowledge at runtime; the agent did not merely
+   happen to agree with it.
+
+   **Still unmeasured, and the obvious re-run:** awscdk's row was lost to the
+   infra timeout, and it ships the identical JSDoc.
 
 4. **Discovery materializes as code and survives a session reset.** In
    multi-step `apigw-redeploy`, CDK's rbw halves from step 1 to step 2
@@ -142,6 +147,47 @@ run). **n=1 per cell — these are hypotheses, not findings.**
    mechanical escape-hatch evidence, from a scenario not designed to test it.
 
 ---
+
+### The unifying reading — an abstraction is crystallized community failure
+
+Findings 2 and 3 look contradictory (transparency wins, then loses) until you
+ask *what an abstraction actually contains*. It is not primarily an API wrapper:
+it is **accumulated community experience of what goes wrong, encoded so the next
+person cannot easily repeat it**. The `swappiness`/`maxSwap` JSDoc is somebody's
+production incident turned into a docstring. Terraform community modules exist
+for the same reason — wiring raw provider resources into a working system was
+hard, so practitioners captured the hard-won composition lessons and shared them
+as code.
+
+This gives one law that explains both findings:
+
+> **abstraction advantage ≈ (encoded hard-won experience) − (cost of learning
+> the abstraction's own vocabulary)**
+
+- `ecs-swappiness`: an old, well-trodden, painful corner → much experience
+  encoded → the abstraction teaches → **abstraction wins**.
+- `sfn-jsonata`: a feature newer than its wrapper → little experience encoded
+  yet → only vocabulary left to learn → **pass-through wins**.
+
+The L2-lag family (§5) is therefore not a separate phenomenon; it is this law
+evaluated where the first term is still near zero.
+
+**The LLM-specific half.** A model knows the *head* of its training
+distribution, not the tail. Popular resources and mainstream patterns are known
+deeply; niche couplings like `swappiness`/`maxSwap` are not. So the prediction
+sharpens into something measurable:
+
+> the abstraction advantage should be **largest exactly where the model's prior
+> knowledge is weakest**, and should invert to a pure vocabulary tax where the
+> model already knows the answer.
+
+That is a dose-response claim on an axis we can measure directly — see M6.
+
+**A complication to state up front:** an abstraction helps through *two*
+channels — runtime delivery (what finding 3 measures) and **training-corpus
+enrichment** (CDK's docs are themselves in the corpus, so the abstraction may
+have already taught the model, invisibly, and that improves even the raw-HCL
+arm). Only the first is visible in a trial. M6 separates them.
 
 ## 4. Measurement roadmap
 
@@ -178,6 +224,16 @@ data shows, it is the most important result this benchmark can produce.**
 Design note: seed the workspace with both relevant *and* less-relevant popular
 modules, so module **selection** cost is measured, not assumed away.
 
+### M3 sharpening — modules and L2s capture *different* knowledge
+Community modules encode **composition** knowledge ("how to wire N resources
+into a working system"); vendor L2s encode composition **plus per-property
+semantics** via the doc surface the agent reads at the point of use. A module
+that exposes `swappiness` as a pass-through variable would **not** have saved
+finding 3 unless its author had personally hit the bug. Prediction to test:
+**modules win on composition traps and lose on property-semantics traps.** That
+split is the most interesting thing M3 can measure, and it is worth choosing the
+Batch-A/B/C scenarios covered by the modules arm to span both kinds.
+
 ### M4 — scale dose-response (the biggest live limitation)
 Every scenario today is 1–2 files — the regime where abstraction pays off
 *least*, because the whole thing fits in the agent's head. The maintainability
@@ -191,6 +247,25 @@ is a useful real-world calibration point for the upper end.
 ### M5 — oracle authority
 See `docs/design/oracle-authority-proposal.md`. Decide **after** a full battery,
 using the measured divergence rate between static-green and live-green.
+
+### M6 — closed-book knowledge probe (cheap, no AWS, no trials)
+Operationalizes the §3 law. For every scenario's trap, ask the model the
+underlying question **closed-book** — no workspace, no docs, no tools — and
+record whether it knows (e.g. *"in an ECS task definition, does setting
+memorySwappiness alone take effect?"*). Then:
+
+| closed-book | with abstraction | reading |
+|---|---|---|
+| knows | correct | abstraction adds only vocabulary cost → expect it to **lose** |
+| does not know | correct | abstraction **delivered** the knowledge at runtime (channel 1) |
+| knows | — | may itself be corpus enrichment from the abstraction's docs (channel 2) |
+| does not know | wrong | the abstraction failed to encode it — an abstraction-quality finding |
+
+This turns "abstractions help" into a per-trap prediction with a stated
+mechanism, costs no AWS and no trials, and is the cheapest high-value
+experiment on this roadmap. Probe results must be dated: model knowledge is a
+moving target, and a trap that is tail-knowledge today may be head-knowledge in
+the next model generation — which is itself a finding worth tracking.
 
 ---
 
@@ -259,12 +334,17 @@ single accidental instance of exactly this.
 ## 7. Open decisions
 
 1. Adopt the oracle-authority inversion (M5)? — decide on battery data.
-2. Do the profile metrics (rbw / escape-hatch / blast radius) become
+2. Is the §3 law ("abstraction advantage = encoded experience − vocabulary
+   cost") pre-registered as **the** thesis, replacing the flatter
+   "typed L2s beat raw HCL" framing? It is better supported by the evidence and
+   it is falsifiable in a way the flat version is not — but it was derived
+   post-hoc from n=1 pairs, so M6 should test it before it is promoted.
+3. Do the profile metrics (rbw / escape-hatch / blast radius) become
    **pre-registered headline** columns, or exploratory secondary ones? They were
    found post-hoc, which is exactly the situation pre-registration exists to
    discipline.
-3. Does `hcl-modules` become a **fourth arm** (all scenarios) or a **treatment**
+4. Does `hcl-modules` become a **fourth arm** (all scenarios) or a **treatment**
    applied to a chosen subset?
-4. Is the fresh-session-per-step choice pre-registered as *modelling
+5. Is the fresh-session-per-step choice pre-registered as *modelling
    maintenance-by-a-different-engineer* (§3 finding 3), and does an
    explicitly-cached variant become an M2 condition?
