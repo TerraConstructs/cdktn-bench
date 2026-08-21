@@ -127,20 +127,31 @@ run). **n=1 per cell — these are hypotheses, not findings.**
    size; report the absolute alongside it and treat sub-2k-token trials as
    uninformative on this axis. **No lostness claim is supported by this data.**
 
-   **Self-verification could not have saved it — this is a *knowledge-only*
-   trap.** The agent did run `terraform plan`, and it passed, because the config
-   is valid. So would `apply`: ECS accepts the task definition, and
-   `describe-task-definition` returns `memorySwappiness: 42`. The value is
-   ignored only at **container runtime**, so catching it empirically means
-   launching a task and inspecting cgroup settings inside the container. It is
-   therefore invisible to plan, to apply, to API-level behavioural probing —
-   and catchable only by *encoded knowledge*. See
-   `docs/design/oracle-authority-proposal.md` §3.2, which this row corrects.
+   **Self-verification could not have saved it, but a LIVE probe would have —
+   verified empirically 2026-08-20 against account 886312446417.** Registering
+   the agent's own shape via the ECS API and reading it back:
 
-   This is also the sharpest form of the §3 law: for knowledge-only traps you
-   **cannot test your way to the answer**. No feedback loop the agent can run
-   will reveal it; the knowledge can only be inherited — from the JSDoc, from a
-   module author who was burned, from a colleague.
+   | sent | stored, per `describe-task-definition` |
+   |---|---|
+   | `linuxParameters: {swappiness: 42}` | **`linuxParameters: {}`** — silently dropped |
+   | `linuxParameters: {swappiness: 42, maxSwap: 256}` | `{maxSwap: 256, swappiness: 42}` — kept |
+
+   `RegisterTaskDefinition` returns **`ACTIVE`, revision 1** — a clean success
+   that silently discards the configuration. So the trap is **API-visible**:
+   `describe-task-definition` exposes it immediately as an empty
+   `linuxParameters`. What could NOT have caught it is anything the agent ran
+   offline — `terraform plan` and `validate` both passed, because the config is
+   valid Terraform; the discard happens server-side at registration.
+
+   Two consequences worth carrying forward:
+   - This is **positive evidence for the behavioural-oracle direction**
+     (`docs/design/oracle-authority-proposal.md`): a two-line live probe
+     catches this more directly than the tier-1 structural assert does, and
+     without encoding the coupling knowledge into the oracle at all.
+   - **Hypothesis (untested):** because Terraform sends `swappiness` and AWS
+     stores `{}`, the next `refresh`/`plan` should read back the empty map and
+     show a **perpetual diff** — meaning the idempotence tier would also catch
+     this. Worth confirming on the first live run of this scenario.
 
    It failed **cheap** — 1,152
    output tokens, 8 messages, the smallest trial in the battery — the signature

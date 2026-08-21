@@ -66,31 +66,40 @@ than against it: that scenario's signal was never correctness — it is
 oracle does not lose the decomposition signal, because the oracle was never
 carrying it.** It only has to certify "it works."
 
-### 3.0 CORRECTION (2026-08-20): a third category — *knowledge-only* traps
+### 3.0 NOTE (2026-08-20): a retracted correction, and a probe that strengthens §3
 
-The table above claims every trap but one manifests at runtime. The
-`ecs-swappiness` trial disproves that for at least one important class.
+An earlier revision of this file added a third trap category — *knowledge-only*,
+allegedly invisible to any practical probe — using `ecs-swappiness` as its
+example, on the assumption that `describe-task-definition` would return
+`memorySwappiness: 42` and that the value was merely ignored at container
+runtime.
 
-`memorySwappiness` without `maxSwap` is accepted by `terraform plan`, accepted
-by `apply`, and returned intact by `describe-task-definition`. The value is
-ignored only at **container runtime** — observing it empirically means launching
-a task and inspecting cgroup settings inside the running container. The failing
-agent *did* run `init`/`validate`/`plan` and they all passed.
+**That assumption was tested and is false.** Registering the failing agent's own
+shape against a real account (886312446417, 2026-08-20):
 
-So there are three categories, not two:
+| sent | stored, per `describe-task-definition` |
+|---|---|
+| `linuxParameters: {swappiness: 42}` | **`linuxParameters: {}`** — silently dropped |
+| `linuxParameters: {swappiness: 42, maxSwap: 256}` | `{maxSwap: 256, swappiness: 42}` — kept |
 
-| category | example | catchable by |
-|---|---|---|
-| manifests in the plan/API | missing CBD, exclusive attachment, drift | behavioural probe **or** structural assert |
-| manifests only in cost/effort | bucket decomposition | neither — it is the token count |
-| **knowledge-only** | `swappiness`/`maxSwap` | **encoded knowledge only** — no practical probe |
+`RegisterTaskDefinition` returns `ACTIVE` — a clean success that discards the
+configuration server-side. The trap is therefore **API-visible**, and a live
+probe catches it *more* directly than the tier-1 structural assert: the probe
+needs no knowledge of the `maxSwap` coupling at all, only "read back what you
+wrote and compare."
 
-**Consequence for this proposal:** inverting oracle authority to behavioural
-probes must NOT mean deleting tier-1 structural asserts. For knowledge-only
-traps the structural assert *is* the encoded knowledge, and it is the only
-practical oracle. The recommendation in §5 stands, with this amendment: a
-scenario must declare which category its trap falls in, and knowledge-only traps
-keep a structural assert as their authority.
+**The category is withdrawn for lack of a confirmed example.** It may still
+exist — a trap manifesting only in deep container/kernel state is conceivable —
+but no scenario in this benchmark is currently known to be one, and the claim
+should not be carried until an example is verified. Two lessons stand:
+
+1. **Do not assume an API stores what it accepts.** AWS APIs silently drop
+   fields at the wrong nesting level or with unmet preconditions, and return
+   success. "The plan is valid" and "the resource is configured" are different
+   claims, and only a read-back distinguishes them.
+2. This makes the §5 recommendation *stronger*, not weaker: a
+   read-back-and-compare probe is both simpler than the equivalent structural
+   assert and independent of whether the oracle author knew the coupling.
 
 ### 3.1 The one thing a behavioural oracle cannot do alone
 
