@@ -1,0 +1,1225 @@
+# specs/s3-bucket-hardening-decomposition.yaml
+#
+# Design source: docs/design/batch-a-greenfield-blueprints.md §1 (authored
+# 2026-08-20, "Batch A" — the operator's "ready with today's harness"
+# bucket). Merges three graded siblings the operator's cluster note called
+# near-duplicates on one evidence base:
+# `s3-bucket-decomposition-missing-subresource`, `s3-bucket-inline-subresources`
+# and tier-A1 `s3-bucket-hardening-decomposition`. One scenario.
+#
+# THE MECHANISM (operator-facing — this is why `id` names "decomposition"
+# while every agent-visible name below names only the ticket's four
+# controls, per SCHEMA.md §0.1): Terraform provider v4 split `aws_s3_bucket`'s
+# inline blocks into ~10 standalone sub-resources
+# (tfp-aws#23106, CLOSED/completed 2022-02-10, 300 reactions / 93 comments,
+# re-verified 2026-08-20 — HashiCorp's own pinned v4-decomposition
+# mega-thread; also tfp-aws#23103 29 👍, #25325 closed-not-planned, #23758
+# 14 👍, #26328 — a bucket failing an AWS Config encryption rule after the
+# split, the silent-omission failure in the wild). So "a versioned,
+# KMS-encrypted, TLS-only, non-public bucket" is ONE construct with four
+# props on awscdk/terraconstructs (`s3.Bucket` /
+# `storage.Bucket` — `versioned`, `encryption`/`encryptionKey`, `enforceSSL`,
+# `blockPublicAccess`) and SIX independently-and-silently-omittable resources
+# on hcl-raw (`aws_s3_bucket`, `_versioning`, `_server_side_encryption_configuration`,
+# `_public_access_block`, `_policy`, plus `aws_kms_key`).
+#
+# THE SHARP EDGE INSIDE THE SHARP EDGE (source-verified 2026-08-20 against
+# the pinned `aws-cdk-lib` 2.263.0, local clone commit a9e6639):
+# `enforceSSL` derives BOTH ARNs — aws-s3/lib/bucket.ts:2689-2704,
+# `resources: [this.bucketArn, this.arnForObjects('*')]` (re-read directly
+# at this commit, confirmed byte-identical to the blueprint's citation) —
+# while a hand-written Deny statement naming only the bucket ARN reads
+# correctly, passes every existence check, and protects nothing (leaves
+# every GetObject over plain HTTP allowed). This is the plausible-wrong
+# solution this spec's headline catch (`tls-policy-misses-object-arn`)
+# reproduces.
+#
+# terraconstructs ports the identical mechanism
+# (lib/aws/storage/bucket.js:691-695 `enforceSSLStatement()`, `resources:
+# [this.resource.arn, this.arnForObjects('*')]`, same `aws:SecureTransport`
+# Bool-false Deny condition — re-verified directly against the pinned
+# 0.2.13 package at authoring time, see arms.terraconstructs.reason below)
+# BUT has NO `blockPublicAccess` prop on `storage.Bucket` at all — verified
+# directly (0.2.13 `lib/aws/storage/bucket.d.ts` has no such property; the
+# ONLY call to `S3BucketPublicAccessBlock` anywhere in `bucket.js` is
+# inside the `if (this.public) {...}` branch at line 726, and it
+# unconditionally sets all four flags to `false` there, which is the
+# opposite of this scenario's requirement) — so this arm's reference
+# solution must reach for the `@cdktn/provider-aws` L1
+# `s3BucketPublicAccessBlock.S3BucketPublicAccessBlock` construct
+# alongside the L2 `storage.Bucket`. This is the escape-hatch tax the
+# blueprint predicts and this spec's arms.terraconstructs.reason documents.
+#
+# EVIDENCE RE-VERIFICATION NOTE (2026-08-20, this authoring pass): the
+# blueprint's own tier-0 design for `tls-deny-statement-present` (a direct
+# `.values.policy|fromjson...Condition.Bool['aws:SecureTransport']` tf_jsonpath)
+# was RE-CHECKED against real `terraform show -json` plan output (hashicorp/aws
+# 6.58.0, offline) for a reference-shaped fixture and found FALSIFIED for the
+# TF-shaped arms: `aws_s3_bucket_policy.values.policy` is entirely ABSENT
+# from `.planned_values` (not present-with-wrong-value — absent) whenever the
+# policy's `jsonencode(...)` call embeds a reference to the created bucket's
+# provider-computed `.arn` (SCHEMA.md §4.2.1's G2 contagion mechanism —
+# confirmed directly: `jq '.planned_values...aws_s3_bucket_policy.values.policy'`
+# -> nothing but `{"region": "us-east-1"}`, no `policy` key at all, for a
+# hand-built fixture whose Deny statement's `Resource` references
+# `aws_s3_bucket.this.arn`). This is true regardless of whether the policy is
+# authored via a raw `jsonencode(...)` call OR via the idiomatic
+# `data "aws_iam_policy_document"` + `.json` pattern (both independently
+# probed): a `data "aws_iam_policy_document"`'s OWN `.planned_values` DOES
+# preserve literal Effect/Condition/Sid structure even with an unknown
+# `resources` reference (probed directly), but the DOWNSTREAM
+# `aws_s3_bucket_policy.policy = data.....json` attribute is itself unknown
+# either way, and terraconstructs' own `BucketPolicy` construct
+# (lib/aws/storage/bucket-policy.js: `policy: this.document.json`, a plain
+# `PolicyDocument.json` token — the same *shape class* as a raw
+# `jsonencode(...)` call, not the data-source shape) gives no reason to expect
+# richer static structure there either. CONSEQUENCE: `tls-deny-statement-present`
+# (the Bool/SecureTransport condition-literal check) is downgraded from the
+# blueprint's original tier-0-on-every-arm design to **applies_to: [awscdk]
+# only** — CFN's synthesized template is always fully static so the direct
+# check is sound there; no safe TF-shaped tier-0 OR tier-1 equivalent exists
+# for the CONDITION CONTENT specifically (a genuine v1 static-oracle scope
+# limit, not an authoring oversight — recorded here rather than silently
+# assumed away, per the operator's "Predicted tiers are evidence-checked,
+# never assumed" batch-wide rule, §0.1(4)). What DOES stay checkable,
+# shape-invariantly, on the TF-shaped arms is the "covers both bucket AND
+# object ARNs" fact this scenario's headline catch actually depends on —
+# see `tls-deny-covers-objects-too-tf` below, which counts references to
+# the created bucket's BARE ADDRESS (plan-time-known regardless of the
+# unknown VALUE, and regardless of which specific attribute — `.arn`,
+# `.id`, `.bucket` — a hand-written Resource expression derives the ARN
+# string from) rather than reading the opaque encoded VALUE. Verified
+# directly: a Deny statement whose `Resource` list contains the bucket ARN
+# once directly and once via a `${...}/*}` interpolation produces
+# `.configuration...expressions.policy.references` = `["<addr>.arn",
+# "<addr>", "<addr>.arn", "<addr>"]` (the BARE address `"<addr>"` itself
+# appearing TWICE, once per occurrence in the HCL source — Terraform always
+# emits the bare resource address alongside any specific-attribute
+# reference to it) vs. ONCE for the plausible-wrong, object-arn-omitting
+# fixture — a clean, genuinely shape-invariant 2-vs-1 signal, re-verified
+# directly (2026-08-21) for BOTH the `.arn`-derived AND the `.id`-derived
+# ("arn:aws:s3:::${bucket.id}") construction, and for the one-hop
+# `data "aws_iam_policy_document"` indirection too — see
+# oracles/rego/s3-bucket-hardening-decomposition/policy.rego's own header
+# comment ("SHAPE-INVARIANCE FIX") for the counting mechanism this
+# corrects (a verifier-found major: the original mechanism counted only
+# `.arn`-SUFFIXED references, which is NOT shape-invariant and rejected
+# the `.id`-derived construction outright — fixed by counting the bare
+# address instead, which every specific-attribute reference carries
+# alongside it regardless of which attribute).
+#
+# TWO FURTHER VERIFIER-FOUND FIXES (2026-08-21, this authoring pass — the
+# scenario's first verification run):
+#  (a) `tls-deny-condition-present` (tier 0, awscdk-only, above) used `op:
+#      eq` against `.Condition.Bool[*]`'s ITERATED value, which (i) crashed
+#      with a jq "Cannot iterate over null" error on any correct solution
+#      with a SECOND Deny statement carrying no `Bool` condition at all
+#      (e.g. `enforceSSL: true` + `minimumTLSVersion: "1.2"`, which
+#      aws-cdk-lib's own `s3.Bucket` L2 renders as a separate
+#      `NumericLessThan`-conditioned Deny — an ORACLE-ACCEPTED shape per
+#      this file's "Oracle must tolerate/defend" point 2), and (ii) even
+#      when it didn't crash, `eq`'s "exactly one resolved node" rule
+#      rejected any correct solution with a second Deny statement that DID
+#      carry its own Bool condition (e.g. a hand-added
+#      `PrincipalAccount`-scoped Deny). Fixed by resolving the whole
+#      `Condition.Bool` object (not its iterated value — null-safe: a
+#      missing key resolves to `null` and is filtered, never iterated) and
+#      switching to `op: contains` (>= 1 matching node, not exactly 1).
+#      VERIFIED DIRECTLY against real `cdk synth` output for both
+#      previously-crashing/rejecting shapes.
+#  (b) `oracles/cfn-guard/.../policy.guard`'s `tls_deny_covers_bucket_and_objects`
+#      rule applied its `count(Resource.*) >= 2` cardinality check to EVERY
+#      Deny statement in the policy, not just the TLS-conditioned one — a
+#      correct template with any second, legitimately bucket-ARN-scoped
+#      Deny (e.g. denying `s3:PutBucketPolicy`/`s3:PutBucketAcl` on the
+#      bucket ARN alone, by design a 1-element Resource array) failed this
+#      rule even though the TLS-deny statement itself covered both ARNs.
+#      Fixed by scoping the cardinality check to Deny statements matched by
+#      their OWN `Condition.Bool.'aws:SecureTransport' == "false"`. VERIFIED
+#      DIRECTLY with real `cfn-guard validate` runs (old rule: FAIL/exit 19
+#      on the correct-plus-extra-Deny template; new rule: PASS/exit 0 on
+#      that same template, unchanged FAIL/exit 19 on the plausible-wrong
+#      fixture and on a template with no TLS-deny statement at all).
+#
+# THREE MORE VERIFIER-FOUND FIXES (2026-08-21, this scenario's SECOND
+# verification run -- the first run's fixes (a)/(b) above were themselves
+# unverified when this pass started):
+#  (c) CONTAMINATED awscdk WORKING DIRECTORY (major, NOT fixable from
+#      inside this scenario's ownership -- documented here per the
+#      finding's own hint rather than silently left, and NOT
+#      independently re-verified by a later pass since the fix is
+#      operator-level, out of this spec's authority): the awscdk arm's
+#      generated task ships `lib/example-stack.ts` -- a ready-made,
+#      hardened `s3.Bucket` (versioned/blockPublicAccess/encryption) --
+#      inside the agent's own `/app/project/lib/`, alongside the empty
+#      `lib/scenario-stack.ts` skeleton the agent is actually asked to
+#      fill in. Confirmed present and agent-visible: `COPY workspace/lib
+#      ./lib` (environment/Dockerfile) copies the whole directory,
+#      `example-stack.ts` is dead code after generation (bin/app.ts
+#      imports only `../lib/scenario-stack`, never `ExampleStack`), and it
+#      even carries this scenario's own `sse-left-at-s3-managed` catch's
+#      wrong-enum value (`BucketEncryption.S3_MANAGED`) verbatim. NO
+#      equivalent exists on hcl_raw (its only S3 sample,
+#      `fixtures/main.tf`, lands OUTSIDE `/app/project` under
+#      `/opt/preflight/fixtures/`, `WORKDIR /opt/preflight` — a
+#      DIFFERENT working directory the agent's own `main.tf` edits never
+#      touch) or on terraconstructs (`environment/app/lib/` holds only
+#      the empty `scenario-stack.ts` skeleton, no sample at all). This is
+#      an ARM-LEVEL generator artifact
+#      (`arms/awscdk/environment/workspace/lib/example-stack.ts`, copied
+#      unconditionally by `generator/gen.py::write_environment()`'s
+#      `copytree`, which overwrites `lib/scenario-stack.ts` and
+#      `bin/app.ts` but never deletes `lib/example-stack.ts`) -- shared by
+#      EVERY awscdk-arm scenario in this repo, not something this
+#      scenario's own spec/oracle/tasks can fix without editing
+#      `generator/gen.py` or `arms/awscdk/**`, which are outside this
+#      scenario's ownership and touched by scenario-authoring agents
+#      working in parallel elsewhere in this repo. Recorded here so this
+#      spec's own awscdk-favoring arm prediction (blueprint §1,
+#      "awscdk predicted to win") is READ WITH THIS CAVEAT, not as a
+#      clean tokens-to-green measurement: an awscdk agent that reads its
+#      own `lib/` directory before writing (a normal exploratory first
+#      step) sees 2 of this scenario's 4 controls, plus the exact wrong
+#      KMS-encryption enum value, already modeled nearby -- a real,
+#      unmeasured token-cost and possibly behavior-cost confound versus
+#      hcl_raw and terraconstructs, which get no such assist. FLAGGED FOR
+#      A CENTRALIZED FIX: `generator/gen.py::write_environment()`'s
+#      awscdk branch should delete (or never copytree)
+#      `workspace/lib/example-stack.ts` for every generated task, the
+#      same way `patch_awscdk_preflight()` already rewrites `preflight.sh`
+#      away from referencing `ExampleStack` -- a fix that would help
+#      every awscdk-arm scenario in the repo, not just this one, which is
+#      exactly why it belongs in the generator rather than duplicated
+#      per-spec.
+#  (d) LOCALS-HOIST TF FALSE-DENY (major): `locals { bucket_arn =
+#      aws_s3_bucket.x.arn }` + `Resource = [local.bucket_arn,
+#      "${local.bucket_arn}/*"]` is a genuinely correct policy, but
+#      `local.*` values are not represented anywhere in `terraform show
+#      -json` plan output's `.configuration` block at all (VERIFIED
+#      DIRECTLY, offline, hashicorp/aws 6.58.0:
+#      `.configuration.root_module`'s own keys for such a plan are
+#      exactly `["resources", "variables"]`, no `locals` key -- there is
+#      no hop to follow, unlike the `data.aws_iam_policy_document` and
+#      `aws_kms_alias` one-hop cases immediately below, both of which ARE
+#      full `configured_resources` entries with real `.expressions`).
+#      `bucket_ref_count` correctly resolves to 0 for this shape (the
+#      bucket's bare address never appears among the policy's
+#      references), but the fail-closed rule's message -- "no
+#      aws_s3_bucket_policy resource references this bucket's ARN at
+#      all" -- is FACTUALLY FALSE for it: the policy DOES reference the
+#      bucket, indirectly, just not visibly so from this artifact. FIX:
+#      `oracles/rego/.../policy.rego` now detects this specific shape
+#      (`local_only_refs`/`local_only_policies`) and emits an ACCURATE
+#      reason instead (still a deny -- see "Oracle must tolerate/defend"
+#      point 5 below for why accepting it would be unsound, not merely an
+#      accuracy nit). VERIFIED DIRECTLY against a real `terraform plan`
+#      for this exact shape both before (false message) and after (true
+#      message) the fix. NARROWED, this scenario's FOURTH verification
+#      pass, this file's header comment fix (h): this deny rule's
+#      rationale holds only when the local's resolved value is genuinely
+#      absent from `.planned_values` (as it is for this shape, `local.
+#      bucket_arn = aws_s3_bucket.x.arn`); a `local` built from a fully
+#      resolvable literal is a distinct sub-case that must NOT be denied
+#      -- see fix (h) below.
+#  (e) IN-CONFIG KMS ALIAS FALSE-DENY (major): `kms_master_key_id =
+#      aws_kms_alias.x.arn` where `aws_kms_alias.x.target_key_id`
+#      references an `aws_kms_key` this configuration creates is exactly
+#      "a key created in this same configuration"
+#      (oracles/s3-bucket-hardening-decomposition/intent.md's own
+#      wording) but was rejected outright: the SSE config's
+#      `kms_master_key_id.references` resolves to
+#      `["aws_kms_alias.archive.arn", "aws_kms_alias.archive"]`, no
+#      `aws_kms_key.` prefix, so `references_a_kms_key`'s old
+#      direct-only check failed it. FIX: `resolved_kms_key_refs` now
+#      follows the alias's own `target_key_id.references` one hop when
+#      the direct reference is to an `aws_kms_alias` address -- mirrors
+#      `policy_references()`'s existing `data.aws_iam_policy_document`
+#      one-hop pattern exactly (see "Oracle must tolerate/defend" point 1
+#      below, updated). VERIFIED DIRECTLY: a real fixture's
+#      `aws_kms_alias.archive.target_key_id = aws_kms_key.archive.key_id`
+#      resolves the alias's own references to
+#      `["aws_kms_key.archive.key_id", "aws_kms_key.archive"]`, and the
+#      updated rego accepts this shape (empty `deny` set) while still
+#      correctly rejecting the original `kms-key-not-referenced` catch
+#      fixture and the plausible-wrong `tls-policy-misses-object-arn`
+#      fixture (both re-verified unchanged after this fix).
+#
+# TWO MORE VERIFIER-FOUND FIXES (2026-08-22, this scenario's THIRD
+# verification pass):
+#  (f) TF LITERAL-ARN FALSE-DENY (major): a Deny statement's Resource list
+#      written as LITERAL ARN STRINGS -- `Resource =
+#      ["arn:aws:s3:::cdktn-bench-document-archive",
+#      "arn:aws:s3:::cdktn-bench-document-archive/*"]` (the bucket's own
+#      name hand-copied, never referenced) -- is a genuinely working
+#      solution (it covers both ARNs, correctly) but scored reward 0.0 with
+#      the fail-closed "no aws_s3_bucket_policy resource references this
+#      bucket's ARN at all" message, which is FACTUALLY FALSE for it.
+#      Unlike the locals-hoist case (fix (d) above), this is NOT an
+#      unresolvable-from-a-static-artifact gap: nothing in this shape is
+#      provider-computed, so SCHEMA.md §4.2.1's G2 contagion never
+#      triggers, and `.planned_values` genuinely carries the FULLY
+#      RESOLVED policy value -- there is no reason to fall back to the
+#      graph-edge path at all here. VERIFIED DIRECTLY (offline, terraform
+#      1.15.8, hashicorp/aws 6.58.0, via `cdktn-bench/hcl-raw:dev`): a
+#      main.tf identical to solution/solve.sh except the Deny statement's
+#      Resource list uses those two literal strings plans successfully,
+#      and `.planned_values...aws_s3_bucket_policy.values.policy` decodes
+#      to exactly that two-element, SecureTransport-false Deny statement,
+#      while `.configuration...expressions.policy` is `{}` (no
+#      `references` key -- nothing to graph-edge count, genuinely
+#      different from the locals case where a `local.*` reference IS
+#      present but unfollowable). The bucket resource's OWN
+#      `.planned_values...values` has NO `arn` key at all (verified
+#      directly -- S3 bucket ARNs are never plan-time-resolved as a bucket
+#      attribute), so the expected ARN is derived the same way S3 itself
+#      derives it, `"arn:aws:s3:::" + <bucket-name>`, from the bucket
+#      resource's own separately-resolved `values.bucket` name. FIX:
+#      `resolved_policy_covers`/`resolved_policy_covers_for_bucket` in
+#      `oracles/rego/.../policy.rego` decode the resolved
+#      `.planned_values` policy value directly whenever it is present (the
+#      resource-existence + Deny/Condition/Resource-coverage check the
+#      graph-edge path exists to approximate when the value ISN'T
+#      resolvable) and suppress the generic fail-closed message for that
+#      bucket when it independently confirms two-ARN coverage. VERIFIED
+#      DIRECTLY: `opa eval` against the real plan above now returns an
+#      empty `deny` set for this shape; the locals-hoist fixtures (fix
+#      (d)), the `kms-key-not-referenced` fixture, and the plausible-wrong
+#      `tls-policy-misses-object-arn` fixture (both `.arn`-derived and
+#      literal-Resource-array-of-one variants) are all re-verified
+#      unchanged (still denied) after this fix.
+#  (g) CFN-GUARD SPLIT-STATEMENT ARM-PARITY GAP (major): a template
+#      expressing the TLS deny as TWO Deny statements -- one with
+#      `Resource = [bucket ARN]`, one with `Resource = [object-ARN
+#      pattern]`, both conditioned on `aws:SecureTransport == "false"` --
+#      is logically identical to (and no less correct than) the reference
+#      solution's single two-element statement, and the rego oracle's own
+#      `bucket_ref_count` already accepts the TF-arm equivalent (it counts
+#      references across the WHOLE policy expression, not per-statement).
+#      But `oracles/cfn-guard/.../policy.guard`'s
+#      `tls_deny_covers_bucket_and_objects` rule applied its
+#      `count(Resource.*) >= 2` cardinality check INSIDE the
+#      `%tls_deny_statements { ... }` block, i.e. to EACH matched
+#      statement individually -- so a template with this split shape
+#      failed both individual checks (1 element each) even though the two
+#      statements TOGETHER cover both ARNs, an arm-symmetric-strictness
+#      break versus the TF-shaped arms. VERIFIED DIRECTLY (cfn-guard
+#      3.2.0): the old per-statement rule against a hand-built
+#      two-statement template of exactly this shape: `Status = FAIL`,
+#      `ComparisonError Value=1 ComparedWith=2`, exit 19. FIX: the
+#      cardinality check now aggregates `count(%tls_deny_statements.
+#      Resource.*)` across ALL TLS-conditioned Deny statements at once,
+#      matching the rego's whole-policy semantics exactly. VERIFIED
+#      DIRECTLY: the same two-statement template against the fixed rule:
+#      `Status = PASS`, exit 0. Re-verified unchanged after this fix: the
+#      plausible-wrong single-statement fixture (Resource=[bucket ARN]
+#      only) still FAILS (exit 19); a template with no TLS-deny statement
+#      at all still FAILS closed (exit 19); the existing fix-(b) shape
+#      (correct 2-element TLS deny plus an unrelated, legitimately
+#      1-element `s3:PutBucketAcl` Deny) still PASSES (exit 0).
+#  (h) LOCALS-HOIST FALSE-DENY, RESOLVABLE SUB-CASE (major, this scenario's
+#      FOURTH verification pass): fix (d)'s `local_only_refs`/
+#      `local_only_policies` deny rule fired unconditionally on ANY
+#      all-`local.`-prefixed policy reference set, including one built
+#      from a fully resolvable literal --
+#      `locals { bucket_name = "<bucket-name>"; bucket_arn =
+#      "arn:aws:s3:::${local.bucket_name}" }` + `Resource =
+#      [local.bucket_arn, "${local.bucket_arn}/*"]`. At the
+#      `.configuration...references` graph-edge level this is
+#      indistinguishable from fix (d)'s genuinely-unresolvable case (both
+#      resolve to `["local.bucket_arn", "local.bucket_arn"]`) -- but
+#      unlike that case, `.planned_values...aws_s3_bucket_policy.values.
+#      policy` for THIS shape IS fully resolved to the two-ARN,
+#      SecureTransport-false Deny statement (VERIFIED DIRECTLY, offline,
+#      terraform 1.15.8, hashicorp/aws 6.58.0, `docker run --network none
+#      cdktn-bench/hcl-raw:dev`) -- exactly the resolved-value signal fix
+#      (f)'s `resolved_policy_covers` already extracts for the literal-ARN
+#      shape, just reached one level of indirection further through a
+#      `local`. Firing fix (d)'s "cannot verify... local value" deny on
+#      this plan is FACTUALLY FALSE (`resolved_policy_covers` independently
+#      confirms two-ARN coverage for it) and scored a genuinely-working
+#      solution reward 0.0. FIX: added `resolved_policy_covers_any(bp)` (a
+#      per-policy, any-bucket version of fix (f)'s check) and guarded both
+#      the locals-only deny rule and `local_only_policies` itself with
+#      `not resolved_policy_covers_any(bp)`, mirroring the guard the
+#      fail-closed rule already carried for fix (f). VERIFIED DIRECTLY:
+#      `opa eval` against the real plan above now returns an empty `deny`
+#      set; fix (d)'s own two documented unresolvable variants (`Resource
+#      = [local.bucket_arn, "${local.bucket_arn}/*"]` where `local.
+#      bucket_arn = aws_s3_bucket.x.arn`, and `policy = local.policy_json`)
+#      are re-verified unchanged (still denied, with the accurate locals
+#      message) after this fix -- narrowing is scoped to exactly the
+#      resolvable sub-case. See "Oracle must tolerate/defend" point 5
+#      below, narrowed accordingly.
+#
+# ONE FINDING INVESTIGATED AND NOT REPRODUCED (2026-08-22, this scenario's
+# THIRD verification pass): a prior review round also flagged
+# `local_only_refs`/`local_only_policies` (fix (d) above) as "dead code
+# that can never fire," on the claim that
+# `.configuration...aws_s3_bucket_policy.expressions.policy` resolves to
+# `{}` (no `references` key at all) for both of fix (d)'s documented
+# locals-hoist variants. This was RE-TESTED DIRECTLY this pass, offline,
+# same versions (terraform 1.15.8, hashicorp/aws 6.58.0, via
+# `cdktn-bench/hcl-raw:dev`, both variants) and did NOT reproduce: for
+# `Resource = [local.bucket_arn, "${local.bucket_arn}/*"]`,
+# `.expressions.policy` resolves to `{"references": ["local.bucket_arn",
+# "local.bucket_arn"]}` (non-empty); for `policy = local.policy_json`, to
+# `{"references": ["local.policy_json"]}` (non-empty) -- both populated,
+# neither `{}`. Running the actual `policy.rego` (`opa eval`) against both
+# real plans produces exactly the accurate "references only local
+# value(s)" deny message fix (d) describes, for both variants -- the
+# mechanism fires and behaves as documented. Left UNCHANGED (verified
+# working, not dead code); recorded here rather than silently dropped so a
+# later pass can re-check if this resurfaces.
+#
+# THE LOUD-TIER-0 CAVEAT (blueprint, carried forward verbatim): this
+# scenario's catches are TOKEN-COST DIFFERENTIAL PROBES, not silent-catch
+# statistics. Every declared catch resolves at tier "0" or tier "1" on
+# every arm (no catch here is silent/uncaught-by-design) — the interesting
+# cross-arm signal is HOW MANY iterations/tokens each arm needs to reach a
+# green state (one L2 construct with four props vs. six independently
+# wireable resources plus a hand-written policy document), not whether the
+# oracle can tell correct from incorrect. Do not pool this scenario's rows
+# into silent-catch statistics — operator's own note on the
+# `s3-bucket-inline-subresources` sibling, blueprint §1(e).
+
+id: s3-bucket-hardening-decomposition
+# workspace_id (SCHEMA.md §0.1.1): single-step greenfield, so this is
+# optional and would default to `id` — but `id` names the pitfall
+# ("decomposition"), so it is set explicitly here even though
+# `decomposition` alone does not match any AGENT_MECHANISM_DENY_PATTERNS /
+# AGENT_FORESHADOW_DENY_PATTERNS entry (belt-and-suspenders: the blueprint's
+# own leak test names this the deliberate choice, not a false-positive
+# dodge). Deny-list run against `document-archive`: no match on any
+# mechanism pattern (`lifecycle`, `replace*`, `drift`, `in[ _-]?use`,
+# `already exists`, …) or foreshadow pattern (`re-deploy`, `next step`,
+# `iteration`, …) — clean.
+workspace_id: document-archive
+# title (agent-visible header — single-step greenfield, so `workspace_title`
+# is FORBIDDEN per SCHEMA.md §0.1; this string is stamped byte-for-byte into
+# lib/scenario-stack.ts / bin/app.ts's CFN description / main.tf / main.ts).
+# Names only the four controls the ticket itself states. Deny-list swept:
+# no match — `versioning` is not `\breplacements?\b`, `access` is not on
+# either list. Watch (blueprint's own note): an earlier draft used "lifecycle
+# rules" here — `\blifecycle\b` is a MECHANISM pattern and would have been
+# refused; this scenario deliberately never asks for S3 lifecycle rules
+# (unrelated to the version-retention requirement below, which versioning
+# alone satisfies).
+title: "Document archive bucket with versioning, KMS encryption, TLS-only access and no public access"
+difficulty: 2
+services: [s3, kms]
+
+arms:
+  awscdk: true
+  hcl_raw: true
+  terraconstructs:
+    enabled: true
+    reason: >
+      arms/terraconstructs/README.md §3 ("storage" module row: "S3 (bucket,
+      policy, notifications, website config, lifecycle)") and §4's
+      s3-lambda-log-retention verdict row (confirms `storage.Bucket`,
+      `src/aws/storage/bucket.ts`, is SUPPORTED and exercised by this
+      preflight) together establish `storage.Bucket` coverage; §3's
+      "encryption" module row ("KMS (key, alias, rotation)") establishes
+      `encryption.Key` (`src/aws/encryption/key.ts`) coverage. Both
+      re-verified directly against the pinned 0.2.13 package at authoring
+      time (2026-08-20): `lib/aws/storage/bucket.js` synthesizes
+      `versioned`/`encryption`/`encryptionKey`/`enforceSSL` exactly as the
+      README claims, and `lib/aws/encryption/key.js` backs `encryption.Key`
+      with a real `@cdktn/provider-aws` `kmsKey.KmsKey` L1 resource.
+      PARTIAL, DOCUMENTED GAP (verified directly, not assumed —
+      arms.terraconstructs.reason must be independently checkable,
+      SCHEMA.md §1): `storage.Bucket`'s own `BucketProps`
+      (`lib/aws/storage/bucket.d.ts`) has NO `blockPublicAccess` prop at
+      all. The ONLY invocation of
+      `@cdktn/provider-aws`'s `s3BucketPublicAccessBlock.S3BucketPublicAccessBlock`
+      anywhere in `lib/aws/storage/bucket.js` is inside the `if
+      (this.public) {...}` branch (line 726), and it unconditionally sets
+      all four flags to `false` there — the OPPOSITE of what this scenario
+      needs. This arm's reference solution therefore constructs the L2
+      `storage.Bucket` (versioned/encryption/encryptionKey/enforceSSL) plus
+      a SEPARATE, hand-wired L1 `s3BucketPublicAccessBlock.S3BucketPublicAccessBlock`
+      pointed at `bucket.bucketName` (the L2's own public `get bucketName()`
+      accessor, confirmed to return `this.resource.bucket` — i.e. a genuine
+      Terraform reference to the created bucket, not a string echo) — a
+      real, measurable escape-hatch tax versus awscdk's single
+      `blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL` prop. Enabled
+      anyway: the arm still has a full, real L2 path for 3 of the 4
+      controls and the fourth is a one-resource L1 addition, not a
+      show-stopping gap.
+
+instruction:
+  shared_body: |
+    We need an S3 bucket for archived customer documents.
+
+    Every version of an object must be kept, including after an overwrite or a
+    delete. Objects must be encrypted at rest with a KMS key that we control,
+    not with S3's default key. Any request that is not made over TLS must be
+    rejected. The bucket and its contents must not be reachable by anyone
+    outside this account under any circumstances.
+  placeholders: []
+  per_arm:
+    awscdk:
+      language_line: "Author this as an AWS CDK (TypeScript) app using aws-cdk-lib L2 constructs."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdk.out/ScenarioStack.template.json
+        build_command: "npm run build"
+        synth_command: "npx cdk synth --no-lookups --quiet -o cdk.out"
+        json_fields: []
+    hcl_raw:
+      language_line: "Author this as hand-written Terraform HCL (no modules)."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields: []
+    terraconstructs:
+      language_line: "Author this using terraconstructs (TypeScript) L2 constructs, synthesized via cdktn."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdktf.out/stacks/document-archive/plan.json
+        synth_command: "npx cdktn synth"
+        json_fields: []
+
+# --- ORACLE MUST TOLERATE / DEFEND (operator-facing, adding-scenarios.md
+# §1 item 3a — never in prompt prose) -----------------------------------
+#
+# 1. "KMS key that we control" admits two shapes: a NEW `aws_kms_key`
+#    created in this configuration, or an EXISTING customer-managed key
+#    referenced by ARN/alias. Offline plan cannot read an alias data
+#    source, and referencing a key that does not exist is not a working
+#    solution — BEHAVIORALIZED: the SSE configuration's
+#    `kms_master_key_id`/`KMSMasterKeyID` must reference a KMS key resource
+#    DECLARED IN THIS CONFIGURATION (a graph edge — `sse-kms-references-
+#    created-key-{cfn,tf}` below), and `sse_algorithm`/`SSEAlgorithm` must
+#    be `aws:kms` (`sse-is-kms`, tier 0). Does NOT require any particular
+#    key-policy shape (see risk note below). On the TF-shaped arms this
+#    graph edge tolerates ONE HOP through an `aws_kms_alias` this same
+#    configuration also creates (`kms_master_key_id =
+#    aws_kms_alias.x.arn`, where `aws_kms_alias.x.target_key_id`
+#    references the created `aws_kms_key`) — added 2026-08-21 second
+#    verification pass, `resolved_kms_key_refs` in
+#    oracles/rego/.../policy.rego, verified directly against real
+#    `terraform show -json` plan output (see this file's header comment,
+#    fix (e)). It does NOT tolerate a `local` value standing in for
+#    either the bucket or the key ARN anywhere in this scenario — see
+#    point 5 below.
+# 2. "must not be reachable by anyone outside this account under any
+#    circumstances" admits (i) the four public-access-block flags, (ii) a
+#    bucket-policy Deny on `aws:PrincipalAccount != <account>`, or (iii)
+#    both. The oracle accepts (i) ALONE or (i)+(ii); it does NOT accept
+#    (ii) ALONE — the ticket says "under any circumstances", and a
+#    policy-only answer is defeated by a public ACL (S3's own legacy
+#    public-access mechanism, independent of bucket policy). This asymmetry
+#    is stated here so the strictness is reviewable; the four `bpa-*`
+#    tier-0 asserts below are unconditional on every arm, and no assert
+#    anywhere requires a PrincipalAccount-scoped Deny statement — the
+#    ticket is satisfiable by (i) alone, and the oracle never demands more
+#    than the ticket asks for.
+# 3. "Every version kept, including after a delete" is satisfied by
+#    versioning ALONE; MFA-delete is NOT required and MUST NOT be
+#    asserted (an API caller cannot even set it — MFA-delete requires the
+#    AWS account root user with an active MFA device, via the S3 API
+#    directly, never through CloudFormation or Terraform).
+# 4. RISK (blueprint's own note, carried forward): the KMS key makes the
+#    plan slightly bigger on every arm. The KMS key's OWN resource policy
+#    is deliberately kept OUT of `oracle.intent`/`structural_asserts` below
+#    — grading it would silently turn this into an IAM-policy scenario,
+#    which is not this scenario's subject.
+# 5. NOT TOLERATED, documented gap, NARROWED 2026-08-22 fourth
+#    verification pass (verifier-found major, this file's header comment
+#    fix (h) — originally added 2026-08-21 second verification pass, fix
+#    (d)): a TF-shaped Deny statement's Resource list built from a
+#    `locals` hoist — `locals { bucket_arn = aws_s3_bucket.x.arn }` +
+#    `Resource = [local.bucket_arn, "${local.bucket_arn}/*"]` — is a
+#    genuinely working solution in real Terraform, but `terraform show
+#    -json` plan output's `.configuration.root_module` carries NO
+#    representation of a `local` value's own definition at all (verified
+#    directly: its own keys are exactly `["resources", "variables"]`) —
+#    unlike the `data.aws_iam_policy_document` and `aws_kms_alias`
+#    one-hop cases above, both real `configured_resources` entries with
+#    inspectable `.expressions`, there is no hop here to follow, AND
+#    `.planned_values` for this shape carries no resolved `policy` value
+#    either (verified directly). Accepting this shape blindly would be
+#    UNSOUND: a `local` could just as easily alias an unrelated literal
+#    ARN, and this static oracle has no way to tell the two apart. The
+#    oracle therefore still denies THIS sub-case (correctly, if for a v1
+#    static-oracle-scope-limit reason rather than a content violation) —
+#    `local_only_refs`/`local_only_policies` in oracles/rego/.../policy.rego
+#    give it an ACCURATE deny message instead of the generic (and, for
+#    this shape, factually false) "no policy references this bucket at
+#    all" one. Consistent with this spec's own existing convention for
+#    this class of gap (see the SecureTransport-condition-literal TF-arm
+#    gap discussed at length above and in oracle.intent's own wording note
+#    below).
+#
+#    NARROWED SCOPE (fix (h)): this rejection applies ONLY when the
+#    local's resolved value is genuinely absent from `.planned_values` —
+#    i.e. the local itself hoists a provider-computed reference
+#    (`aws_s3_bucket.x.arn`, `local.policy_json` built the same way). A
+#    `local` built from a fully resolvable literal — e.g.
+#    `locals { bucket_name = "<bucket-name>"; bucket_arn =
+#    "arn:aws:s3:::${local.bucket_name}" }` — is INDISTINGUISHABLE from
+#    the rejected case at the `.configuration...references` graph-edge
+#    level (both resolve to `["local.bucket_arn", "local.bucket_arn"]`),
+#    but its `.planned_values...aws_s3_bucket_policy.values.policy` IS
+#    fully resolved (verified directly, same evidence class as point 6's
+#    literal-ARN case below), so the oracle verifies it directly via
+#    `resolved_policy_covers` and TOLERATES it — an empty `deny` set, same
+#    as point 6. See this file's header comment fix (h) for the full
+#    before/after verification.
+# 6. TOLERATED, added 2026-08-22 third verification pass (verifier-found
+#    major, this file's header comment fix (f)): a TF-shaped Deny
+#    statement's Resource list written as LITERAL ARN STRINGS (the
+#    bucket's own name hand-copied — `Resource =
+#    ["arn:aws:s3:::<bucket-name>", "arn:aws:s3:::<bucket-name>/*"]`,
+#    never a reference to the bucket resource at all) is unlike point 5's
+#    locals case: nothing here is provider-computed, so
+#    `.planned_values...aws_s3_bucket_policy.values.policy` genuinely IS
+#    the fully resolved policy value (SCHEMA.md §4.2.1's contagion never
+#    triggers when nothing computed is embedded) and this oracle can and
+#    does verify the decoded value directly — `resolved_policy_covers`/
+#    `resolved_policy_covers_for_bucket` in oracles/rego/.../policy.rego,
+#    verified directly against real `terraform show -json` plan output
+#    (see this file's header comment, fix (f)).
+# 7. ARM PARITY, fixed 2026-08-22 third verification pass (verifier-found
+#    major, this file's header comment fix (g)): a correct awscdk template
+#    expressing the TLS deny as two Deny statements (one scoped to the
+#    bucket ARN, one to the object ARN, both conditioned on
+#    aws:SecureTransport=="false") used to fail
+#    oracles/cfn-guard/.../policy.guard's `tls_deny_covers_bucket_and_objects`
+#    rule, which applied its `>= 2` cardinality check to EACH TLS-deny
+#    statement individually rather than to their combined coverage — a
+#    stricter standard than the TF-shaped arms' rego check (which counts
+#    references across the WHOLE policy expression). Fixed by aggregating
+#    the cardinality check across all TLS-conditioned Deny statements at
+#    once, restoring arm-symmetric strictness.
+oracle:
+  intent: >
+    An S3 bucket exists with versioning enabled, so every version of an
+    object (including one superseded by an overwrite or a delete) is
+    retained. The bucket's default encryption uses SSE-KMS
+    (ServerSideEncryptionByDefault.SSEAlgorithm / sse_algorithm ==
+    "aws:kms"), and the KMS key it names is a key created in this same
+    configuration — not a literal/imported key ARN, since a key this
+    configuration does not itself declare is not verifiably "a key we
+    control" from a static artifact. On the TF-shaped arms, one hop of
+    indirection through an `aws_kms_alias` this same configuration also
+    creates is tolerated (`kms_master_key_id` referencing the alias,
+    whose own `target_key_id` references the created key) — the alias
+    resource's own expressions are inspectable in plan JSON, so this
+    remains verifiably "a key we control"; a `local` value standing in
+    for the key ARN is NOT tolerated, since Terraform's plan JSON carries
+    no representation of a `local` value's own definition at all (see
+    "Oracle must tolerate/defend" point 1 in this spec's YAML comments).
+    A `local` value standing in for the bucket ARN in the TLS-deny
+    Resource list is likewise not verifiable from that graph-edge
+    representation alone, but IS tolerated in the specific sub-case where
+    the local's own resolved value is independently recoverable from the
+    plan's resolved output — the oracle verifies that resolved value
+    directly rather than the unfollowable `local.*` reference itself (see
+    "Oracle must tolerate/defend" point 5 in this spec's YAML comments).
+    All four S3 public-access-block flags
+    (BlockPublicAcls, BlockPublicPolicy, IgnorePublicAcls,
+    RestrictPublicBuckets) are explicitly set to true. A bucket policy
+    contains a Deny statement, conditioned on `aws:SecureTransport` ==
+    false, whose Resource set covers BOTH the bucket ARN itself and every
+    object inside it (an object-ARN pattern, e.g. `<bucket-arn>/*`) — a
+    Deny naming only the bucket ARN leaves every object-level request over
+    plain HTTP allowed and does not satisfy "any request not made over TLS
+    must be rejected". Every S3 sub-resource this scenario creates (on the
+    TF-shaped arms: the versioning, encryption, public-access-block and
+    policy resources) targets the SAME bucket this configuration creates —
+    never a literal/hardcoded bucket name.
+
+    Wording note (this authoring pass, 2026-08-20): the Bool/SecureTransport
+    CONDITION's literal content is graded on awscdk only (CFN's synthesized
+    template is always fully static); no safe TF-shaped tier-0 or tier-1
+    check for that specific literal exists (SCHEMA.md §4.2.1's contagion
+    mechanism — a `jsonencode(...)`-authored, or terraconstructs'
+    `PolicyDocument.json`-authored, bucket policy that references the
+    created bucket's provider-computed `.arn` anywhere inside it becomes
+    ENTIRELY opaque to static plan-JSON inspection, not just the
+    specific referenced value — verified directly against real
+    `terraform show -json` plan output, see this file's header comment).
+    What stays checkable, shape-invariantly, on the TF-shaped arms is that
+    the policy's Resource expression references the created bucket's BARE
+    ADDRESS TWICE (once for the bucket itself, once for the object-ARN
+    pattern) rather than once — the `tls-deny-covers-objects-too-tf`
+    graph-edge check below. Counting the bare address (not a `.arn`-suffix)
+    is what makes this genuinely shape-invariant: Terraform emits that bare
+    address alongside ANY specific-attribute reference to the resource
+    (`.arn`, `.id`, `.bucket`, ...), so a Deny statement built from
+    `aws_s3_bucket.x.arn` and one built from
+    `"arn:aws:s3:::${aws_s3_bucket.x.id}"` produce the identical 2-vs-1
+    signal (re-verified directly against real `terraform show -json` plan
+    output for both constructions, 2026-08-21 — see
+    oracles/rego/s3-bucket-hardening-decomposition/policy.rego's own header
+    comment). This is an accepted, documented v1 static-oracle scope limit
+    (an adversarial TF-shaped policy that references the bucket twice
+    inside an unrelated ALLOW statement would not be caught by this
+    specific check) — consistent with this codebase's existing convention
+    for this class of gap (see
+    oracles/cfn-guard/s3-lambda-log-retention/policy.guard's own header for
+    the precedent). Addendum (2026-08-22 third verification pass): when a
+    TF-shaped policy's Resource list is written as LITERAL ARN strings
+    (the bucket's own name hand-copied, never referenced), nothing in it
+    is provider-computed, so the contagion above never triggers and
+    `.planned_values` genuinely carries the fully resolved policy value —
+    for that specific shape only, the oracle verifies the Condition and
+    Resource-coverage content directly from the resolved value (including
+    the SecureTransport literal, not just the bare-address count), the
+    same way awscdk's tier-0 check does. See "Oracle must tolerate/defend"
+    point 6 and oracles/rego/.../policy.rego's own header comment, fix (f).
+
+  structural_asserts:
+    # --- TIER 0 (executed unconditionally by every trial's static_tiers.sh) ---
+    - name: versioning-enabled
+      description: "The bucket's versioning configuration status is Enabled."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.VersioningConfiguration.Status"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_versioning')].values.versioning_configuration[*].status"
+      op: eq
+      expected: "Enabled"
+
+    - name: sse-is-kms
+      description: >
+        The bucket's default server-side encryption algorithm is
+        "aws:kms" — never S3's own default ("AES256"), which is a
+        typed, valid, autocompleted enum member on both typed arms that
+        silently violates "a KMS key that we control" (this scenario's
+        `sse-left-at-s3-managed` anti-L2 catch).
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.BucketEncryption.ServerSideEncryptionConfiguration[*].ServerSideEncryptionByDefault.SSEAlgorithm"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_server_side_encryption_configuration')].values.rule[*].apply_server_side_encryption_by_default[*].sse_algorithm"
+      op: eq
+      expected: "aws:kms"
+
+    # bpa-* (×4): each flag is plan-time-known regardless of arm -- a plain
+    # boolean literal, never derived from another resource's computed
+    # output. Verified directly: awscdk with `blockPublicAccess` entirely
+    # OMITTED synthesizes NO `PublicAccessBlockConfiguration` key at all
+    # (0 resolved nodes -- `eq` fails outright, the desired behavior for a
+    # forgotten-entirely case); a PARTIALLY-set `BlockPublicAccess` (only 2
+    # of 4 flags passed to the constructor) synthesizes ONLY those 2 keys,
+    # the other 2 are absent (again 0 nodes, `eq` fails) -- this is the
+    # `bpa-partially-set` catch's mechanism on awscdk. On hcl_raw/
+    # terraconstructs, `aws_s3_bucket_public_access_block`'s schema
+    # defaults every omitted flag to a real, present `false` in
+    # `.planned_values` (verified directly) -- so `eq true` fails there
+    # too, by a different but equally sound mechanism (present-but-wrong
+    # rather than absent).
+    - name: bpa-block-public-acls
+      description: "PublicAccessBlockConfiguration.BlockPublicAcls / block_public_acls is true."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.PublicAccessBlockConfiguration.BlockPublicAcls"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_public_access_block')].values.block_public_acls"
+      op: eq
+      expected: true
+
+    - name: bpa-block-public-policy
+      description: "PublicAccessBlockConfiguration.BlockPublicPolicy / block_public_policy is true."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.PublicAccessBlockConfiguration.BlockPublicPolicy"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_public_access_block')].values.block_public_policy"
+      op: eq
+      expected: true
+
+    - name: bpa-ignore-public-acls
+      description: "PublicAccessBlockConfiguration.IgnorePublicAcls / ignore_public_acls is true."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.PublicAccessBlockConfiguration.IgnorePublicAcls"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_public_access_block')].values.ignore_public_acls"
+      op: eq
+      expected: true
+
+    - name: bpa-restrict-public-buckets
+      description: "PublicAccessBlockConfiguration.RestrictPublicBuckets / restrict_public_buckets is true."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.PublicAccessBlockConfiguration.RestrictPublicBuckets"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_public_access_block')].values.restrict_public_buckets"
+      op: eq
+      expected: true
+
+    # awscdk ONLY -- see this file's header comment / oracle.intent wording
+    # note for why no sound TF-shaped tier-0 (or tier-1) equivalent exists
+    # for this specific literal (SCHEMA.md §4.2.1 contagion, re-verified
+    # directly against real terraform plan output at authoring time).
+    - name: tls-deny-condition-present
+      description: >
+        AT LEAST ONE Deny statement in the bucket policy has a
+        Condition.Bool object exactly equal to {"aws:SecureTransport":
+        "false"} (CFN's synthesized template is always fully static, so
+        this literal is plan-time-known regardless of what the Resource
+        ARNs reference). Resolves `.Condition.Bool` (the object itself, NOT
+        `.Condition.Bool[*]`'s iterated value -- jsonpath_jq's supported
+        grammar has no bracket-quoted-key syntax for the literal
+        `aws:SecureTransport` key, which contains a colon, so the single-key
+        object is compared whole rather than its value extracted) per Deny
+        statement and drops the nulls (a Deny statement with no `Bool`
+        condition key at all, e.g. one conditioned on
+        `NumericLessThan.'s3:TlsVersion'` instead -- `minimumTLSVersion` on
+        top of `enforceSSL` renders exactly this as a SEPARATE Deny
+        statement -- resolves to null there and is filtered out, never
+        iterated, so it can never crash the check). Uses `contains`
+        (>= 1 matching resolved node), never `eq` (exactly 1): a correct
+        bucket policy MAY carry more than one Deny statement (this
+        scenario's own "Oracle must tolerate/defend" point 2 -- e.g. an
+        additional Deny scoped to `aws:PrincipalAccount`, or the
+        `minimumTLSVersion` case above), and `eq`'s "exactly one resolved
+        node" ambiguity rule previously rejected every such correct,
+        multi-Deny-statement solution outright (VERIFIED DIRECTLY this
+        authoring pass, a verifier-found major fix: both the
+        `minimumTLSVersion` shape and a hand-added
+        `PrincipalAccount`-scoped Deny, real `cdk synth` output, aws-cdk-lib
+        2.263.0). This still requires the specific `false`-valued
+        SecureTransport Bool condition to be present somewhere; a Deny
+        statement whose ONLY Bool key is unrelated (e.g.
+        `aws:MultiFactorAuthPresent`) does not satisfy it on its own.
+      tier: "0"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::BucketPolicy')].Properties.PolicyDocument.Statement[?(@.Effect=='Deny')].Condition.Bool"
+      op: contains
+      expected:
+        "aws:SecureTransport": "false"
+
+    # --- TIER 1 (Rego + cfn-guard, hand-authored) ---------------------------
+
+    # tls-deny-covers-objects-too (THE HEADLINE CATCH, tls-policy-misses-
+    # object-arn's own tier-1 assert). Split cfn/tf per SCHEMA.md §4.2.1
+    # (mirrors s3-lambda-log-retention's own lambda-permission-scoped-to-
+    # bucket-{cfn,tf} pair): CFN is always fully static, so the awscdk
+    # check is a direct existence/cardinality check on the Deny statement's
+    # Resource array (verified directly: a correct solution's Resource
+    # array has exactly 2 elements -- an Fn::GetAtt node for the bucket ARN
+    # and an Fn::Join node for the object-ARN pattern; the plausible-wrong
+    # fixture's has exactly 1; the real enforcement -- see
+    # oracles/cfn-guard/.../policy.guard -- scopes this cardinality check
+    # to the TLS-conditioned Deny statement specifically, so a correct
+    # template with an ADDITIONAL, unrelated, legitimately 1-element-Resource
+    # Deny statement is never penalized for it -- a verifier-found fix,
+    # 2026-08-21, see this file's header comment). The TF-shaped arms'
+    # Resource VALUE is plan-time-unknown (this file's header comment), so
+    # those use the plan-time-known graph-edge path instead: the policy
+    # expression's `.references` list contains the bucket's BARE ADDRESS
+    # TWICE for a correct solution (once per HCL-source occurrence -- the
+    # direct reference AND the "${...}/*"} interpolation -- regardless of
+    # whether the specific attribute referenced is `.arn`, `.id`, or
+    # `.bucket`, since Terraform emits the bare address alongside any of
+    # them) and ONCE for the plausible-wrong fixture -- verified directly
+    # against real `terraform show -json` plan output for the raw
+    # `jsonencode(...)` shape, the `data "aws_iam_policy_document"` shape
+    # (Rego must follow one `data.aws_iam_policy_document.*` hop when
+    # present, mirroring toy-ssm-parameter's own one-hop-indirection
+    # precedent), and BOTH `.arn`-derived and `.id`-derived constructions.
+    - name: tls-deny-covers-objects-too-cfn
+      description: >
+        (awscdk only -- see tls-deny-covers-objects-too-tf for the
+        TF-shaped arms.) The Deny-on-non-TLS statement's Resource array has
+        at least 2 elements -- one for the bucket ARN itself, one for the
+        object-ARN pattern. A Resource array naming only the bucket ARN
+        (the plausible-wrong catch) has exactly 1. (The real enforcement,
+        oracles/cfn-guard/.../policy.guard, scopes this cardinality check
+        to the Deny statement matched by its OWN
+        Condition.Bool.'aws:SecureTransport' == "false" -- never to every
+        Deny statement in the policy, which would wrongly penalize an
+        additional, unrelated Deny statement with its own legitimately
+        1-element Resource array.)
+      tier: "1"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::BucketPolicy')].Properties.PolicyDocument.Statement[?(@.Effect=='Deny')].Resource[*]"
+      op: exists
+
+    - name: tls-deny-covers-objects-too-tf
+      description: >
+        (hcl_raw + terraconstructs only -- see
+        tls-deny-covers-objects-too-cfn for awscdk.) Graph-edge cardinality
+        check: the created bucket's BARE ADDRESS (never a `.arn`-suffix
+        specifically -- Terraform emits the bare address alongside ANY
+        specific-attribute reference to the resource, `.arn`/`.id`/`.bucket`
+        alike, which is what makes this shape-invariant) must appear TWICE
+        in the policy expression's `.references` list (once for the bucket
+        ARN itself, once for the "${bucket-attr}/*"-shaped object-ARN
+        interpolation) -- a Resource set naming only the bucket ARN
+        produces exactly ONE such reference. (The `[*]`/`regex` shape below
+        is a coarse existence check for documentation purposes only -- the
+        real >= 2 cardinality enforcement lives in
+        oracles/rego/.../policy.rego's `bucket_ref_count`, which this
+        JSONPath/op pair cannot itself express.)
+      tier: "1"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_s3_bucket_policy')].expressions.policy.references[*]"
+      op: regex
+      expected: "^aws_s3_bucket\\."
+
+    # every-subresource-targets-this-bucket (TF-shaped arms ONLY -- there is
+    # no separate-subresource concept on awscdk at all: CFN's
+    # AWS::S3::Bucket carries VersioningConfiguration/BucketEncryption/
+    # PublicAccessBlockConfiguration/etc as INLINE properties on the one
+    # bucket resource, so this mistake -- a subresource that exists but is
+    # wired to a different bucket -- is structurally impossible to
+    # reproduce there; not even listed as N/A applies_to, simply omitted).
+    - name: every-subresource-targets-this-bucket-tf
+      description: >
+        Every `aws_s3_bucket_versioning` / `_server_side_encryption_configuration`
+        / `_public_access_block` / `_policy` resource's `bucket` expression
+        REFERENCES the `aws_s3_bucket` resource this configuration creates
+        (a graph edge) -- never a literal/hardcoded bucket name string.
+      tier: "1"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_s3_bucket_versioning' || @.type=='aws_s3_bucket_server_side_encryption_configuration' || @.type=='aws_s3_bucket_public_access_block' || @.type=='aws_s3_bucket_policy')].expressions.bucket.references[*]"
+      op: regex
+      expected: "^aws_s3_bucket\\."
+
+    # sse-kms-references-created-key (the KMS half of "Oracle must
+    # tolerate/defend" point 1 above). Split cfn/tf the same way as
+    # tls-deny-covers-objects-too: CFN is static (KMSMasterKeyID is a
+    # resolvable Fn::GetAtt node either way, verified directly), the
+    # KMSMasterKeyID/kms_master_key_id VALUE is plan-time-unknown on the
+    # TF-shaped arms whenever it references the created key's
+    # provider-computed `.arn` (verified directly: entirely absent from
+    # `.planned_values` for a correct fixture), so those use the
+    # plan-time-known graph-edge path -- mirrors s3-lambda-log-retention's
+    # own SourceArn Fn::GetAtt / graph-edge pair exactly.
+    - name: sse-kms-references-created-key-cfn
+      description: >
+        (awscdk only -- see sse-kms-references-created-key-tf for the
+        TF-shaped arms.) BucketEncryption's KMSMasterKeyID is an
+        `Fn::GetAtt` intrinsic (a reference to a KMS key resource declared
+        in this template) -- never a hardcoded/imported key ARN literal,
+        which would be a plain string with no such key.
+      tier: "1"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.BucketEncryption.ServerSideEncryptionConfiguration[*].ServerSideEncryptionByDefault.KMSMasterKeyID"
+      op: exists
+
+    - name: sse-kms-references-created-key-tf
+      description: >
+        (hcl_raw + terraconstructs only -- see
+        sse-kms-references-created-key-cfn for awscdk.) Graph-edge check:
+        `kms_master_key_id`'s expression must REFERENCE an `aws_kms_key`
+        resource this configuration creates -- a hardcoded/imported key ARN
+        literal has no such reference and resolves this path to zero nodes.
+      tier: "1"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_s3_bucket_server_side_encryption_configuration')].expressions.rule[*].apply_server_side_encryption_by_default[*].kms_master_key_id.references[*]"
+      op: regex
+      expected: "^aws_kms_key\\."
+
+  rego_hints:
+    - >-
+      package cdktn_bench.s3_bucket_hardening_decomposition, graded against
+      `terraform show -json` PLAN output for BOTH TF-shaped arms. Read
+      `.configuration.root_module.resources[].expressions...references`
+      for every graph-edge check below -- never
+      `.planned_values...values.policy` / `...kms_master_key_id`, both are
+      plan-time-unknown whenever the referenced attribute is
+      provider-computed (this file's own header comment; SCHEMA.md §4.2.1).
+    - >-
+      tls-deny-covers-objects-too-tf: collect every `aws_s3_bucket_policy`
+      resource's `.expressions.policy.references` list. If the only
+      references present are to a `data.aws_iam_policy_document.*` address
+      (not to the bucket resource directly), follow that one hop further
+      into THAT data source's own `.expressions.statement[*].resources.references`
+      list instead (mirrors toy-ssm-parameter's own one-hop-indirection
+      precedent -- an idiomatic `data "aws_iam_policy_document"`-composed
+      policy references the data source, not the bucket, directly). Count
+      occurrences of the bucket resource's BARE ADDRESS itself (exact
+      equality, e.g. `"aws_s3_bucket.archive"` -- never a `.arn`-suffix
+      specifically) in whichever list you end up reading; deny if the count
+      is < 2. Shape-invariant: Terraform emits that bare address alongside
+      ANY specific-attribute reference to the resource (`.arn`, `.id`,
+      `.bucket`), so this counts identically whether the Deny statement's
+      Resource list was built from `bucket.arn` or from
+      `"arn:aws:s3:::${bucket.id}"` -- counting only `.arn`-suffixed
+      references (this package's fix, 2026-08-21) wrongly rejected the
+      latter, equally-correct shape. Fail-closed: deny if an
+      `aws_s3_bucket` resource exists in the plan but no
+      `aws_s3_bucket_policy` resource exists anywhere -- EXCEPT when the
+      only reason the bare-address count is 0 is that every reference is
+      to a `local.*` value (a genuinely correct `locals`-hoisted policy;
+      see the next hint) -- that case gets its own, accurate deny message
+      instead of the generic fail-closed one.
+    - >-
+      LOCALS-HOIST (documented v1 static-oracle scope limit, 2026-08-21
+      second verification pass, NARROWED 2026-08-22 fourth verification
+      pass): if a `aws_s3_bucket_policy`'s `.expressions.policy.references`
+      list is non-empty and EVERY entry in it starts with `local.` (never
+      a mix), this is a `locals { bucket_arn = ... }`-hoisted policy.
+      FIRST check whether `.planned_values...aws_s3_bucket_policy.values.
+      policy` for this SAME resource is resolved (non-null) and, decoded,
+      names a Deny statement covering both this bucket's ARN and the
+      object-ARN pattern under `aws:SecureTransport == "false"` (the same
+      resolved-value check the literal-ARN shape below uses) -- if so,
+      TOLERATE it silently (empty deny for this rule): the local resolved
+      to a fully known, verifiably-correct literal
+      (`locals { bucket_name = "..."; bucket_arn =
+      "arn:aws:s3:::${local.bucket_name}" }` is the canonical example),
+      and `.planned_values` proves it directly regardless of the
+      unfollowable `local.*` graph edge. Only when that resolved value is
+      ABSENT (the `local` hoists a provider-computed reference, e.g.
+      `local.bucket_arn = aws_s3_bucket.x.arn` -- genuinely correct
+      Terraform, but `terraform show -json` plan output's
+      `.configuration.root_module` carries NO representation of a
+      `local` value's own definition anywhere, verified directly: its own
+      keys are exactly `["resources", "variables"]`, no hop to follow,
+      unlike the `data.aws_iam_policy_document` hop above) do you deny it,
+      with an ACCURATE message naming this specific reason (not the
+      generic "no policy references this bucket's ARN at all", which is
+      factually false for this shape -- it does reference the bucket,
+      just not visibly so from this artifact, and not the resolved-value
+      path either, since there IS none to check here). Only in that
+      unresolvable sub-case is it correct to refuse: a `local` with no
+      recoverable value could equally alias an unrelated literal ARN, and
+      this oracle has no way to statically tell the two apart.
+    - >-
+      sse-kms-references-created-key-tf ALIAS ONE-HOP (2026-08-21 second
+      verification pass): if `kms_master_key_id`'s direct references are
+      to an `aws_kms_alias` address rather than an `aws_kms_key` address
+      directly, follow that ONE hop into the alias resource's OWN
+      `.expressions.target_key_id.references` list before deciding (mirrors
+      the `data.aws_iam_policy_document` one-hop pattern above -- an
+      `aws_kms_alias` IS a full `configured_resources` entry with real,
+      inspectable `.expressions`, unlike a `local` value). Deny only if
+      NEITHER the direct references NOR (when applicable) the one-hop
+      alias references contain an entry matching `^aws_kms_key\.`.
+    - >-
+      every-subresource-targets-this-bucket-tf: for each of
+      aws_s3_bucket_versioning / aws_s3_bucket_server_side_encryption_configuration
+      / aws_s3_bucket_public_access_block / aws_s3_bucket_policy present in
+      the plan, deny if its `.expressions.bucket.references` has NO entry
+      matching `^aws_s3_bucket\.` (covers both "hardcoded bucket name
+      literal" and "references some other resource entirely").
+    - >-
+      sse-kms-references-created-key-tf: collect every
+      `aws_s3_bucket_server_side_encryption_configuration` resource's
+      `.expressions.rule[*].apply_server_side_encryption_by_default[*].kms_master_key_id.references`.
+      Deny if a resource of this type exists (sse-is-kms's own tier-0 check
+      already confirms `sse_algorithm == "aws:kms"` for it to reach this
+      rule meaningfully) but has NO reference matching `^aws_kms_key\.` --
+      covers both "hardcoded/imported key ARN literal" (no `.references`
+      key at all, only `.constant_value`) and "references an unrelated
+      resource".
+    - >-
+      NOT_VERIFIABLE (documented gap, SCHEMA.md §4.2.1 third-bullet
+      pattern): this package does NOT attempt to verify the Deny
+      statement's Condition/Effect literal content on the TF-shaped arms
+      at all (only awscdk's tls-deny-condition-present, tier 0, checks
+      that) -- the encoded policy value is opaque there regardless of
+      authoring shape (this file's header comment). Do not add a
+      `not_verifiable` rule for this specific gap; it was never claimed as
+      a checked fact for these arms in oracle.intent, so there is nothing
+      to record as "attempted but unresolved" -- distinct from a case
+      where intent DOES claim the fact is checked (see
+      toy-ssm-parameter's own `not_verifiable` precedent for that case).
+
+  cfn_guard_hints:
+    - >-
+      Graded against the awscdk arm's synthesized CloudFormation template.
+      `let deny_statements = Resources.*[ Type == "AWS::S3::BucketPolicy" ].Properties.PolicyDocument.Statement[ Effect == "Deny" ]`.
+    - >-
+      rule tls_deny_covers_bucket_and_objects when %deny_statements
+      !empty: first requires `%tls_deny_statements !empty`, where
+      `tls_deny_statements` is `deny_statements` FURTHER FILTERED to
+      `Condition.Bool.'aws:SecureTransport' == "false"` (never "every Deny
+      statement" -- a correct template may carry an additional, unrelated
+      Deny statement, and scoping to every Deny statement wrongly penalizes
+      it, a verifier-found fix, 2026-08-21). Then, for `%tls_deny_statements`
+      only: `count(Resource.*) >= 2` (mirrors apigw-redeploy's own
+      `count(DependsOn.*) >= %mcount` cardinality-check pattern) -- the
+      direct, always-static CFN form of tls-deny-covers-objects-too-cfn.
+    - >-
+      rule sse_kms_key_is_getatt when a AWS::S3::Bucket with
+      BucketEncryption.ServerSideEncryptionConfiguration[*].ServerSideEncryptionByDefault.SSEAlgorithm
+      == "aws:kms" exists: its ...KMSMasterKeyID.'Fn::GetAtt' EXISTS (the
+      direct, always-static CFN form of sse-kms-references-created-key-cfn
+      -- mirrors s3-lambda-log-retention's own SourceArn.'Fn::GetAtt'
+      pattern exactly).
+    - >-
+      Fail-closed companion rules (mirror toy-ssm-parameter's own
+      convention): FAIL if an AWS::S3::Bucket exists but zero
+      AWS::S3::BucketPolicy resources with a Deny statement exist at all;
+      FAIL if BucketEncryption's SSEAlgorithm is "aws:kms" but no
+      KMSMasterKeyID property is present at all (omitted entirely, as
+      opposed to present-but-a-literal).
+
+  tier05_jsonata: null
+
+catches:
+  - name: subresource-omitted
+    taxonomy: nested-attribute
+    description: >
+      hcl_raw drops `aws_s3_bucket_versioning` entirely -- the
+      most-forgotten of the six decomposed resources per the v4-split
+      evidence trail (tfp-aws#23106 and siblings, this file's header
+      comment) -- while every other control (encryption, public-access
+      block, TLS policy) is still correctly wired. On awscdk/terraconstructs
+      the structurally equivalent mistake is a single omitted L2 prop
+      (`versioned: true` never set, its implied default `false`), since
+      there is no separate resource to drop. Caught directly: with
+      versioning either never created (hcl_raw) or left at its `false`
+      default (awscdk/terraconstructs), `versioning-enabled`'s `eq
+      "Enabled"` check resolves to 0 nodes (hcl_raw: the resource doesn't
+      exist) or 1 node equal to a status the toolchain never even emits as
+      "Enabled" (awscdk/terraconstructs: VersioningConfiguration is omitted
+      entirely when `versioned` is falsy, same 0-node failure) -- fails
+      outright either way, the cheapest possible tier.
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "0"
+      terraconstructs_override: null
+
+  - name: tls-policy-misses-object-arn
+    taxonomy: nested-attribute
+    description: >
+      THE PLAUSIBLE-WRONG SOLUTION (this scenario's headline catch,
+      blueprint §1(c)). The Deny-on-non-TLS statement's Resource set names
+      only the bucket ARN itself (`[bucket_arn]`), omitting the
+      object-level ARN pattern (`bucket_arn + "/*"`) that `enforceSSL`
+      derives automatically on both typed arms (aws-cdk-lib
+      aws-s3/lib/bucket.ts:2689-2704; terraconstructs
+      lib/aws/storage/bucket.js:691-695 `enforceSSLStatement()` -- both
+      re-verified directly at authoring time, this file's header comment).
+      This fixture READS CORRECTLY, passes every existence check
+      (tls-deny-condition-present on awscdk, the bucket-policy-exists shape
+      on every arm), and PROTECTS NOTHING: every `s3:GetObject` over plain
+      HTTP against an object inside the bucket is still allowed, because
+      IAM policy evaluation for an S3 object-level action is scoped by the
+      object ARN, not the bucket ARN. This is the sharp edge inside the
+      sharp edge the whole scenario is designed around: an agent hand-
+      authoring the Deny statement on hcl_raw (no compiler/type-system
+      nudge toward the two-ARN shape) is the realistic failure mode;
+      typing `enforceSSL: true` on either L2 makes this mistake
+      structurally unreachable through ordinary use.
+    predicted_tier_caught:
+      awscdk: "1"
+      hcl: "1"
+      terraconstructs_override: null
+
+  - name: bpa-partially-set
+    taxonomy: nested-attribute
+    description: >
+      Sets `block_public_acls` + `block_public_policy` (or their CDK
+      equivalent, a `BlockPublicAccess` instance constructed with only
+      those two fields) but leaves `ignore_public_acls` /
+      `restrict_public_buckets` at their `false` defaults -- the ticket's
+      "not reachable... under any circumstances" is only half-satisfied.
+      Verified directly (this file's header comment on the four bpa-*
+      asserts) that this is caught identically, if by a different
+      mechanism, on both artifact families: awscdk emits NO
+      PublicAccessBlockConfiguration key for the two omitted flags (0
+      resolved nodes); hcl_raw/terraconstructs' provider schema resolves
+      the two omitted flags to an explicit, present `false` in
+      `.planned_values` (1 resolved node, wrong value). Either way, `eq
+      true` fails the two omitted flags' asserts.
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "0"
+      terraconstructs_override: null
+
+  - name: sse-left-at-s3-managed
+    taxonomy: anti-L2
+    description: >
+      Uses `AES256` (hcl_raw's bare `sse_algorithm` string) /
+      `s3.BucketEncryption.S3_MANAGED` (awscdk's typed enum member) /
+      terraconstructs' equivalent typed enum member -- a TYPED, VALID,
+      AUTOCOMPLETED enum member on both typed arms that silently violates
+      "a KMS key that we control", since S3-managed encryption uses a key
+      S3 itself owns, never one this configuration creates or references.
+      The type system cannot help here: `BucketEncryption.S3_MANAGED` is
+      exactly as easy to pick as `BucketEncryption.KMS` (verified directly
+      against aws-cdk-lib's own `BucketEncryption` enum,
+      aws-s3/lib/bucket.ts:3383-3400, and terraconstructs'
+      `parseEncryption()` switch, lib/aws/storage/bucket.js, which mirrors
+      it member-for-member) -- the falsifiability catch (H2) this scenario
+      contributes, per the prereg's own anti-L2 taxonomy definition.
+      Caught directly: `sse-is-kms`'s `eq "aws:kms"` check resolves to
+      `"AES256"` instead, failing at the cheapest tier on every arm.
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "0"
+      terraconstructs_override: null
+
+  - name: kms-key-not-referenced
+    taxonomy: graph-dependency
+    description: >
+      The bucket's SSE configuration is genuinely `aws:kms` (passes
+      `sse-is-kms`), but its `KMSMasterKeyID`/`kms_master_key_id` names an
+      IMPORTED or hand-typed key ARN literal rather than a KMS key resource
+      this configuration actually creates -- e.g. awscdk's
+      `kms.Key.fromKeyArn(stack, 'ImportedKey', '<literal-arn>')`, or
+      hcl_raw's `kms_master_key_id = "<literal-arn>"` with no matching
+      `resource "aws_kms_key"` block anywhere. This nominally satisfies "a
+      KMS key that we control" in prose but is NOT verifiably so from a
+      static artifact -- the referenced key might not exist, might belong
+      to a different account, or might have a resource policy this
+      configuration has no control over (the exact "Oracle must
+      tolerate/defend" point 1 concern this scenario's own spec comments
+      state). VERIFIED DIRECTLY at authoring time (not assumed): an awscdk
+      fixture using `kms.Key.fromKeyArn(...)` synthesizes ZERO
+      `AWS::KMS::Key` resources and a plain string `KMSMasterKeyID` (no
+      `Fn::GetAtt`); a matching hcl_raw fixture leaves
+      `.expressions.kms_master_key_id` holding only a `.constant_value`,
+      never a `.references` entry matching `^aws_kms_key\.`.
+    predicted_tier_caught:
+      awscdk: "1"
+      hcl: "1"
+      terraconstructs_override: null
+
+  - name: subresource-targets-wrong-bucket
+    taxonomy: graph-dependency
+    description: >
+      TF-shaped arms only (applies_to below) -- structurally impossible on
+      awscdk, where there is no separate subresource to misattach at all
+      (this file's own every-subresource-targets-this-bucket-tf assert
+      comment). One of the four decomposed subresources (most realistically
+      `aws_s3_bucket_public_access_block` or `aws_s3_bucket_policy`, copy-
+      pasted from another example with its `bucket` argument left as a
+      hardcoded literal bucket name, or accidentally pointed at an
+      unrelated `aws_s3_bucket` resource) does not reference the bucket
+      this scenario creates. The subresource EXISTS (so every tier-0
+      existence check for it still passes) and its own literal properties
+      may be entirely correct (all four bpa flags `true`, say) -- but it is
+      silently controlling a DIFFERENT bucket (or none at all, if the
+      literal name matches nothing this configuration creates), leaving
+      THIS scenario's bucket unprotected by that specific control. Caught
+      by the graph-edge check: `.expressions.bucket.references` for the
+      misattached subresource has no entry matching `^aws_s3_bucket\.`
+      (a literal string has only `.constant_value`; a reference to a
+      DIFFERENT `aws_s3_bucket` resource still fails the "targets THIS
+      bucket" regex once the Rego package also confirms the referenced
+      address does not match the scenario's own bucket resource -- see
+      rego_hints).
+    applies_to: [hcl_raw, terraconstructs]
+    predicted_tier_caught:
+      awscdk: "1"
+      hcl: "1"
+      terraconstructs_override: null
+
+verifier:
+  budget:
+    max_iters: 8
+  live_check:
+    enabled: false
+    module: tests/live_check.py
+
+provenance:
+  author: "Vincent (via Claude Code, Batch A scenario-authoring task)"
+  date: "2026-08-20"
+  prereg_section_refs:
+    - "docs/design/batch-a-greenfield-blueprints.md §1 (s3-bucket-hardening-decomposition) -- the design source this spec implements verbatim, including its identity/prompt/oracle-tier plan and its 'oracle must tolerate/defend' analysis"
+    - "docs/design/batch-a-greenfield-blueprints.md §0.1-§0.2 (batch-wide conventions: identity separation, prompt-voice rules, static-oracle-default, evidence-checked tiers) applied throughout"
+    - "iac-abstraction-benchmark-prereg.md §5 (catch taxonomy: nested-attribute, graph-dependency, anti-L2 / H2 falsifiability), §3 (oracle tiers)"
+    - "tfp-aws#23106 (v4 aws_s3_bucket decomposition mega-thread, CLOSED/completed 2022-02-10, 300 reactions / 93 comments, re-verified 2026-08-20) and siblings #23103, #25325, #23758, #26328 -- the trap mechanics' primary evidence"
+    - "specs/SCHEMA.md §4.2.1 (plan-time-unknown attributes / G2 contagion) -- this spec's own re-derivation of tls-deny-statement-present's tier away from the blueprint's original tier-0-on-every-arm design, evidence-checked directly against real terraform show -json plan output at authoring time (see this file's header comment)"
+    - "2026-08-21 second verification pass (post-authoring repair): fixed a contaminated awscdk working directory (documented, not fixable from this scenario's own ownership -- this file's header comment fix (c)), a locals-hoist TF false-deny (fix (d)), and an in-config-KMS-alias TF false-deny (fix (e)) -- all three verifier-found, all three re-verified directly against real terraform show -json plan output and real opa eval runs, see oracles/rego/s3-bucket-hardening-decomposition/policy.rego's own header comment for the mechanism"
+    - "2026-08-22 third verification pass (post-authoring repair): fixed a TF literal-ARN false-deny (fix (f), resolved-value fallback in oracles/rego/.../policy.rego) and a cfn-guard split-TLS-statement arm-parity gap (fix (g), aggregated cardinality check in oracles/cfn-guard/.../policy.guard) -- both verifier-found, both re-verified directly against real terraform show -json plan output / real cfn-guard 3.2.0 runs, see each oracle package's own header comment for the mechanism"
+    - "2026-08-22 fourth verification pass (post-authoring repair): fixed a gap in fix (f)'s own resolved-value guard -- it covered the fail-closed rule but not the locals-only deny rule, so a locals-hoisted policy whose resolved value WAS independently verifiable in .planned_values still got fix (d)'s accurate-for-the-unresolvable-case-only locals message (fix (h), `resolved_policy_covers_any` guard added to both the locals-only deny rule and `local_only_policies` in oracles/rego/.../policy.rego; narrowed the corresponding claims in 'Oracle must tolerate/defend' point 5, the LOCALS-HOIST rego_hints entry, and oracle.intent) -- verifier-found, re-verified directly against real terraform show -json plan output and real opa eval runs, see oracles/rego/s3-bucket-hardening-decomposition/policy.rego's own header comment for the mechanism"

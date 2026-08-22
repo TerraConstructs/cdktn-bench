@@ -1,0 +1,1186 @@
+# specs/ddb-gsi-attribute-definitions.yaml
+#
+# Design source: docs/design/batch-a-greenfield-blueprints.md §6
+# (`ddb-gsi-attribute-definitions`), authored 2026-08-20 against
+# `aws-cdk-lib` 2.263.0 and `terraconstructs` 0.2.13. This spec re-verifies
+# every claim in that blueprint directly against the pinned toolchains
+# before freezing anything below -- see the per-catch notes for what was
+# re-derived and what changed.
+#
+# ---------------------------------------------------------------------
+# SOURCE-VERIFIED (this authoring session, 2026-08-21):
+#
+#   aws-cdk-lib (local clone, packages/aws-cdk-lib/aws-dynamodb/lib/table.ts):
+#     - `registerAttribute()` (private, :1802-1813) is the ONLY place that
+#       pushes into `this.attributeDefinitions`, called exclusively from
+#       the table's own partition/sort-key wiring and from
+#       `addGlobalSecondaryIndex()`/`addLocalSecondaryIndex()`. There is no
+#       public API that adds an attribute definition without it being a
+#       key -- confirmed by reading the whole class, not assumed.
+#     - `addGlobalSecondaryIndex()`'s projection validation (:1760-1767)
+#       throws `ValidationError` synchronously ("non-key attributes should
+#       be specified when using INCLUDE projection type" / the converse)
+#       when `projectionType: INCLUDE` is set without `nonKeyAttributes`,
+#       or vice versa.
+#     - Rendered at :1365 (`attributeDefinitions: this.attributeDefinitions`).
+#
+#   terraconstructs 0.2.13 (local pnpm store,
+#   lib/aws/storage/table.js -- byte-identical mechanism):
+#     - `registerAttribute()` (:1085-1096), same de-dup-by-name shape,
+#       called only from `addKey()` (table keys) and
+#       `addGlobalSecondaryIndex()` (:776-808, itself calling
+#       `registerAttribute(props.partitionKey)` /
+#       `registerAttribute(props.sortKey)`). No other caller exists in the
+#       file. Rendered at :685 (`attribute: this.attributeDefinitionsInternal`).
+#     - `buildIndexProjection()` (:1047-1055) throws the same-shaped
+#       `ValidationError` ("Non-key attributes should be specified when
+#       using INCLUDE projection type") for the identical INCLUDE-without-
+#       nonKeyAttributes mistake.
+#     - `GlobalSecondaryIndexProps extends SecondaryIndexProps, SchemaOptions`
+#       (lib/aws/storage/table.d.ts:341) exposes exactly
+#       `indexName`/`partitionKey`/`sortKey`/`projectionType`/
+#       `nonKeyAttributes` -- no escape hatch to add a bare attribute
+#       definition either.
+#   CONCLUSION: on both typed arms, catch 1 (over-declared attribute
+#   definitions) and catch 3 (undeclared GSI key attribute) are
+#   structurally unreachable through the public L2 API on both arms --
+#   `registerAttribute` is the only writer of the attribute-definition set
+#   on both, and it is never called except from a key-defining path.
+#
+#   hashicorp/aws 6.58.0, LIVE-VERIFIED with a real, fully offline
+#   `terraform init` (filesystem-cached provider binary,
+#   `skip_credentials_validation`/`skip_requesting_account_id`/
+#   `skip_metadata_api_check` = true, dummy `access_key`/`secret_key` --
+#   no AWS API is ever contacted) + `terraform validate` + `terraform plan`
+#   against three minimal `aws_dynamodb_table` fixtures, run directly at
+#   authoring time (not assumed from the blueprint's own citation):
+#
+#     (a) extra `attribute` blocks for shippingAddress/lineItems/
+#         paymentReference (catch 1): `terraform validate` PASSES (only a
+#         deprecation warning for `hash_key`); `terraform plan` FAILS --
+#         "Error: all attributes must be indexed. Unused attributes:
+#         [\"lineItems\" \"paymentReference\" \"shippingAddress\"]" -- a
+#         LOCAL provider-side check with no network/AWS call involved
+#         (confirmed by the offline provider flags above). This is a
+#         REFINEMENT of the blueprint's own citation (tfp-aws#46322 quotes
+#         the mirror-image "Unmatched indexes" error, not this one) --
+#         same mechanism, the complementary message, both real and both
+#         reproduced directly here.
+#     (b) `customerId`/`createdAt` used as a GSI key but never declared as
+#         `attribute` blocks (catch 3): `terraform validate` PASSES;
+#         `terraform plan` FAILS -- "Error: all indexes must match a
+#         defined attribute. Unmatched indexes: [\"createdAt\"
+#         \"customerId\"]" -- byte-identical to tfp-aws#46322's own quoted
+#         text. LOCAL check, same offline guarantee as (a).
+#     (c) `projection_type = "INCLUDE"` with `non_key_attributes` omitted
+#         (catch 2): `terraform validate` PASSES *and* `terraform plan`
+#         ALSO SUCCEEDS -- `non_key_attributes` resolves to `[]` in
+#         `planned_values` rather than being rejected by either toolchain
+#         step. THIS CONTRADICTS THE BLUEPRINT'S IMPLIED MECHANISM (its own
+#         "0 / 0" tier prediction did not specify HOW hcl_raw reaches tier
+#         0 for this catch, and the s3-lambda-log-retention precedent this
+#         batch leans on is a toolchain-rejection precedent, which does NOT
+#         hold here). The tier prediction ("0") is UNCHANGED, but the
+#         mechanism is: hcl_raw is caught by the
+#         `gsi-projects-exactly-status-and-total` structural_assert alone
+#         (empty resolved set != {status, totalAmount}), same as it would
+#         catch a solution that used ALL/KEYS_ONLY projection instead. See
+#         that catch's own description for the corrected mechanism.
+#     A fourth fixture (all keys declared correctly, INCLUDE +
+#     non_key_attributes = [status, totalAmount]) was also run and plans
+#     clean, confirming the structural_asserts below resolve against real
+#     `terraform show -json` output byte-for-byte (paths re-verified with
+#     `jq` directly against that plan's JSON, not assumed from memory).
+#
+#   Every `cfn_jsonpath`/`tf_jsonpath` below was independently re-verified
+#   by compiling it through `generator/jsonpath_jq.py` and running the
+#   resulting `jq` filter against (i) the real `terraform show -json`
+#   output from the fixtures above and (ii) a synthetic
+#   `AWS::DynamoDB::Table` CFN fragment built from the standard, decade-
+#   stable CFN resource shape (AttributeDefinitions/KeySchema/
+#   GlobalSecondaryIndexes/Projection) -- both resolve to the expected
+#   values.
+#
+# Evidence status (blueprint §6(d), RE-RE-VERIFIED this session, correcting
+# this file's own earlier mischaracterization of tfp-aws#46322 -- a
+# verifier caught it, corrected in place below): 4 of 5 originally-graded
+# URLs for this scenario
+# were FALSIFIED at blueprint-authoring time (tfp-aws#671 -- GSI capacity
+# `ignore_changes`; #3828 -- spurious GSI recreation from an old SDK
+# hashing bug; #556 -- a 2017 `range_key` limitation, long fixed; #728 --
+# a DRY ergonomics request whose own example already sets
+# `non_key_attributes` correctly). The fifth, **tfp-aws#46322** ("terraform
+# 6.30 failed with aws_dynamodb_table Error: all indexes must match a
+# defined attribute. Unmatched indexes", CLOSED/completed, created
+# 2026-02-04, **closed 2026-04-14** -- 2026-05-16 is only the lock-bot's
+# `updated_at`, NOT the close date, corrected here), was carried forward as
+# this scenario's sole citation on the strength of its error text matching
+# probe (b) above verbatim. Read again, in full, this session
+# (`gh api repos/hashicorp/terraform-provider-aws/issues/46322`): it is
+# labeled **bug, regression** (not a design confirmation), the reporter's
+# own words are "it is an existing resource for a few years, no change on
+# it, I expect the plan to do nothing", and the accepted root cause
+# (maintainer sjlewis25, 2026-02-05, PR #46338, released v6.41.0) is
+# "empty string range_key values were being validated as if they were
+# actual attribute names ... skip empty strings when building the
+# indexedAttributes map" -- i.e. THIS ISSUE IS A PROVIDER FALSE-POSITIVE
+# BUG, not an instance of anyone actually mis-declaring an attribute set.
+# It is kept below, but RE-CHARACTERIZED honestly: it confirms the "all
+# indexes must match a defined attribute" validator exists and fires on
+# provider 6.x (the exact error text probe (b) reproduces), not that this
+# scenario's trap is what caused it. The PRIMARY evidence is the provider
+# doc itself, LIVE-READ this session directly from
+# `hashicorp/terraform-provider-aws`'s `main` branch (not the blueprint's
+# memory of it): `website/docs/r/dynamodb_table.html.markdown` line 19 --
+# "**Note:** Only define attributes on the table object that are going to
+# be used as a hash key or range key for the table itself, or for LSI/GSI
+# keys. Adding attributes not used in these scenarios causes an infinite
+# plan loop." -- and line 409 (`global_secondary_index.non_key_attributes`)
+# -- "Only required with `INCLUDE` as a projection type". Both cited in
+# provenance below, ahead of #46322.
+#
+# DEVIATION FROM THE BLUEPRINT'S LITERAL PROMPT TEXT (recorded here, not
+# silently reproduced): the blueprint's own shared_body never spells out
+# `customerId`/`createdAt`/`totalAmount` as literal field names -- it says
+# "list one customer's orders newest-first" and "shows the order's status
+# and total". But oracle.structural_asserts below (copied from the
+# blueprint's own oracle-tier table) check those EXACT literal strings via
+# `eq`/`set_eq`. An oracle that hardcodes identifier strings the ticket
+# never states is unsound -- it would fail an agent who wrote a completely
+# correct table using, say, `customer_id`/`orderDate`/`total`. The fix
+# applied here is NOT a new prompt constraint (it adds no mechanism/shape
+# requirement -- no GSI, index, or projection vocabulary is named); it
+# extends the SAME "items also carry ..." data-model sentence already in
+# the blueprint's own prompt to name every field by its real identifier,
+# exactly as `orderId` already is. This is the same move
+# s3-lambda-log-retention's own prompt makes ("items carry these
+# attributes" is data, not an implementation hint) -- see
+# instruction.shared_body below.
+#
+# ALTERNATIVE-SHAPE FIX (awscdk arm, found by a verifier, fixed this
+# session): `aws-cdk-lib` 2.263.0's `dynamodb.TableV2` -- the construct the
+# library's own `aws-dynamodb/README.md` calls "the preferred construct for
+# all use cases, including creating a single table" -- synthesizes
+# `AWS::DynamoDB::GlobalTable`, never `AWS::DynamoDB::Table`. Every
+# `cfn_jsonpath` below originally hard-filtered on
+# `@.Type=='AWS::DynamoDB::Table'` alone, so a property-for-property
+# CORRECT `TableV2` solution resolved ZERO nodes on every assert and
+# scored 0.0 for a reason that has nothing to do with this scenario's
+# actual pitfall -- exactly the `apigw-openapi` "each route is its own
+# resource" failure mode `docs/adding-scenarios.md` §1 item 3a warns
+# against, except this instance was oracle-side (a jsonpath too narrow),
+# not prompt-side. REPRODUCED directly this session: synthesized a minimal
+# `TableV2` stack (`aws-cdk-lib` 2.263.0, this arm's own pinned version)
+# with `partitionKey: orderId` and one `globalSecondaryIndexes` entry
+# (`customerId`/`createdAt`, `INCLUDE`, `[status, totalAmount]`) --
+# semantically identical to the reference solution. Its synthesized
+# `Properties` are BYTE-IDENTICAL in shape to `AWS::DynamoDB::Table`'s:
+# `AttributeDefinitions`/`KeySchema`/`GlobalSecondaryIndexes[*].KeySchema`/
+# `.Projection.{ProjectionType,NonKeyAttributes}` all present at the exact
+# same paths (the only additions are a top-level `Replicas` array and a
+# per-GSI-replica stanza, neither of which any assert below touches).
+# FIXED by widening the `Type` filter on all six `cfn_jsonpath` entries to
+# `@.Type=='AWS::DynamoDB::Table' || @.Type=='AWS::DynamoDB::GlobalTable'`
+# (jq disjunction, compiled and verified directly through
+# `generator/jsonpath_jq.py`, then run with `jq` against the real
+# synthesized `TableV2` template above -- all six now resolve correctly).
+# `solution/reference-alt-tablev2/` under the awscdk task dir is a second,
+# hand-authored `TableV2` reference fixture proving this tolerance for
+# real (not auto-discovered by `gates/oracle_falsifiability.py` --
+# `solution/solve.sh` stays the canonical `Table`-shaped reference the
+# gate walks; this is a manually-run, additional proof, since the harness
+# has no "second correct shape" slot -- see that fixture's own solve.sh
+# header for the transcript).
+#
+# KEY_SCHEMA SHAPE-TOLERANCE FIX (hcl_raw arm, found by a verifier, fixed
+# this session, 2026-08-21): `aws_dynamodb_table`'s `global_secondary_index`
+# argument reference exposes its HASH/RANGE key TWO ways -- LIVE-READ this
+# session, again, from the SAME `hashicorp/terraform-provider-aws` file
+# this spec already cites as primary evidence (`website/docs/r/
+# dynamodb_table.html.markdown`, `main` branch): `hash_key` -- "(Optional,
+# **Deprecated**) ... Mutually exclusive with `key_schema`. Use
+# `key_schema` instead."; `range_key` -- the identical wording; `key_schema`
+# -- "(Optional) Configuration block(s) for the key schema...", the
+# NON-deprecated, provider-preferred form. This scenario's
+# `gsi-hash-key-is-customerId`/`gsi-range-key-is-createdAt` structural_asserts
+# originally read ONLY `global_secondary_index[*].hash_key`/`.range_key` on
+# every arm, so a semantically-identical, non-deprecated `key_schema`-shaped
+# hcl_raw solution scored 0.0 -- exactly the `apigw-openapi` "each route is
+# its own resource and method" failure mode `docs/adding-scenarios.md` §1
+# item 3a exists to prevent, here on the oracle side (a jsonpath too
+# narrow), not the prompt side, and specific to hcl_raw: terraconstructs's
+# `storage.Table` renders ONLY the deprecated `hashKey`/`rangeKey` shape
+# internally (`node_modules/terraconstructs/lib/aws/storage/table.js:
+# 787-788`, confirmed no confound there), and CFN's `KeySchema` has no
+# analogous alternate shape at all, so awscdk was never affected either.
+#
+# REPRODUCED directly this session, fully offline (`terraform init` +
+# `validate` + `plan` against the filesystem-cached hashicorp/aws 6.58.0
+# provider, dummy credentials, the same offline mechanism this file's own
+# earlier header probes (a)-(c) already used): a `key_schema`-shaped GSI
+# (two `key_schema { attribute_name, key_type }` blocks,
+# HASH=customerId/RANGE=createdAt) plans CLEAN with zero warnings, and
+# `terraform show -json`'s `planned_values` for that GSI is
+# `{key_schema:[{customerId,HASH},{createdAt,RANGE}], name,
+# non_key_attributes, projection_type:"INCLUDE", range_key:""}` -- NO
+# `hash_key` key at all (that field is genuinely plan-time-UNKNOWN in this
+# shape; `terraform plan`'s own diff shows `hash_key = (known after
+# apply)`, so `planned_values`, which only ever carries plan-time-KNOWN
+# values, omits it). Running the reference `tests/static_tiers.sh` against
+# it, before this fix: `gsi-hash-key-is-customerId` FAIL (resolved=[]),
+# `gsi-range-key-is-createdAt` FAIL (resolved=[""]) -- tier0_pass=0,
+# reward 0.0, on an otherwise-correct solution.
+#
+# FIX: `generator/jsonpath_jq.py`'s supported grammar (`.Field`/`..Field`/
+# `[?(@.F=='V')]`, OR only WITHIN one filter's equality conditions, `[*]`)
+# cannot express "read `.hash_key` OR, when that's absent, read
+# `.key_schema[?(@.key_type=='HASH')].attribute_name`" as a single
+# JSONPath string, and this scenario's authoring agent does not own
+# `generator/*.py` to widen it (other scenarios are being authored in the
+# same tree concurrently -- touching shared generator code is out of
+# scope for a single-scenario fix regardless). So, following this
+# scenario's OWN precedent immediately below
+# (`attribute-definitions-are-exactly-the-key-attributes`'s own tier-1
+# promotion, whose description explains exactly this move): `hcl_raw` was
+# removed from `applies_to` on both tier-0 asserts (unchanged, still tier
+# 0, for `awscdk`/`terraconstructs`), and the fact is graded for hcl_raw
+# by two new `deny` rules folded into the ALREADY-EXISTING
+# `oracles/rego/ddb-gsi-attribute-definitions/policy.rego` -- NOT as two
+# new named tier-"1" `structural_assert` entries, because neither fact has
+# a covering `catches[]` entry of its own (no catch in this scenario
+# produces a wrong GSI key, only a wrong attribute-definition SET), and a
+# new tier-1 assert with no covering catch would inflate
+# `generator/check_tier1_coverage.py`'s per-arm floor for hcl_raw from 1
+# assert/1 catch to 3 asserts/1 catch -- an untracked, gating regression
+# on a shared, not-owned coverage-floor file. VERIFIED directly, this
+# session, with the fixed policy: the `key_schema`-shaped fixture above --
+# now ALLOW; the traditional `hash_key`/`range_key`-shaped reference
+# solution -- still ALLOW, unchanged; a deliberately-wrong `key_schema`
+# fixture with HASH/RANGE swapped -- DENY, two violations, naming both.
+# Running the real, regenerated `tests/static_tiers.sh` against the
+# `key_schema`-shaped fixture end-to-end (not just `opa eval` in
+# isolation): tier0_pass=1 (the two relocated asserts no longer apply to
+# hcl_raw; every remaining tier-0 assert passes), tier1_status=PASS ->
+# reward 1.0. `solution/reference-alt-key-schema/` under the hcl_raw task
+# dir is a second, hand-authored reference fixture proving this for real,
+# the same convention as `solution/reference-alt-tablev2/` above.
+#
+# STANDALONE-GSI SHAPE-TOLERANCE FIX (hcl_raw arm, found by adversarial
+# verification after 3 rounds, fixed this session, 2026-08-22): hcl_raw
+# has a SECOND alternative shape for declaring the byCustomer GSI, beyond
+# the KEY_SCHEMA fix above -- `hashicorp/aws` 6.58.0 (LIVE-CONFIRMED this
+# session via `terraform providers schema -json` against the filesystem-
+# mirrored provider, and via `gh api search/issues` against
+# hashicorp/terraform-provider-aws: tfp-aws PR #44999 added the resource
+# 2026-01-06, PR #47747 removed its "experimental" flag 2026-05-05, so it
+# is a real, GA, in-mirror resource on this scenario's own pinned provider
+# version, not a hypothetical) ships `aws_dynamodb_global_secondary_index`
+# -- a STANDALONE resource for an "externally managed" GSI, as opposed to
+# the inline `global_secondary_index` block nested inside
+# `aws_dynamodb_table`. This is not a hypothetical shape an agent might
+# invent: it is NAMED, BY LINK, in the very paragraph this spec's own
+# PRIMARY evidence citation quotes -- `website/docs/r/dynamodb_table.
+# html.markdown` line 19, quoted above (`provenance` below) as "...causes
+# an infinite plan loop", continues on the SAME line (re-fetched from
+# `main` this session, this spec's earlier quote of it was truncated mid-
+# sentence): "When using [`aws_dynamodb_global_secondary_index`](/docs/
+# providers/aws/r/dynamodb_global_secondary_index.html), you do not need
+# to define attributes for externally managed GSIs in the
+# `aws_dynamodb_table` resource." An agent that reads this scenario's own
+# best evidence for its trap -- exactly the read-before-write behavior
+# this benchmark rewards -- is walked straight to this resource by name.
+#
+# REPRODUCED directly this session, fully offline (`terraform init` +
+# `validate` + `plan` against the filesystem-cached hashicorp/aws 6.58.0
+# provider, dummy credentials, the same offline mechanism this file's
+# earlier probes already used): `aws_dynamodb_table.orders` with
+# `hash_key = "orderId"` and a SINGLE `attribute { name = "orderId" }`
+# block, plus a sibling `resource "aws_dynamodb_global_secondary_index"
+# "by_customer" { table_name = aws_dynamodb_table.orders.name, index_name
+# = "byCustomer", key_schema { attribute_name = "customerId",
+# attribute_type = "S", key_type = "HASH" }, key_schema { attribute_name =
+# "createdAt", attribute_type = "S", key_type = "RANGE" }, projection {
+# projection_type = "INCLUDE", non_key_attributes = ["status",
+# "totalAmount"] } }` -- `terraform validate` Success, `terraform plan`
+# exit 0, "Plan: 2 to add, 0 to change, 0 to destroy", ZERO deprecation
+# warnings (the reference solve.sh's `hash_key`/`range_key` form warns;
+# this shape does not, same as the `key_schema`-inline shape). This is
+# semantically IDENTICAL to the reference solution -- same table key, same
+# GSI key, same projection -- and is the exact shape the KEY_SCHEMA fix's
+# own citation (`hash_key`/`range_key` "Mutually exclusive with
+# `key_schema`. Use `key_schema` instead.") does NOT cover: `key_schema`
+# there means the INLINE block form, a third, still-different shape from
+# this standalone resource.
+#
+# `terraform show -json`'s `planned_values` for `aws_dynamodb_table.
+# orders` in this shape has NO `global_secondary_index` key AT ALL (the
+# table's own field is genuinely plan-time-unknown here -- `terraform
+# plan`'s diff shows `global_secondary_index (known after apply)`, so
+# `planned_values` omits it entirely, same "unknown values are omitted,
+# not placeholdered" mechanism the KEY_SCHEMA fix's own `hash_key`
+# omission already relies on); the GSI's own facts instead live on the
+# SEPARATE `aws_dynamodb_global_secondary_index.by_customer` resource, at
+# `.values.key_schema[*]` (`{attribute_name, attribute_type, key_type}`,
+# confirmed via `terraform providers schema -json`) and
+# `.values.projection[0].{projection_type,non_key_attributes}`.
+#
+# Running the PRE-FIX `tests/static_tiers.sh` against this fixture (the
+# exact adversarial-verification failure mode): `gsi-projection-is-include`
+# and `gsi-projects-exactly-status-and-total` both jq-error ("Cannot
+# iterate over null (null)") because `aws_dynamodb_table.values.
+# global_secondary_index` is absent -- `assert_check` in
+# `tests/_assert_lib.sh` turns a jq query error into an unconditional FAIL
+# (not a "0 nodes resolved, op says fail" result), so `tier0_pass=0` and
+# reward is 0.0 on a plan-clean, semantically-correct solution -- the
+# `apigw-openapi` "each route is its own resource" failure mode
+# `docs/adding-scenarios.md` §1 item 3a exists to prevent, on an oracle
+# that (per that same section) had EVERY chance to read this shape off its
+# own cited evidence and did not.
+#
+# FIX, same move as KEY_SCHEMA immediately above and for the identical
+# reason (`generator/jsonpath_jq.py`'s grammar cannot express "read GSI
+# facts from `aws_dynamodb_table.values.global_secondary_index[*]` OR from
+# a DIFFERENT resource `type` entirely" as one jsonpath, let alone as one
+# shared with the key_schema fallback already needed): `gsi-hash-key-is-
+# customerId`/`gsi-range-key-is-createdAt` were ALREADY tier-1-on-hcl_raw
+# from the KEY_SCHEMA fix, so `oracles/rego/ddb-gsi-attribute-
+# definitions/policy.rego`'s existing `resolved_hash_key`/
+# `resolved_range_key` machinery only needed a shared upstream helper
+# (`table_gsis`) that also normalizes a standalone resource's fields into
+# the same `{hash_key, range_key, key_schema}` shape those functions
+# already read -- no change to either function's own body.
+# `gsi-projection-is-include`/`gsi-projects-exactly-status-and-total`
+# additionally had `hcl_raw` removed from their own `applies_to` (now
+# `[awscdk, terraconstructs]`, matching the two GSI-key asserts), and two
+# NEW `deny` rules were added to the same policy.rego, reading through the
+# same `table_gsis` helper -- see that file's own header comment,
+# "STANDALONE-GSI SHAPE-TOLERANCE FIX", for the full rule text and the
+# live, offline reproduction proving the ALLOW/DENY cases.
+# `attribute-definitions-are-exactly-the-key-attributes` needed NO logic
+# change (see that assert's own description above for why its existing
+# allowlist rule was already shape-invariant) -- only its own description
+# updated to say so explicitly, since a verifier reasonably asked whether
+# it needed one.
+#
+# `solution/reference-alt-standalone-gsi/` under the hcl_raw task dir is a
+# third, hand-authored reference fixture proving this shape scores 1.0 for
+# real -- same convention as `solution/reference-alt-key-schema/` and
+# `solution/reference-alt-tablev2/` above (manually run;
+# `gates/oracle_falsifiability.py` still walks only the canonical
+# `solution/solve.sh`, which stays `hash_key`/`range_key`-shaped).
+#
+# Full evidence trail (`gh api`/live `terraform`/`opa eval` transcripts,
+# every command run and its output) is in this scenario's own authoring
+# report, not reproduced verbatim here to keep this header from doubling
+# in size -- see `oracles/rego/ddb-gsi-attribute-definitions/policy.rego`'s
+# own header comment, which carries the same argument at the
+# policy-authoring level.
+#
+# ---------------------------------------------------------------------
+# EXISTENCE + TOTAL-PROJECTION FIX (adversarial verification, REPAIR ROUND
+# 2, 2026-08-22): the STANDALONE-GSI fix above, verified in isolation,
+# turned out to have widened hcl_raw's tolerance too far -- removing four
+# tier-0 asserts from hcl_raw's `applies_to` left NOTHING rejecting a plan
+# with NO GSI at all (every remaining tier-1 `deny` rule is existentially
+# quantified over the GSI list, so an empty list satisfies all of them),
+# and a second, narrower gap let a standalone GSI resource with a missing
+# `projection` block silently drop out of grading entirely rather than
+# being graded and correctly rejected. Both are pure oracle-completeness
+# bugs in the fix itself, not new toolchain findings -- fixed in
+# `oracles/rego/ddb-gsi-attribute-definitions/policy.rego` (own header
+# comment, same section name, has the full argument and live, offline
+# reproduction of both) plus a new `catches[]` entry, `gsi-missing-
+# entirely`, covering the first gap (the second has no dedicated catch --
+# see `attribute-definitions-are-exactly-the-key-attributes`'s own
+# description for why). `oracle.intent` below was also reworded (not
+# re-derived) to state the attribute-definition fact shape-invariantly --
+# its prior wording ("customerId/createdAt must never be missing from
+# [the table's own attribute-definition set]") was already-false for the
+# STANDALONE-GSI shape the prior round's fix tolerates, a spec-honesty gap
+# independent of the two grading regressions above (SCHEMA.md §4.1: this
+# field is the single source of truth both policy.rego and policy.guard
+# are checked against, so it must state what the fully-tolerant oracle
+# actually requires, not a stricter fiction).
+#
+# ---------------------------------------------------------------------
+# REPAIR ROUND 3 (adversarial verification, 2026-08-22, same session):
+# TWO more findings against the REPAIR ROUND 2 state above -- both fixed
+# in `oracles/rego/ddb-gsi-attribute-definitions/policy.rego` (own header
+# comment, matching section names below, has the full argument and live,
+# offline reproduction of each):
+#
+#   (1) TABLE-ASSOCIATION FIX: `table_gsis`'s standalone-resource fallback
+#   (added by the STANDALONE-GSI fix) matched EVERY
+#   `aws_dynamodb_global_secondary_index` resource in the plan to EVERY
+#   table, with no check on that resource's own `table_name` -- an
+#   ORPHAN standalone GSI resource (one whose `table_name` names some
+#   unrelated table, or a table not present in the plan) made the
+#   REPAIR-ROUND-2 existence check pass vacuously for a table with NO
+#   real index of its own. Fixed by associating a standalone GSI with a
+#   table only when its `table_name` resolves to that table's own
+#   `.values.name`, or is genuinely absent/null (the `.id`-reference
+#   construction, still plan-time-unknown and so still permissively
+#   matched -- this fix narrows a false unconditional match, it does not
+#   reintroduce the strict-match regression the STANDALONE-GSI fix's
+#   original reasoning was written to avoid).
+#   `solution/broken/gsi-missing-entirely/solve.sh` (hcl_raw task dir) now
+#   additionally carries an orphan standalone GSI resource, so
+#   `gates/oracle_falsifiability.py` exercises this fix through the real
+#   toolchain, not just a manual `opa eval`.
+#
+#   (2) TERRACONSTRUCTS TOLERANCE FIX: the STANDALONE-GSI fix narrowed
+#   `gsi-hash-key-is-customerId`/`gsi-range-key-is-createdAt`/
+#   `gsi-projection-is-include`/`gsi-projects-exactly-status-and-total`
+#   off hcl_raw's `applies_to` but left terraconstructs on them, reasoning
+#   (this file's arms.terraconstructs.reason, and the catches below) that
+#   terraconstructs's own `storage.Table` L2 construct can only ever
+#   synthesize the inline `global_secondary_index` block. True of
+#   `storage.Table` itself, but incomplete for the arm: the
+#   terraconstructs task's own `environment/app/package.json` also ships
+#   `@cdktn/provider-aws`, whose L1 `DynamodbGlobalSecondaryIndex` binding
+#   synthesizes the SAME standalone-resource shape hcl_raw already
+#   tolerates -- reachable in the same workspace, not a hypothetical. The
+#   adversarial-verification finding that surfaced this REPRODUCED it end
+#   to end (a `storage.Table` partition key plus a sibling L1
+#   `DynamodbGlobalSecondaryIndex` plans clean and is
+#   semantically-identical to the reference shape, but scored 0.0 on four
+#   `jq` errors before this fix); this repair round INDEPENDENTLY
+#   RE-CONFIRMED reachability by inspecting a local install of the arm's
+#   own exact pinned `@cdktn/provider-aws@24.8.0` directly (`static
+#   readonly tfResourceType = "aws_dynamodb_global_secondary_index"` on
+#   `DynamodbGlobalSecondaryIndex`) and mechanically confirmed the fix
+#   composes correctly (the regenerated terraconstructs
+#   `tests/static_tiers.sh` now declares only 1 tier-0 assert, matching
+#   hcl_raw; its `tests/policy.rego` is byte-identical to the file this
+#   round edited) without re-running the arm's own `npm ci`/`cdktn synth`
+#   a second time. Fixed the same way the STANDALONE-GSI fix
+#   handled hcl_raw: those four asserts now `applies_to: [awscdk]` only;
+#   terraconstructs is graded on all four facts at tier 1 instead, by the
+#   SAME already-shape-tolerant `policy.rego` rules (no rule-body change
+#   needed -- that file already runs against terraconstructs's own
+#   `terraform show -json` plan output via
+#   `attribute-definitions-are-exactly-the-key-attributes`'s own
+#   `applies_to`). `predicted_tier_caught.terraconstructs_override` is
+#   updated below, on the three catches this changes, from `"0"` to `"1"`
+#   (matching `hcl`'s value -- terraconstructs no longer diverges from the
+#   `.hcl` collapsing convention for these facts, since it no longer has
+#   its own, narrower tier-0 mechanism catching them): `include-
+#   projection-without-non-key-attributes`,
+#   `gsi-projection-type-is-keys-only-not-include`, `gsi-missing-entirely`.
+#   `arms.terraconstructs.reason` below is corrected to no longer imply
+#   `storage.Table` is the arm's only DynamoDB-GSI-producing surface.
+
+id: ddb-gsi-attribute-definitions
+workspace_id: orders-table
+title: "Orders table with a per-customer query index"
+difficulty: 2
+services: [dynamodb]
+
+arms:
+  awscdk: true
+  hcl_raw: true
+  terraconstructs:
+    enabled: true
+    reason: >
+      terraconstructs 0.2.13, lib/aws/storage/table.js (local pnpm-store
+      clone, read in full at authoring time): `storage.Table` is a real L2
+      with genuine GSI support -- `addGlobalSecondaryIndex()` (:776-808)
+      takes typed `partitionKey`/`sortKey`/`projectionType`/
+      `nonKeyAttributes` props (lib/aws/storage/table.d.ts:341,
+      `GlobalSecondaryIndexProps extends SecondaryIndexProps,
+      SchemaOptions`), calls the SAME private `registerAttribute()`
+      (:1085-1096) aws-cdk-lib's Table class calls, and synthesizes a
+      genuine `aws_dynamodb_table` resource (`attribute`/
+      `globalSecondaryIndex` rendered at :685-687 via
+      `@cdktn/provider-aws`'s `dynamodbTable` binding) -- no custom
+      resource, no L1 escape hatch needed. `buildIndexProjection()`
+      (:1047-1055) throws the same INCLUDE-without-nonKeyAttributes
+      `ValidationError` aws-cdk-lib throws, at the same synth-time layer.
+      `storage.AttributeType`/`storage.ProjectionType` are real TS enums
+      (lib/aws/storage/shared.d.ts:108/:169) re-exported through the
+      `storage` namespace (lib/aws/storage/index.d.ts,
+      lib/aws/index.d.ts:13 `export * as storage from "./storage"`).
+      NOTE (REPAIR ROUND 3, 2026-08-22): `storage.Table` is not this arm's
+      ONLY DynamoDB-GSI-producing surface -- this task's own
+      `environment/app/package.json` also ships `@cdktn/provider-aws`,
+      whose L1 `DynamodbGlobalSecondaryIndex` binding synthesizes a
+      standalone `aws_dynamodb_global_secondary_index` resource,
+      reachable alongside `storage.Table` in the same workspace. See this
+      file's header comment, "TERRACONSTRUCTS TOLERANCE FIX", for how the
+      oracle now tolerates that shape too.
+
+instruction:
+  shared_body: |
+    Create the DynamoDB table for the orders service.
+
+    Each order is identified by orderId, belongs to a customerId, and
+    records when it was placed as createdAt. The support tooling needs to
+    list one customer's orders newest-first, and for that listing it only
+    ever shows the order's status and totalAmount -- nothing else should be
+    read from the index.
+
+    Items also carry shippingAddress, lineItems and a paymentReference.
+  placeholders: []
+  per_arm:
+    awscdk:
+      language_line: "Author this as an AWS CDK (TypeScript) app using aws-cdk-lib L2 constructs."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdk.out/ScenarioStack.template.json
+        build_command: "npm run build"
+        synth_command: "npx cdk synth --no-lookups --quiet -o cdk.out"
+        json_fields: []
+    hcl_raw:
+      language_line: "Author this as hand-written Terraform HCL (no modules)."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields: []
+    terraconstructs:
+      language_line: "Author this using terraconstructs (TypeScript) L2 constructs, synthesized via cdktn."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdktf.out/stacks/orders-table/plan.json
+        synth_command: "npx cdktn synth"
+        json_fields: []
+
+catches:
+  - name: attribute-definitions-include-non-key-attributes
+    taxonomy: typed-value-trap
+    description: >
+      Declares `attribute` blocks for shippingAddress, lineItems AND
+      paymentReference in addition to the three real key attributes --
+      the PLAUSIBLE-WRONG solution: "declare your schema" is what
+      `attribute` blocks mean in every relational-adjacent tool, and the
+      prompt's own item-shape sentence (data, not an implementation hint --
+      see this file's header comment) is what invites it. LIVE-VERIFIED at
+      authoring time (hashicorp/aws 6.58.0, fully offline -- see header):
+      `terraform validate` PASSES (only a deprecation warning), but
+      `terraform plan` itself FAILS -- "Error: all attributes must be
+      indexed. Unused attributes: [\"lineItems\" \"paymentReference\"
+      \"shippingAddress\"]" -- a local provider-side check, no AWS API
+      call, no apply needed. Structurally unreachable on awscdk and
+      terraconstructs through ordinary use: `registerAttribute()` is the
+      only writer of the attribute-definition set on both, and on both it
+      is called exclusively from a key-defining path (table partition/sort
+      key, or `addGlobalSecondaryIndex`) -- confirmed by reading each
+      class in full, not assumed. No dedicated structural_assert exists
+      for this catch: the generated `tests/static_tiers.sh` writes
+      reward=0.0 unconditionally the moment `plan_command` fails, before
+      any structural_assert or policy ever runs (same convention
+      specs/s3-lambda-log-retention.yaml's own
+      log-retention-not-a-valid-enum-value catch documents).
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "0"
+      terraconstructs_override: null
+    applies_to: [hcl_raw]
+
+  - name: include-projection-without-non-key-attributes
+    taxonomy: typed-value-trap
+    description: >
+      Sets the GSI's projection to INCLUDE but omits the projected
+      attribute list. On awscdk/terraconstructs this is a synth-time
+      `ValidationError`, thrown from the SAME private validation method on
+      both (`buildIndexProjection`/the inline check inside
+      `addGlobalSecondaryIndex` -- see this file's header comment for the
+      exact lines on each arm) -- structurally unreachable to leave
+      unhandled: the L2 call throws before synth output exists.
+      On hcl_raw this is NOT a toolchain-tier rejection -- LIVE-VERIFIED
+      directly (correcting an unstated assumption in the design blueprint,
+      which predicted tier "0" for hcl_raw without specifying the
+      mechanism): `terraform validate` AND `terraform plan` both SUCCEED
+      with `projection_type = "INCLUDE"` and `non_key_attributes` omitted;
+      the plan's `planned_values` shows `non_key_attributes: []` rather
+      than an error. hcl_raw is caught here by the fact
+      `gsi-projects-exactly-status-and-total` encodes: an empty resolved
+      set can never equal `{status, totalAmount}` under set-equality, so
+      this remains a genuine catch on every arm, just via a different
+      mechanism/tier on hcl_raw than on the two typed arms. As of the
+      STANDALONE-GSI SHAPE-TOLERANCE FIX (this file's header comment),
+      `gsi-projects-exactly-status-and-total` itself is tier 0 on
+      awscdk/terraconstructs only; on hcl_raw the identical fact is
+      graded at TIER 1 instead, by
+      `oracles/rego/ddb-gsi-attribute-definitions/policy.rego` (the same
+      jsonpath-grammar limit the KEY_SCHEMA SHAPE-TOLERANCE FIX already
+      hit for the two GSI-key facts applies here too: a standalone
+      `aws_dynamodb_global_secondary_index` resource's projection lives
+      at a different path than the inline block's, which one jsonpath
+      cannot express). TERRACONSTRUCTS TOLERANCE FIX (REPAIR ROUND 3, this
+      file's header comment) narrowed `gsi-projects-exactly-status-and-
+      total`'s own `applies_to` to `[awscdk]` only -- but THIS catch's
+      terraconstructs mechanism is UNCHANGED by that, and stays
+      `terraconstructs_override: "0"`: unlike `gsi-projection-type-is-
+      keys-only-not-include` (which plans/synths clean and so genuinely
+      depended on which tier graded it), this fixture's own
+      `table.addGlobalSecondaryIndex()` call throws the synth-time
+      `ValidationError` this description's own first sentence documents
+      UNCONDITIONALLY, before `cdktf.out/.../plan.json` is ever produced
+      -- LIVE-VERIFIED directly in the local `terraconstructs` clone,
+      `lib/aws/storage/table.js:995-999`. No structural_assert (tier 0 or
+      tier 1) is ever reached to grade this fixture on terraconstructs,
+      so narrowing `gsi-projects-exactly-status-and-total`'s `applies_to`
+      changes nothing here -- `terraconstructs_override: "0"` denotes the
+      SAME toolchain-failure bucket it always did, still accurate.
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "1"
+      terraconstructs_override: "0"
+
+  - name: gsi-key-attribute-not-declared
+    taxonomy: graph-dependency
+    description: >
+      Adds the GSI on customerId (hash) / createdAt (range) but leaves
+      both out of the table's `attribute` set -- the mirror image of
+      attribute-definitions-include-non-key-attributes. tfp-aws#46322's
+      quoted error text is byte-identical to what this exact mistake
+      produces (see header comment's honest re-characterization of that
+      issue -- it is a provider regression/false-positive, not a report of
+      anyone actually making this mistake, but the validator it documents
+      is the same one that fires here). LIVE-VERIFIED at authoring time
+      (hashicorp/aws 6.58.0, fully
+      offline): `terraform validate` PASSES; `terraform plan` FAILS --
+      "Error: all indexes must match a defined attribute. Unmatched
+      indexes: [\"createdAt\" \"customerId\"]" -- byte-identical to
+      tfp-aws#46322's own quoted error text, a local provider-side check,
+      no AWS API call. Structurally unreachable on awscdk/terraconstructs
+      through ordinary use: `addGlobalSecondaryIndex()` calls
+      `registerAttribute()` on its own `partitionKey`/`sortKey` props as a
+      side effect on both arms (aws-cdk-lib :1749/:1789;
+      terraconstructs.js :783-784), so an agent using the idiomatic API
+      cannot add a GSI key without its attribute definition being added
+      alongside it automatically. No dedicated structural_assert exists
+      for this catch either, for the same reason as the first catch: the
+      toolchain step itself fails before any structural_assert runs.
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "0"
+      terraconstructs_override: null
+    applies_to: [hcl_raw]
+
+  - name: attribute-definitions-include-an-unrequested-key
+    taxonomy: typed-value-trap
+    description: >
+      Gives the table itself a sort key on status (hash_key=orderId,
+      range_key=status), in addition to the requested byCustomer GSI --
+      a real, always-available primary-key shape no ticket text asks for
+      ("each order is identified by orderId" names the table's own key as
+      orderId alone; nothing asks for a composite table key). Unlike
+      attribute-definitions-include-non-key-attributes (a DANGLING
+      attribute block, rejected by the provider) and
+      gsi-key-attribute-not-declared (a MISSING one, also rejected), this
+      attribute genuinely IS used as a real key -- so nothing in any
+      toolchain has grounds to reject it. LIVE-VERIFIED at authoring time
+      on every arm: hcl_raw (hashicorp/aws 6.58.0, fully offline) --
+      `terraform validate` and `terraform plan` both SUCCEED, `status`
+      lands in `values.attribute` as a fourth entry; awscdk (aws-cdk-lib
+      2.263.0) -- `new dynamodb.Table(this, "OrdersTable", {
+      partitionKey: orderId, sortKey: status })` synths clean, no
+      `ValidationError`, `AttributeDefinitions` gets a fourth entry;
+      terraconstructs 0.2.13 -- `storage.Table`'s `TableOptions` exposes
+      the identical `sortKey?: Attribute` prop (`table.d.ts:26`) rendered
+      through the SAME `registerAttribute()` this scenario's header
+      comment already documents, so the same fourth-entry widening
+      reproduces there too. Every OTHER structural_assert in this scenario
+      stays single-valued and passes (the table's own HASH key is still
+      orderId; there is still exactly one GSI, still customerId/createdAt/
+      INCLUDE/[status,totalAmount]) -- only the attribute-definition SET
+      is wrong, which is exactly what
+      attribute-definitions-are-exactly-the-key-attributes (tier 1, see
+      its own description) exists to catch, and the only catch in this
+      scenario that fact actually catches.
+    predicted_tier_caught:
+      awscdk: "1"
+      hcl: "1"
+      terraconstructs_override: null
+
+  - name: gsi-projection-type-is-keys-only-not-include
+    taxonomy: typed-value-trap
+    description: >
+      Sets the GSI's projection to KEYS_ONLY (omitting non_key_attributes
+      entirely, which KEYS_ONLY neither needs nor accepts an error for) --
+      the blueprint's own named competing shape
+      (`docs/design/batch-a-greenfield-blueprints.md` §6(b) "Oracle must
+      tolerate / defend": "Two shapes satisfy the listing requirement... The
+      oracle accepts INCLUDE only... KEYS_ONLY forces a second read of the
+      whole item"), and a genuinely plausible choice -- KEYS_ONLY is often
+      cited as the storage-minimal/best-practice default. LIVE-VERIFIED at
+      authoring time on every arm: this plans/synths CLEAN everywhere (no
+      validation error anywhere -- KEYS_ONLY is a complete, valid
+      projection on its own), so nothing here is toolchain-caught. Caught
+      instead by the two facts `gsi-projection-is-include` and
+      `gsi-projects-exactly-status-and-total` encode (expected "INCLUDE",
+      resolved "KEYS_ONLY"; expected {status, totalAmount}, resolved [] --
+      KEYS_ONLY has no NonKeyAttributes to project at all) -- tier 0 on
+      awscdk/terraconstructs, tier 1 (via
+      `oracles/rego/ddb-gsi-attribute-definitions/policy.rego`) on hcl_raw
+      as of the STANDALONE-GSI SHAPE-TOLERANCE FIX (this file's header
+      comment) -- either tier, this fixture is caught the same way (the
+      resolved values are wrong regardless of which shape declared the
+      GSI). ALL projection is the same shape for this catch's purposes
+      (also plans/synths clean, also caught the same way -- ALL's
+      NonKeyAttributes is likewise absent/empty) and is not given its own
+      fixture, since it fails the identical two facts the identical way;
+      KEYS_ONLY is used because it is the shape the blueprint names by
+      name. TERRACONSTRUCTS TOLERANCE FIX (REPAIR ROUND 3, this file's
+      header comment): terraconstructs no longer stays tier 0 for this
+      catch -- see `include-projection-without-non-key-attributes`'s own
+      description immediately above for why (the arm's own L1 escape
+      hatch) -- it is graded at tier 1 too, by the same shape-tolerant
+      `policy.rego`, hence `terraconstructs_override: "1"` below, now
+      matching `hcl`'s "1" per specs/SCHEMA.md §3's `.hcl` collapsing
+      convention.
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "1"
+      terraconstructs_override: "1"
+
+  - name: gsi-missing-entirely
+    taxonomy: graph-dependency
+    description: >
+      Declares the table with its own orderId primary key and NEVER adds
+      the byCustomer index at all -- no `global_secondary_index` block, no
+      standalone `aws_dynamodb_global_secondary_index` resource, no
+      `addGlobalSecondaryIndex()` call. Added in the adversarial-
+      verification repair round that followed the STANDALONE-GSI
+      SHAPE-TOLERANCE FIX (this file's header comment, same section
+      "EXISTENCE + TOTAL-PROJECTION FIX" in
+      `oracles/rego/ddb-gsi-attribute-definitions/policy.rego`): moving
+      `gsi-hash-key-is-customerId`/`gsi-range-key-is-createdAt`/
+      `gsi-projection-is-include`/`gsi-projects-exactly-status-and-total`
+      out of hcl_raw's tier-0 `applies_to` (necessary for the
+      STANDALONE-GSI fix -- see those asserts' own descriptions) left
+      NOTHING in hcl_raw's toolchain rejecting a plan with no GSI
+      whatsoever, since every existing tier-1 `deny` rule that grades a
+      GSI fact is existentially quantified over the resolved GSI list --
+      an empty list satisfies each of them vacuously. LIVE-VERIFIED at
+      authoring time: `terraform plan` for a table with only its own
+      hash_key and a single `attribute` block succeeds cleanly ("Plan: 1
+      to add"), and pre-this-round's `policy.rego` produced zero denies
+      against that plan. On awscdk this is UNAFFECTED -- it was always
+      caught at tier 0 by `gsi-hash-key-is-customerId` et al. (still
+      `applies_to: [awscdk]`, unchanged): zero resolved nodes against
+      `op: eq` is a hard tier-0 failure by this whole toolchain's own
+      convention, not something this catch's fixture newly relies on.
+      Caught, for hcl_raw, by the new existence `deny` rule this repair
+      round added to `policy.rego` -- see that file's own header comment
+      for the full argument and the live, offline reproduction.
+      TERRACONSTRUCTS TOLERANCE FIX (REPAIR ROUND 3, this file's header
+      comment): terraconstructs is NO LONGER caught at tier 0 for this
+      catch either, now that `gsi-hash-key-is-customerId` et al. are
+      `applies_to: [awscdk]` only -- it is caught the SAME way hcl_raw is,
+      by the same tier-1 existence `deny` rule (already wired to run
+      against terraconstructs's own `terraform show -json` plan output),
+      hence `terraconstructs_override: "1"` below, now matching `hcl`'s
+      value. `solution/broken/gsi-missing-entirely/solve.sh` under the
+      terraconstructs task dir has its header comment corrected to
+      describe this tier-1 mechanism rather than the superseded tier-0
+      one.
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "1"
+      terraconstructs_override: "1"
+
+oracle:
+  intent: >
+    A DynamoDB table exists whose primary (hash) key is orderId. A global
+    secondary index exists, keyed on customerId as its partition key and
+    createdAt as its sort key, so that one customer's orders can be listed
+    newest-first. The index's projection type is INCLUDE, and it projects
+    exactly status and totalAmount -- nothing more, nothing less: KEYS_ONLY
+    would force a second read of the whole item for data the listing
+    needs on every row, and ALL would expose shippingAddress, lineItems
+    and paymentReference, none of which the listing reads.
+
+    No attribute definition, anywhere in the DynamoDB resource graph this
+    table participates in, may name anything other than a key attribute of
+    the table itself or of one of its indexes -- orderId, customerId and
+    createdAt are the only three attributes ever used as a key across this
+    scenario, so no attribute-definition declaration may name anything
+    else. DynamoDB requires every declared attribute definition to be used
+    by some key (the table's own key or a secondary index's key), and
+    every key attribute must have a matching definition somewhere in that
+    graph. shippingAddress, lineItems and paymentReference are real item
+    attributes the prompt names, but DynamoDB is schemaless for non-key
+    data -- they must never appear in any attribute-definition set.
+    This is stated shape-invariantly on purpose: which specific resource's
+    attribute-definition set carries which key attribute's definition is
+    an implementation detail of how the index itself is declared (e.g. an
+    index declared as a field on the table object needs its own key
+    attributes defined there; an index declared as its own, separate,
+    externally-managed resource carries them there instead) -- not a fact
+    the ticket has any opinion about.
+
+    Billing mode is not specified by the ticket and is not graded.
+
+  structural_asserts:
+    - name: table-hash-key-is-orderId
+      description: "The table's own (non-index) primary key is orderId."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::DynamoDB::Table' || @.Type=='AWS::DynamoDB::GlobalTable')].Properties.KeySchema[?(@.KeyType=='HASH')].AttributeName"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_dynamodb_table')].values.hash_key"
+      op: eq
+      expected: "orderId"
+
+    - name: attribute-definitions-are-exactly-the-key-attributes
+      description: >
+        No attribute definition, anywhere in the DynamoDB resource graph
+        this table participates in, names anything other than orderId,
+        customerId or createdAt -- the three attributes used as a table or
+        index key. The actually-enforced rego rule is an ALLOWLIST (see
+        below), not a full `set_eq` -- this is the "and nothing else" fact
+        that catches attribute-definitions-include-an-unrequested-key (an
+        extra, unintended value would pass a subset-only op) -- NOT
+        attribute-definitions-include-non-key-attributes or
+        gsi-key-attribute-not-declared, both of which are caught earlier,
+        by the toolchain itself failing before any structural_assert runs
+        (see each catch's own description).
+
+        `op`/`expected` below (`set_eq` / the full three-name list) reflect
+        this fact's `tf_jsonpath`/`cfn_jsonpath` resolved against the
+        CANONICAL reference shape only (`solution/solve.sh`'s inline
+        `hash_key`/`range_key` GSI, where the table's own `attribute` set
+        genuinely IS the full three-name set) -- they are what
+        `generator/check_reference_paths.py` (`make check-paths`) verifies
+        the declared path resolves to on that one fixture, not a claim
+        that every tolerated shape produces that same set. The
+        STANDALONE-GSI SHAPE-TOLERANCE FIX (this file's header comment)
+        makes this assert's actual tier-1 enforcement
+        (`oracles/rego/ddb-gsi-attribute-definitions/policy.rego`) an
+        allowlist rather than a round-trip set-equality precisely so a
+        table that legitimately declares FEWER than all three (because two
+        of them live in a sibling `aws_dynamodb_global_secondary_index`
+        resource's own `key_schema` instead) still passes -- see the
+        SHAPE-AWARE paragraph immediately below. Treat `op`/`expected`
+        here as documentation of the canonical-shape check, not an
+        exhaustive spec of tier-1 behavior across every tolerated shape --
+        the hand-authored `policy.rego`/`policy.guard` are the actual
+        source of enforced truth for this tier-1 fact, per SCHEMA.md §4.1.
+
+        SHAPE-AWARE as of the STANDALONE-GSI SHAPE-TOLERANCE FIX (this
+        file's header comment): on the standalone-`aws_dynamodb_global_
+        secondary_index`-resource hcl_raw shape, the table's OWN
+        `attribute` set legitimately contains only {orderId} -- customerId
+        and createdAt carry their `attribute_type` inside the standalone
+        resource's own `key_schema` blocks instead, never on the table
+        object (LIVE-VERIFIED directly: adding `attribute { name =
+        "customerId" ... }` etc. to the table object in this shape, even
+        though customerId IS a real key elsewhere, still fails
+        `terraform plan` with "all attributes must be indexed. Unused
+        attributes" -- the table's own attribute-usage check only ever
+        looks at that SAME resource's own hash_key/range_key/inline-GSI/
+        LSI keys, never a sibling resource's). This requires no rule
+        change here: this Rego rule is, and always was, an ALLOWLIST
+        (`not attr.name in required_attributes`), never a full
+        `set_eq` -- a table that declares fewer than all three (because
+        two of them live in a sibling resource instead) already passes,
+        since every name it DOES declare is still a member of the
+        allowlist; only a table that declares something OUTSIDE the
+        allowlist is denied, which is shape-invariant. See
+        `oracles/rego/ddb-gsi-attribute-definitions/policy.rego`'s own
+        header comment for the live, offline reproduction.
+
+        Graded at TIER 1
+        (Rego/cfn-guard), not tier 0's direct jsonpath check, even though
+        every value read here is a static, plan-time-known echo of
+        agent-supplied config (op=set_eq would be a perfectly sound tier-0
+        check on that basis alone, same as every other assert in this
+        file) -- this is a deliberate authoring choice, not a technical
+        necessity: attribute-definitions-include-an-unrequested-key is
+        REACHABLE and plans/synths CLEAN on every arm (verified directly,
+        see that catch's own description), so it is the one fact in this
+        scenario nothing else already catches earlier -- promoting it to
+        tier 1 and hand-authoring `oracles/rego/ddb-gsi-attribute-
+        definitions/policy.rego` (hcl_raw + terraconstructs) and
+        `oracles/cfn-guard/ddb-gsi-attribute-definitions/policy.guard`
+        (awscdk) around it gives this scenario a real, falsifiable
+        tier-1 proof obligation (`gates/grading_proof.py`'s own
+        `any_tier1_proof` requirement) instead of leaving every catch
+        caught earlier and the Rego/cfn-guard chain permanently
+        unexercised.
+
+        This is also the ONE tier-1 structural_assert this spec declares
+        by name -- but `policy.rego`'s `deny` set now additionally encodes
+        FOUR more facts that are NOT their own structural_assert entries:
+        the GSI's HASH key resolves to customerId, its RANGE key resolves
+        to createdAt, its projection type resolves to INCLUDE, and its
+        projected non-key attributes resolve to exactly {status,
+        totalAmount} -- each shape-tolerant across every TF-shaped GSI
+        shape on BOTH hcl_raw and terraconstructs (REPAIR ROUND 3,
+        "TERRACONSTRUCTS TOLERANCE FIX", widened this from hcl_raw-only):
+        the inline `global_secondary_index` block (deprecated
+        `hash_key`/`range_key` OR the current `key_schema` block form --
+        see this file's header comment "KEY_SCHEMA SHAPE-TOLERANCE FIX")
+        and the standalone `aws_dynamodb_global_secondary_index` resource
+        (see "STANDALONE-GSI SHAPE-TOLERANCE FIX" / "TERRACONSTRUCTS
+        TOLERANCE FIX", same header). The first two facts are hcl_raw's
+        AND terraconstructs's shared tier-1 replacement for the tier-0
+        gsi-hash-key-is-customerId/gsi-range-key-is-createdAt asserts
+        above (both now applies_to: [awscdk] only); the latter two are
+        the shared tier-1 replacement for gsi-projection-is-include/
+        gsi-projects-exactly-status-and-total (also now applies_to:
+        [awscdk] only) -- all four folded into THIS assert's
+        already-existing policy.rego rather than declared as four new
+        tier-"1" structural_assert entries of their own, specifically to
+        avoid inflating `generator/check_tier1_coverage.py`'s per-arm
+        tier-1-assert count for hcl_raw/terraconstructs against an
+        unchanged catch count (none of these facts has a covering
+        `catches[]` entry of its own -- the catches that exercise them,
+        gsi-projection-type-is-keys-only-not-include and
+        include-projection-without-non-key-attributes, are already
+        declared and already covered by fixtures; no NEW catch was added
+        -- so a new named assert for any of the four would widen that
+        shared, not-owned coverage floor with no NEW catch to cover it).
+        See `oracles/rego/ddb-gsi-attribute-definitions/policy.rego`'s own
+        header comment for the live, offline reproduction proving every
+        shape, on both TF-shaped arms, plans clean and every deny rule
+        fires correctly.
+
+        A FIFTH fact was added to the same `policy.rego`, in the
+        adversarial-verification repair round that followed the
+        STANDALONE-GSI fix (2026-08-22, same file's "EXISTENCE +
+        TOTAL-PROJECTION FIX" header section): the table resolves AT LEAST
+        ONE global secondary index by some shape at all (inline block or
+        standalone resource) -- fires whenever `table_gsis(table)` is
+        empty. Removing `gsi-hash-key-is-customerId` et al. from hcl_raw's
+        tier-0 `applies_to` left NOTHING in hcl_raw's toolchain rejecting
+        a table with no GSI whatsoever (the four facts above are all
+        existentially quantified over the GSI list, so an empty list
+        satisfies every one of them vacuously) -- this fifth fact closes
+        that gap. It IS covered by its own new `catches[]` entry,
+        `gsi-missing-entirely` (unlike the other four, which ride on
+        existing catches) -- because it is a genuinely new failure mode
+        (total absence of the index) that no prior catch's fixture
+        exercises, not a shape-tolerance variant of one that already does.
+        REPAIR ROUND 3 widened this fifth fact's relevance to
+        terraconstructs too (the "TERRACONSTRUCTS TOLERANCE FIX", same
+        header) -- once `gsi-hash-key-is-customerId` et al. are
+        `applies_to: [awscdk]` only, terraconstructs relies on this SAME
+        existence rule for `gsi-missing-entirely`, exactly as hcl_raw
+        does; `gsi-missing-entirely`'s own `catches[]` entry was updated
+        accordingly (`terraconstructs_override` now "1", matching `hcl`).
+
+        A SIXTH fact-independent fix, `standalone_gsi_matches_table` (also
+        REPAIR ROUND 3, "TABLE-ASSOCIATION FIX" in policy.rego's own
+        header comment): the fifth fact's own `table_gsis(table)` fallback
+        for the standalone-resource shape originally matched ANY
+        `aws_dynamodb_global_secondary_index` resource in the whole plan
+        to EVERY table, with no check on that resource's own `table_name`
+        -- an ORPHAN standalone GSI resource (naming some unrelated table)
+        made the fifth fact's own existence check pass vacuously for a
+        table with no real index of its own. Fixed by associating a
+        standalone GSI with a table only when its `table_name` resolves to
+        that table's own `.values.name`, or is genuinely absent/null (the
+        `.id`-reference construction the original, now-narrowed match was
+        written to tolerate). See policy.rego's own header comment for the
+        full argument and live, offline reproduction;
+        `solution/broken/gsi-missing-entirely/solve.sh` (hcl_raw task dir)
+        now additionally carries an orphan standalone GSI resource to
+        exercise this fix end to end.
+      tier: "1"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::DynamoDB::Table' || @.Type=='AWS::DynamoDB::GlobalTable')].Properties.AttributeDefinitions[*].AttributeName"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_dynamodb_table')].values.attribute[*].name"
+      op: set_eq
+      expected: ["orderId", "customerId", "createdAt"]
+
+    - name: gsi-hash-key-is-customerId
+      description: >
+        The global secondary index's partition (hash) key is customerId.
+        Tier 0 on awscdk ONLY: hcl_raw was deliberately EXCLUDED first (see
+        this file's header comment "KEY_SCHEMA SHAPE-TOLERANCE FIX")
+        because `aws_dynamodb_table`'s `global_secondary_index` block
+        exposes its HASH key two ways -- the deprecated `hash_key` string
+        argument (what this jsonpath reads) and the current,
+        non-deprecated `key_schema` block form -- and this narrow jsonpath
+        grammar cannot express "read whichever one the HCL actually used"
+        as one path. terraconstructs was ALSO later excluded (REPAIR ROUND
+        3, "TERRACONSTRUCTS TOLERANCE FIX" in this file's header comment):
+        its own workspace can produce the SAME standalone
+        `aws_dynamodb_global_secondary_index` resource hcl_raw can, via
+        `@cdktn/provider-aws`'s L1 binding, which this jsonpath (scoped to
+        the inline block) cannot see either. Both hcl_raw and
+        terraconstructs are graded on this fact at tier 1 instead, by
+        `oracles/rego/ddb-gsi-attribute-definitions/policy.rego`
+        (shape-tolerant, sees every GSI shape on both arms -- inline hash_key/range_key, inline key_schema, and the standalone aws_dynamodb_global_secondary_index resource) -- see that file's own header
+        comment for the full argument and the live, offline reproduction.
+      tier: "0"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::DynamoDB::Table' || @.Type=='AWS::DynamoDB::GlobalTable')].Properties.GlobalSecondaryIndexes[*].KeySchema[?(@.KeyType=='HASH')].AttributeName"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_dynamodb_table')].values.global_secondary_index[*].hash_key"
+      op: eq
+      expected: "customerId"
+
+    - name: gsi-range-key-is-createdAt
+      description: >
+        The global secondary index's sort (range) key is createdAt, which
+        is what makes a newest-first listing possible. Tier 0 on awscdk
+        ONLY, for the SAME reasons and via the SAME tier-1 fallback as
+        gsi-hash-key-is-customerId immediately above (see that entry's
+        description and this file's header comment "KEY_SCHEMA
+        SHAPE-TOLERANCE FIX" / "TERRACONSTRUCTS TOLERANCE FIX") --
+        `range_key` has the identical deprecated-vs-`key_schema` two-shape
+        problem `hash_key` does, on both hcl_raw and terraconstructs.
+      tier: "0"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::DynamoDB::Table' || @.Type=='AWS::DynamoDB::GlobalTable')].Properties.GlobalSecondaryIndexes[*].KeySchema[?(@.KeyType=='RANGE')].AttributeName"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_dynamodb_table')].values.global_secondary_index[*].range_key"
+      op: eq
+      expected: "createdAt"
+
+    - name: gsi-projection-is-include
+      description: >
+        The index's projection type is INCLUDE -- never the implied
+        default ALL, and never KEYS_ONLY (either of which would violate
+        "nothing else should be read from the index").
+        Tier 0 on awscdk ONLY: hcl_raw was deliberately EXCLUDED first (see
+        this file's header comment "STANDALONE-GSI SHAPE-TOLERANCE FIX")
+        because a GSI can be declared as an inline `global_secondary_index`
+        block on `aws_dynamodb_table` (this jsonpath's shape) OR as a
+        standalone `aws_dynamodb_global_secondary_index` resource, whose
+        projection type lives at `.values.projection[0].projection_type`
+        instead -- a completely different resource `type`/path this narrow
+        jsonpath grammar cannot express as one filter. terraconstructs was
+        ALSO later excluded (REPAIR ROUND 3, "TERRACONSTRUCTS TOLERANCE
+        FIX" in this file's header comment): its own workspace can produce
+        the identical standalone resource via `@cdktn/provider-aws`'s L1
+        binding. Both hcl_raw and terraconstructs are graded on this fact
+        at tier 1 instead, by
+        `oracles/rego/ddb-gsi-attribute-definitions/policy.rego`
+        (shape-tolerant, sees every GSI shape on both arms -- inline hash_key/range_key, inline key_schema, and the standalone aws_dynamodb_global_secondary_index resource) -- see that file's own header
+        comment for the full argument and the live, offline reproduction.
+      tier: "0"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::DynamoDB::Table' || @.Type=='AWS::DynamoDB::GlobalTable')].Properties.GlobalSecondaryIndexes[*].Projection.ProjectionType"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_dynamodb_table')].values.global_secondary_index[*].projection_type"
+      op: eq
+      expected: "INCLUDE"
+
+    - name: gsi-projects-exactly-status-and-total
+      description: >
+        The index's projected non-key attributes are EXACTLY {status,
+        totalAmount} -- nothing more (this is what catches
+        include-projection-without-non-key-attributes on hcl_raw: an
+        empty resolved set fails set_eq against a non-empty expected set)
+        and nothing less.
+        Tier 0 on awscdk ONLY, for the SAME reasons and via the SAME
+        tier-1 fallback as gsi-projection-is-include immediately above
+        (see that entry's description and this file's header comment
+        "STANDALONE-GSI SHAPE-TOLERANCE FIX" / "TERRACONSTRUCTS TOLERANCE
+        FIX") -- a standalone `aws_dynamodb_global_secondary_index`
+        resource's non_key_attributes lives at
+        `.values.projection[0].non_key_attributes`, not under
+        `aws_dynamodb_table.values.global_secondary_index[*]` at all, on
+        either hcl_raw or terraconstructs.
+      tier: "0"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::DynamoDB::Table' || @.Type=='AWS::DynamoDB::GlobalTable')].Properties.GlobalSecondaryIndexes[*].Projection.NonKeyAttributes"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_dynamodb_table')].values.global_secondary_index[*].non_key_attributes"
+      op: set_eq
+      expected: ["status", "totalAmount"]
+
+  rego_hints:
+    - >-
+      package cdktn_bench.ddb_gsi_attribute_definitions, graded against
+      `terraform show -json` PLAN output for BOTH TF-shaped arms (hcl_raw
+      and terraconstructs -- identical plan JSON shape, no per-arm
+      override needed, since `aws_dynamodb_table.values.attribute[*].name`
+      is a static echo of agent-supplied config on both, never
+      plan-time-unknown -- SCHEMA.md §4.2.1 does not apply here). `input`
+      at policy-evaluation time is that plan JSON document. Encodes the
+      tier-1 structural_assert `attribute-definitions-are-exactly-the-
+      key-attributes`: `deny` whenever some `aws_dynamodb_table`
+      resource's `values.attribute[*].name` is anything other than
+      orderId/customerId/createdAt. This is a genuine ALLOWLIST check
+      (every declared attribute must be one of the three), not a full
+      round-trip set-equality -- the converse half ("every one of the
+      three must actually be declared") is already unreachable to violate
+      on a plan that reaches this policy at all: on awscdk/terraconstructs,
+      `table-hash-key-is-orderId`/`gsi-hash-key-is-customerId`/
+      `gsi-range-key-is-createdAt` (all tier 0 on those two arms, already
+      executed before Rego ever runs) each require their own key attribute
+      to resolve to a real value; on EVERY arm including hcl_raw,
+      DynamoDB's own provider-side validation (this scenario's header
+      comment, probe (b)) independently rejects any plan where a key
+      references an undeclared attribute before `terraform show -json`
+      ever produces output at all -- so a plan that reaches this policy
+      already has all three required names present regardless of which of
+      those two mechanisms is doing the work for a given arm; only "and
+      nothing else" remains to check.
+    - >-
+      No graph-edge/plan-time-unknown concern applies to this rule at
+      all (contrast SCHEMA.md §4.2.1's IAM-policy worked example): an
+      attribute's `name` inside a `dynamic "attribute"`/literal `attribute
+      { name = ... }` block is never provider-computed, so
+      `.planned_values...values.attribute[*].name` is always resolved,
+      for every fixture this scenario's catches produce.
+    - >-
+      Two further `deny` rules, `resolved_hash_key`/`resolved_range_key`
+      (added in the "KEY_SCHEMA SHAPE-TOLERANCE FIX" round, widened from
+      hcl_raw-only to also cover terraconstructs in the REPAIR ROUND 3
+      "TERRACONSTRUCTS TOLERANCE FIX" -- see this spec's own header
+      comment and policy.rego's own header comment for the full argument
+      and the live, offline reproduction): hcl_raw's AND terraconstructs's
+      shared replacement for the tier-0 gsi-hash-key-is-customerId/
+      gsi-range-key-is-createdAt asserts, which apply to awscdk only as of
+      these fixes. `aws_dynamodb_table`'s
+      `global_secondary_index` block exposes its HASH/RANGE key two ways
+      -- the deprecated `hash_key`/`range_key` string arguments, or the
+      current, non-deprecated `key_schema` block form -- and this
+      scenario's narrow `tf_jsonpath` grammar cannot express "whichever
+      one the HCL actually used" as a single path, so the fact is graded
+      here instead: `deny` whenever a GSI's resolved HASH key isn't
+      customerId, or its resolved RANGE key isn't createdAt, reading
+      `hash_key`/`range_key` when non-empty and falling back to the
+      matching `key_schema` entry otherwise. `hash_key` is genuinely
+      plan-time-UNKNOWN when a GSI is written in `key_schema` form
+      (confirmed directly: `terraform plan`'s diff shows `hash_key =
+      (known after apply)` there) -- SCHEMA.md §4.2.1's caveat does not
+      bite even so, because `planned_values` (what this policy reads)
+      omits unknown values entirely rather than exposing a placeholder,
+      and the rule observes that omission as an undefined field reference
+      and falls through to the always-plan-time-known `key_schema` block,
+      never touching the unknown value itself.
+  cfn_guard_hints:
+    - >-
+      Graded against the awscdk arm's synthesized CloudFormation template
+      (`cdk.out/ScenarioStack.template.json`). Encodes the SAME tier-1
+      fact as `../rego/ddb-gsi-attribute-definitions/policy.rego`, at the
+      same strictness: every `AWS::DynamoDB::Table` (and, for the
+      TableV2-tolerance fix this file's header comment documents, every
+      `AWS::DynamoDB::GlobalTable`) resource's
+      `Properties.AttributeDefinitions[*].AttributeName` must be IN
+      [orderId, customerId, createdAt] -- cfn-guard's `IN` operator over a
+      literal allowlist, the same idiom
+      `../toy-ssm-parameter/policy.guard`'s `Action[*] IN [...]` rules
+      already use in this repo, applied here to `AttributeName` instead of
+      `Action`. CFN's synthesized template is always fully static (no
+      "plan" concept, no provider-computed value ever appears in
+      `AttributeDefinitions`), so this is a literal-value check with no
+      SCHEMA.md §4.2.1 caveat to carry, unlike some other scenarios'
+      tier-1 awscdk rules.
+  tier05_jsonata: null
+
+verifier:
+  budget:
+    max_iters: 8
+  live_check:
+    enabled: false
+    module: tests/live_check.py
+
+provenance:
+  author: "Vincent (via Claude Code, Batch A scenario-authoring task)"
+  date: "2026-08-21"
+  prereg_section_refs:
+    - "docs/design/batch-a-greenfield-blueprints.md §6 (ddb-gsi-attribute-definitions) -- this spec's design source"
+    - "hashicorp/terraform-provider-aws, website/docs/r/dynamodb_table.html.markdown, read LIVE from `main` this session (not the blueprint's memory of it) -- line 19: \"Only define attributes on the table object that are going to be used as a hash key or range key for the table itself, or for LSI/GSI keys. Adding attributes not used in these scenarios causes an infinite plan loop.\"; line 409 (`global_secondary_index.non_key_attributes`): \"Only required with INCLUDE as a projection type\". PRIMARY evidence for this scenario's trap -- promoted ahead of tfp-aws#46322 by this session's re-verification, see this file's header comment"
+    - "tfp-aws#46322 (\"terraform 6.30 failed with aws_dynamodb_table Error: all indexes must match a defined attribute. Unmatched indexes\") -- RE-CHARACTERIZED this session (was previously cited as if it were a report of this scenario's trap; it is not): CLOSED/completed, created 2026-02-04, closed 2026-04-14 (not 2026-05-16, which is only the lock-bot's `updated_at` -- corrected here), labeled bug+regression, root-caused to an empty-string `range_key` being validated as if it were an attribute name (fixed in provider v6.41.0, PR #46338). It confirms the \"all indexes must match a defined attribute\" validator exists and fires on provider 6.x -- its exact error text is independently reproduced by a live, fully offline `terraform plan` at authoring time, see this file's header comment -- but it is NOT a report of anyone mis-declaring an attribute set; kept as secondary, corroborating evidence only"
+    - "hashicorp/terraform-provider-aws, website/docs/r/dynamodb_table.html.markdown, read LIVE from `main` again this session (verifier-fix round, 2026-08-21) -- evidence for the KEY_SCHEMA SHAPE-TOLERANCE FIX this file's header comment documents: line 406, `hash_key` -- \"(Optional, **Deprecated**) ... Mutually exclusive with `key_schema`. Use `key_schema` instead.\"; line 407, `key_schema` -- \"(Optional) Configuration block(s) for the key schema... Required if `hash_key` is not specified.\"; line 412, `range_key` -- the same deprecated/mutually-exclusive wording as `hash_key`. Confirms the provider's own non-deprecated GSI-key form that this fix now tolerates on the hcl_raw arm"
+    - "hashicorp/terraform-provider-aws, website/docs/r/dynamodb_table.html.markdown, read LIVE from `main` again this session (adversarial-verification repair round, 2026-08-22) -- evidence for the STANDALONE-GSI SHAPE-TOLERANCE FIX this file's header comment documents: line 19, the FULL sentence (this spec's earlier citation of the same line was truncated mid-sentence) -- \"...Adding attributes not used in these scenarios causes an infinite plan loop. When using [`aws_dynamodb_global_secondary_index`](/docs/providers/aws/r/dynamodb_global_secondary_index.html), you do not need to define attributes for externally managed GSIs in the `aws_dynamodb_table` resource.\" Confirms the provider's own standalone-resource GSI form, named by the same paragraph this spec already cites as primary evidence for its trap"
+    - "hashicorp/terraform-provider-aws, `terraform providers schema -json` run directly against the filesystem-mirrored hashicorp/aws 6.58.0 provider (this session, adversarial-verification repair round) -- confirms `aws_dynamodb_global_secondary_index`'s real schema: required `table_name`/`index_name`; `key_schema` block list (`attribute_name`, `attribute_type`, `key_type`, all required); `projection` block list (`projection_type` required, `non_key_attributes` optional). Cross-checked against `gh api search/issues` on hashicorp/terraform-provider-aws: PR #44999 added the resource 2026-01-06, PR #47747 removed its experimental flag 2026-05-05 -- a real, GA, in-mirror resource on this scenario's pinned provider version, not a hypothetical"
+    - "REPAIR ROUND 2 (2026-08-22, this session): the STANDALONE-GSI fix's own tolerance was verified directly to be too wide -- a table with NO global secondary index at all, and separately a standalone GSI resource with no `projection` block, both plan clean and (pre-this-round) scored reward 1.0 against the then-current policy.rego. Reproduced fully offline (terraform 1.15.8 + the darwin_arm64 hashicorp/aws 6.58.0 plugin cache at `~/.terraform.d/plugin-cache`, dummy credentials, no AWS API contacted) for both fixtures, before and after this round's fix, via direct `opa eval -d oracles/rego/ddb-gsi-attribute-definitions/policy.rego` against real `terraform show -json` plan JSON -- see `oracles/rego/ddb-gsi-attribute-definitions/policy.rego`'s own header comment, section \"EXISTENCE + TOTAL-PROJECTION FIX\", for the full argument"
+    - "REPAIR ROUND 3 (2026-08-22, this session): two more findings against the REPAIR ROUND 2 state. (1) TABLE-ASSOCIATION FIX -- `table_gsis`'s standalone-resource fallback matched EVERY `aws_dynamodb_global_secondary_index` resource in the plan to EVERY table with no `table_name` check, so an ORPHAN standalone GSI resource (naming an unrelated table) made a table with NO real index score ALLOW. Reproduced fully offline (same toolchain/flags as REPAIR ROUND 2): `aws_dynamodb_table.orders` with no GSI of its own, plus a separate `aws_dynamodb_global_secondary_index` resource whose `table_name = \"totally-unrelated-table\"`, plans clean and (pre-this-round) scored reward 1.0. Also confirmed directly, same session: `table_name` written as `aws_dynamodb_table.orders.name` resolves to the literal string in `planned_values` (plan-time-known); written as `aws_dynamodb_table.orders.id` it resolves to `null` (plan-time-unknown, omitted/nulled not placeholdered) -- the fix matches on either the known-equal literal or the absent/null case, never an unconditional match. (2) TERRACONSTRUCTS TOLERANCE FIX -- the STANDALONE-GSI fix narrowed `gsi-hash-key-is-customerId`/`gsi-range-key-is-createdAt`/`gsi-projection-is-include`/`gsi-projects-exactly-status-and-total` off hcl_raw's `applies_to` but left terraconstructs on them, on the assumption terraconstructs's `storage.Table` L2 cannot produce the standalone-resource shape -- true of `storage.Table` itself, but the terraconstructs task's own `environment/app/package.json` also ships `@cdktn/provider-aws`, whose L1 `DynamodbGlobalSecondaryIndex` binding produces the identical shape. The adversarial-verification finding itself reproduced this end to end through the terraconstructs arm's own `tests/static_tiers.sh`: a `storage.Table` partition key plus a sibling L1 `DynamodbGlobalSecondaryIndex` construct plans clean (\"Plan: 2 to add\") but scored reward 0.0 (four `jq: error ... Cannot iterate over null` failures) before this fix. This repair round independently re-confirmed reachability (a local install of the arm's own exact pinned `@cdktn/provider-aws@24.8.0` was inspected directly: `DynamodbGlobalSecondaryIndex`'s `tfResourceType` is literally `\"aws_dynamodb_global_secondary_index\"`) and mechanically re-confirmed the fix composes to reward 1.0 (regenerated `tests/static_tiers.sh` now declares only 1 tier-0 assert for terraconstructs, matching hcl_raw; its `tests/policy.rego` is byte-identical to the file this round edited) without re-running the arm's own `npm ci`/`cdktn synth` a second time -- same four facts narrowed to `applies_to: [awscdk]`, terraconstructs graded at tier 1 by the same already-shape-tolerant `policy.rego`, unchanged rule bodies. See `oracles/rego/ddb-gsi-attribute-definitions/policy.rego`'s own header comment, sections \"TABLE-ASSOCIATION FIX\" and \"TERRACONSTRUCTS TOLERANCE FIX\", for the full argument"

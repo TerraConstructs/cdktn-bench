@@ -1,0 +1,63 @@
+#
+# Hand-authored (Batch A scenario authoring, verifier-fix round,
+# 2026-08-21) -- NOT a generator stub. oracles/emit.py never overwrites
+# this file once it exists (specs/SCHEMA.md §8.2 rule 7), so it is safe
+# across regeneration.
+#
+# Scenario:   ddb-gsi-attribute-definitions (specs/ddb-gsi-attribute-definitions.yaml)
+# Intent doc: oracles/ddb-gsi-attribute-definitions/intent.md
+# Graded against the awscdk arm's synthesized CloudFormation template
+# (cdk.out/ScenarioStack.template.json) -- specs/SCHEMA.md §4.2/§8. A
+# generated tests/static_tiers.sh runs
+#   cfn-guard validate --data cdk.out/ScenarioStack.template.json --rules policy.guard
+# and fails tier-1 iff any rule below FAILs.
+#
+# Encodes the SAME tier-1 fact as ../rego/ddb-gsi-attribute-definitions/
+# policy.rego, at the same strictness -- see that file's own header for
+# the full argument (why this is tier 1 at all, why an allowlist alone is
+# sound). `attribute-definitions-are-exactly-the-key-attributes`:
+# `Properties.AttributeDefinitions[*].AttributeName` must be IN
+# [orderId, customerId, createdAt] on every AWS::DynamoDB::Table this
+# template declares -- the fact that catches
+# `attribute-definitions-include-an-unrequested-key` (a table given a
+# real, extra sort key, e.g. `status`, that synths clean with no
+# ValidationError, so nothing else in this scenario has any grounds to
+# reject it).
+#
+# Two resource-type rules, not one filtered by `Type in [...]` --
+# cfn-guard's collection-filter clause (`Resources.*[ ... ]`) has no
+# established `in`-over-a-list-literal precedent anywhere else in this
+# repo (every other oracles/cfn-guard/*/policy.guard filters with a single
+# `==`); `IN` is only used here, as elsewhere, inside a `{ }` per-item
+# check block. AWS::DynamoDB::GlobalTable coverage exists for the SAME
+# reason this scenario's structural_asserts' cfn_jsonpath entries widened
+# their own Type filter (see specs/ddb-gsi-attribute-definitions.yaml's
+# own "ALTERNATIVE-SHAPE FIX" header comment): `aws-cdk-lib` 2.263.0's
+# `dynamodb.TableV2` synthesizes AWS::DynamoDB::GlobalTable, not
+# AWS::DynamoDB::Table, and REPRODUCED directly at authoring time (see
+# that same header comment) that a TableV2 template's
+# `Properties.AttributeDefinitions` sits at the exact same path/shape as
+# Table's -- so this rule stays sound for a TableV2-shaped reference
+# solution too, not just the Table-shaped one this scenario's own
+# solution/solve.sh and broken/ fixtures use.
+#
+# Verified directly against a real `cdk synth` template at authoring
+# time: the reference solution (orderId/customerId/createdAt only) --
+# PASS; the attribute-definitions-include-an-unrequested-key fixture
+# (Table given `sortKey: status` in addition to `partitionKey: orderId`)
+# -- FAIL, on `AttributeName == "status"` not being IN the allowlist.
+
+let tables = Resources.*[ Type == "AWS::DynamoDB::Table" ]
+let global_tables = Resources.*[ Type == "AWS::DynamoDB::GlobalTable" ]
+
+rule attribute_definitions_are_exactly_the_key_attributes when %tables !empty {
+	%tables.Properties.AttributeDefinitions[*] {
+		AttributeName IN ["orderId", "customerId", "createdAt"]
+	}
+}
+
+rule attribute_definitions_are_exactly_the_key_attributes_globaltable when %global_tables !empty {
+	%global_tables.Properties.AttributeDefinitions[*] {
+		AttributeName IN ["orderId", "customerId", "createdAt"]
+	}
+}

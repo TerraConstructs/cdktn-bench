@@ -1,0 +1,159 @@
+#
+# Hand-authored (Batch A scenario-authoring task, 2026-08-20) -- NOT a
+# generator stub. emit_oracles() never overwrites this file once it exists
+# (specs/SCHEMA.md §8.2 rule 7).
+#
+# Scenario:   s3-bucket-hardening-decomposition (specs/s3-bucket-hardening-decomposition.yaml)
+# Intent doc: oracles/s3-bucket-hardening-decomposition/intent.md
+# Graded against the awscdk arm's synthesized CloudFormation template
+# (cdk.out/ScenarioStack.template.json) -- specs/SCHEMA.md §4.2/§8. A
+# generated tests/static_tiers.sh runs
+#   cfn-guard validate --data cdk.out/ScenarioStack.template.json --rules policy.guard
+# and fails tier-1 iff any rule below FAILs.
+#
+# Encodes two tier-1 structural_assert families
+# (specs/s3-bucket-hardening-decomposition.yaml), both direct/static checks
+# since CFN's synthesized template is always fully static (no "plan"
+# concept, unlike the TF-shaped arms -- SCHEMA.md §4.2.1):
+#
+#   1. tls-deny-covers-objects-too-cfn -- the Deny-on-non-TLS statement's
+#      Resource array has at least 2 elements. VERIFIED DIRECTLY at
+#      authoring time against a real `cdk synth` output (aws-cdk-lib
+#      2.263.0, offline): `s3.Bucket({ enforceSSL: true, ... })`
+#      synthesizes a Resource array of exactly 2 elements -- an
+#      `Fn::GetAtt` node for the bucket ARN and an `Fn::Join` node for the
+#      object-ARN pattern (`aws-s3/lib/bucket.ts:2689-2704`,
+#      `arnForObjects('*')`). The plausible-wrong fixture (Resource naming
+#      only the bucket ARN) has exactly 1.
+#
+#      SCOPING FIX (this authoring pass, 2026-08-21, verifier-found major):
+#      the cardinality check below is scoped to `%tls_deny_statements` --
+#      Deny statements that ARE the TLS-deny (matched by their own
+#      `Condition.Bool.'aws:SecureTransport' == "false"`), never to every
+#      Deny statement in the policy. The rule used to run `count(Resource.*)
+#      >= 2` against `%deny_statements` (every Deny, unscoped) -- a fully
+#      correct template that adds any SECOND, legitimately bucket-scoped
+#      Deny statement (e.g. `enforceSSL: true` plus `minimumTLSVersion:
+#      "1.2"`, which aws-cdk-lib's own `s3.Bucket` L2 renders as a SEPARATE
+#      Deny conditioned on `NumericLessThan.'s3:TlsVersion'`, with no Bool
+#      condition at all -- or a hand-added Deny denying
+#      `s3:PutBucketPolicy`/`s3:PutBucketAcl` scoped to the bucket ARN
+#      alone, by design a 1-element Resource array) failed this rule even
+#      though the TLS-deny statement ITSELF covered both ARNs. VERIFIED
+#      DIRECTLY (this authoring pass): a template with the reference
+#      solution's own TLS-deny (2-element Resource) plus a second,
+#      legitimately 1-element-Resource Deny (`s3:PutBucketPolicy` /
+#      `s3:PutBucketAcl` scoped to the bucket ARN) -- `cfn-guard validate`
+#      against the OLD unscoped rule: `Status = FAIL`,
+#      `tls_deny_covers_bucket_and_objects FAIL`, exit 19. Same template
+#      against the scoped rule below: `Status = PASS`, exit 0. The
+#      plausible-wrong fixture (single Deny, single-element Resource, IS
+#      itself the TLS-deny) still fails the scoped rule identically to
+#      before (verified: `Status = FAIL`, exit 19) -- the fix narrows what
+#      the cardinality check applies to, not what it requires.
+#
+#   2. sse-kms-references-created-key-cfn -- BucketEncryption's
+#      KMSMasterKeyID is an `Fn::GetAtt` intrinsic (mirrors
+#      oracles/cfn-guard/s3-lambda-log-retention/policy.guard's own
+#      SourceArn.'Fn::GetAtt' pattern exactly, same rationale: CDK's own
+#      `s3.Bucket` L2 always renders a same-configuration KMS key's ARN as
+#      `Fn::GetAtt`; a hardcoded/imported key ARN literal is a plain string
+#      and can never have that key). VERIFIED DIRECTLY: a fixture using
+#      `kms.Key.fromKeyArn(...)` (the kms-key-not-referenced catch's own
+#      mechanism) synthesizes `KMSMasterKeyID` as a bare string with NO
+#      `Fn::GetAtt` key at all, and ZERO `AWS::KMS::Key` resources in the
+#      template.
+#
+# Residual, documented gap (mirrors s3-lambda-log-retention's own header
+# comment for the identical class of limitation, cfn-guard 3.2.0 has no
+# cross-collection identity-join builtin): rule 2 cannot verify the
+# `Fn::GetAtt` target's logical ID actually names an AWS::KMS::Key resource
+# (as opposed to some other GetAtt-addressable resource) -- an adversarial
+# template that GetAtt's an unrelated resource's Arn would still pass. Not
+# defended against here, consistent with this codebase's existing
+# convention of treating such adversarial-construction gaps as an accepted
+# v1 idealization when the realistic mistake (an imported/hardcoded key
+# ARN literal) is what's covered.
+#
+# every-subresource-targets-this-bucket-tf has NO cfn-guard counterpart:
+# CFN's AWS::S3::Bucket carries VersioningConfiguration / BucketEncryption /
+# PublicAccessBlockConfiguration as INLINE properties on the one bucket
+# resource -- there is no separate-subresource concept to misattach on this
+# arm at all (the spec's own subresource-targets-wrong-bucket catch is
+# `applies_to: [hcl_raw, terraconstructs]` for exactly this reason).
+
+let s3_buckets = Resources.*[ Type == "AWS::S3::Bucket" ]
+let bucket_policies = Resources.*[ Type == "AWS::S3::BucketPolicy" ]
+let deny_statements = Resources.*[
+	Type == "AWS::S3::BucketPolicy"
+].Properties.PolicyDocument.Statement[ Effect == "Deny" ]
+# The TLS-deny statement specifically -- scoped by its OWN condition, not
+# just "any Deny" (see this file's header comment, "SCOPING FIX"). A
+# second, legitimately bucket-ARN-only Deny statement (a different
+# concern entirely) must never be subject to the "covers bucket AND
+# objects" cardinality check below, since that check's whole rationale
+# (the TLS-deny statement must reach both the bucket ARN and the object
+# ARNs) simply does not apply to it.
+let tls_deny_statements = Resources.*[
+	Type == "AWS::S3::BucketPolicy"
+].Properties.PolicyDocument.Statement[
+	Effect == "Deny"
+	Condition.Bool.'aws:SecureTransport' == "false"
+]
+
+rule bucket_policy_exists_when_bucket_present when %s3_buckets !empty {
+	%bucket_policies !empty
+	<<
+		Violation: an AWS::S3::Bucket exists but no AWS::S3::BucketPolicy resource was found in the template -- the TLS-deny requirement cannot be satisfied without one
+	>>
+}
+
+# tls-deny-covers-objects-too-cfn
+#
+# AGGREGATE-ACROSS-STATEMENTS FIX (verifier-found major, 2026-08-22 third
+# verification pass): the cardinality check used to run `count(Resource.*)
+# >= 2` INSIDE the `%tls_deny_statements { ... }` block, which applies the
+# check to EACH matched statement INDIVIDUALLY. A logically identical,
+# equally correct template that expresses the TLS deny as TWO SEPARATE
+# statements -- one Resource=[bucket ARN], one Resource=[object-ARN
+# pattern], both conditioned on aws:SecureTransport=="false" -- has every
+# individual statement's own Resource count at 1, so the per-statement form
+# FAILED it even though the two statements TOGETHER cover both ARNs.
+# VERIFIED DIRECTLY (cfn-guard 3.2.0): a hand-built two-statement template
+# of exactly this shape -- old rule: `Status = FAIL`,
+# `tls_deny_covers_bucket_and_objects FAIL`, `ComparisonError Value=1
+# ComparedWith=2`, exit 19; new rule below (aggregated `count`): `Status =
+# PASS`, exit 0. This is precisely the rego oracle's own semantics
+# (oracles/rego/.../policy.rego's `bucket_ref_count` counts references
+# across the WHOLE policy expression, not per-statement), so this fix also
+# restores arm parity between the CFN and TF-shaped checks for this catch.
+# Re-verified unchanged after this fix: the plausible-wrong single-statement
+# fixture (Resource=[bucket ARN] only) still FAILS (exit 19); a template
+# with no TLS-deny statement at all still FAILS closed (exit 19, no
+# non-compliant resource crash from evaluating `.Resource.*` over an empty
+# collection); the existing fix-(b) shape (correct 2-element TLS deny plus
+# an unrelated, legitimately 1-element `s3:PutBucketAcl` Deny) still PASSES
+# (exit 0) -- aggregation only changes the split-TLS-statement outcome.
+rule tls_deny_covers_bucket_and_objects when %deny_statements !empty {
+	%tls_deny_statements !empty
+	<<
+		Violation: no Deny statement conditioned on Bool['aws:SecureTransport'] == "false" was found -- "any request not made over TLS must be rejected" is not satisfied
+	>>
+	let tls_deny_resource_count = count(%tls_deny_statements.Resource.*)
+	%tls_deny_resource_count >= 2
+	<<
+		Violation: the TLS-deny statement(s)' combined Resource coverage has fewer than 2 elements -- it must cover both the bucket ARN itself and every object inside it (an object-ARN pattern), whether expressed as one Deny statement or split across several, or requests to objects over plain HTTP remain allowed
+	>>
+}
+
+# sse-kms-references-created-key-cfn
+rule sse_kms_key_exists_when_bucket_present when %s3_buckets !empty {
+	%s3_buckets {
+		when Properties.BucketEncryption.ServerSideEncryptionConfiguration[0].ServerSideEncryptionByDefault.SSEAlgorithm == "aws:kms" {
+			Properties.BucketEncryption.ServerSideEncryptionConfiguration[0].ServerSideEncryptionByDefault.KMSMasterKeyID.'Fn::GetAtt' EXISTS
+			<<
+				Violation: SSEAlgorithm is aws:kms but KMSMasterKeyID is not an Fn::GetAtt reference to a KMS key resource declared in this template (an imported/hardcoded key ARN literal is not verifiably "a key we control" from a static artifact)
+			>>
+		}
+	}
+}
