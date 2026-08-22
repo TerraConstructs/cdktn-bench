@@ -299,6 +299,68 @@ experiment on this roadmap. Probe results must be dated: model knowledge is a
 moving target, and a trap that is tail-knowledge today may be head-knowledge in
 the next model generation — which is itself a finding worth tracking.
 
+### M7 — split the aws-bench scenario (throughput, isolation, hash blast radius)
+
+**Today: one scenario, `anchor`, and all 45 tasks hardcode `scenario_id = "anchor"`.**
+That is a framework-*sanctioned* degenerate use, not a mistake: aws-bench
+hard-requires a member account per task (`_staged_credentials` raises on an empty
+`account_mapping`, `aws_trial.py:183-186`) while cdktn-bench grades ~100 %
+offline, so anchor exists to satisfy that precondition at ~$0. It deploys one
+SSM parameter plus two IAM roles; median deploy ~230 s against upstream's
+10-30 min. **There is no amortization argument for or against splitting** — the
+framework has no per-scenario AWS cost accounting anyway (the only `cost_usd` in
+the codebase is LLM tokens, `metrics/run_data.py:326-397`).
+
+For reference, upstream runs **8 scenarios / 134 tasks (~17:1)**, split by
+*deployed infra shape* (`serverless-apps` = VPC/ALB/RDS/MSK/ECS;
+`troubleshooting-multiservice` = 30 stacks across 7 regions), not by account
+shape — every scenario is single-account by construction
+(`aws_bench/scenario/config.py:51-53`).
+
+**Three reasons to split anyway, all measured:**
+
+1. **Mutating trials serialize account-wide, with the reset inside the lock.**
+   `_ScenarioAdmissionGate` (`task/queue.py:32-77`) is keyed by `scenario_id` and
+   held across the whole trial *including its reset*. Six mutating trials × ~8.5
+   min reset ≈ **51 min strictly serial, regardless of `-n`**. Splitting
+   `apigw-redeploy` and `named-resource-replacement` onto separate scenarios
+   halves that immediately. (The gate is reader-preferring, so a stream of
+   read-only trials can also park a waiting mutating one.)
+2. **Contamination is account-global.** A failed reset tags the account
+   (`account_management/manager.py:317`) and every later trial on that scenario
+   is refused (`aws_trial.py:272-286`) until a clean `env cleanup`. With one
+   scenario, one bad mutating trial hard-stops **all 45 tasks**; with two, the 39
+   read-only tasks keep running.
+3. **Scenario hashing has no blast-radius boundary.** `compute_scenario_hash`
+   SHA256s *every* file under the scenario dir (`scenario/hashing.py:32-44`) —
+   currently **218 MB / 8,291 files**, of which 8,254 are `node_modules`, plus
+   committed `cdk.out/` and `dist/`. Any `npm install` or synth refresh silently
+   invalidates the POST_SETUP baseline (the standing `env setup` debt in §1 is
+   exactly this), and the tree is re-hashed on every mutating trial's reset.
+   Hashing does not cross-contaminate *between* scenarios — but with one
+   scenario, "within a scenario" means everything, so that isolation is worth
+   zero today.
+
+**What will force it regardless** — three queue items cannot be served by
+`workspace_seed` (a file in the agent container) or by multi-step `pre_invoke`
+(per-trial), because they need infra that pre-exists the trial:
+`rds-blue-green` (a live RDS instance — cannot live in a $0 anchor shared by 45
+tasks), `cross-stack-export-deadly-embrace` (≥2 deployed stacks with a live
+export/import edge), and `s3-notification-on-unowned-bucket` — the sharpest
+case, since anchor's agent role is `AdministratorAccess`, making "a bucket this
+principal does not own" **unrepresentable in this account at all**. That one
+needs a second account, i.e. a second scenario, by definition.
+
+**Cheap first step, independent of any split:** shrink the hashed/Docker-context
+tree (`node_modules`, `cdk.out`, `dist` out of `scenarios/anchor/`), which
+removes most spurious baseline invalidation and 218 MB of I/O per reset.
+
+**Note:** no DECISIONS entry has ever weighed one-scenario vs many — it is
+asserted as a premise in `scenarios/anchor/README.md`, `scenario.toml`,
+`local-registry.json` and `SCHEMA.md` §8.3, never argued. A split needs a
+pre-registered amendment, not just a code change, because `scenario_id` is part
+of task identity.
+
 ---
 
 ## 5. Scenario authoring queue
