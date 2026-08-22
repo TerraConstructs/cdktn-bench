@@ -282,3 +282,28 @@ def test_patch_emits_one_named_copy_per_file_preserving_relative_paths() -> None
     assert dockerfile_copies_path(sources, "workspace/lambda/placeholder.zip")
     # still ends on its CMD
     assert patched.rstrip().endswith('CMD ["/bin/bash"]')
+
+
+def test_generated_awscdk_tasks_do_not_ship_the_arm_example_stack():
+    """`lib/example-stack.ts` is the ARM image's offline-synth smoke test and
+    must never reach a generated task's agent-visible workspace.
+
+    Nothing in a generated task references it (bin/app.ts instantiates
+    ScenarioStack; the patched preflight asserts on
+    ScenarioStack.template.json), but it is READABLE by the agent and ships a
+    fully hardened `s3.Bucket` -- a partial answer key for any S3 scenario,
+    arm-asymmetric (no hcl_raw/terraconstructs equivalent, so it confounds
+    cross-arm tokens-to-green), and the only agent-visible file that trips the
+    identity deny-list.
+    """
+    # tasks/anchor/smoke is hand-maintained, not generated: its own bin/app.ts
+    # imports ExampleStack (it IS the arm smoke test), so it keeps the file.
+    offenders = sorted(
+        str(p.relative_to(REPO_ROOT))
+        for p in (REPO_ROOT / "tasks").rglob("*/environment/workspace/lib/example-stack.ts")
+        if p.parts[-5] != "smoke"
+    )
+    assert offenders == [], (
+        "generated awscdk task(s) still ship the arm's example-stack.ts "
+        f"(answer-key leak + arm asymmetry): {offenders}"
+    )

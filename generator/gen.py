@@ -1113,6 +1113,22 @@ def write_environment(spec: Spec, arm: Arm, dest: Path) -> None:
         )
         preflight_path = dest / "preflight.sh"
         preflight_path.write_text(patch_awscdk_preflight(preflight_path.read_text()))
+        # lib/example-stack.ts is the ARM image's offline-synth smoke test. In a
+        # GENERATED task nothing references it any more: bin/app.ts is rewritten
+        # to instantiate ScenarioStack, and patch_awscdk_preflight() above
+        # repoints the preflight at ScenarioStack.template.json. It is therefore
+        # dead code -- but it is dead code the agent can READ, and it ships a
+        # fully hardened s3.Bucket (versioned + BLOCK_ALL + S3_MANAGED +
+        # autoDeleteObjects). That is a partial answer key for any S3 scenario
+        # (it carried 2 of 4 controls for s3-bucket-hardening-decomposition,
+        # including the exact wrong-enum value of one of that spec's own
+        # catches), it is arm-asymmetric (hcl_raw and terraconstructs ship no
+        # equivalent, so it confounds cross-arm tokens-to-green), and it is the
+        # only agent-visible file in the repo that trips the identity deny-list.
+        # Delete it from the generated task; the arm image keeps its own copy.
+        example_stack = workspace / "lib" / "example-stack.ts"
+        if example_stack.exists():
+            example_stack.unlink()
     elif arm == "hcl_raw":
         assert entry_rel == "main.tf", (
             f"hcl_raw output_contract.entry_file must be main.tf (the offline "
