@@ -411,6 +411,14 @@ Arm-neutral, cheap, and it makes the Amendment 29 tenet falsifiable rather than
 assumed. If it does not separate the shapes, that amendment's premise is weaker
 than claimed.
 
+### Pre-registered test of Amendment 29 (physical identity not load-bearing)
+
+**`stack-deployed-twice-in-one-account`** — deploy the same stack twice into one
+account/region. Fixed physical names collide and fail; generated names pass.
+Arm-neutral (every arm can do either), cheap, and it makes the Amendment 29
+tenet **falsifiable rather than assumed**. If it does not separate the shapes,
+that amendment's premise is weaker than claimed and should be revisited.
+
 ### A family the evidence suggests adding
 **L2-lag by feature age** — pick features by how recently the L2 wrapped them
 and measure the discovery tax as a function of that age. Finding 2 (§3) is a
