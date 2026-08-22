@@ -1,0 +1,822 @@
+# specs/asg-launch-template-tag-propagation.yaml
+#
+# Batch A blueprint §3 (docs/design/batch-a-greenfield-blueprints.md).
+# workspace_id: worker-fleet. Tags must reach BOTH launched instances and
+# the EBS volumes those instances carry — two AWS-API-level mechanisms, not
+# one, and the whole scenario turns on the fact that they are different.
+#
+# PRIMARY EVIDENCE (re-verified directly at authoring time, 2026-08-21 —
+# not inherited from the blueprint without re-checking):
+#
+#   1. AWS's own docs state the mechanism split in one sentence:
+#      "You can also propagate tags from an Auto Scaling group to the EC2
+#      instances that it launches. Tags are not propagated to Amazon EBS
+#      volumes. To add tags to Amazon EBS volumes, specify the tags in a
+#      launch template."
+#      -- https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-tagging.html
+#      (read in full at authoring time). Same page, "EC2 instance tagging
+#      lifecycle": "If you specify instance tags in your launch template and
+#      you opted to propagate your group's tags to its instances, all the
+#      tags are merged" -- so a launch template's own `instance`-resourceType
+#      tag_specifications and the ASG's `tag{propagate_at_launch=true}`
+#      blocks are two INDEPENDENT, ADDITIVE paths to the same destination
+#      (instances); volumes have exactly one path, ever.
+#   2. Provider schema fact (re-verified against the pinned hcl_raw mirror,
+#      hashicorp/aws 6.58.0, and directly reproduced against terraform
+#      1.15.8 offline): `aws_autoscaling_group` has NO flat `tags` argument
+#      at all -- only repeated `tag { key, value, propagate_at_launch }`
+#      blocks, propagate_at_launch REQUIRED. A solution that writes
+#      `tags = { ... }` on this resource is rejected by `terraform init`
+#      itself ("Unsupported argument"), before `plan` ever runs. The
+#      provider docs are silent on the ASG-tag vs launch-template-tag-
+#      specification interaction (zero cross-references either direction)
+#      -- itself evidence for why this is a recurring, undocumented
+#      footgun, not a well-signposted one.
+#   3. Evidence-integrity note carried over from the blueprint (its own
+#      §0.5 re-verification): of the three originally-graded GitHub issues,
+#      TWO do not support this scenario's claim at all -- tfp-aws#729 is
+#      `aws_instance.volume_tags` with >1 attached volume (a different
+#      resource, a different mechanism); tfp-aws#19890 is provider-level
+#      `default_tags` not reaching `aws_instance` ROOT BLOCK DEVICES (again
+#      a different resource). Only tfp-aws#7926 (CLOSED/completed,
+#      2019-03-13, the `default_tags` feature request) survives -- its
+#      comment thread discusses `aws_autoscaling_group` needing special
+#      handling because `propagate_at_launch` is per-tag and interacts
+#      badly with provider defaults. Its reaction count (507) is NOT this
+#      scenario's own signal and is not repeated as such anywhere below;
+#      it is cited only for the mechanism discussion in its thread.
+#   4. `aws-cdk-lib` 2.263.0 (local clone, pinned commit a9e6639, read
+#      directly): `aws-autoscaling/lib/auto-scaling-group.ts` routes ASG
+#      tags through `core/lib/tag-manager.ts`'s `AsgFormatter.formatTags()`
+#      (`propagateAtLaunch: tag.applyToLaunchedInstances !== false`,
+#      registered for `TagType.AUTOSCALING_GROUP`) -- but contains NO
+#      TagSpecifications/volume-tagging code of its own. Independently
+#      re-verified: `AutoScalingGroupProps` (both the base
+#      `CommonAutoScalingGroupProps` and the full props interface) has NO
+#      `tags` field at all -- an agent writing `tags: {...}` inline in the
+#      constructor's props object literal is rejected by `tsc`'s excess-
+#      property check on a fresh object literal, the exact structural
+#      analog of hcl_raw's "Unsupported argument" rejection (point 2
+#      above).
+#      CORRECTED 2026-08-21 (this scenario's own verifier round caught the
+#      previous version of this point as FALSE for this harness): whether
+#      `AutoScalingGroup`'s DEFAULT construction path (instanceType+
+#      machineImage passed directly, no explicit `launchTemplate` prop)
+#      synthesizes a legacy `AWS::AutoScaling::LaunchConfiguration` or a
+#      real `AWS::EC2::LaunchTemplate` depends ENTIRELY on the
+#      `@aws-cdk/aws-autoscaling:generateLaunchTemplateInsteadOfLaunchConfig`
+#      feature flag (`aws-autoscaling/lib/auto-scaling-group.ts`'s own
+#      `FeatureFlags.of(this).isEnabled(AUTOSCALING_GENERATE_LAUNCH_TEMPLATE)`
+#      branch) -- and this harness's own generated `cdk.json` (identical
+#      boilerplate on every awscdk-arm scenario, including this one) sets
+#      that flag `true`. Under THIS harness's actual configuration, the
+#      DEFAULT construction path DOES build a real `ec2.LaunchTemplate`
+#      child construct (`new ec2.LaunchTemplate(this, "LaunchTemplate",
+#      {machineImage, instanceType, ...})`), so
+#      `aws-ec2/lib/launch-template.ts`'s own `TagManager`
+#      (`launchTemplateData.tagSpecifications` mirrors ONE tag map into
+#      BOTH `resourceType: 'instance'` AND `resourceType: 'volume'`
+#      entries) is reachable from a single stack-wide `Tags.of(this).add()`
+#      call with NO explicit `LaunchTemplate` construction step at all.
+#      Reproduced directly (real `npm run build && npx cdk synth
+#      --no-lookups`, this scenario's own generated awscdk workspace): a
+#      stack with `new autoscaling.AutoScalingGroup(this, "WorkerFleet",
+#      {instanceType, machineImage, minCapacity: 2, maxCapacity: 6})` (no
+#      `launchTemplate:` prop) plus `cdk.Tags.of(this).add(...)` for both
+#      keys synthesizes `AWS::EC2::LaunchTemplate` with
+#      `TagSpecifications` carrying both `instance` and `volume` entries
+#      and both required keys, AND `AWS::AutoScaling::AutoScalingGroup`
+#      with its own `Tags`/`PropagateAtLaunch=true` list -- every tier-0
+#      assert and the (now-fixed, see the cfn_guard_hints correction
+#      below) tier-1 cfn-guard rule PASS. So on THIS harness, volume
+#      tagging is reachable on the default construction path too -- an
+#      explicit `ec2.LaunchTemplate` is no longer load-bearing for
+#      correctness (though it remains a valid, equally-scoring shape; see
+#      arms.terraconstructs.reason below for how this changes the arm
+#      prediction).
+#   5. `terraconstructs` 0.2.13 (the exact pinned tarball, downloaded and
+#      inspected directly): `lib/aws/aws-tags.js`'s `visitAutoScalingGroup()`
+#      writes `aws_autoscaling_group` `tag` blocks with
+#      `propagateAtLaunch: this.props.applyToLaunchedInstances !== false`
+#      (same semantics as aws-cdk-lib). Separately,
+#      `lib/aws/compute/launch-template.js` marks `LaunchTemplate` a
+#      `_appliesTagsToLaunchedInstances` sink: its own `tags` setter (the
+#      generic `Tags.of(scope).add()` aspect target) synthesizes
+#      `tag_specifications` for BOTH `instance` and `volume` resourceTypes
+#      from one tag map. Because `compute.autoscaling.AutoScalingGroup`
+#      (`lib/aws/compute/auto-scaling/auto-scaling-group.js`), given
+#      `vpc`+`instanceType`+`machineImage` with no explicit `launchTemplate`,
+#      DOES internally construct an `ec2.LaunchTemplate`-equivalent L2
+#      construct as a CHILD of itself (`new LaunchTemplate(this,
+#      "LaunchTemplate", {...})`) -- confirmed by direct source read -- a
+#      SINGLE scope-wide `Tags.of(stack).add(key, value)` reaches BOTH the
+#      ASG's own tag blocks AND the child LaunchTemplate's instance+volume
+#      tag_specifications automatically, with no explicit LaunchTemplate
+#      construction required from the agent. This is the concrete,
+#      source-verified mechanism behind the arm prediction below: one
+#      aspect call gives this arm everything awscdk needs two separate,
+#      deliberate steps for.
+#
+# HARNESS FACT (checked directly against arms/hcl-raw/environment/workspace/
+# provider.tf, which the agent cannot edit -- see gen.py's ownership_note):
+# that file ALREADY declares `default_tags { tags = { project = "cdktn-bench",
+# arm = "hcl-raw" } }` on the shared `provider "aws" {}` block. This is
+# unrelated to (and does not satisfy) this scenario's CostCenter/Environment
+# requirement -- `aws_autoscaling_group` has no `tags`/`tags_all` attribute
+# for default_tags to merge into at all, and the pre-existing default_tags
+# only ever reaches an ordinary resource's own `tags` argument (e.g. the
+# launch template's OWN tags, not its tag_specifications sub-blocks). The
+# provider-default-tags-instead catch below is scoped around this fact, not
+# around it (see that catch's own description).
+#
+# D2 (batch §0.4): --no-lookups forbids `MachineImage.latestAmazonLinux2()`'s
+# SSM context lookup, and hcl_raw has no `data "aws_ami"` mock -- WORKER_AMI_ID
+# is a literal placeholder for exactly this reason.
+#
+# terraconstructs-specific offline gotcha (verified directly, matches the
+# documented precedent in specs/named-resource-replacement.yaml's own arms
+# reason): `compute.Vpc`'s default `availabilityZones` resolution
+# (`AwsStack.availabilityZones()`, aws-stack.js:418) creates a real
+# `data "aws_availability_zones"` Terraform data source -- there is no
+# offline mock for it, so a correct terraconstructs reference solution MUST
+# pass `availabilityZones` explicitly (literal AZ names) to `Vpc`, exactly as
+# hcl_raw must use literal AZs and as named-resource-replacement's own arm
+# note already established for this exact library call. NOT an issue on
+# awscdk: `bin/app.ts` deliberately instantiates an environment-agnostic
+# stack (no `env: {account, region}, per gen.py's own comment), so
+# `Stack.availabilityZones()` falls back to the CFN-native `Fn::GetAZs()`
+# intrinsic (resolved by CloudFormation at deploy time, never a CDK context
+# lookup) -- confirmed directly against aws-cdk-lib core/lib/stack.ts.
+#
+# ---------------------------------------------------------------------------
+# ORACLE MUST TOLERATE / DEFEND (operator-facing; SCHEMA.md §1 item 3a --
+# this analysis stays in comments, never in prompt prose)
+# ---------------------------------------------------------------------------
+# The instance half and the volume half are NOT symmetric, and the oracle
+# treats them differently on purpose:
+#
+#   - VOLUMES have exactly one path to a tag, ever (AWS doc point 1 above):
+#     the launch template's `tag_specifications` block for
+#     `resource_type = "volume"`. There is no alternative shape to tolerate,
+#     so this half is checked directly at tier 0 (structural_asserts
+#     volume-tag-costcenter-present / volume-tag-environment-present) --
+#     unconditional existence+value checks, not an OR.
+#   - INSTANCES have two independent, ADDITIVE paths (AWS doc point 1,
+#     "EC2 instance tagging lifecycle": launch-template instance tags and
+#     ASG-propagated tags MERGE, group's value wins on key collision) --
+#     the ASG's own `tag{propagate_at_launch=true}` blocks, OR the launch
+#     template's `tag_specifications` for `resource_type = "instance"`, OR
+#     both. Because this is a genuine two-mechanism OR across two DIFFERENT
+#     resource types, no single flat tier-0 JSONPath can express it (tier-0
+#     asserts are ALL required, ANDed together by static_tiers.sh -- there
+#     is no "either of these two" primitive at that layer). Per SCHEMA.md
+#     §4.2's own guidance ("tier 1 if it's the kind of graph/intent check
+#     better expressed as Rego/cfn-guard policy"), the instance-tag-reaches
+#     requirement is therefore graded ENTIRELY at tier 1
+#     (every-required-tag-reaches-instances),
+#     a quantified OR rule in both oracles/rego/.../policy.rego and
+#     oracles/cfn-guard/.../policy.guard.
+#     CORRECTED 2026-08-21 (this scenario's own verifier round found the
+#     cfn-guard half of this claim FALSE as originally shipped -- see
+#     oracles/cfn-guard/.../policy.guard's own header comment for the full
+#     before/after): the ORIGINAL cfn-guard rule's nested `Tags[*] { Key ==
+#     ... Value == ... }` block inside the launch-template-instance
+#     OR-branch was ALL-quantified (missing its own `some`), so it only
+#     passed a Tags list containing EXACTLY one tag -- and FAILED the
+#     moment a realistic multi-tag Tags list (e.g. CostCenter + Environment
+#     + CDK's own auto-injected `Name` tag, which is exactly what a real
+#     `cdk synth` produces once ANY tag reaches a LaunchTemplate) was
+#     checked. The hand-built-fixture proof this comment originally
+#     described was UNREPRESENTATIVE of what the arm actually synthesizes
+#     and did not catch this. Fixed by making the nested Tags check
+#     existential (`some Tags[*] { ... }`) and RE-VERIFIED against REAL
+#     synthesized/planned artifacts, not hand-built JSON fixtures, for
+#     every mechanism this rule must tolerate:
+#       - awscdk, real `npm run build && npx cdk synth --no-lookups` of a
+#         stack that builds an explicit `ec2.LaunchTemplate` and calls
+#         ONLY `Tags.of(lt).add()` (no ASG tagging) --
+#         LaunchTemplateData.TagSpecifications for BOTH resourceTypes
+#         correctly carries CostCenter, Environment, AND CDK's own `Name`
+#         tag in one Tags list -- the fixed cfn-guard policy PASSES (the
+#         unfixed policy FAILED both rules on this exact artifact, reward
+#         0.0).
+#       - awscdk, real `cdk synth` of the DEFAULT construction path (no
+#         explicit LaunchTemplate, stack-wide `Tags.of(this).add()` --
+#         see header comment evidence point 4's own correction) -- both
+#         the ASG mechanism and the launch-template-instance mechanism are
+#         present simultaneously; PASSES.
+#       - hcl_raw, real `terraform init && plan` (terraform 1.15.8,
+#         hashicorp/aws 6.58.0, the exact pinned versions) of a `main.tf`
+#         using ONLY the launch-template `tag_specifications
+#         {resource_type = "instance"}` mechanism (no ASG `tag{}` blocks)
+#         -- `opa eval` (1.19.0) against policy.rego's `deny` is empty
+#         (PASS). This half of the Rego/cfn-guard pair was never broken --
+#         `object.get(spec.tags, key, null) == value` is a map lookup, not
+#         a quantifier, so it was correct as shipped; RE-checked here
+#         against a real plan (not a hand-built fixture) to raise this
+#         claim to the same evidence standard as the cfn-guard fix.
+#       - terraconstructs shares the identical policy.rego, graded against
+#         the identical `terraform show -json` plan JSON shape for
+#         `aws_launch_template`/`aws_autoscaling_group` (both TF-shaped
+#         arms plan against the same hashicorp/aws provider schema) -- the
+#         hcl_raw proof immediately above carries over structurally; not
+#         separately re-run through a terraconstructs synth for this one
+#         shape.
+#       - the "neither mechanism" negative (both rules FAIL) is exercised
+#         by this scenario's own `instances-never-tagged` broken fixture
+#         (solution/broken/instances-never-tagged/solve.sh on every arm),
+#         which already runs through each arm's REAL toolchain via `make
+#         falsifiability`/`make grading-proof` -- not a hand-built fixture
+#         either.
+#     Every reference solution below happens to use the ASG mechanism (the
+#     one every arm's idiomatic tagging API reaches for first -- `Tags.of()`
+#     on the typed arms, a `tag{}` block on hcl_raw), so this scenario does
+#     NOT carry a second reference-solution tree proving the
+#     launch-template-only shape end to end (SCHEMA.md §1 item 3a's own
+#     cost note: "tolerating N shapes means proving the oracle in N
+#     shapes... falsifiability cost scales with the number of shapes",
+#     "prefer a behavioural oracle... over widening structural asserts
+#     shape by shape") -- the tolerance above is proven directly against
+#     each arm's REAL toolchain output for a hand-authored HCL/TS fixture
+#     kept outside the generated task dirs, not via a second full
+#     solve.sh tree, which is the proportionate level of proof for a shape
+#     no reference solution actually needs -- PROVIDED (as this scenario's
+#     own verifier round established) that "proven directly" means "run
+#     through the real toolchain," never a hand-built JSON/CFN document
+#     checked only against the policy file in isolation, which is exactly
+#     what let the cfn-guard bug above ship undetected the first time.
+#   - What is NOT tolerated, and why it's still a fair narrowing: a
+#     solution that reaches for provider-level `default_tags` instead of
+#     either mechanism. On hcl_raw the shared, non-agent-owned
+#     `provider.tf` already declares one `default_tags` block (see the
+#     HARNESS FACT above) -- Terraform allows exactly one non-aliased
+#     `provider "aws" {}` configuration, so the only way an agent could
+#     even ATTEMPT to add CostCenter/Environment via default_tags is a
+#     second, duplicate `provider "aws" {}` block inside its own main.tf,
+#     which `terraform init` rejects outright ("Duplicate provider
+#     configuration for \"aws\"..."), verified directly against terraform
+#     1.15.8 offline. This is not an oracle-defensive narrowing invented to
+#     make one catch easier -- it is a structural consequence of the
+#     harness's own non-agent-owned-bootstrap-file convention (SCHEMA.md
+#     §2.1, finding G1), documented here rather than silently assumed.
+#
+id: asg-launch-template-tag-propagation
+workspace_id: worker-fleet
+title: "Auto Scaling worker fleet whose instances and volumes carry cost-allocation tags"
+difficulty: 3
+services: [autoscaling, ec2]
+
+arms:
+  awscdk: true
+  hcl_raw: true
+  terraconstructs:
+    enabled: true
+    reason: >
+      SUPPORTED, source-verified directly against the pinned terraconstructs
+      0.2.13 tarball (downloaded and inspected at spec-authoring time, not
+      assumed from arms/terraconstructs/README.md alone -- that README's
+      own coverage table is confirmed accurate here). `compute.Vpc`
+      (lib/aws/compute/vpc.js), `compute.LaunchTemplate`
+      (lib/aws/compute/launch-template.js), `compute.autoscaling.
+      AutoScalingGroup` (lib/aws/compute/auto-scaling/auto-scaling-group.js)
+      and `compute.MachineImage.genericLinux()` (a literal AMI map, no
+      context lookup -- lib/aws/compute/machine-image/machine-image.js) are
+      all present with the exact same construction-time behavior aws-cdk-lib
+      2.263.0 has. `AutoScalingGroup`'s default construction path here
+      internally builds its own child `LaunchTemplate` construct
+      (confirmed by direct source read), and `LaunchTemplate`'s own tags
+      setter is a `Tags.of()`-aspect sink that mirrors one tag map into
+      BOTH `instance` and `volume` `tag_specifications`
+      (lib/aws/compute/launch-template.js) -- so a single stack-wide
+      `Tags.of(this).add(key, value)` reaches the ASG's own
+      tag-propagation blocks (lib/aws/aws-tags.js's
+      `visitAutoScalingGroup()`) AND both launch-template tag_specification
+      resourceTypes with no extra step, exactly the way `Tags.of()` reaches
+      both halves on awscdk's own default construction path (see this
+      file's header comment, evidence point 4).
+      PREDICTION CORRECTED 2026-08-21 (this scenario's own verifier round):
+      an earlier draft of this reason predicted terraconstructs would BEAT
+      awscdk outright on this scenario, on the premise that awscdk's
+      default `AutoScalingGroup` construction path could never reach
+      volume tag_specifications and therefore FORCED an explicit
+      `ec2.LaunchTemplate` construction step no terraconstructs solution
+      needs. That premise is false for THIS harness: the generated
+      `cdk.json`'s `generateLaunchTemplateInsteadOfLaunchConfig` flag (on
+      by default here) makes awscdk's own default construction path build
+      a real child `LaunchTemplate` too, reachable from one
+      `Tags.of(this).add()` call, exactly like this arm (reproduced
+      directly, see header comment evidence point 4). The differential
+      this scenario actually measures on THIS harness is therefore
+      narrower than originally predicted: both arms' single-aspect-call
+      default-construction shape reaches both instance and volume halves
+      at reward 1.0. terraconstructs keeps one arm-specific edge worth
+      noting -- it never has a legacy-LaunchConfiguration fallback to
+      reason about at all (aws-cdk-lib's own escape hatch is a feature
+      flag an agent never has to know exists; terraconstructs' behavior is
+      unconditional) -- but this is a smaller, harder-to-observe
+      differential than "beats awscdk outright," and the pre-registered
+      arm prediction is revised accordingly: comparable reward on both
+      arms for a correct solution, with terraconstructs' advantage (if
+      any) showing up as a lower-friction path to the same result rather
+      than as a reward gap. One offline-plan gotcha
+      this arm alone needs handling for: `compute.Vpc`'s default
+      `availabilityZones` resolution creates an unmockable
+      `data "aws_availability_zones"` lookup (aws-stack.js:418) -- the
+      reference solution passes `availabilityZones` explicitly (see this
+      file's header comment).
+      PRE-REGISTERED ARM-LEVEL CONFOUND, added 2026-08-22 (repair round):
+      every built-in `compute.UserData` subclass's `render()`
+      (lib/aws/compute/user-data.js, all four implementations --
+      `LinuxUserData`, `WindowsUserData`, `CustomUserData`,
+      `MultipartUserData`) unconditionally constructs a
+      `dataCloudinitConfig.DataCloudinitConfig` (the `hashicorp/cloudinit`
+      provider). `compute.MachineImage.genericLinux()` -- the literal-AMI
+      image factory this scenario's own reference solution must use per D2
+      -- does NOT avoid this: `GenericLinuxImage.getImage()`
+      (machine-image.js) defaults `userData: this.props.userData ??
+      UserData.forLinux()`, so unless a solution passes its own `userData`
+      explicitly, the synthesized stack always names `hashicorp/cloudinit`
+      in `required_providers`. That provider is NOT in this arm's offline
+      mirror (arms/terraconstructs/environment/mirror-src/main.tf mirrors
+      only `hashicorp/aws` and `hashicorp/archive`; adding a fourth
+      provider is a batch-wide mirror-delta decision per this batch's own
+      §0.3, out of this single spec's authoring scope, and is not made
+      here). Confirmed directly: a draft reference solution that let
+      `genericLinux()`'s default stand synthesized cleanly (cdktn's own
+      "matching provider construct" validation is satisfied by registering
+      the construct) but the subsequent offline `terraform init`
+      `static_tiers.sh` runs failed mirror coverage with
+      `provider(s) required by this artifact are MISSING from the arm
+      image's own offline mirror: registry.terraform.io/hashicorp/
+      cloudinit@2.4.0 (mirror has: nothing)`. The oracle-correct fix (see
+      this scenario's own terraconstructs solve.sh) is a minimal
+      `UserData` subclass whose `render()` returns a plain empty string,
+      passed explicitly via `GenericLinuxImageProps.userData` -- checked
+      before the library default. This is a REAL, PRE-REGISTERED CONFOUND
+      on this arm, stated honestly rather than papered over: this
+      scenario's prompt never asks for instance bootstrap content, so nothing
+      about the trap this scenario is designed to measure (tag
+      propagation to launched instances and volumes) requires it, but an
+      agent that never discovers the empty-`UserData` workaround scores
+      below 1.0 here for a reason that is orthogonal to the tag-propagation
+      trap -- i.e., on the terraconstructs arm, a sub-1.0 reward on this
+      scenario is NOT interpretable as evidence about tag-propagation
+      alone; it may instead (or additionally) reflect this arm's
+      `hashicorp/cloudinit` mirror gap. This does not depend on anything
+      in the agent-visible prompt or environment naming the pitfall: no
+      seeded file, comment, or instruction text discloses the cloudinit gap
+      or the empty-`UserData` shape anywhere the agent can see it (verified
+      by re-reading `tasks/anchor/asg-launch-template-tag-propagation-
+      terraconstructs/instruction.md` and every file under that task's
+      `environment/` in full); the confound is disclosed here, operator-
+      side, precisely so a reader of results does not misattribute a
+      terraconstructs miss to the tag-propagation trap without checking
+      which failure actually occurred.
+
+instruction:
+  shared_body: |
+    Stand up an Auto Scaling group of worker instances for the batch
+    platform: the fleet must run at least 2 instances at all times,
+    scaling up to at most 6 as load grows, in a new VPC with two private
+    subnets. Instances run AMI {{WORKER_AMI_ID}} on t3.small.
+
+    Finance reconciles our EC2 spend from tags. Every instance the group
+    launches, and every EBS volume attached to it, must carry
+    CostCenter=platform-42 and Environment=prod — including instances the
+    group launches later when it scales out.
+  placeholders:
+    - name: WORKER_AMI_ID
+      source: literal
+      value: "ami-0c55b159cbfafe1f0"
+  per_arm:
+    awscdk:
+      language_line: "Author this as an AWS CDK (TypeScript) app using aws-cdk-lib L2 constructs."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdk.out/ScenarioStack.template.json
+        build_command: "npm run build"
+        synth_command: "npx cdk synth --no-lookups --quiet -o cdk.out"
+        json_fields: []
+    hcl_raw:
+      language_line: "Author this as hand-written Terraform HCL (no modules)."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields: []
+    terraconstructs:
+      language_line: "Author this using terraconstructs (TypeScript) L2 constructs, synthesized via cdktn."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdktf.out/stacks/worker-fleet/plan.json
+        synth_command: "npx cdktn synth"
+        json_fields: []
+
+catches:
+  - name: tags-only-on-the-asg-resource
+    taxonomy: nested-attribute
+    description: >
+      THE PLAUSIBLE-WRONG SOLUTION (the shape muscle memory reaches for
+      first): the agent writes the two required tags as a flat key-value
+      map on the Auto Scaling group resource itself, the way almost every
+      other taggable resource in every arm works -- `tags = { CostCenter =
+      "platform-42", Environment = "prod" }` on hcl_raw, or an inline
+      `tags: {...}` object literal passed to the ASG L2 constructor on the
+      typed arms. `aws_autoscaling_group` has NO such flat argument at all
+      (verified directly against the pinned hashicorp/aws 6.58.0 provider
+      schema AND reproduced live: `terraform init` rejects it with
+      "Unsupported argument" before plan ever runs) -- only repeated `tag`
+      blocks, each requiring `key`, `value` and `propagate_at_launch`. The
+      typed arms reject the structural analog just as early: neither
+      `CommonAutoScalingGroupProps` (aws-cdk-lib) nor
+      `AutoScalingGroupProps` (terraconstructs) declares a `tags` field, so
+      an inline `tags: {...}` object literal in the constructor call is
+      rejected by `tsc`'s excess-property check on a fresh object literal --
+      the SAME toolchain-failure tier hcl_raw's schema rejection lands at,
+      before `cdk synth`/`cdktn synth` ever runs. No structural_assert is
+      needed to catch this: the generated tests/static_tiers.sh already
+      writes reward=0.0 unconditionally the moment the toolchain step itself
+      fails (matching the s3-lambda-log-retention scenario's own
+      log-retention-not-a-valid-enum-value precedent for this exact
+      "toolchain failure IS the catch" shape).
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "0"
+      terraconstructs_override: null
+
+  - name: instance-tags-but-no-volume-tags
+    taxonomy: nested-attribute
+    description: >
+      Tags reach instances correctly (via the ASG's own tag-propagation
+      mechanism, or the launch template's instance tag_specifications, or
+      both) but the launch template's `tag_specifications` never includes a
+      `volume`-resourceType entry at all -- the realistic "I tagged the
+      thing that matters" mistake, since instances are the visible,
+      billed-for resource and EBS volumes are easy to forget entirely. Per
+      this file's header-comment evidence (AWS's own docs: "Tags are not
+      propagated to Amazon EBS volumes"), there is no fallback path for
+      volumes -- every attached EBS volume launches untagged, and Finance's
+      reconciliation silently misses the storage line of the bill. Caught
+      directly at tier 0 (volume-tag-costcenter-present /
+      volume-tag-environment-present resolve to zero nodes when the
+      `volume` tag_specifications entry is absent).
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "0"
+      terraconstructs_override: null
+
+  - name: instances-never-tagged
+    taxonomy: nested-attribute
+    description: >
+      The mirror-image gap, added to make this scenario's genuinely
+      two-mechanism instance-tag requirement (see this file's "ORACLE MUST
+      TOLERATE / DEFEND" header comment) actually falsifiable at the tier
+      that grades it: the launch template's `volume` tag_specifications
+      entry correctly carries both keys, but NEITHER accepted
+      instance-reaching mechanism is present -- no ASG `tag{
+      propagate_at_launch = true }` block for either key, AND no launch
+      template `instance`-resourceType tag_specifications entry either.
+      Every tier-0 fact this scenario declares (ASG exists, capacity,
+      launch template exists, both volume-tag values, instance type, AMI
+      reference) still passes, because none of those eleven tier-0 asserts
+      inspects the instance-reaching mechanism at all -- that quantified
+      "at least one of two mechanisms" fact lives entirely at tier 1
+      (every-required-tag-reaches-instances),
+      by design (SCHEMA.md §4.2: a genuine two-mechanism OR belongs in
+      Rego/cfn-guard, not a flat tier-0 JSONPath). This catch exists
+      specifically to prove that tier-1 rule has real, independent bite --
+      not merely to document a rule nothing ever falls through to (the
+      grading-proof gate's own purpose).
+    predicted_tier_caught:
+      awscdk: "1"
+      hcl: "1"
+      terraconstructs_override: null
+
+  - name: provider-default-tags-instead
+    taxonomy: anti-L2
+    description: >
+      hcl_raw only (see this file's header comment, "ORACLE MUST TOLERATE /
+      DEFEND", final bullet, for why this is structurally hcl_raw-specific
+      given the harness's own non-agent-owned-provider.tf convention): the
+      agent reaches for the AWS provider's `default_tags` mechanism --
+      documented by HashiCorp as the general-purpose "apply these tags
+      everywhere" tool, and the shared provider.tf already has one such
+      block (`project`/`arm`, unrelated to this scenario) -- and tries to
+      extend it with CostCenter/Environment via a second `provider "aws" {}`
+      block in its own main.tf, since main.tf is the one file it can edit.
+      Terraform permits exactly one non-aliased default provider
+      configuration; `terraform init` rejects the duplicate outright
+      ("Duplicate provider configuration for \"aws\": A default
+      (non-aliased) provider configuration ... was already given"),
+      verified directly against terraform 1.15.8 + the pinned offline
+      provider.tf fixture. Even setting the toolchain failure aside:
+      `aws_autoscaling_group` has no `tags`/`tags_all` attribute for any
+      default_tags mechanism to merge into at all (this file's header
+      evidence point 2), so the mechanism would not have reached launched
+      instances even if the provider block conflict did not exist first --
+      the anti-L2 taxonomy's own point, that reaching for a provider-level
+      shortcut here misses the resource-specific mechanism the ticket
+      actually needs.
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "0"
+      terraconstructs_override: null
+    applies_to: [hcl_raw]
+
+oracle:
+  intent: >
+    An Auto Scaling group of EC2 instances exists, sized to a minimum of 2
+    and a maximum of 6, launching from a launch template whose instances run
+    AMI {{WORKER_AMI_ID}} on a t3.small instance type in a VPC this
+    configuration creates. Every instance the group launches carries the
+    tags CostCenter=platform-42 and Environment=prod -- reached via the
+    Auto Scaling group's own tag-propagation mechanism
+    (`propagate_at_launch`/PropagateAtLaunch = true), or via the launch
+    template's own `instance`-resourceType tag specification, or both; at
+    least one of the two must be present for each key. Every EBS volume the
+    group's instances launch with also carries both tags -- reachable ONLY
+    through the launch template's `volume`-resourceType tag specification
+    (Auto Scaling's own tag-propagation mechanism never reaches EBS
+    volumes, regardless of `propagate_at_launch`), so this half has no
+    alternative mechanism to accept.
+
+  structural_asserts:
+    - name: asg-exists
+      description: "An Auto Scaling group exists."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::AutoScaling::AutoScalingGroup')]"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_autoscaling_group')]"
+      op: exists
+
+    - name: launch-template-exists
+      description: "A launch template exists (the only reachable path to volume tag_specifications, and on awscdk/terraconstructs the ASG's own construction path for anything other than the legacy LaunchConfiguration shape)."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::EC2::LaunchTemplate')]"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_launch_template')]"
+      op: exists
+
+    # MinSize/MaxSize split cfn/tf (SCHEMA.md §4.2.1's own split pattern,
+    # applied here for a plain TYPE mismatch rather than a plan-time-unknown
+    # one): CFN's AWS::AutoScaling::AutoScalingGroup.MinSize/MaxSize are
+    # STRING-typed (verified directly: aws-cdk-lib's
+    # Tokenization.stringifyNumber(minCapacity/maxCapacity),
+    # aws-autoscaling/lib/auto-scaling-group.ts:1904-1905), while the TF
+    # provider schema's aws_autoscaling_group.min_size/max_size are NUMBERs
+    # (confirmed against terraconstructs' own L2, which passes minCapacity/
+    # maxCapacity straight through with no stringification --
+    # lib/aws/compute/auto-scaling/auto-scaling-group.js:803-804). jq's `==`
+    # (this scenario's tier-0 evaluator) does not coerce "2" == 2, so one
+    # shared expected value across both artifact families would silently
+    # fail on whichever family it wasn't tuned for -- split the same way
+    # policy-resource-scoped-not-wildcard-cfn/-tf split for a different
+    # (plan-time-unknown) reason in specs/_toy/toy-ssm-parameter.yaml.
+    - name: asg-min-size-cfn
+      description: "(awscdk only -- see asg-min-size-tf for hcl_raw/terraconstructs.) MinSize is the string \"2\"."
+      tier: "0"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::AutoScaling::AutoScalingGroup')].Properties.MinSize"
+      op: eq
+      expected: "2"
+
+    - name: asg-min-size-tf
+      description: "(hcl_raw + terraconstructs only -- see asg-min-size-cfn for awscdk.) min_size is the number 2."
+      tier: "0"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_autoscaling_group')].values.min_size"
+      op: eq
+      expected: 2
+
+    - name: asg-max-size-cfn
+      description: "(awscdk only -- see asg-max-size-tf for hcl_raw/terraconstructs.) MaxSize is the string \"6\"."
+      tier: "0"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::AutoScaling::AutoScalingGroup')].Properties.MaxSize"
+      op: eq
+      expected: "6"
+
+    - name: asg-max-size-tf
+      description: "(hcl_raw + terraconstructs only -- see asg-max-size-cfn for awscdk.) max_size is the number 6."
+      tier: "0"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_autoscaling_group')].values.max_size"
+      op: eq
+      expected: 6
+
+    - name: launch-template-instance-type
+      description: "The launch template's instance type is t3.small -- always a plan-time-known agent-authored literal on every arm, never provider-computed."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::EC2::LaunchTemplate')].Properties.LaunchTemplateData.InstanceType"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_launch_template')].values.instance_type"
+      op: eq
+      expected: "t3.small"
+
+    # awscdk/tf split (a real, verified path-SHAPE divergence found during
+    # this scenario's own falsifiability proof, not assumed): on hcl_raw
+    # and terraconstructs the AMI is a plain plan-time-known string on
+    # every correct solution (both arms echo the placeholder literal
+    # directly into `image_id`/`imageId`). On awscdk, `ec2.MachineImage.
+    # genericLinux({...})`'s own `getImage()` (aws-ec2/lib/machine-image/
+    # machine-image.ts:612-637) branches on `Token.isUnresolved(Stack.of
+    # (scope).region)` -- and this arm's generated `bin/app.ts`
+    # deliberately instantiates an environment-agnostic `new cdk.App()`
+    # with no `env: {account, region}` (SCHEMA.md §2.1's own
+    # ownership_note, "synth-only oracle tiers never need AWS credentials
+    # or environment lookups"), so `region` IS unresolved -- which makes
+    # `genericLinux()` ALWAYS render a `CfnMapping`/`Fn::FindInMap`
+    # intrinsic for ImageId on this arm, never a literal string, REGARDLESS
+    # of what the agent writes (this is not solution-shape-dependent; it is
+    # a structural consequence of the harness's own env-agnostic stack).
+    # Verified directly: `make check-paths` against this scenario's own
+    # oracle-correct awscdk reference fixture resolved this path to
+    # `{"Fn::FindInMap": [...]}`, not the literal string, before this split
+    # was added. Reduced to an existence check on awscdk (an AMI reference
+    # of SOME shape is present); the exact-value check is kept on the two
+    # TF-shaped arms, where it is genuinely sound.
+    - name: launch-template-image-id-present-cfn
+      description: "(awscdk only -- see launch-template-image-id-tf for hcl_raw/terraconstructs.) The launch template has an ImageId property, of whatever shape (see this file's own comment above for why an exact-value check is not sound here)."
+      tier: "0"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::EC2::LaunchTemplate')].Properties.LaunchTemplateData.ImageId"
+      op: exists
+
+    - name: launch-template-image-id-tf
+      description: "(hcl_raw + terraconstructs only -- see launch-template-image-id-present-cfn for awscdk.) The launch template's image_id is the literal WORKER_AMI_ID placeholder."
+      tier: "0"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_launch_template')].values.image_id"
+      op: eq
+      expected: "ami-0c55b159cbfafe1f0"
+
+    # --- volume half: the ONE mechanism, unconditional (see this file's
+    # own "ORACLE MUST TOLERATE / DEFEND" header comment) ---------------
+    - name: volume-tag-costcenter-present
+      description: >
+        The launch template's `volume`-resourceType tag specification
+        carries CostCenter=platform-42. This is the ONLY path to a tagged
+        EBS volume (AWS's own docs: "Tags are not propagated to Amazon EBS
+        volumes"), so unlike the instance half this is a sound,
+        unconditional tier-0 fact -- no OR needed. CFN's shape is a LIST of
+        {Key,Value} pairs under
+        LaunchTemplateData.TagSpecifications[resourceType=='volume'].Tags;
+        the TF provider schema's shape is a MAP under
+        tag_specifications[resource_type=='volume'].tags -- a genuine path
+        SHAPE difference between the two artifact families (not just a
+        value-type mismatch), so cfn_jsonpath and tf_jsonpath necessarily
+        differ in more than their literal values here, same as every other
+        cfn/tf pair in this file; both were resolved directly against a
+        hand-built fixture of each shape before being written here.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::EC2::LaunchTemplate')].Properties.LaunchTemplateData.TagSpecifications[?(@.ResourceType=='volume')].Tags[?(@.Key=='CostCenter')].Value"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_launch_template')].values.tag_specifications[?(@.resource_type=='volume')].tags.CostCenter"
+      op: eq
+      expected: "platform-42"
+
+    - name: volume-tag-environment-present
+      description: "Same mechanism and shape as volume-tag-costcenter-present, for the Environment=prod tag."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::EC2::LaunchTemplate')].Properties.LaunchTemplateData.TagSpecifications[?(@.ResourceType=='volume')].Tags[?(@.Key=='Environment')].Value"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_launch_template')].values.tag_specifications[?(@.resource_type=='volume')].tags.Environment"
+      op: eq
+      expected: "prod"
+
+    # --- instance half: genuinely two independent, ADDITIVE mechanisms
+    # (see this file's own "ORACLE MUST TOLERATE / DEFEND" header comment)
+    # -- graded ENTIRELY at tier 1, since no flat tier-0 JSONPath can
+    # express "at least one of these two resource-type-different paths",
+    # for EITHER required key. ONE entry (not two, one per key) on purpose
+    # -- `make tier1-coverage`'s own coarse per-arm floor is
+    # count(catches predicting a tier-1 catch) >= count(tier-1 asserts);
+    # this scenario has exactly one catch whose predicted_tier_caught is
+    # "1" (instances-never-tagged), and its own single broken fixture
+    # already violates BOTH required keys at once (see that catch's own
+    # description), so a real per-key split here would only inflate the
+    # assert count past what any covering fixture demonstrates, tripping
+    # that floor for no falsifiability gain. The cfn_jsonpath/tf_jsonpath
+    # below document the CANONICAL, directly-verified path (the ASG's own
+    # tag-propagation mechanism for CostCenter, which every reference
+    # solution below uses) as SCHEMA.md §4.2.1's split-entry pattern does
+    # for a different reason -- the REAL, tolerant, BOTH-keys OR check is
+    # oracles/rego/.../policy.rego + oracles/cfn-guard/.../policy.guard,
+    # not this cfn_jsonpath/tf_jsonpath pair, which is guidance/spec only
+    # (never independently executed -- tier 1 is Rego/cfn-guard-graded, per
+    # SCHEMA.md §4.2's own tier description).
+    - name: every-required-tag-reaches-instances
+      description: >
+        For EACH of CostCenter=platform-42 and Environment=prod, at least
+        one accepted mechanism -- the ASG's own
+        `tag{propagate_at_launch=true}` block, or the launch template's
+        `instance`-resourceType tag specification -- carries that tag to
+        every launched instance. A quantified rule over the union of the
+        two mechanisms, for both required keys (the "every-required-tag-
+        reaches-instances" rule this scenario's design source calls for).
+        The cfn_jsonpath/tf_jsonpath below document ONE representative
+        instance of the ASG-mechanism path (CostCenter; every reference
+        solution in this scenario uses the ASG mechanism for both keys);
+        the launch-template-instance-tag_specifications alternative, and
+        the Environment key, are encoded ONLY in the Rego/cfn-guard policy
+        files (see rego_hints/cfn_guard_hints below and this file's own
+        header comment for why).
+      tier: "1"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::AutoScaling::AutoScalingGroup')].Properties.Tags[?(@.Key=='CostCenter')].PropagateAtLaunch"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_autoscaling_group')].values.tag[?(@.key=='CostCenter')].propagate_at_launch"
+      op: eq
+      expected: true
+
+  rego_hints:
+    - >-
+      package cdktn_bench.asg_launch_template_tag_propagation, graded
+      against `terraform show -json` PLAN output for hcl_raw AND
+      terraconstructs. Read every fact from `.planned_values...resources[]`
+      only -- every value this scenario's rule needs (ASG tag key/value/
+      propagate_at_launch, launch template tag_specifications
+      resource_type/tags) is a plan-time-known, agent-authored literal on
+      a correct solution (SCHEMA.md §4.2.1's plan-time-unknown concern does
+      not apply anywhere in this scenario -- nothing here is built from
+      another resource's provider-computed output), so unlike
+      s3-lambda-log-retention's or toy-ssm-parameter's own Rego, there is
+      no `.configuration...expressions.*.references` graph-edge fallback
+      needed here at all.
+    - >-
+      instance_tag_reaches(key, value) is TRUE if EITHER: (a) some
+      aws_autoscaling_group's `tag[]` list has an entry with that key,
+      that value, AND propagate_at_launch == true, OR (b) some
+      aws_launch_template's `tag_specifications[]` has an entry with
+      resource_type == "instance" whose `tags` map has that key mapped to
+      that value. deny one message per required key (CostCenter=
+      platform-42, Environment=prod) that instance_tag_reaches is false
+      for. Verified directly (opa 1.19.0) against REAL `terraform plan`
+      output (not hand-built JSON): PASSES a real hcl_raw plan using ONLY
+      mechanism (a) (this scenario's own reference solutions), PASSES a
+      real hcl_raw plan using ONLY mechanism (b) (main.tf with launch
+      template `tag_specifications {resource_type = "instance"}` and no
+      ASG `tag{}` blocks, terraform 1.15.8 + hashicorp/aws 6.58.0), FAILS
+      the `instances-never-tagged` broken fixture (neither mechanism,
+      every arm, run through the real toolchain via `make
+      falsifiability`/`make grading-proof`).
+    - >-
+      fail-closed: deny if an aws_autoscaling_group exists in the plan but
+      zero aws_launch_template resources exist anywhere (mirrors every
+      other scenario's own fail-closed convention -- guards against the
+      comprehensions above being vacuously silent when the launch template
+      is omitted entirely rather than merely under-tagged; tier-0's own
+      launch-template-exists assert already covers this case directly, so
+      this rule is defense in depth, not this catch's primary mechanism).
+
+  cfn_guard_hints:
+    - >-
+      Graded against the awscdk arm's synthesized CloudFormation template.
+      `let asgs = Resources.*[ Type == "AWS::AutoScaling::AutoScalingGroup" ]`,
+      `let lts = Resources.*[ Type == "AWS::EC2::LaunchTemplate" ]`.
+    - >-
+      rule instance_tag_costcenter_reaches when %asgs !empty: PASS if
+      EITHER `some %asgs.Properties.Tags[*] { Key == "CostCenter" Value ==
+      "platform-42" PropagateAtLaunch == true }` OR
+      `some %lts.Properties.LaunchTemplateData.TagSpecifications[*] {
+      ResourceType == "instance" some Tags[*] { Key == "CostCenter" Value ==
+      "platform-42" } }` -- note the INNER `some` before `Tags[*]` (fixed
+      2026-08-21; the original shipped rule omitted it, making that clause
+      ALL-quantified and therefore rejecting any realistic multi-tag Tags
+      list -- see this file's own header comment for the full
+      before/after) -- joined with cfn-guard's own `or` clause operator.
+      Verified directly (cfn-guard 3.2.0) against REAL `cdk synth` output
+      (not hand-built CFN): PASSES a real synthesized template using only
+      the ASG mechanism (default construction path, stack-wide
+      `Tags.of()`), PASSES a real synthesized template using only the
+      launch-template-instance mechanism (explicit `ec2.LaunchTemplate`
+      tagged alone -- Tags list carries CostCenter, Environment, AND CDK's
+      own auto-injected `Name` tag together, the realistic shape the
+      original rule failed), and FAILS (exit 19, non-compliant on both
+      resources) the `instances-never-tagged` broken fixture (neither
+      mechanism, run through the real toolchain). A second,
+      identically-shaped rule covers the Environment key.
+    - >-
+      rule launch_template_exists_when_asg_present when %asgs !empty:
+      %lts !empty (fail-closed companion, mirrors the rego_hints
+      fail-closed rule above).
+
+  tier05_jsonata: null
+
+verifier:
+  budget:
+    max_iters: 8
+  live_check:
+    enabled: false
+    module: tests/live_check.py
+
+provenance:
+  author: "Vincent (via Claude Code, batch-A scenario-authoring task)"
+  date: "2026-08-21"
+  prereg_section_refs:
+    - "docs/design/batch-a-greenfield-blueprints.md §3 (asg-launch-template-tag-propagation) -- this spec's design source"
+    - "docs/design/batch-a-greenfield-blueprints.md §0.5 -- the evidence re-verification finding that falsifies tfp-aws#729 and #19890 for this candidate, carried forward in this file's own header comment"
+    - "https://docs.aws.amazon.com/autoscaling/ec2/userguide/ec2-auto-scaling-tagging.html -- re-read in full at THIS spec's own authoring time (2026-08-21), the primary mechanism citation this spec adds beyond the blueprint (\"Tags are not propagated to Amazon EBS volumes\", \"EC2 instance tagging lifecycle\")"
+    - "tfp-aws#7926 (CLOSED, 2019-03-13) -- the one blueprint-cited issue that survives re-verification; its reaction count is not this scenario's own signal (see this file's header comment)"
+    - "2026-08-21, this scenario's own adversarial verifier round (fixes applied in place, not a redesign): (1) oracles/cfn-guard/.../policy.guard's launch-template-instance OR-branch was ALL-quantified over Tags[*] (missing an inner `some`), rejecting any realistic multi-tag Tags list -- fixed and re-verified against real cdk synth output, not hand-built fixtures (see this file's header comment and policy.guard's own header); (2) this file's evidence point 4 and arms.terraconstructs.reason both asserted awscdk's DEFAULT AutoScalingGroup construction path could never reach volume tag_specifications -- FALSE for this harness (cdk.json's generateLaunchTemplateInsteadOfLaunchConfig flag is on), corrected in both places, and the terraconstructs-beats-awscdk-outright prediction downgraded to a narrower, harder-to-observe differential; (3) the shared_body prompt's '2 instances, scaling to at most 6' was ambiguous between minimum and desired capacity while the oracle gated on min_size==2 exactly -- reworded to ticket-voice ('must run at least 2 instances at all times') to resolve the ambiguity in-world rather than oracle-side."

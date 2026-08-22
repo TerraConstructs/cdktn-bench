@@ -1,0 +1,94 @@
+#
+# Hand-authored (2026-08-21) -- NOT a generator stub. emit_oracles() never
+# overwrites this file once it exists (specs/SCHEMA.md §8.2 rule 7).
+#
+# Scenario:   asg-launch-template-tag-propagation (specs/asg-launch-template-tag-propagation.yaml)
+# Intent doc: oracles/asg-launch-template-tag-propagation/intent.md
+# Graded against the awscdk arm's synthesized CloudFormation template
+# (cdk.out/ScenarioStack.template.json) -- specs/SCHEMA.md §4.2/§8.
+#
+# Encodes the every-required-tag-reaches-instances tier-1 structural_assert
+# -- the ONE genuinely two-mechanism fact in this scenario (see the spec's
+# own "ORACLE MUST TOLERATE / DEFEND" header comment). A required tag
+# reaches launched instances if EITHER the ASG's own Tags list has an
+# entry with that Key/Value and PropagateAtLaunch == true, OR the launch
+# template's LaunchTemplateData.TagSpecifications has an entry with
+# ResourceType == "instance" whose Tags list carries that Key/Value.
+#
+# CORRECTED 2026-08-21 (this scenario's own adversarial verifier round):
+# the launch-template-instance OR-branch below used to check
+# `Tags[*] { Key == ... Value == ... }` WITHOUT an inner `some` --
+# cfn-guard's default quantification over a `[*]` selector inside a block
+# is ALL, not ANY, so that clause only ever passed a Tags list containing
+# EXACTLY ONE tag. The moment a realistic Tags list carried more than one
+# entry -- e.g. CostCenter + Environment + CDK's own auto-injected `Name`
+# tag, which is what a real `cdk synth` produces once ANY tag reaches a
+# LaunchTemplate -- both rules below FAILED, even though the required tag
+# WAS present. A correct, ticket-satisfying solution that tags only the
+# launch template (no ASG tagging) therefore scored 0.0 under the original
+# rule. The bug survived initial authoring because the original "verified
+# directly" proof used a hand-built, single-tag CFN JSON fixture -- never
+# checked against a REAL synthesized template. Fixed by adding the missing
+# inner `some` before `Tags[*]`; RE-VERIFIED against REAL `cdk synth`
+# output (not hand-built JSON), reproducing the verifier's own repro case:
+#   - a real synthesized template from a stack that builds an explicit
+#     `ec2.LaunchTemplate` and calls ONLY `Tags.of(lt).add()` (no ASG
+#     tagging) -- LaunchTemplateData.TagSpecifications carries CostCenter,
+#     Environment, AND CDK's own `Name` tag together in one Tags list --
+#     `cfn-guard validate` (3.2.0) -> exit 0 (PASS). The unfixed rule
+#     FAILED this exact artifact (both rules non-compliant on both
+#     resources).
+#   - a real synthesized template using the ASG mechanism only (default
+#     AutoScalingGroup construction path, stack-wide `Tags.of()` --
+#     see the spec's own header comment evidence point 4) -> PASS.
+#   - the `instances-never-tagged` broken fixture (neither mechanism,
+#     volume tag_specifications correct, nothing else -- run through the
+#     real toolchain via `solution/broken/instances-never-tagged/solve.sh`)
+#     -> validate exit 19 (FAIL, both resources reported non-compliant).
+# The `or` clause between the two `some` checks is cfn-guard 3's real
+# boolean-OR operator (not two separately-ANDed rules) -- confirmed by
+# reading both PASS transcripts above line by line, not merely a
+# non-error exit code.
+
+let asgs = Resources.*[ Type == "AWS::AutoScaling::AutoScalingGroup" ]
+let launch_templates = Resources.*[ Type == "AWS::EC2::LaunchTemplate" ]
+
+rule instance_tag_costcenter_reaches when %asgs !empty {
+	some %asgs.Properties.Tags[*] {
+		Key == "CostCenter"
+		Value == "platform-42"
+		PropagateAtLaunch == true
+	}
+	or
+	some %launch_templates.Properties.LaunchTemplateData.TagSpecifications[*] {
+		ResourceType == "instance"
+		some Tags[*] {
+			Key == "CostCenter"
+			Value == "platform-42"
+		}
+	}
+}
+
+rule instance_tag_environment_reaches when %asgs !empty {
+	some %asgs.Properties.Tags[*] {
+		Key == "Environment"
+		Value == "prod"
+		PropagateAtLaunch == true
+	}
+	or
+	some %launch_templates.Properties.LaunchTemplateData.TagSpecifications[*] {
+		ResourceType == "instance"
+		some Tags[*] {
+			Key == "Environment"
+			Value == "prod"
+		}
+	}
+}
+
+# Fail-closed: an ASG exists but no launch template exists at all. Defense
+# in depth -- tier-0's own launch-template-exists assert already covers
+# this case directly (mirrors oracles/cfn-guard/s3-lambda-log-retention/
+# policy.guard's own fail-closed convention).
+rule launch_template_exists_when_asg_present when %asgs !empty {
+	%launch_templates !empty
+}
