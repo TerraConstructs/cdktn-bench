@@ -1,0 +1,88 @@
+#
+# oracles/cfn-guard/acm-dns-validation-record-wiring/policy.guard --
+# HAND-AUTHORED (SCHEMA.md §8.2 rule 7). Encodes
+# specs/acm-dns-validation-record-wiring.yaml's one awscdk-only tier-"1"
+# structural_assert (`validation-options-name-the-zone`) +
+# oracle.cfn_guard_hints. Graded against the awscdk arm's synthesized
+# CloudFormation template (cdk.out/ScenarioStack.template.json) --
+# specs/SCHEMA.md §4.2/§8.
+#
+# Intent doc: oracles/acm-dns-validation-record-wiring/intent.md
+#
+# WHY THIS IS TIER 1 DESPITE CFN BEING ALWAYS STATIC. Unlike the TF-shaped
+# arms, `DomainValidationOptions[*].HostedZoneId` is never plan-time-unknown
+# -- CloudFormation's synthesized template has no "plan" concept at all, so
+# this could be a tier-0 jq check. Kept at tier "1" anyway, to match the
+# TF-shaped arms' strictness per the oracle-equivalence requirement
+# (SCHEMA.md §4.2) -- the exact same asymmetry s3-lambda-log-retention's own
+# `lambda-permission-scoped-to-bucket-cfn` rule documents (see that policy's
+# own header comment).
+#
+# STRUCTURALLY IMPOSSIBLE catches on this arm: three of this scenario's four
+# catches (no-validation-records-at-all, one-record-for-two-domains,
+# missing-certificate-validation-resource) have no equivalent here at all --
+# there is no agent-authored Route53 record or "wait" resource on awscdk for
+# any of those mistakes to happen to. This policy's only job is the fourth
+# catch's awscdk-side structural half: did BOTH domain names actually get a
+# hosted-zone-qualified validation option. (email-validation-instead itself
+# is caught at tier 0 by validation-method-is-dns, not here.)
+#
+# Two per-domain-name rules, not one combined `IN [apex, www]` filter +
+# `count(...) == 2`: cfn-guard 3.2.0 (confirmed installed, `cfn-guard
+# --version` -> 3.2.0) DOES support `count(...)` directly (see
+# oracles/cfn-guard/apigw-openapi/policy.guard's `route_count_correct` rule
+# for the precedent this borrows), but a single combined count check can't
+# say WHICH domain is missing when it fails, and DOMAIN_NAME here is a
+# fixed, known literal (an agent-supplied echo of the {{ZONE_NAME}}
+# placeholder, resolved to a literal at spec-generation time -- never
+# plan-time-unknown on this always-static arm), so per-domain filtering is
+# both more precise and no more code.
+#
+# Verified against real `cdk synth --no-lookups` output: this scenario's own
+# reference solution/solve.sh (PASS) and solution/broken/
+# email-validation-instead/ (FAIL on certificate_validation_method_is_dns's
+# own tier-0 jq check upstream of this policy ever running against it --
+# see tests/static_tiers.sh; this policy only needed the direct positive
+# check against the reference solution's own template, since the other
+# three catches are N/A on this arm by construction).
+
+let certs = Resources.*[ Type == "AWS::CertificateManager::Certificate" ]
+let zones = Resources.*[ Type == "AWS::Route53::HostedZone" ]
+
+rule validation_option_covers_apex when %certs !empty {
+	let apex_options = %certs.Properties.DomainValidationOptions[ DomainName == "storefront.example.com" ]
+	%apex_options !empty
+	<<
+		Violation: no DomainValidationOptions entry names storefront.example.com -- the apex domain will never get a DNS validation record
+	>>
+	%apex_options[*] {
+		HostedZoneId EXISTS
+		<<
+			Violation: the storefront.example.com DomainValidationOptions entry has no HostedZoneId -- ACM has no hosted zone to write the validation record into
+		>>
+	}
+}
+
+rule validation_option_covers_www when %certs !empty {
+	let www_options = %certs.Properties.DomainValidationOptions[ DomainName == "www.storefront.example.com" ]
+	%www_options !empty
+	<<
+		Violation: no DomainValidationOptions entry names www.storefront.example.com -- the www alias will never get a DNS validation record
+	>>
+	%www_options[*] {
+		HostedZoneId EXISTS
+		<<
+			Violation: the www.storefront.example.com DomainValidationOptions entry has no HostedZoneId -- ACM has no hosted zone to write the validation record into
+		>>
+	}
+}
+
+# Fail-closed companion (mirrors toy-ssm-parameter's own convention): a
+# hosted zone exists in the template but zero
+# AWS::CertificateManager::Certificate resources exist at all.
+rule certificate_exists_when_zone_present when %zones !empty {
+	%certs !empty
+	<<
+		Violation: a public hosted zone exists but no AWS::CertificateManager::Certificate resource was found in the template
+	>>
+}

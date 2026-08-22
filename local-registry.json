@@ -11,6 +11,18 @@
     ],
     "tasks": [
       {
+        "name": "acm-dns-validation-record-wiring-awscdk",
+        "path": "tasks/anchor/acm-dns-validation-record-wiring-awscdk"
+      },
+      {
+        "name": "acm-dns-validation-record-wiring-hcl-raw",
+        "path": "tasks/anchor/acm-dns-validation-record-wiring-hcl-raw"
+      },
+      {
+        "name": "acm-dns-validation-record-wiring-terraconstructs",
+        "path": "tasks/anchor/acm-dns-validation-record-wiring-terraconstructs"
+      },
+      {
         "name": "anchor-smoke",
         "path": "tasks/anchor/smoke"
       },
@@ -39,6 +51,30 @@
         "path": "tasks/anchor/apigw-redeploy-terraconstructs"
       },
       {
+        "name": "asg-launch-template-tag-propagation-awscdk",
+        "path": "tasks/anchor/asg-launch-template-tag-propagation-awscdk"
+      },
+      {
+        "name": "asg-launch-template-tag-propagation-hcl-raw",
+        "path": "tasks/anchor/asg-launch-template-tag-propagation-hcl-raw"
+      },
+      {
+        "name": "asg-launch-template-tag-propagation-terraconstructs",
+        "path": "tasks/anchor/asg-launch-template-tag-propagation-terraconstructs"
+      },
+      {
+        "name": "ddb-gsi-attribute-definitions-awscdk",
+        "path": "tasks/anchor/ddb-gsi-attribute-definitions-awscdk"
+      },
+      {
+        "name": "ddb-gsi-attribute-definitions-hcl-raw",
+        "path": "tasks/anchor/ddb-gsi-attribute-definitions-hcl-raw"
+      },
+      {
+        "name": "ddb-gsi-attribute-definitions-terraconstructs",
+        "path": "tasks/anchor/ddb-gsi-attribute-definitions-terraconstructs"
+      },
+      {
         "name": "ecs-swappiness-awscdk",
         "path": "tasks/anchor/ecs-swappiness-awscdk"
       },
@@ -49,6 +85,30 @@
       {
         "name": "ecs-swappiness-terraconstructs",
         "path": "tasks/anchor/ecs-swappiness-terraconstructs"
+      },
+      {
+        "name": "iam-managed-policy-exclusive-vs-attachment-awscdk",
+        "path": "tasks/anchor/iam-managed-policy-exclusive-vs-attachment-awscdk"
+      },
+      {
+        "name": "iam-managed-policy-exclusive-vs-attachment-hcl-raw",
+        "path": "tasks/anchor/iam-managed-policy-exclusive-vs-attachment-hcl-raw"
+      },
+      {
+        "name": "iam-managed-policy-exclusive-vs-attachment-terraconstructs",
+        "path": "tasks/anchor/iam-managed-policy-exclusive-vs-attachment-terraconstructs"
+      },
+      {
+        "name": "lambda-log-group-ownership-and-retention-awscdk",
+        "path": "tasks/anchor/lambda-log-group-ownership-and-retention-awscdk"
+      },
+      {
+        "name": "lambda-log-group-ownership-and-retention-hcl-raw",
+        "path": "tasks/anchor/lambda-log-group-ownership-and-retention-hcl-raw"
+      },
+      {
+        "name": "lambda-log-group-ownership-and-retention-terraconstructs",
+        "path": "tasks/anchor/lambda-log-group-ownership-and-retention-terraconstructs"
       },
       {
         "name": "named-resource-replacement-awscdk",
@@ -63,6 +123,18 @@
         "path": "tasks/anchor/named-resource-replacement-terraconstructs"
       },
       {
+        "name": "s3-bucket-hardening-decomposition-awscdk",
+        "path": "tasks/anchor/s3-bucket-hardening-decomposition-awscdk"
+      },
+      {
+        "name": "s3-bucket-hardening-decomposition-hcl-raw",
+        "path": "tasks/anchor/s3-bucket-hardening-decomposition-hcl-raw"
+      },
+      {
+        "name": "s3-bucket-hardening-decomposition-terraconstructs",
+        "path": "tasks/anchor/s3-bucket-hardening-decomposition-terraconstructs"
+      },
+      {
         "name": "s3-lambda-log-retention-awscdk",
         "path": "tasks/anchor/s3-lambda-log-retention-awscdk"
       },
@@ -73,6 +145,30 @@
       {
         "name": "s3-lambda-log-retention-terraconstructs",
         "path": "tasks/anchor/s3-lambda-log-retention-terraconstructs"
+      },
+      {
+        "name": "s3-notification-authoritative-singleton-awscdk",
+        "path": "tasks/anchor/s3-notification-authoritative-singleton-awscdk"
+      },
+      {
+        "name": "s3-notification-authoritative-singleton-hcl-raw",
+        "path": "tasks/anchor/s3-notification-authoritative-singleton-hcl-raw"
+      },
+      {
+        "name": "s3-notification-authoritative-singleton-terraconstructs",
+        "path": "tasks/anchor/s3-notification-authoritative-singleton-terraconstructs"
+      },
+      {
+        "name": "s3-notification-custom-resource-tax-awscdk",
+        "path": "tasks/anchor/s3-notification-custom-resource-tax-awscdk"
+      },
+      {
+        "name": "s3-notification-custom-resource-tax-hcl-raw",
+        "path": "tasks/anchor/s3-notification-custom-resource-tax-hcl-raw"
+      },
+      {
+        "name": "s3-notification-custom-resource-tax-terraconstructs",
+        "path": "tasks/anchor/s3-notification-custom-resource-tax-terraconstructs"
       },
       {
         "name": "sfn-jsonata-awscdk",

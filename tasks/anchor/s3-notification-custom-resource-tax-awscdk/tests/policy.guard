@@ -1,0 +1,107 @@
+#
+# Hand-authored (Batch A scenario-authoring task, 2026-08-21) -- NOT a
+# generator stub. emit_oracles() never overwrites this file once it exists
+# (specs/SCHEMA.md §8.2 rule 7).
+#
+# Scenario:   s3-notification-custom-resource-tax (specs/s3-notification-custom-resource-tax.yaml)
+# Intent doc: oracles/s3-notification-custom-resource-tax/intent.md
+# Graded against the awscdk arm's synthesized CloudFormation template
+# (cdk.out/ScenarioStack.template.json) -- specs/SCHEMA.md §4.2/§8. A
+# generated tests/static_tiers.sh runs
+#   cfn-guard validate --data cdk.out/ScenarioStack.template.json --rules policy.guard
+# and fails tier-1 iff any rule below FAILs.
+#
+# Two rule families, mirroring oracles/cfn-guard/s3-lambda-log-retention/
+# policy.guard's own SourceArn-is-Fn::GetAtt + fail-closed pairing exactly
+# (per this spec's own comment: lambda-permission-scoped-to-bucket-cfn is
+# REUSED VERBATIM from that scenario):
+#
+#   1. permission_source_arn_resolves_via_getatt / permission_exists_when_
+#      bucket_present -- reused verbatim.
+#   2. notification_targets_created_function / notification_exists_when_
+#      function_present (THIS SCENARIO'S OWN new rule pair,
+#      notification-targets-the-wrong-function's tier-1 assert) -- every
+#      LambdaConfigurations entry's Function must be an Fn::GetAtt
+#      intrinsic (a hardcoded ARN literal is a plain string and can never
+#      have that key), and a Lambda function existing without any such
+#      entry at all fails closed.
+#
+# SCOPE (see the spec's own "Oracle must tolerate / defend" comment block
+# for the full reasoning): both rule families below target the
+# NATIVE AWS::S3::Bucket.NotificationConfiguration.LambdaConfigurations
+# shape (this scenario's reference solution bypasses the L2's own
+# Custom::S3BucketNotifications entirely -- see the spec's own header
+# comment, "THE SHARP EDGE INSIDE THE SHARP EDGE"), not the custom
+# resource's LambdaFunctionConfigurations shape s3-lambda-log-retention.yaml
+# targets. An EventBridge-shaped solution is NOT recognized by any rule
+# here -- a documented v1 scope limitation, not a silent one.
+#
+# Residual, documented gap (mirrors s3-lambda-log-retention/policy.guard's
+# own header comment for the identical class of limitation, cfn-guard 3.2.0
+# has no cross-collection identity-join builtin): neither GetAtt rule below
+# can verify the Fn::GetAtt target's LOGICAL ID actually names the specific
+# AWS::Lambda::Function/AWS::S3::Bucket resource this scenario creates, as
+# opposed to some other GetAtt-addressable resource of the same type -- not
+# defended against here, consistent with this codebase's existing
+# convention of treating such adversarial-construction gaps as an accepted
+# v1 idealization. With exactly-one-lambda-function's own tier-0
+# cardinality check already guaranteeing at most one AWS::Lambda::Function
+# resource exists whenever a rule below is reached, the gap is narrower
+# here than in the general case: any Fn::GetAtt-to-a-Lambda-function
+# necessarily names the one this scenario creates.
+#
+# Verified against real `cdk synth` output at authoring time: this
+# scenario's own reference solution/solve.sh (Function is Fn::GetAtt,
+# SourceArn is Fn::GetAtt -- PASS, both rule families green), the
+# stack-ships-a-deployment-time-function broken fixture (a SECOND
+# AWS::Lambda::Function appears via the L2's own Custom::S3BucketNotifications
+# path -- caught upstream by exactly-one-lambda-function /
+# no-deployment-time-custom-resource, this file's own rules stay
+# irrelevant to that catch by design), and the
+# notification-targets-the-wrong-function broken fixture (Function is a
+# hardcoded literal ARN string, no Fn::GetAtt key at all -- FAIL on
+# notification_targets_created_function, while
+# permission_source_arn_resolves_via_getatt stays green since that fixture
+# leaves the permission itself untouched).
+
+let s3_buckets = Resources.*[ Type == "AWS::S3::Bucket" ]
+let lambda_fns = Resources.*[ Type == "AWS::Lambda::Function" ]
+let s3_invoke_permissions = Resources.*[
+	Type == "AWS::Lambda::Permission"
+	Properties.Principal == "s3.amazonaws.com"
+]
+let bucket_notification_lambda_configs = Resources.*[
+	Type == "AWS::S3::Bucket"
+].Properties.NotificationConfiguration.LambdaConfigurations.*
+
+rule permission_source_arn_resolves_via_getatt when %s3_invoke_permissions !empty {
+	%s3_invoke_permissions {
+		Properties.SourceArn.'Fn::GetAtt' EXISTS
+		<<
+			Violation: a Lambda permission's Principal is s3.amazonaws.com but SourceArn is not an Fn::GetAtt reference to a resource declared in this template (no wildcard/hardcoded/omitted SourceArn permitted)
+		>>
+	}
+}
+
+rule permission_exists_when_bucket_present when %s3_buckets !empty {
+	%s3_invoke_permissions !empty
+	<<
+		Violation: an AWS::S3::Bucket exists, but no AWS::Lambda::Permission resource granting Principal s3.amazonaws.com exists anywhere in the template -- S3 cannot invoke the Lambda function without one
+	>>
+}
+
+rule notification_targets_created_function when %bucket_notification_lambda_configs !empty {
+	%bucket_notification_lambda_configs {
+		Function.'Fn::GetAtt' EXISTS
+		<<
+			Violation: a NotificationConfiguration.LambdaConfigurations entry's Function is not an Fn::GetAtt reference to the AWS::Lambda::Function resource this scenario creates -- a hardcoded/unrelated ARN does not satisfy "notify the claims processor"
+		>>
+	}
+}
+
+rule notification_exists_when_function_present when %lambda_fns !empty {
+	%bucket_notification_lambda_configs !empty
+	<<
+		Violation: an AWS::Lambda::Function exists, but no NotificationConfiguration.LambdaConfigurations entry exists anywhere in the template to wire uploads to it
+	>>
+}

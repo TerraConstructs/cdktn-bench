@@ -1,0 +1,764 @@
+# specs/s3-notification-custom-resource-tax.yaml
+#
+# Design source: docs/design/batch-a-greenfield-blueprints.md §10 (authored
+# 2026-08-20, "Batch A"). Rank 5 in §0.2's authoring order -- the batch's
+# DELIBERATE THESIS-CAN-LOSE entry (operator's own framing, §10(e)): the
+# platform-constraint sentence in the prompt forces the awscdk arm OFF its
+# own recommended L2 API (`bucket.addEventNotification` /
+# `s3n.LambdaDestination`) and onto the `CfnBucket` L1 escape hatch, because
+# the L2 path provisions a stack-wide `Custom::S3BucketNotifications`
+# handler function (plus its execution role) that the ticket's own
+# constraint forbids. hcl-raw and terraconstructs pay no such tax: both
+# synthesize a genuine `aws_s3_bucket_notification` resource with
+# first-class provider support (terraconstructs re-verified directly this
+# authoring pass -- see arms.terraconstructs.reason below). This is the
+# batch's clearest escape-hatch signal by design (§10(e), §0.2 rank-5 row).
+#
+# THE MECHANISM (operator-facing -- why `id` names "custom-resource-tax"
+# while every agent-visible name below names only the ticket's outcome
+# constraint, per SCHEMA.md §0.1): CloudFormation has NO resource for S3
+# bucket notifications (aws-cloudformation/cloudformation-coverage-roadmap#79,
+# OPEN since 2019-08-01, 461 reactions live 2026-08-20 -- re-read this
+# authoring pass, graded figure of 479 was already stale, same order of
+# magnitude, still one of the highest-signal open items on that tracker; 52
+# comments). `aws-cdk-lib` therefore ships a custom resource:
+# aws-s3/lib/notifications-resource/notifications-resource.ts's
+# `class BucketNotifications` backs `bucket.addEventNotification(...)` with a
+# `Custom::S3BucketNotifications` resource plus a stack-wide singleton
+# handler function (notifications-resource-handler.ts, logical id
+# `BucketNotificationsHandler050a0587b7544547bf325f094a3db834`) and its
+# execution role -- re-verified directly against the pinned aws-cdk-lib
+# 2.263.0 local clone (commit a9e6639) at authoring time: aws-s3/lib/bucket.ts
+# still exists at this path in the current, refactored source tree (a9e6639
+# reorganized aws-s3/lib into mixins/ + a generated s3.generated.ts that is
+# NOT checked into source and is instead build-time-generated from the CFN
+# resource spec -- confirmed via `grep -rl CfnBucket` finding no static
+# .generated.ts on disk, only import sites; the CFN
+# AWS::S3::Bucket.NotificationConfiguration.LambdaConfigurations[].{Event,
+# Function} property shape this spec's reference solution depends on was
+# independently re-verified against the live CloudFormation Template
+# Reference (docs.aws.amazon.com, read directly this authoring pass) rather
+# than assumed from a stale local copy).
+#
+# THE SHARP EDGE INSIDE THE SHARP EDGE (source-verified this authoring
+# pass): the CFN-NATIVE `AWS::S3::Bucket.NotificationConfiguration` shape
+# (`LambdaConfigurations[].Event` / `.Function`, singular Event string) is
+# NOT the same shape as the custom resource's own S3-API-mirroring payload
+# (`LambdaFunctionConfigurations[].Events` / `.LambdaFunctionArn`, plural
+# Events array -- the shape s3-lambda-log-retention.yaml's own
+# s3-notification-put-event-configured assert targets, because THAT
+# scenario's reference solution goes through the L2 and therefore the
+# custom resource). This spec's reference solution deliberately bypasses
+# the custom resource, so every oracle.structural_asserts entry below that
+# touches NotificationConfiguration targets the NATIVE CfnBucket property
+# path, not the custom-resource one -- getting this confused would silently
+# write a dead tier-0 jsonpath (a `make check-paths`-class bug, SCHEMA.md
+# §4.2.1) against this scenario's own correct awscdk solution.
+#
+# terraconstructs (0.2.13, the pinned package) ports the SAME L2 ergonomics
+# as awscdk's `addEventNotification` -- `storage.Bucket.addEventNotification`
+# -> `BucketNotifications.addNotification` -- but re-verified DIRECTLY this
+# authoring pass by extracting and reading the real pinned tarball
+# (lib/aws/storage/bucket-notifications.d.ts/.js): `createResourceOnce()`
+# backs it with a genuine `s3BucketNotification.S3BucketNotification` L1
+# construct (`@cdktn/provider-aws`'s typed binding for the real
+# `aws_s3_bucket_notification` Terraform resource) -- NOT a custom resource,
+# NOT an extra Lambda function, NOT an extra IAM role. This is the escape-
+# hatch tax differential the whole scenario exists to quantify: awscdk's
+# idiomatic API pays it, terraconstructs' idiomatic API does not, hcl-raw's
+# only API (hand-written HCL) never could. Also re-confirmed directly
+# against the same pinned tarball: `storage.targets.FunctionDestination.bind()`
+# calls `fn.addPermission()` with `principal: iam.ServicePrincipal
+# ("s3.amazonaws.com")` / `sourceArn: bucket.bucketArn` as a side effect
+# (lib/aws/storage/notification-targets/function.js) -- the same
+# structurally-unreachable-to-forget mechanism aws-cdk-lib's own
+# `s3n.LambdaDestination` uses, already exploited by
+# s3-lambda-log-retention's own s3-lambda-invoke-permission-scoped catch.
+# And the SAME `addNotification`-only-registers-inside-its-filter-loop quirk
+# that scenario's own reference solution works around (calling
+# `addEventNotification` with a lone `{}` filter argument) is re-verified
+# present in this exact pinned tarball too -- this scenario's own
+# terraconstructs reference solution below carries the identical
+# workaround, for the identical reason.
+#
+# --- ORACLE MUST TOLERATE / DEFEND (operator-facing,
+# docs/adding-scenarios.md §1 item 3a -- never in prompt prose) -----------
+#
+# 1. The prompt's platform-constraint sentence is an OUTCOME constraint (what
+#    may exist in the deployed stack: exactly the claims processor, no
+#    helpers/deployment-time functions/tooling functions) -- it never names
+#    an API, a construct, or "use the L1". All three arms have at least one
+#    way to satisfy it (blueprint §10(b)):
+#      - hcl-raw: the ordinary `aws_s3_bucket_notification` (idiomatic, zero
+#        extra functions -- no escape hatch needed at all).
+#      - terraconstructs: the ordinary L2 `addEventNotification` (idiomatic,
+#        zero extra functions -- confirmed above, no escape hatch needed).
+#      - awscdk: the L1 escape hatch -- setting `notificationConfiguration`
+#        directly on the bucket's own underlying `CfnBucket`
+#        (`bucket.node.defaultChild as s3.CfnBucket`), bypassing the L2's
+#        `addEventNotification` entirely so the custom-resource singleton is
+#        never lazily created. The oracle counts functions/custom resources
+#        and grades the wiring, never which API produced it.
+# 2. A real, additional shape a competent engineer could choose exists on
+#    EVERY arm: EventBridge notifications (bucket-level
+#    `EventBridgeConfiguration`/`eventbridge = true` plus an
+#    `AWS::Events::Rule`/`aws_cloudwatch_event_rule` targeting the
+#    function) also wire uploads to the processor with zero extra compute
+#    on any arm, in the sense the ticket's own prose asks for.
+#    HONEST SCOPE LIMITATION, recorded here per docs/adding-scenarios.md §1
+#    item 3a's own cost-accounting rule ("tolerating N shapes means proving
+#    the oracle in N shapes... where it becomes unaffordable, prefer a
+#    behavioural oracle over widening structural asserts shape by shape"),
+#    and CORRECTED during this authoring pass from an earlier draft that
+#    overclaimed tier-0 neutrality (caught by re-deriving the actual jq
+#    semantics of the two tier-0 asserts below against this exact case,
+#    not assumed): **this v1's GRADED checks -- both the two relevant
+#    tier-0 asserts and the tier-1 Rego/cfn-guard policies -- are scoped to
+#    the S3-direct-notification shape only, and an EventBridge-shaped
+#    solution does NOT score full reward.** Specifically,
+#    `s3-notification-event-type-configured` resolves zero nodes for a
+#    bucket with no `LambdaConfigurations`/`lambda_function` block at all
+#    (EventBridge wiring lives in a structurally different property/
+#    resource) -- `regex`'s own `>= 1 node` requirement fails outright on
+#    zero resolved nodes exactly like `in`'s own `> 0` flattened-length
+#    requirement would have (§3 below; the op changed, this 0-node failure
+#    mode did not) -- and `lambda-permission-principal-is-s3` (`op: eq`)
+#    resolves zero nodes for a permission whose principal is
+#    `events.amazonaws.com` rather than `s3.amazonaws.com`, failing `eq`'s
+#    own `== 1 resolved node` requirement. Building a genuine tier-0-and-tier-1 union
+#    across two structurally unrelated resource families (S3 notification
+#    vs. EventBridge rule + target + differently-scoped permission), on
+#    three arms, each needing its own reference solution and broken
+#    fixtures to prove, was judged to cost more than this scenario's
+#    mandated "M" effort tier (§10(f)) affords -- and, unlike the tier-0
+#    op vocabulary's single-jsonpath-single-op shape, SCHEMA.md §4.2 has no
+#    "either of these two facts" primitive at all, so a true union could
+#    only ever live in tier-1's Rego/cfn-guard, which would still need to
+#    special-case which principal/target shape is expected per branch.
+#    `oracle.intent` below states plainly that this v1 does not grade
+#    EventBridge as an accepted shape, rather than silently implying
+#    S3-notification-only coverage is total shape coverage -- a documented,
+#    reviewable v1 gap, not a silent one, consistent with this codebase's
+#    existing convention for this class of scope limit (see
+#    specs/s3-bucket-hardening-decomposition.yaml's own
+#    tls-deny-statement-present tier-scope note for the precedent this
+#    mirrors).
+# 3. Event-list BREADTH (fixed during a verifier pass, 2026-08-21): the
+#    prompt names no specific event type, so a competent engineer
+#    enumerating several genuine ObjectCreated sub-events (not just the
+#    single :Put this spec's own reference solutions happen to write) is
+#    an equally-correct shape. `s3-notification-event-type-configured`
+#    below is therefore a `regex` match against the `^s3:ObjectCreated:`
+#    prefix (ANY-of-resolved-values semantics, >=1 node required), not an
+#    `op: in` allowlist of two specific literals -- see that assert's own
+#    comment for the full derivation and the re-verified before/after
+#    behaviour against the compiled tests/static_tiers.sh.
+#
+# THE MEASUREMENT, recorded but not graded (blueprint §10(c)'s own framing):
+# alongside reward, this scenario's whole point is the artifact-shape number
+# -- total resource count, IAM role count, Lambda function count, presence
+# of any Custom::*/deployment-time helper -- that quantifies the tax. The
+# harness has no dedicated home for that number in v1 (per §10(c)); the
+# honest interim, per the blueprint, is this comment plus whatever gets
+# recorded in DECISIONS.md the first time this scenario actually runs.
+# Falsifiability/reward is carried entirely by the two catches below, never
+# by this measurement.
+
+id: s3-notification-custom-resource-tax
+# workspace_id (SCHEMA.md §0.1.1): single-step greenfield, so this is
+# optional and would default to `id` -- but `id` names the pitfall/
+# measurement ("custom-resource-tax"), so it is set explicitly (blueprint
+# §10(a) table). Deny-list run against `claims-intake`: no match on any
+# AGENT_MECHANISM_DENY_PATTERNS entry (`lifecycle`, `replace*`, `drift`,
+# `in[ _-]?use`, `already exists`, `pitfall`, `trap`, ...) or
+# AGENT_FORESHADOW_DENY_PATTERNS entry (`re-deploy`, `next step`,
+# `iteration`, `subsequent`, `follow-up`, ...) -- clean.
+workspace_id: claims-intake
+# title (agent-visible header -- single-step greenfield, so `workspace_title`
+# is FORBIDDEN per SCHEMA.md §0.1; this string is stamped byte-for-byte into
+# lib/scenario-stack.ts / bin/app.ts's CFN description / main.tf / main.ts).
+# Verbatim from blueprint §10(a). Names only the ticket's open goal (notify
+# the processor) and its own outcome constraint (no extra compute) -- never
+# the diagnosis ("custom resource", "escape hatch", "L1", "L2"). Deny-list
+# swept by hand against the same two pattern classes: no match --
+# "no extra compute in the stack" contains neither "lifecycle" nor
+# "replac*" nor any foreshadowing verb; "notifies" is not "re-deploy" or
+# "iteration".
+title: "Claims intake bucket that notifies the processor, with no extra compute in the stack"
+difficulty: 2
+services: [s3, lambda, iam]
+
+arms:
+  awscdk: true
+  hcl_raw: true
+  terraconstructs:
+    enabled: true
+    reason: >
+      arms/terraconstructs/README.md §4's s3-lambda-log-retention verdict
+      row already establishes `storage.Bucket` + S3->Lambda notification
+      wiring (`lib/aws/storage/bucket-notifications.ts`) as SUPPORTED,
+      synthesizing a genuine `aws_s3_bucket_notification` Terraform resource
+      -- re-verified DIRECTLY this authoring pass (not inherited from that
+      other spec's finding) by extracting the pinned 0.2.13 package tarball
+      and reading its real, on-disk
+      lib/aws/storage/bucket-notifications.{d.ts,js}: `createResourceOnce()`
+      constructs `new s3BucketNotification.S3BucketNotification(this,
+      "Resource", {...})` -- `@cdktn/provider-aws`'s typed L1 binding for
+      the real `aws_s3_bucket_notification` resource (confirmed against
+      that package's own `lib/s3-bucket-notification/index.d.ts`:
+      `S3BucketNotificationConfig.lambdaFunction:
+      S3BucketNotificationLambdaFunction[]`, docs URL pinned to provider
+      6.52.0, matching this arm's own mirror pin) -- never a custom
+      resource, never an extra Lambda function or IAM role. Also
+      re-verified directly against the same pinned tarball:
+      `lib/aws/storage/notification-targets/function.js`'s
+      `FunctionDestination.bind()` calls `fn.addPermission()` with
+      `principal: new iam.ServicePrincipal("s3.amazonaws.com")`,
+      `sourceArn: bucket.bucketArn` as a side effect -- structurally
+      unreachable to forget, exactly like aws-cdk-lib's own
+      `s3n.LambdaDestination`. THIS SCENARIO'S OWN CONSEQUENCE (distinct
+      from s3-lambda-log-retention's use of the same facts): because this
+      arm's idiomatic L2 API pays NO escape-hatch tax (no custom resource,
+      no extra function/role), this arm's reference solution below uses the
+      ordinary L2 path throughout -- it is awscdk alone that must reach for
+      an L1 escape hatch, which is exactly the differential blueprint §10
+      exists to measure. Carried over from the pinned tarball, same
+      workaround as s3-lambda-log-retention's own reference solution:
+      `BucketNotifications.addNotification` (same file) only registers a
+      target INSIDE its `for (const filter of filters)` loop, so
+      `addEventNotification` called with zero filter arguments silently
+      registers nothing at all (no notification target, no
+      `fn.addPermission()` call either, since that call also lives inside
+      the loop via `FunctionDestination.bind()`) -- worked around the same
+      way, passing one all-optional-fields filter object `{}`.
+
+instruction:
+  shared_body: |
+    Claims documents land in an S3 bucket and must be handed to the claims
+    processor function as they arrive.
+
+    Platform constraint for this account: a stack may only contain the
+    compute it is being deployed to run. The claims processor is the only
+    function this stack is allowed to create — no helpers, no
+    deployment-time functions, no functions belonging to the tooling.
+  placeholders: []
+  per_arm:
+    awscdk:
+      language_line: "Author this as an AWS CDK (TypeScript) app using aws-cdk-lib L2 constructs."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdk.out/ScenarioStack.template.json
+        build_command: "npm run build"
+        synth_command: "npx cdk synth --no-lookups --quiet -o cdk.out"
+        json_fields: []
+    hcl_raw:
+      language_line: "Author this as hand-written Terraform HCL (no modules)."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields: []
+    terraconstructs:
+      language_line: "Author this using terraconstructs (TypeScript) L2 constructs, synthesized via cdktn."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdktf.out/stacks/claims-intake/plan.json
+        synth_command: "npx cdktn synth"
+        json_fields: []
+
+catches:
+  - name: stack-ships-a-deployment-time-function
+    taxonomy: anti-L2
+    description: >
+      THE FALSIFIABILITY CATCH (H2), and the scenario's own headline
+      measurement made concrete as a fixture. The idiomatic, recommended
+      awscdk solution -- `bucket.addEventNotification(EventType.
+      OBJECT_CREATED_PUT, new s3n.LambdaDestination(fn))` -- lazily
+      provisions aws-cdk-lib's stack-wide `BucketNotificationsHandler`
+      custom-resource Lambda function plus its execution role
+      (aws-s3/lib/notifications-resource/notifications-resource.ts,
+      `createResourceOnce()`; re-verified against the pinned 2.263.0 clone
+      at authoring time, this file's own header comment) -- TWO extra
+      resources and ONE extra function the ticket's own platform constraint
+      forbids ("no helpers, no deployment-time functions"). This is the
+      exact API aws-cdk-lib's own documentation recommends for this job;
+      nothing about calling it looks wrong, and it deploys and plans clean.
+      Caught directly and doubly: `exactly-one-lambda-function` resolves 2
+      nodes (the processor AND the handler) where the assert's own `eq`
+      semantics require exactly 1 (SCHEMA.md §4.2's ambiguity rule -- >1
+      resolved nodes fails outright, regardless of value), and
+      `no-deployment-time-custom-resource` finds the literal
+      `Custom::S3BucketNotifications` type string the handler's own
+      resource carries. Neither check exists on the TF-shaped arms by
+      construction: hcl-raw's only API is hand-written HCL (no lazy
+      singleton to accidentally provision), and terraconstructs' own L2
+      path synthesizes a genuine `aws_s3_bucket_notification` with no extra
+      function or role at all (this file's own arms.terraconstructs.reason)
+      -- so this catch's fixture is `applies_to: [awscdk]` only, not a
+      contrivance elsewhere.
+    applies_to: [awscdk]
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "0"
+      terraconstructs_override: null
+
+  - name: notification-targets-the-wrong-function
+    taxonomy: graph-dependency
+    description: >
+      The notification wiring exists and plans/synthesizes clean, but its
+      target does not reference the Lambda function this scenario creates
+      -- a hardcoded/unrelated ARN literal (the realistic mistake: a value
+      copy-pasted from another example, or from a decoy/example function,
+      never updated to point at the processor actually created here).
+      Every existence-level tier-0 check still passes (a notification
+      exists; its event type is a valid upload event; exactly one Lambda
+      function exists in the stack, satisfying `exactly-one-lambda-function`
+      on its own); what is silently wrong is WHICH function receives
+      uploads -- structurally identical in spirit to
+      s3-lambda-log-retention's own SourceArn-scoping catch, one hop over
+      (the target reference, not the permission's scope). Caught by a
+      graph-edge check: on awscdk, the CFN template is always fully static,
+      so `NotificationConfiguration.LambdaConfigurations[*].Function` must
+      resolve as an `Fn::GetAtt` intrinsic (a real reference to the created
+      function's own logical resource) -- a hardcoded ARN string has no
+      such key. On the TF-shaped arms, `aws_s3_bucket_notification`'s
+      `lambda_function[*].lambda_function_arn` expression must carry a
+      `.references` entry matching `^aws_lambda_function\.` -- a hardcoded
+      literal has only a `.constant_value`, never a `.references` entry
+      (SCHEMA.md §4.2.1's graph-edge pattern, identical mechanism to
+      s3-lambda-log-retention's own lambda-permission-scoped-to-bucket-tf).
+    predicted_tier_caught:
+      awscdk: "1"
+      hcl: "1"
+      terraconstructs_override: null
+
+  # ADDED during this spec's own authoring pass (2026-08-21), after
+  # `make tier1-coverage` flagged a real, un-tracked gap: the
+  # lambda-permission-scoped-to-bucket-{cfn,tf} tier-1 assert (§10(c)
+  # blueprint's own "invoke-permission-scoped | as in §9 (tier 1)" row,
+  # reused verbatim per this spec's own header comment) had NO covering
+  # catch/broken fixture anywhere in this spec's own `catches:` list --
+  # the blueprint's table names the FACT but only two named `catches`
+  # entries, so the reused rule was pigeonhole-invisible to
+  # falsifiability/grading-proof (it could be silently gutted and nothing
+  # would notice). This catch completes that row properly, mirroring
+  # s3-lambda-log-retention's own s3-lambda-invoke-permission-scoped catch
+  # exactly (same rule, same mechanism, this scenario's own naming).
+  - name: notification-permission-not-scoped-to-bucket
+    taxonomy: graph-dependency
+    description: >
+      S3 cannot invoke the Lambda function on upload unless a
+      resource-based Lambda permission grants principal s3.amazonaws.com
+      AND is scoped (SourceArn/source_arn) to the SPECIFIC bucket this
+      scenario creates -- omitted, or scoped to the wrong/no resource, and
+      uploads silently never invoke the function. REUSED VERBATIM from
+      s3-lambda-log-retention's own identically-mechanismed
+      s3-lambda-invoke-permission-scoped catch (this spec's own header
+      comment cites it explicitly): CDK's L2 notification API
+      (`s3n.LambdaDestination`) makes the missing-permission half
+      structurally unreachable through ordinary use, but this scenario's
+      own reference solution deliberately bypasses that API (the platform
+      constraint forces the L1 escape hatch), so the permission is
+      hand-wired -- and a hand-wired permission can omit or mis-scope
+      SourceArn exactly as easily as hand-written HCL can. Caught by the
+      SAME graph-edge/existence pair lambda-permission-scoped-to-bucket-
+      {cfn,tf} already declares: on awscdk, SourceArn is omitted entirely
+      (0 resolved nodes on `Properties.SourceArn`); on the TF-shaped arms,
+      `source_arn` is a hardcoded/wildcard literal with no `.references`
+      entry matching `^aws_s3_bucket\.`.
+    predicted_tier_caught:
+      awscdk: "1"
+      hcl: "1"
+      terraconstructs_override: null
+
+oracle:
+  intent: >
+    An S3 bucket exists. Exactly one AWS Lambda function exists in the
+    stack -- the claims processor -- and no deployment-time custom resource
+    of any kind (awscdk: no `Custom::*` resource; the platform constraint
+    forbids any function or role that exists only to support the
+    deployment mechanism, not to run the workload). Uploads to the bucket
+    (at least one genuine s3:ObjectCreated:* upload-triggering event -- the
+    literal :Put, the wildcard :*, or any specific ObjectCreated sub-event
+    such as :Post or :CompleteMultipartUpload) are wired to invoke that one
+    function through an S3 bucket notification configuration whose Lambda
+    target references the function this scenario creates. A resource-based
+    Lambda permission grants
+    s3.amazonaws.com the right to invoke the function, scoped to this
+    specific bucket (no wildcard, no unrelated/hardcoded ARN) -- mirrors
+    s3-lambda-log-retention's own identical requirement.
+
+    Scope note (this authoring pass, 2026-08-21, corrected from an earlier
+    draft that overclaimed EventBridge tolerance -- see this spec's own
+    "Oracle must tolerate / defend" comment block for the full trail): a
+    bucket wired through EventBridge notifications instead of the S3
+    notification configuration above (EventBridge enabled on the bucket,
+    plus a rule whose target references the function) also wires uploads to
+    the processor in the sense the ticket's own prose asks for, but is NOT
+    graded as an accepted shape by this v1 -- neither the two relevant
+    tier-0 asserts below nor the tier-1 Rego/cfn-guard policies recognize
+    it, and a solution built that way will not score full reward. This is a
+    documented v1 scope limitation, not a silent one.
+
+  structural_asserts:
+    # --- TIER 0 (executed unconditionally by every trial's static_tiers.sh) ---
+    - name: s3-bucket-exists
+      description: "An S3 bucket exists."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')]"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket')]"
+      op: exists
+
+    # exactly-one-lambda-function -- the "count of resources of type X"
+    # primitive the blueprint calls for (§10(f)). No `count`/cardinality op
+    # exists in SCHEMA.md §4.2's op table, so this leans on `eq`'s own
+    # documented ambiguity rule instead: ">1 resolved nodes FAILS outright,
+    # not just 0" (SCHEMA.md §4.2's op table, `eq` row) -- collecting the
+    # (constant, arm-specific) `Type`/`type` literal off every matched
+    # Lambda-function resource and asserting it `eq`s that same literal
+    # therefore doubles as an existence check (0 nodes fails) AND a
+    # cardinality-exactly-one check (2+ nodes fails, regardless of whether
+    # both happen to equal the literal) in one op, with no new primitive
+    # needed. This is this scenario's own half of
+    # stack-ships-a-deployment-time-function's catching mechanism.
+    # Split cfn/tf (mirrors this codebase's own precedent for a literal
+    # VALUE that legitimately differs by artifact shape, e.g.
+    # s3-bucket-hardening-decomposition's tls-deny-covers-objects-too-
+    # {cfn,tf} pair -- SCHEMA.md §4.2's single-jsonpath-pair op/expected is
+    # shared across both `tf_jsonpath` and `cfn_jsonpath`, so a `Type`
+    # literal that reads "AWS::Lambda::Function" on awscdk and
+    # "aws_lambda_function" on the TF-shaped arms cannot be expressed as
+    # ONE assert with one `expected` -- caught and fixed during this
+    # spec's own falsifiability-gate run, not assumed correct from the
+    # jsonpath text alone: `make check-paths`-class review of the actual
+    # compiled jq (`.type` resolving to the TF literal, compared against
+    # the CFN literal) would have false-failed a genuinely-correct
+    # hcl_raw/terraconstructs reference solution had this shipped as one
+    # shared assert).
+    - name: exactly-one-lambda-function-cfn
+      description: >
+        (awscdk only -- see exactly-one-lambda-function-tf for the
+        TF-shaped arms.) Exactly one AWS::Lambda::Function resource exists
+        in the synthesized template -- the claims processor, and nothing
+        else (no deployment-time helper function).
+      tier: "0"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Lambda::Function')].Type"
+      op: eq
+      expected: "AWS::Lambda::Function"
+
+    - name: exactly-one-lambda-function-tf
+      description: >
+        (hcl_raw + terraconstructs only -- see exactly-one-lambda-function-cfn
+        for awscdk.) Exactly one aws_lambda_function resource exists in the
+        planned artifact -- the claims processor, and nothing else.
+      tier: "0"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_function')].type"
+      op: eq
+      expected: "aws_lambda_function"
+
+    # no-deployment-time-custom-resource -- awscdk only (blueprint §10(c):
+    # "TF arms: vacuous (recorded as N/A via applies_to, not faked)"). Every
+    # AWS::CloudFormation::CustomResource-shaped type CFN synthesizes for a
+    # provider-framework-backed custom resource carries the literal
+    # `Custom::` prefix (confirmed against this scenario's own
+    # BucketNotificationsHandler-backed catch fixture: type string is
+    # exactly `Custom::S3BucketNotifications`) -- collecting every
+    # Resources[*].Type value and requiring none matches that prefix is a
+    # general "no deployment-time custom resource of any kind" check, not
+    # narrowed to this one handler's own type name.
+    - name: no-deployment-time-custom-resource
+      description: >
+        (awscdk only -- CloudFormation has no "custom resource" concept for
+        the TF-shaped arms' plan JSON to vacuously satisfy or violate; not
+        listed in applies_to at all, per this scenario's own N/A-not-faked
+        convention.) No resource in the synthesized template has a Type
+        beginning with "Custom::" -- the platform constraint forbids any
+        deployment-time helper, and every framework-backed CDK custom
+        resource (including the BucketNotificationsHandler this scenario's
+        own anti-L2 catch targets) carries that prefix.
+      tier: "0"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[*].Type"
+      op: not_regex
+      expected: "^Custom::"
+
+    # s3-notification-event-type-configured -- plan-time-known on every arm
+    # (a literal, agent-authored event-type string, never provider-computed
+    # -- SCHEMA.md §4.2.1's default case). NOTE the CFN path targets the
+    # NATIVE AWS::S3::Bucket.NotificationConfiguration shape (singular
+    # `Event`), NOT the custom resource's own S3-API-mirroring
+    # LambdaFunctionConfigurations shape (plural `Events`) that
+    # s3-lambda-log-retention.yaml's own identically-named assert targets --
+    # this scenario's reference solution deliberately bypasses the custom
+    # resource, so only the native shape is ever populated (this file's own
+    # header comment, "THE SHARP EDGE INSIDE THE SHARP EDGE").
+    #
+    # CORRECTED during a verifier pass (2026-08-21, this authoring session):
+    # the prompt names no event type at all (unlike
+    # s3-lambda-log-retention.yaml:92's own "(an s3:ObjectCreated:Put
+    # event)" in-world sentence, which is what makes THAT spec's `op: in`
+    # legitimate per docs/adding-scenarios.md §1 item 3a). Without such a
+    # sentence, a competent engineer enumerating the specific
+    # ObjectCreated sub-events they actually care about (e.g.
+    # `["s3:ObjectCreated:Put", "s3:ObjectCreated:Post",
+    # "s3:ObjectCreated:CompleteMultipartUpload"]`, all genuine upload
+    # completions) is an equally-correct shape to the single `:Put` this
+    # spec's own reference solutions happen to write -- and `op: in`'s
+    # documented ALL-of-flattened-values semantics (SCHEMA.md §4.2 `in`
+    # row; compiled as `all(. as $x | $e | index($x) != null)` in
+    # generator/gen.py's assert_check) fails that shape outright the
+    # moment it lists an event not byte-identical to one of `expected`'s
+    # two literals, even though every listed event is a genuine S3 upload
+    # trigger. This is the exact `apigw-openapi` failure mode docs/
+    # adding-scenarios.md §1 item 3a warns against: a real, alternative,
+    # ticket-satisfying shape scored 0 because the oracle encoded one
+    # author's specific literal instead of the underlying fact ("some
+    # upload-triggering ObjectCreated event is wired"). Fixed
+    # ORACLE-side, per that same section's own resolution rule ("Resolve
+    # it ORACLE-side (behavioralize the asserts)... never a prompt
+    # constraint that exists only to force the oracle's expected shape"):
+    # `op: regex` against the `^s3:ObjectCreated:` prefix. `regex`'s own
+    # semantics (SCHEMA.md §4.2 `regex` row; compiled as `($v | length) >=
+    # 1 and ($v | any(type == "string" and test($e)))`) require >=1
+    # resolved node (so a bucket with NO LambdaConfigurations/
+    # lambda_function block at all -- e.g. an EventBridge-only or
+    # notification-less solution, this spec's own documented v1 scope
+    # limit above -- still resolves 0 nodes and fails) AND only need ONE
+    # matching entry, not all of them (so any enumeration of genuine
+    # ObjectCreated sub-events passes regardless of how many are listed,
+    # while a solution that wires only unrelated event families, e.g.
+    # `s3:ObjectRemoved:*`, still fails). Re-verified directly against the
+    # real compiled tests/static_tiers.sh this pass: the reference hcl-raw
+    # solution's single `s3:ObjectCreated:Put` still passes under the new
+    # op, and swapping it for the three-sub-event enumeration above also
+    # passes (previously FAILed under `op: in`, confirming this was a live
+    # false-negative, not a theoretical one).
+    - name: s3-notification-event-type-configured
+      description: >
+        The bucket's (native CfnBucket, or TF-shaped arms'
+        aws_s3_bucket_notification) notification configuration includes at
+        least one s3:ObjectCreated:* entry (the literal :Put, the
+        wildcard :*, or any specific ObjectCreated sub-event such as
+        :Post or :CompleteMultipartUpload -- any genuine upload-triggering
+        event satisfies the ticket). WHICH function it targets is covered
+        by the graph-edge checks below, since the target's own
+        Function/lambda_function_arn field is plan-time-unknown wherever
+        it references the created function's provider-computed ARN.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.NotificationConfiguration.LambdaConfigurations[*].Event"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_notification')].values.lambda_function[*].events[*]"
+      op: regex
+      expected: "^s3:ObjectCreated:"
+
+    # lambda-permission-principal-is-s3 -- REUSED VERBATIM from
+    # s3-lambda-log-retention.yaml's own identically-named assert (both
+    # Principal/principal and its literal value are plan-time-known
+    # regardless of arm, since neither depends on another resource's
+    # computed output).
+    - name: lambda-permission-principal-is-s3
+      description: >
+        A Lambda resource-based permission exists whose Principal/principal
+        is exactly s3.amazonaws.com. WHETHER it is scoped to the right
+        bucket is the tier-1 concern below.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Lambda::Permission')].Properties.Principal"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_permission')].values.principal"
+      op: eq
+      expected: "s3.amazonaws.com"
+
+    # --- TIER 1 (Rego + cfn-guard, hand-authored) ---------------------------
+
+    # lambda-permission-scoped-to-bucket-{cfn,tf} -- REUSED VERBATIM from
+    # s3-lambda-log-retention.yaml (per blueprint §10(c): "invoke-
+    # permission-scoped | as in §9 (tier 1)", and §9's own table: "the
+    # existing s3-lambda-log-retention rule, reused verbatim"). Same split
+    # for the same reason (SCHEMA.md §4.2.1): CFN is always fully static
+    # (direct existence check); the TF-shaped arms' SourceArn VALUE is
+    # plan-time-unknown whenever it references the created bucket's
+    # provider-computed `.arn` (re-verified for THIS scenario's own
+    # reference fixtures at authoring time, same mechanism as the sibling
+    # spec), so those use the plan-time-known graph-edge path instead.
+    - name: lambda-permission-scoped-to-bucket-cfn
+      description: >
+        (awscdk only -- see lambda-permission-scoped-to-bucket-tf for the
+        TF-shaped arms.) The Lambda permission's SourceArn property is
+        present (not omitted) -- an omitted SourceArn grants ANY
+        s3.amazonaws.com-principal'd call account-wide, not just this
+        scenario's bucket.
+      tier: "1"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Lambda::Permission')].Properties.SourceArn"
+      op: exists
+
+    - name: lambda-permission-scoped-to-bucket-tf
+      description: >
+        (hcl_raw + terraconstructs only -- see
+        lambda-permission-scoped-to-bucket-cfn for awscdk.) Graph-edge
+        check: the permission's source_arn expression must actually
+        REFERENCE the S3 bucket resource this scenario creates -- a
+        hardcoded literal (a wildcard-ish ARN string, an unrelated bucket
+        ARN, or an omitted source_arn) has no such reference and resolves
+        this path to zero nodes.
+      tier: "1"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_lambda_permission')].expressions.source_arn.references[*]"
+      op: regex
+      expected: "^aws_s3_bucket\\."
+
+    # notification-targets-created-function-{cfn,tf} -- THIS SCENARIO'S OWN
+    # new graph-edge check, notification-targets-the-wrong-function's own
+    # tier-1 assert. Same split, same reasoning, same pattern as the pair
+    # above (and as s3-lambda-log-retention's SourceArn pair): CFN static
+    # (direct Fn::GetAtt existence, enforced at the cfn-guard-rule level --
+    # this jsonpath's own `op: exists` is the "spec," per SCHEMA.md §4.2's
+    # own words, the same convention lambda-permission-scoped-to-bucket-cfn
+    # already uses for SourceArn); TF plan-time-unknown value, plan-time-
+    # known graph edge.
+    - name: notification-targets-created-function-cfn
+      description: >
+        (awscdk only -- see notification-targets-created-function-tf for
+        the TF-shaped arms.) The notification's Function property is
+        present. The stricter fact -- that it is genuinely an Fn::GetAtt
+        reference to the created function, not a hardcoded ARN literal --
+        is enforced by the hand-authored cfn-guard policy at equal
+        strictness to the Rego side below (mirrors
+        lambda-permission-scoped-to-bucket-cfn's own convention).
+      tier: "1"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.NotificationConfiguration.LambdaConfigurations[*].Function"
+      op: exists
+
+    - name: notification-targets-created-function-tf
+      description: >
+        (hcl_raw + terraconstructs only -- see
+        notification-targets-created-function-cfn for awscdk.) Graph-edge
+        check: the notification's lambda_function_arn expression must
+        REFERENCE the aws_lambda_function resource this scenario creates --
+        a hardcoded/unrelated ARN literal has no such reference (only a
+        `.constant_value`) and resolves this path to zero nodes. With
+        exactly-one-lambda-function already guaranteeing at most one
+        candidate exists, "references some aws_lambda_function" and
+        "references THE created one" coincide.
+      tier: "1"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_s3_bucket_notification')].expressions.lambda_function[*].lambda_function_arn.references[*]"
+      op: regex
+      expected: "^aws_lambda_function\\."
+
+  rego_hints:
+    - >-
+      package cdktn_bench.s3_notification_custom_resource_tax, graded
+      against `terraform show -json` PLAN output for BOTH TF-shaped arms.
+      Read `.configuration.root_module.resources[].expressions...references`
+      for every graph-edge check below -- never
+      `.planned_values...values.source_arn` /
+      `...values.lambda_function[*].lambda_function_arn`, both are
+      plan-time-unknown whenever the referenced attribute is
+      provider-computed (SCHEMA.md §4.2.1; re-verified for this scenario's
+      own reference fixtures at authoring time). Read `principal` from
+      `.planned_values` (always plan-time-known -- a literal, never
+      provider-computed) joined by `.address` to the `.configuration`
+      resource for the graph-edge checks, mirroring
+      s3-lambda-log-retention/policy.rego's own CORRECTION (do not read
+      `.expressions.principal.constant_value`, which is only populated when
+      the literal is written directly in the resource block and silently
+      empty for an equally-correct `local`/`var`-indirected principal).
+    - >-
+      lambda-permission-scoped-to-bucket-tf: deny if any aws_lambda_permission
+      configured resource with (planned) principal == "s3.amazonaws.com"
+      has NO expressions.source_arn.references entry matching
+      ^aws_s3_bucket\. -- reused verbatim from
+      s3-lambda-log-retention/policy.rego's own identically-named rule.
+      Fail-closed: deny if an aws_s3_bucket resource exists in the plan but
+      NO aws_lambda_permission resource with principal "s3.amazonaws.com"
+      exists anywhere.
+    - >-
+      notification-targets-created-function-tf: collect every
+      aws_s3_bucket_notification resource's
+      expressions.lambda_function[*].lambda_function_arn.references list.
+      Deny if a resource of this type exists but has NO entry across all
+      its lambda_function blocks matching ^aws_lambda_function\. (covers
+      both "hardcoded/unrelated ARN literal", which has only a
+      .constant_value, and "references some other, non-Lambda-function
+      resource entirely"). Fail-closed: deny if an aws_lambda_function
+      resource exists in the plan but NO aws_s3_bucket_notification
+      resource exists anywhere -- guards the same vacuous-comprehension gap
+      the sibling scenario's own fail-closed rule guards.
+
+  cfn_guard_hints:
+    - >-
+      Graded against the awscdk arm's synthesized CloudFormation template.
+      `let s3_invoke_permissions = Resources.*[ Type ==
+      "AWS::Lambda::Permission" Properties.Principal ==
+      "s3.amazonaws.com" ]`; `let bucket_notification_lambda_configs =
+      Resources.*[ Type == "AWS::S3::Bucket"
+      ].Properties.NotificationConfiguration.LambdaConfigurations.*`.
+    - >-
+      rule permission_source_arn_resolves_via_getatt when
+      %s3_invoke_permissions !empty: every matched permission's
+      Properties.SourceArn.'Fn::GetAtt' EXISTS -- reused verbatim from
+      s3-lambda-log-retention/policy.guard's own identically-named rule
+      (same CORRECTION already applied there: EXISTS-as-Fn::GetAtt, not
+      merely EXISTS, so a hardcoded/wildcard literal SourceArn still
+      fails).
+    - >-
+      rule permission_exists_when_bucket_present when %s3_buckets !empty:
+      fail-closed companion, reused verbatim.
+    - >-
+      rule notification_targets_created_function when
+      %bucket_notification_lambda_configs !empty: every matched
+      LambdaConfigurations entry's Function.'Fn::GetAtt' EXISTS -- the
+      direct, always-static CFN form of
+      notification-targets-created-function-cfn (mirrors the SourceArn
+      pattern immediately above: a hardcoded ARN literal is a plain string
+      and can never have an 'Fn::GetAtt' key).
+    - >-
+      rule notification_exists_when_function_present when %lambda_fns
+      !empty: fail-closed companion -- FAIL if an AWS::Lambda::Function
+      exists in the template but %bucket_notification_lambda_configs is
+      empty (guards the same vacuous-comprehension gap the rule above has
+      on its own: a `when` guard skips silently, not FAILs, whenever its
+      own collection is empty).
+    - >-
+      Residual, documented gap (mirrors s3-lambda-log-retention/
+      policy.guard's own header comment for the identical class of
+      limitation, cfn-guard 3.2.0 has no cross-collection identity-join
+      builtin): neither GetAtt rule above can verify the Fn::GetAtt
+      target's LOGICAL ID actually names the specific
+      AWS::Lambda::Function/AWS::S3::Bucket resource this scenario
+      creates, as opposed to some other GetAtt-addressable resource of the
+      same type -- not defended against here, consistent with this
+      codebase's existing convention of treating such adversarial-
+      construction gaps as an accepted v1 idealization. With
+      exactly-one-lambda-function's own tier-0 cardinality check already
+      guaranteeing at most one AWS::Lambda::Function resource exists
+      whenever this rule is reached, the gap is narrower here than in the
+      general case: any Fn::GetAtt-to-a-Lambda-function necessarily names
+      the one this scenario creates.
+
+  tier05_jsonata: null
+
+verifier:
+  budget:
+    max_iters: 8
+  live_check:
+    enabled: false
+    module: tests/live_check.py
+
+provenance:
+  author: "Vincent (via Claude Code, Batch A scenario-authoring task)"
+  date: "2026-08-20"
+  prereg_section_refs:
+    - "docs/design/batch-a-greenfield-blueprints.md §10 (s3-notification-custom-resource-tax) -- the design source this spec implements verbatim, including its identity/prompt/oracle-tier plan, its 'oracle must tolerate/defend' analysis, and its deliberate thesis-can-lose framing"
+    - "docs/design/batch-a-greenfield-blueprints.md §9 (s3-notification-authoritative-singleton) -- source of the lambda-permission-scoped-to-bucket-{cfn,tf} rule this spec reuses verbatim, per §10(c)'s own citation"
+    - "docs/design/batch-a-greenfield-blueprints.md §0.1-§0.2 (batch-wide conventions: identity separation, prompt-voice rules, static-oracle-default, evidence-checked tiers) applied throughout"
+    - "iac-abstraction-benchmark-prereg.md §5 (catch taxonomy: anti-L2 / H2 falsifiability, graph-dependency), §3 (oracle tiers)"
+    - "aws-cloudformation/cloudformation-coverage-roadmap#79 (OPEN since 2019-08-01, 461 reactions re-verified 2026-08-20, 52 comments) -- the primary evidence CloudFormation has no native S3-notification resource, forcing aws-cdk-lib's custom-resource tax this scenario measures"
+    - "specs/s3-lambda-log-retention.yaml -- structural template for the permission-scoping tier-0/tier-1 split (reused verbatim) and for the arms.terraconstructs.reason methodology (re-verified independently against the pinned 0.2.13 tarball at this spec's own authoring time, not inherited uncritically)"

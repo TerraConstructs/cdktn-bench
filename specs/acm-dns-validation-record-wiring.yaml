@@ -1,0 +1,756 @@
+# specs/acm-dns-validation-record-wiring.yaml
+#
+# Blueprint: docs/design/batch-a-greenfield-blueprints.md §8. Design inputs
+# read in full at authoring time: that blueprint section, specs/SCHEMA.md,
+# docs/adding-scenarios.md §1 item 3a / §5 / §6, specs/s3-lambda-log-retention.yaml
+# and specs/named-resource-replacement.yaml (structural templates).
+#
+# Source-verified DIRECTLY at authoring time (2026-08-21), not assumed from
+# the blueprint's own citations:
+#   - terraconstructs 0.2.13 (the exact pinned package -- located and read at
+#     .../terraconstructs@0.2.13_.../node_modules/terraconstructs/lib/aws/edge/
+#     certificate.js): `exports.PublicCertificate` (NOT `Certificate` --
+#     confirms the blueprint's correction of the operator's own naming).
+#     Constructor: if no `validation` prop is supplied, it defaults to
+#     `{ method: ValidationMethod.EMAIL, validationDomains: {...} }`
+#     (certificate.js, PublicCertificate constructor, ~line 130) -- BUT
+#     (CORRECTION, found empirically while building the negative fixture,
+#     see the email-validation-instead catch's own description) that
+#     default only ever populates `validationDomains` for the PRIMARY
+#     domain name, so with a SAN present (this ticket always has one) an
+#     agent that omits `validation` hits a synth-time throw, not a silent
+#     green EMAIL plan -- the catch as graded is the EXPLICIT EMAIL choice,
+#     same as the other two arms, not reachable-by-omission here after all.
+#     When `validation.method === DNS`, the constructor loops
+#     `Object.entries(domainValidation.zoneLookup)` and for each domain name
+#     pushes `new RecordSet(this, ...)` (dns-record.js: RecordSet wraps
+#     `@cdktn/provider-aws` `route53Record.Route53Record`, i.e. a genuine
+#     `aws_route53_record`), then constructs exactly one
+#     `AcmCertificateValidation` with
+#     `validationRecordFqdns: records.map(r => r.fqdn)`. No agent-authored
+#     code is required beyond passing `validation: { method: DNS, hostedZone
+#     / hostedZones: {...} }` into the L2 -- CONFIRMS the blueprint's central
+#     claim and the operator's own comment, against the actual pinned bytes.
+#   - aws-cdk-lib (closest available local clone, 2.262.0, one patch behind
+#     the arm's pinned 2.263.0; certificate.ts logic re-verified unchanged
+#     between the two in the CHANGELOG at authoring time -- no
+#     aws-certificatemanager changes between .262 and .263):
+#     `renderDomainValidation` for `ValidationMethod.DNS` emits
+#     `{domainName, hostedZoneId}` per name and NOTHING ELSE -- no
+#     `AWS::Route53::RecordSet` is ever synthesized. `CertificateValidation`
+#     defaults to EMAIL when neither `validationMethod` nor `validation` is
+#     supplied (`props.validation ? ... : props.validationMethod===DNS ?
+#     fromDns() : fromEmail()`) -- AND, unlike terraconstructs (see the
+#     email-validation-instead catch's own description for the verified
+#     divergence), this default reaches a genuinely green plan even with a
+#     SAN present: `renderDomainValidation`'s EMAIL branch falls back to
+#     `apexDomain(domainName)` per name instead of throwing. Verified
+#     directly against a real `cdk synth` of a bare
+#     `new Certificate(this, "X", { domainName, subjectAlternativeNames })`
+#     (no `validation` prop at all): synthesizes cleanly,
+#     `ValidationMethod: "EMAIL"`.
+#   - arms/terraconstructs/README.md §3 confirms the coverage table row used
+#     in arms.terraconstructs.reason below.
+#
+# ---------------------------------------------------------------------------
+# ORACLE MUST TOLERATE / DEFEND (operator-facing; SCHEMA.md / adding-scenarios
+# §1 item 3a -- this analysis stays in spec comments, never in prompt prose).
+# ---------------------------------------------------------------------------
+#
+# 1. hcl_raw / terraconstructs: TWO shapes wire the validation records --
+#    `for_each` over (a transform of) `aws_acm_certificate.<x>.
+#    domain_validation_options`, or two explicit, separately-named
+#    `aws_route53_record` resources (one per domain). BOTH ACCEPTED. Neither
+#    the tier-0 asserts nor the Rego cardinality/graph-edge check below cares
+#    which shape produced the resources -- they count `.planned_values`
+#    instances of type `aws_route53_record` whose `zone_id` expression
+#    references the zone this configuration creates, regardless of whether
+#    those instances came from `count`/`for_each` expansion or two independent
+#    resource blocks. Chose the EXPLICIT two-resource shape for this
+#    scenario's own reference solution/solve.sh -- not because the oracle
+#    prefers it, but because `for_each` over a not-yet-created certificate's
+#    own computed `domain_validation_options` is real-world documented as
+#    "known only after apply" on first apply (tfp-aws#27299, cited below) and
+#    would make a *reference* solution's own offline `terraform plan`
+#    unreliable to freeze against. An agent that reaches for `for_each` and
+#    gets it working is equally correct and scores 1.0.
+# 2. `aws_route53_record.type` ("CNAME") is ITSELF frequently plan-time-
+#    unknown for a correct solution: if `type` is read from the certificate's
+#    own `domain_validation_options[*].resource_record_type` (idiomatic,
+#    since ACM computes it), that field is provider-computed and absent from
+#    `.planned_values` at plan time -- contagious unknown-ness, SCHEMA.md
+#    §4.2.1. A solution that instead hardcodes `type = "CNAME"` (also
+#    idiomatic -- ACM DNS validation is always CNAME) keeps it statically
+#    known. NEITHER is required: the cardinality/graph-edge check below never
+#    reads `.values.type`, only `.type` (the Terraform RESOURCE type,
+#    `aws_route53_record`, always known) and the `zone_id` reference. This is
+#    a deliberate narrowing from the blueprint's own oracle-tier-plan table
+#    (which said "whose `type` is CNAME") -- re-derived here against how
+#    `terraform show -json` actually represents this, not assumed; recorded
+#    as a documented deviation in this scenario's authoring report.
+# 3. awscdk: only one shape exists (there is no Route53-record-authoring
+#    shape at all -- CloudFormation/ACM own that). Nothing to tolerate.
+# 4a. The certificate's `subject_alternative_names`: NOT a shape choice, a
+#    verified cross-toolchain VALUE asymmetry -- see
+#    `certificate-san-includes-www-cfn` / `certificate-san-includes-both-
+#    names-tf`'s own comments below for the full evidence (a real
+#    `terraform plan`, run at authoring time, shows the `hashicorp/aws`
+#    provider always folding `domain_name` into the planned SAN list; CFN's
+#    synthesized template never does). Recorded here because it is exactly
+#    the class of thing this section exists to flag: a naive single shared
+#    `expected: ["www.<zone>"]` assert would have scored a CORRECT
+#    hcl_raw/terraconstructs reference solution 0.0 on tier 0.
+#    POST-REVIEW CORRECTION (verifier round 2, still 2026-08-21): the FIRST
+#    cut of the awscdk-side assert made the identical mistake one level
+#    down -- `certificate-san-is-www-only-cfn` used `op: set_eq, expected:
+#    ["www.storefront.example.com"]`, which scored a fully correct awscdk
+#    solution 0.0 the moment an agent redundantly re-listed the apex domain
+#    in `subjectAlternativeNames` too (a behaviourally IDENTICAL
+#    certificate -- ACM does not care whether a name reaches it via
+#    `DomainName` or a duplicate `SubjectAlternativeNames` entry). Reflowed
+#    to `op: contains` (renamed `certificate-san-includes-www-cfn`): only
+#    "the `www` alias is present" is load-bearing on this arm, matching
+#    what `certificate-domain-name-is-zone` + this assert TOGETHER already
+#    prove ("both names covered") without pinning the exact SAN-list
+#    spelling the way the TF arms' provider-computed `set_eq` legitimately
+#    can (there, `set_eq` is not an authoring-shape opinion -- the
+#    `CustomizeDiff` makes the planned SET the exact same
+#    `{apex, www}` regardless of what the agent typed, so there is nothing
+#    to over-specify). `oracle.intent` below reflows to match this same
+#    strictness.
+# 4b. A second echo-order swap is also NOT accepted, and deliberately so --
+#    recorded here because its absence was flagged as a gap (verifier round
+#    3, 2026-08-21): `domain_name` = `www.storefront.example.com` with the
+#    apex carried only via `subject_alternative_names` (mirror image of 4a
+#    -- swapping WHICH name is primary, not just whether the apex is
+#    redundantly re-listed in SAN). ACM issues a behaviourally identical
+#    certificate either way -- `DomainName` vs `SubjectAlternativeNames`
+#    placement has no functional consequence -- so in the abstract this IS
+#    the class of naive shape-pinning this section exists to flag (the
+#    `apigw-openapi` failure mode). It is intentionally left unaccepted:
+#      - `certificate-domain-name-is-zone` pins `domain_name` to the apex
+#        (`storefront.example.com`) on ALL THREE arms (`applies_to:
+#        [awscdk, hcl_raw, terraconstructs]`); the www-primary swap fails
+#        that assert everywhere.
+#      - Why pin it at all, given 4a already tolerates the *reverse*
+#        redundancy (apex re-listed inside SAN)? Because the ticket's own
+#        two facts single out the apex as primary -- this is not a coin
+#        flip the oracle imposes. The hosted ZONE this configuration
+#        creates IS `{{ZONE_NAME}}`, the apex (`hosted-zone-exists`), and
+#        the prompt's own sentence names `{{ZONE_NAME}}` before
+#        `www.{{ZONE_NAME}}`. Pairing the certificate's primary domain
+#        name with the zone's own apex name is the one mapping the ticket
+#        text itself picks out; "primary = www, apex = alias" has no
+#        textual anchor to accept it by.
+#      - Consequence, stated plainly rather than left to be re-discovered:
+#        the www-primary swap is scored WRONG uniformly on every arm. On
+#        awscdk, `certificate-san-includes-www-cfn` ALSO fails (a SAN list
+#        of just `[storefront.example.com]` does not `contains
+#        "www.storefront.example.com"`). Uniformity was verified, not
+#        assumed: on the two TF arms, `certificate-san-includes-both-
+#        names-tf` alone would actually still PASS a www-primary swap --
+#        the CustomizeDiff fold (4a's own evidence) means the folded
+#        planned SAN reads `{www.storefront.example.com,
+#        storefront.example.com}` regardless of which name the agent
+#        called "primary", which set-equals the expected pair -- so it is
+#        `certificate-domain-name-is-zone` alone doing the work of
+#        catching this swap on those two arms, not the SAN assert. Since
+#        exactly one apex-pinned assert (never a majority) fires per arm,
+#        and it fires on all three, this cannot bias the cross-arm metric
+#        toward one toolchain: no arm is let through a shape another arm
+#        is denied.
+#      - This is a scored-wrong-by-design ticket-reading choice, not an
+#        oracle gap papered over: tolerating the swap would require
+#        replacing the static `certificate-domain-name-is-zone` op-table
+#        assert with a behavioural "DomainName ∪ SubjectAlternativeNames
+#        set-equals {apex, www}" check in policy.rego/policy.guard on all
+#        three arms (tier-0's `eq`/`contains`/`set_eq` ops cannot express
+#        a union across two JSON paths) -- deliberately not done here, to
+#        keep the primary-domain-name assert load-bearing and cheap
+#        (tier 0, no policy engine) instead of folding it into the same
+#        behavioural tier as the record-wiring graph checks.
+# 4. The zone: the prompt says "the public hosted zone for {{ZONE_NAME}}",
+#    singular and newly created ("moving the storefront to a new domain").
+#    An agent that instead referenced a pre-existing zone via a data source
+#    could not pass offline synth at all (no such zone exists in the offline
+#    mirror/mock-STS fixture) -- so unlike `s3-bucket-hardening-decomposition`'s
+#    KMS-key alternative, there is no second shape to behavioralize around
+#    here; "create the zone in this configuration" is the only offline-
+#    synthable reading, and every graph-edge check below is written against
+#    "the zone this configuration creates" for that reason.
+#
+# ---------------------------------------------------------------------------
+# EVIDENCE (re-verified 2026-08-21 against the blueprint's own citations;
+# no new `gh` reads performed here beyond what the blueprint already logged
+# as re-verified 2026-08-20 -- see docs/design/batch-a-greenfield-blueprints.md
+# §8(d) for the full URL list. Six of seven SUPPORT; #27386 does NOT and is
+# excluded from provenance below, matching the blueprint's own finding).
+# ---------------------------------------------------------------------------
+
+id: acm-dns-validation-record-wiring
+workspace_id: storefront-certificate
+title: "Public certificate for the storefront domain and its www alias"
+difficulty: 3
+services: [acm, route53]
+
+arms:
+  awscdk: true
+  hcl_raw: true
+  terraconstructs:
+    enabled: true
+    reason: >
+      arms/terraconstructs/README.md §3's coverage table lists `edge`:
+      "CloudFront ..., Route53 (zone, records, DNS aliases), ACM
+      (certificate)". Re-verified directly against the pinned 0.2.13 package
+      at authoring time (not just the README's summary): `lib/aws/edge/
+      certificate.js` exports `PublicCertificate`, whose constructor -- when
+      given `validation: { method: ValidationMethod.DNS, ... }` -- creates
+      one `RecordSet` (lib/aws/edge/dns-record.js, backed by
+      `@cdktn/provider-aws` `route53Record.Route53Record`, i.e. a genuine
+      `aws_route53_record`) per validated domain name and exactly one
+      `acmCertificateValidation.AcmCertificateValidation` referencing all of
+      them via `validationRecordFqdns`. `lib/aws/edge/dns-zone.js` exports
+      `DnsZone` (a genuine `aws_route53_zone`). All three constructs this
+      scenario needs exist and wire together exactly as the CDK-Terrain
+      example the operator's own comment cites. (This corrects the
+      blueprint's own note that an EARLIER graded assessment guessed "no
+      acm/route53 L2s in 0.2.13" -- that guess was wrong; see
+      docs/design/batch-a-greenfield-blueprints.md §8(d).)
+
+instruction:
+  shared_body: |
+    We are moving the storefront to a new domain. Create the public hosted
+    zone for `{{ZONE_NAME}}` and an ACM certificate covering both
+    `{{ZONE_NAME}}` and `www.{{ZONE_NAME}}`, validated through DNS in that
+    zone.
+
+    The certificate has to be usable by the load balancer we add next
+    quarter -- so it must reach ISSUED on its own, without anyone clicking
+    through the console.
+  placeholders:
+    - name: ZONE_NAME
+      source: literal
+      value: "storefront.example.com"
+  per_arm:
+    awscdk:
+      language_line: "Author this as an AWS CDK (TypeScript) app using aws-cdk-lib L2 constructs."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdk.out/ScenarioStack.template.json
+        build_command: "npm run build"
+        synth_command: "npx cdk synth --no-lookups --quiet -o cdk.out"
+        json_fields: []
+    hcl_raw:
+      language_line: "Author this as hand-written Terraform HCL (no modules)."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields: []
+    terraconstructs:
+      language_line: "Author this using terraconstructs (TypeScript) L2 constructs, synthesized via cdktn."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdktf.out/stacks/storefront-certificate/plan.json
+        synth_command: "npx cdktn synth"
+        json_fields: []
+
+catches:
+  - name: no-validation-records-at-all
+    taxonomy: graph-dependency
+    description: >
+      The configuration requests the certificate (and creates the hosted
+      zone) and stops there -- no `aws_route53_record` resource at all for
+      the DNS validation challenge. This is plan-green on both TF-shaped
+      arms (nothing about omitting a record fails `terraform validate` or
+      `terraform plan`; ACM/Route53 wiring is not schema-enforced by the
+      provider), but with zero DNS records ever created the certificate has
+      nothing feeding its validation challenge and never leaves
+      PENDING_VALIDATION. STRUCTURALLY IMPOSSIBLE on awscdk: there is no
+      agent-authored Route53 record resource on that arm to omit in the
+      first place -- CloudFormation/ACM own that step entirely once
+      `DomainValidationOptions` names the hosted zone (see this scenario's
+      `validation-options-name-the-zone` assert, the only thing awscdk has
+      to get right here). Caught by `validation-records-one-per-domain`
+      (zero qualifying records found -- the count check fails outright,
+      whether zero or any count other than 2) and, if a validation resource
+      exists at all with no records to reference, by
+      `validation-waits-for-records` too.
+    applies_to: [hcl_raw, terraconstructs]
+    predicted_tier_caught:
+      # `.awscdk` is required by the schema but does not fire on that arm:
+      # `applies_to` excludes it (no agent-authored Route53 record exists
+      # there for this mistake to omit -- see this catch's own
+      # description). "0", not "1" -- generator/check_tier1_coverage.py's
+      # `tier1_catch_count` reads this field WITHOUT consulting
+      # `applies_to` (verifier round 2, 2026-08-21): a stray "1" here would
+      # silently satisfy the awscdk tier-1 coverage floor with a catch that
+      # is structurally impossible to reach on that arm, masking a real gap
+      # (closed instead by the dedicated `dns-validation-without-hosted-
+      # zone` catch below, applies_to: [awscdk]).
+      awscdk: "0"
+      hcl: "1"
+
+  - name: one-record-for-two-domains
+    taxonomy: graph-dependency
+    description: >
+      THE PLAUSIBLE-WRONG SOLUTION, and historically the most common one
+      (tfp-aws#7918, 50 👍, pre-`for_each` index-based wiring failing for
+      multi-SAN certificates; tfp-aws#5237, count/lookup wiring producing
+      `DomainLabelEmpty`; both re-verified 2026-08-20 in the design
+      blueprint). The agent authors exactly ONE `aws_route53_record`,
+      built from `domain_validation_options[0]` (or a `for_each` collapsed
+      to a single key by an off-by-one/dedup mistake), and reuses it for
+      both the apex and the `www` SAN. The apex domain validates; `www`
+      never does, because its own distinct CNAME challenge record was never
+      created. The certificate stays PENDING_VALIDATION forever -- with no
+      error anywhere in the toolchain, since one record is syntactically a
+      completely valid `aws_route53_record`. STRUCTURALLY IMPOSSIBLE on
+      awscdk for the same reason as `no-validation-records-at-all`.
+      Caught by `validation-records-one-per-domain`: exactly 1 qualifying
+      record found, not 2.
+    applies_to: [hcl_raw, terraconstructs]
+    predicted_tier_caught:
+      # "0" -- see no-validation-records-at-all's comment above (same
+      # coverage-gate reasoning; `applies_to` excludes awscdk here too).
+      awscdk: "0"
+      hcl: "1"
+
+  - name: missing-certificate-validation-resource
+    taxonomy: graph-dependency
+    description: >
+      Both DNS validation records are created correctly (one per domain,
+      correctly scoped to the hosted zone), but the configuration never
+      declares `aws_acm_certificate_validation`. Nothing in the plan ever
+      waits for the records to propagate and for ACM to observe them --
+      the certificate resource itself has no dependency forcing
+      confirmation of ISSUED, so any resource that later references this
+      certificate (the load balancer the ticket mentions) could attach to
+      it while it is still PENDING_VALIDATION. Plan-green: omitting a
+      resource is never a `terraform validate`/`plan` error.
+      STRUCTURALLY IMPOSSIBLE on awscdk for the same reason as the first
+      two catches -- CloudFormation's own `AWS::CertificateManager::
+      Certificate` resource does not return CREATE_COMPLETE until ISSUED
+      when DNS validation options are supplied, so there is no separate
+      "wait" resource for the agent to omit. Caught by
+      `validation-waits-for-records`: zero `aws_acm_certificate_validation`
+      resources exist in the plan.
+    applies_to: [hcl_raw, terraconstructs]
+    predicted_tier_caught:
+      # "0" -- see no-validation-records-at-all's comment above (same
+      # coverage-gate reasoning; `applies_to` excludes awscdk here too).
+      awscdk: "0"
+      hcl: "1"
+
+  - name: dns-validation-without-hosted-zone
+    taxonomy: graph-dependency
+    description: >
+      (awscdk only.) THE AWSCDK-SIDE SIBLING of `no-validation-records-at-
+      all`: the certificate is requested with DNS validation, but
+      `CertificateValidation.fromDns()` is called with NO hosted-zone
+      argument -- a typed, valid call on every domain-validated certificate,
+      easy to reach by an agent that remembers "DNS validation" needs
+      `fromDns()` but not that it also needs the zone reference threaded
+      through. Source-verified directly against aws-cdk-lib's own
+      `renderDomainValidation` (aws-certificatemanager/lib/certificate.ts,
+      the DNS branch): for each domain name it looks up
+      `validation.props.hostedZones?.[domainName] ?? validation.props.
+      hostedZone`, and ONLY pushes a `{domainName, hostedZoneId}` entry
+      `if (hostedZone)`. With no hosted zone supplied that condition is
+      false for every domain, so the accumulator array stays empty and
+      `renderDomainValidation` returns `undefined` -- the synthesized
+      template's `DomainValidationOptions` property is entirely ABSENT,
+      not merely incomplete. `cdk synth --no-lookups` still succeeds (no
+      throw; EMAIL's `validationDomains` requirement, see
+      `email-validation-instead`, has no DNS-branch analogue), so this is
+      plan-green all the way through tier 0 -- `validation-method-is-dns`
+      still reads `"DNS"`. Exactly the scenario `oracle.intent` already
+      names for this arm ("the certificate resource alone, with no
+      validation options at all, is a valid CloudFormation template that
+      could sit in PENDING_VALIDATION forever with nothing to tell it how
+      to self-validate"). STRUCTURALLY IMPOSSIBLE on hcl_raw/
+      terraconstructs: there is no CDK-style single "pass the zone into
+      the validation config" call to omit on those arms -- the zone
+      reference there is threaded through the agent-authored
+      `aws_route53_record.zone_id` expression instead, which is exactly
+      what `no-validation-records-at-all` already covers (omitting the
+      record omits the reference in the same act). Caught by
+      `validation-options-name-the-zone`'s cfn-guard half: both
+      `validation_option_covers_apex` and `validation_option_covers_www`
+      fail closed the moment `DomainValidationOptions` is missing
+      entirely, not just missing a `HostedZoneId` on one entry. Verified
+      directly (2026-08-21): a real `cdk synth --no-lookups` against this
+      exact fixture, run through `cfn-guard`, reports
+      `MissingProperty = DomainValidationOptions` on both rules; tier 0
+      passes in full first (tier0_pass=1) and tier 1 alone fails
+      (tier1_status=FAIL), matching this catch's predicted tier.
+    applies_to: [awscdk]
+    predicted_tier_caught:
+      # "0" -- see no-validation-records-at-all's comment above: `.hcl` is
+      # required by the schema but `applies_to` excludes both TF-shaped
+      # arms (see this catch's own STRUCTURALLY IMPOSSIBLE paragraph).
+      awscdk: "1"
+      hcl: "0"
+
+  - name: email-validation-instead
+    taxonomy: anti-L2
+    description: >
+      The certificate is requested with EMAIL validation -- a typed, valid
+      enum member on every arm (`ValidationMethod.EMAIL` / literal `"EMAIL"`
+      / `ValidationMethod.EMAIL`), so nothing in any toolchain rejects it.
+      EMAIL validation silently requires a human to click a link in mail
+      sent to a handful of well-known addresses at the domain
+      (admin@/administrator@/hostmaster@/postmaster@/webmaster@) -- mail
+      nobody administers for an unowned example domain, and even on a real
+      domain it is exactly the console-click the ticket rules out. It can
+      never reach ISSUED unattended either way. TWO DIFFERENT
+      empirically-verified reachability stories per arm (both re-run
+      directly at authoring time, 2026-08-21, against a real synth --
+      neither assumed):
+        - awscdk: omitting `validation` entirely reaches this silently.
+          `Certificate`'s constructor defaults to
+          `CertificateValidation.fromEmail(props.validationDomains)`, and
+          `renderDomainValidation`'s EMAIL branch falls back to
+          `apexDomain(domainName)` for any domain with no explicit
+          validation-domain entry -- so a bare
+          `new Certificate(this, "Cert", { domainName, subjectAlternativeNames
+          })` synthesizes cleanly with `ValidationMethod: "EMAIL"` and a
+          computed `ValidationDomain` per name. Verified directly: real
+          `cdk synth` output for exactly this construct call.
+        - terraconstructs: the SAME-LOOKING omission does NOT reach a green
+          plan when a SAN is present (this ticket's "both `{{ZONE_NAME}}`
+          and `www.{{ZONE_NAME}}`" always supplies one).
+          `renderDomainValidation`'s EMAIL branch here requires a
+          `validationDomains` entry for EVERY domain name with no
+          `apexDomain`-style fallback, and the constructor's own default
+          only ever populates the PRIMARY domain's entry -- verified
+          directly: the same omission throws
+          `Error: When using email for validation, 'validationDomains'
+          needs to be supplied` at synth time (a toolchain failure, tier 0
+          never runs -- reward is still 0.0, but not via
+          validation-method-is-dns). The catch AS GRADED on this arm is
+          therefore the EXPLICIT choice of EMAIL with a complete
+          `validationDomains` map, same shape as the other two arms'
+          explicit literal.
+      Either reachability path is a typed, valid value nothing in any
+      toolchain rejects and, where it reaches a plan at all, is caught only
+      by `validation-method-is-dns`.
+    applies_to: [awscdk, hcl_raw, terraconstructs]
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "0"
+      terraconstructs_override: null
+
+oracle:
+  intent: >
+    A public Route53 hosted zone exists for the storefront's domain, created
+    by this configuration (not looked up). A public ACM certificate exists
+    whose primary domain name is that same domain and whose
+    subject-alternative names cover the `www` alias of it -- the `www`
+    alias must be present, and the domain itself must not be missing from
+    the certificate. On the Terraform-shaped arms the planned SAN set ends
+    up exactly `{domain, www-alias}` regardless of what was typed, because
+    the provider itself always folds the primary domain name into it; on
+    awscdk, whose synthesized template is a direct static echo of what was
+    authored, only "the `www` alias is present" is load-bearing -- an
+    agent that redundantly re-lists the primary domain name in
+    `subjectAlternativeNames` too describes the identical certificate ACM
+    will issue and must not be scored differently than one that lists
+    `www` alone. The certificate's validation method is DNS, never
+    EMAIL: a certificate that needs a human to click a confirmation link
+    does not satisfy "reaches ISSUED on its own".
+
+    On the Terraform-shaped arms (hcl_raw, terraconstructs), which have no
+    CloudFormation-native mechanism to create and clean up DNS validation
+    records on the agent's behalf, the configuration must itself create one
+    DNS record per distinct validated domain name -- two records total, one
+    for the apex and one for the `www` alias, never a single record reused
+    for both (that only ever validates the domain whose challenge it
+    happens to match, leaving the other stuck PENDING_VALIDATION forever) --
+    and each record must live in the hosted zone this same configuration
+    creates. A resource that actually waits on those records reaching
+    Route53 and ACM observing them (`aws_acm_certificate_validation`) must
+    also exist, and its own `validation_record_fqdns` must reference the
+    record resources this configuration created -- a certificate with
+    nothing downstream ever waiting on it never blocks anything on
+    non-issuance, so "ISSUED" is never actually confirmed by the plan.
+
+    On the awscdk arm, CloudFormation and ACM create and clean up the DNS
+    validation records themselves once the certificate's domain validation
+    options name the hosted zone for each validated domain name -- no
+    agent-authored Route53 record resource is required, expected, or
+    evidence of anything, there. What IS required there is that both
+    domain names actually get a hosted-zone-qualified validation option;
+    the certificate resource alone, with no validation options at all, is
+    a valid CloudFormation template that could sit in PENDING_VALIDATION
+    forever with nothing to tell it how to self-validate.
+
+  structural_asserts:
+    - name: hosted-zone-exists
+      description: "A public Route53 hosted zone exists."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Route53::HostedZone')]"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_route53_zone')]"
+      op: exists
+
+    - name: certificate-exists
+      description: "A public ACM certificate exists."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::CertificateManager::Certificate')]"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_acm_certificate')]"
+      op: exists
+
+    - name: certificate-domain-name-is-zone
+      description: >
+        The certificate's primary domain name is exactly the storefront's
+        domain (an agent-supplied, echoed literal -- plan-time-known on
+        every arm regardless of how the hosted zone's own name was
+        authored).
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::CertificateManager::Certificate')].Properties.DomainName"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_acm_certificate')].values.domain_name"
+      op: eq
+      expected: "storefront.example.com"
+
+    # SPLIT cfn/tf (mirrors SCHEMA.md §4.2.1's own split-when-shapes-diverge
+    # convention -- here the divergence is not plan-time-unknown-ness but a
+    # genuine cross-toolchain VALUE difference, empirically verified against
+    # a real `terraform plan`, not assumed): the `hashicorp/aws` provider's
+    # `aws_acm_certificate` resource has a `CustomizeDiff` that ALWAYS folds
+    # `domain_name` into the planned `subject_alternative_names` value, even
+    # when the HCL only lists `["www.storefront.example.com"]` -- verified
+    # directly (`terraform plan` against pinned 6.58.0, 2026-08-21): the
+    # PLANNED `subject_alternative_names` reads
+    # `["storefront.example.com", "www.storefront.example.com"]`, apex
+    # included, for a configuration that only typed the `www` entry. CFN has
+    # no such computation at all: `aws-cdk-lib`'s `Certificate` L2 passes
+    # `props.subjectAlternativeNames` straight through to
+    # `CfnCertificate.subjectAlternativeNames` with no augmentation
+    # (certificate.js, source-verified above) -- the synthesized template
+    # carries exactly what was typed, `www` only. INDEPENDENTLY RE-VERIFIED
+    # for terraconstructs too (not inferred): a real `npx cdktn synth` +
+    # `terraform init && terraform plan` against this arm's own pinned
+    # `@cdktn/provider-aws` 24.8.0 (terraconstructs 0.2.13, cdktn 0.23.0),
+    # authored via `edge.DnsZone` + `edge.PublicCertificate` with
+    # `validation: { method: edge.ValidationMethod.DNS, hostedZone: zone }`,
+    # produces the identical planned `subject_alternative_names` --
+    # `["storefront.example.com", "www.storefront.example.com"]` -- same
+    # CustomizeDiff, same result, both TF-shaped arms confirmed by direct
+    # synth+plan at spec-authoring time (2026-08-21).
+    - name: certificate-san-includes-www-cfn
+      description: >
+        (awscdk only.) The certificate's SubjectAlternativeNames property
+        includes `www.storefront.example.com` -- CFN has no runtime
+        computation, so this is a direct static echo of what was typed.
+        Deliberately `contains`, not `set_eq`: combined with
+        `certificate-domain-name-is-zone` (DomainName is exactly the
+        apex), this already proves the certificate covers both required
+        names without pinning whether the agent ALSO redundantly re-lists
+        the apex in SubjectAlternativeNames -- a behaviourally identical
+        certificate either way (see this scenario's own "ORACLE MUST
+        TOLERATE / DEFEND" comment, item 4a, for the verified regression
+        this replaced).
+      tier: "0"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::CertificateManager::Certificate')].Properties.SubjectAlternativeNames[*]"
+      op: contains
+      expected: "www.storefront.example.com"
+
+    - name: certificate-san-includes-both-names-tf
+      description: >
+        (hcl_raw + terraconstructs only.) The certificate's planned
+        subject_alternative_names is EXACTLY
+        `["storefront.example.com", "www.storefront.example.com"]` -- the
+        `aws_acm_certificate` resource's own CustomizeDiff always folds the
+        primary domain_name into this planned value in addition to
+        whatever SANs were explicitly configured (verified directly against
+        a real `terraform plan`, not assumed), so "www only" is never the
+        correct expectation on this arm shape the way it is on awscdk's
+        static CFN template.
+      tier: "0"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_acm_certificate')].values.subject_alternative_names[*]"
+      op: set_eq
+      expected: ["storefront.example.com", "www.storefront.example.com"]
+
+    - name: validation-method-is-dns
+      description: >
+        The certificate's validation method is DNS. This is the direct
+        catch for `email-validation-instead`: EMAIL is a typed, valid value
+        on every arm, so only a value-content check (never a toolchain
+        rejection) catches it.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::CertificateManager::Certificate')].Properties.ValidationMethod"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_acm_certificate')].values.validation_method"
+      op: eq
+      expected: "DNS"
+
+    # --- validation-records-one-per-domain (tier 1, hcl_raw + terraconstructs)
+    # The actual arithmetic ("exactly 2, no more, no less") is Rego's job --
+    # there is no `count`/cardinality op in the tier-0 op table (specs/
+    # SCHEMA.md §4.2's own op table), and even if there were, the graph-edge
+    # half (which zone a record's zone_id REFERENCES, not its plan-time-
+    # unknown resolved value -- SCHEMA.md §4.2.1) needs the same policy
+    # engine anyway. This tf_jsonpath is the SPEC for
+    # oracles/rego/acm-dns-validation-record-wiring/policy.rego (the file
+    # that actually runs), documenting the graph-edge half only: every
+    # qualifying aws_route53_record's zone_id expression must reference an
+    # aws_route53_zone resource created in this same configuration.
+    - name: validation-records-one-per-domain
+      description: >
+        Exactly one `aws_route53_record` resource exists per distinct
+        validated domain name (two total: the apex and `www`), each
+        referencing (by graph edge, not by plan-time-unknown resolved
+        value) the hosted zone this configuration creates. Catches
+        `no-validation-records-at-all` (count 0) and
+        `one-record-for-two-domains` (count 1) identically -- "not equal
+        to 2" is the one predicate that fires on both.
+      tier: "1"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_route53_record')].expressions.zone_id.references[*]"
+      op: regex
+      expected: "^aws_route53_zone\\."
+
+    # --- validation-waits-for-records (tier 1, hcl_raw + terraconstructs)
+    - name: validation-waits-for-records
+      description: >
+        An `aws_acm_certificate_validation` resource exists, and its
+        `validation_record_fqdns` expression references at least one
+        `aws_route53_record` resource created in this configuration (graph
+        edge -- the resolved FQDN values are themselves plan-time-unknown,
+        SCHEMA.md §4.2.1, since they echo the records' own provider-computed
+        `fqdn` attributes). Catches `missing-certificate-validation-resource`
+        (the resource is entirely absent) and, as a secondary effect,
+        reinforces `no-validation-records-at-all` (a validation resource
+        with nothing to reference).
+      tier: "1"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_acm_certificate_validation')].expressions.validation_record_fqdns.references[*]"
+      op: regex
+      expected: "^aws_route53_record\\."
+
+    # --- validation-options-name-the-zone (tier 1, awscdk only)
+    # CFN's synthesized template is always fully static (no "plan" concept),
+    # so unlike the TF-shaped arms this IS a direct, always-resolvable
+    # existence check, not a graph-edge resolution. Kept at tier "1" anyway
+    # (not demoted to tier "0") to match the TF-shaped arms' strictness per
+    # the oracle-equivalence requirement (SCHEMA.md §4.2), mirroring
+    # s3-lambda-log-retention's own lambda-permission-scoped-to-bucket-cfn
+    # precedent for the identical reasoning. Deliberately a WEAKER
+    # exists-only check here -- op:exists on a `[*]` path only requires >= 1
+    # resolved node, not "exactly 2, one per domain name" -- because there is
+    # no set-membership/cardinality op in the tier-0 table to express that
+    # directly against a JSONPath. The REAL enforcement (both specific domain
+    # names present, each with a HostedZoneId, nothing else) is the
+    # hand-authored cfn-guard policy below -- this entry documents the
+    # weaker half only, same convention as validation-records-one-per-domain
+    # above documenting its own graph-edge half.
+    - name: validation-options-name-the-zone
+      description: >
+        The certificate's `DomainValidationOptions` carries a
+        `HostedZoneId` for at least one entry (existence half; the
+        hand-authored cfn-guard policy is the real, cardinality-aware
+        check that both the apex and `www` entries are present and each
+        has one).
+      tier: "1"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::CertificateManager::Certificate')].Properties.DomainValidationOptions[*].HostedZoneId"
+      op: exists
+
+  rego_hints:
+    - >-
+      package cdktn_bench.acm_dns_validation_record_wiring, graded against
+      `terraform show -json` PLAN output (input) for hcl_raw AND
+      terraconstructs. Read graph-edge facts from
+      input.configuration.root_module.resources[].expressions.<attr>.
+      references (plan-time-known regardless of arm) -- never from
+      input.planned_values...values.zone_id /
+      .values.validation_record_fqdns, both of which resolve to null
+      whenever built from another resource's provider-computed output
+      (SCHEMA.md §4.2.1, re-verified for this scenario's own reference
+      fixture at authoring time).
+    - >-
+      Collect `created_zone_addresses` = the set of `.address` for every
+      input.planned_values...resources[] of type aws_route53_zone. Collect
+      `qualifying_record_addresses` = the set of `.address` for every
+      input.configuration...resources[] of type aws_route53_record whose
+      expressions.zone_id.references contains an entry that STARTS WITH one
+      of created_zone_addresses (a module-nested zone's config address is a
+      prefix of its planned_values reference form).
+    - >-
+      Count `.planned_values...resources[]` of type aws_route53_record whose
+      `.address` either EQUALS a qualifying config address (no for_each) or
+      STARTS WITH `"<qualifying-address>["` (for_each/count-expanded
+      instance) -- deny unless this count is EXACTLY 2. This single rule
+      catches both no-validation-records-at-all (count 0) and
+      one-record-for-two-domains (count 1); do not write them as two
+      separate rules, "!= 2" already covers both and stays correct if this
+      scenario's shape ever changes.
+    - >-
+      Separately: deny if zero input.configuration...resources[] of type
+      aws_acm_certificate_validation exist at all (fail-closed,
+      missing-certificate-validation-resource); deny if one exists but its
+      expressions.validation_record_fqdns.references contains no entry
+      matching ^aws_route53_record\. (mirrors s3-lambda-log-retention's own
+      "role_has_no_recognized_policy" fail-closed convention -- guards
+      against a vacuously-silent comprehension when the resource type is
+      renamed/aliased away from what the rule expects).
+
+  cfn_guard_hints:
+    - >-
+      Graded against the awscdk arm's synthesized CloudFormation template.
+      `let certs = Resources.*[ Type == "AWS::CertificateManager::Certificate" ]`.
+    - >-
+      rule validation_option_covers_apex when %certs !empty: filter
+      %certs.Properties.DomainValidationOptions[ DomainName ==
+      "storefront.example.com" ], assert it is !empty (the apex domain has
+      SOME validation option at all) and that every matching entry has
+      HostedZoneId EXISTS.
+    - >-
+      rule validation_option_covers_www when %certs !empty: the same
+      filter/assert pair for DomainName == "www.storefront.example.com".
+      Two separate rules (not one filtered on `IN [apex, www]`) because
+      cfn-guard's own `count(...)` idiom (see
+      oracles/cfn-guard/apigw-openapi/policy.guard's
+      `route_count_correct` rule for the precedent) is most legible checked
+      per-domain-name here -- a single combined count==2 rule cannot also
+      say WHICH domain is missing when it fails.
+    - >-
+      rule certificate_exists_when_zone_present (fail-closed companion,
+      mirrors toy-ssm-parameter's convention): FAIL if an
+      AWS::Route53::HostedZone exists in the template but zero
+      AWS::CertificateManager::Certificate resources exist at all.
+
+  tier05_jsonata: null
+
+verifier:
+  budget:
+    max_iters: 8
+  live_check:
+    enabled: false
+    module: tests/live_check.py
+    # STATIC ONLY, AND NECESSARILY SO (blueprint §8(c)): DNS validation
+    # requires real NS delegation for a domain this account does not own, so
+    # a certificate created live would sit in PENDING_VALIDATION forever --
+    # there is no live outcome to check that a synth/plan-only oracle cannot
+    # already see. Separately: creating a real Route53 public hosted zone is
+    # itself a billable resource (a live trial would leave a
+    # $0.50/month/zone charge running even before touching the certificate).
+    # Both are independently sufficient reasons this must never flip to
+    # `true` for this scenario -- it is not a resourcing choice to revisit
+    # later, it is a hard "this scenario cannot be verified against real
+    # AWS" fact.
+
+provenance:
+  author: "Vincent (via Claude Code, batch-A scenario-authoring task)"
+  date: "2026-08-21"
+  prereg_section_refs:
+    - "docs/design/batch-a-greenfield-blueprints.md §8 (acm-dns-validation-record-wiring) -- the pre-spec this scenario implements"
+    - "iac-abstraction-benchmark-prereg.md §5 (catch taxonomy: graph-dependency ×4, anti-L2 ×1 -- ×4 as of the verifier-round-2 addition of dns-validation-without-hosted-zone, closing the awscdk tier-1 coverage gap; ×3 at initial authoring), §3 (oracle tiers -- static-only by necessity, see verifier.live_check's own comment above)"
+    - "specs/SCHEMA.md §4.2.1 (plan-time-unknown attributes -- both tier-1 TF-shaped asserts are graph-edge checks for exactly this reason)"

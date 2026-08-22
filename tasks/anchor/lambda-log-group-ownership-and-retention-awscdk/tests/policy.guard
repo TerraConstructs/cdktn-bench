@@ -1,0 +1,175 @@
+#
+# Hand-authored (2026-08-21, adversarial-review fix round) -- NOT a
+# generator stub. emit_oracles() never overwrites this file once it exists
+# (specs/SCHEMA.md §8.2 rule 7), so edits here are safe across
+# regeneration.
+#
+# Scenario:   lambda-log-group-ownership-and-retention (specs/lambda-log-group-ownership-and-retention.yaml)
+# Intent doc: oracles/lambda-log-group-ownership-and-retention/intent.md
+# Graded against the awscdk arm's synthesized CloudFormation template
+# (cdk.out/ScenarioStack.template.json) -- specs/SCHEMA.md §4.2/§8.
+#
+# THIS FILE WAS PREVIOUSLY A DELIBERATE generator-scaffolded placeholder
+# (the marker `is_stub_policy()` greps for, spelled out fully in
+# tests/_assert_lib.sh's own docstring rather than repeated verbatim here
+# on purpose -- writing it literally in this comment would itself trip
+# that same stub-detection grep) (2026-08-21,
+# initial authoring), on the theory that catch 4 (`log-group-name-
+# diverges-from-function`) needed STRING CONCATENATION to check --
+# "LogGroupName == '/aws/lambda/' + FunctionName" -- which cfn-guard 3.2.0
+# genuinely cannot do (no string-building operator at all). That theory
+# was CORRECT for the naming-convention path alone, but an adversarial
+# review found the underlying oracle itself was wrong: this scenario's
+# real fact is "the declared log group governs this function's logs",
+# which has TWO independent, sufficient mechanisms -- exact convention-name
+# match, OR explicit `LoggingConfig.LogGroup` wiring (a first-class Lambda
+# argument, GA'd 2023-11-16, that accepts a log group of ANY name at all;
+# `aws-cdk-lib` 2.263.0's own `lambda.Function.logGroup` prop compiles
+# straight to it -- `function.js::getLoggingConfig`:
+# `logGroup: props.logGroup?.logGroupRef.logGroupName`, landing at
+# `CfnFunction.Properties.LoggingConfig.LogGroup`). The WIRING disjunct
+# needs no string concatenation at all -- it is a plain structural
+# EXISTS check -- so it is fully implementable in cfn-guard with no
+# capability gap. Only the naming disjunct's EXACT-suffix form remains
+# unimplementable here (see "RESIDUAL GAP" below); the weaker PREFIX form
+# still is. specs/lambda-log-group-ownership-and-retention.yaml's own
+# header comment ("VERIFIER-REJECTED FIX" / "RESIDUAL, NARROWER
+# TOOL-CAPABILITY GAP") carries the full evidence trail, including the
+# hand-built PASS/FAIL transcripts this rule was checked against before
+# being written into the task tree.
+#
+# Encodes catch 4 (`log-group-name-diverges-from-function`, graph-dependency)
+# and its own tier-1 structural_assert spec
+# (`log-group-governs-the-function-cfn`, specs/lambda-log-group-
+# ownership-and-retention.yaml): a log group that only matches the
+# `/aws/lambda/...` NAMING PATTERN (not necessarily this exact function's
+# own name) governs nothing UNLESS the function is also explicitly wired
+# to it. `deny` (i.e. non-compliant) fires only when NEITHER disjunct
+# holds for a Lambda function in the template.
+#
+# `some %log_groups { ... } or some %functions { ... }` is cfn-guard 3's
+# real boolean-OR operator between two `some` blocks at a rule's top
+# level -- same construct as
+# oracles/cfn-guard/asg-launch-template-tag-propagation/policy.guard's own
+# `instance_tag_costcenter_reaches`/`instance_tag_environment_reaches`
+# rules (that file's own header comment names this as the precedent). A
+# custom `<<...>> ` violation message attached directly after such an
+# `or`-joined pair was found, empirically, to break cfn-guard 3.2.0's
+# parser (confirmed directly, 2026-08-21 -- a `<<...>>` block works fine
+# after a single `some {}` clause, but not after `some {} or some {}`) --
+# this rule has no custom message for that reason, matching the asg
+# precedent's own choice, not an oversight.
+#
+# Verified directly against cfn-guard 3.2.0 with hand-built fixtures
+# before this file was written into the task tree (all four outcomes
+# checked, `cfn-guard validate`, real exit codes):
+#   - wired only (LoggingConfig.LogGroup Ref to an arbitrarily-named log
+#     group, e.g. "/platform/event-processor", no /aws/lambda/ name
+#     anywhere) -> PASS (exit 0). This is the shape the pre-fix rule
+#     scored 0.0 -- the bug this fix closes.
+#   - convention-name-only (log group literally named
+#     "/aws/lambda/event-processor", no LoggingConfig.LogGroup) -> PASS
+#     (exit 0). This scenario's own reference solution's shape.
+#   - neither (log group named "/platform/event-processor", no wiring) ->
+#     FAIL (exit 19). This is catch 4's own awscdk-arm broken fixture
+#     shape -- see solution/broken/log-group-name-diverges-from-function/
+#     under the generated awscdk task dir.
+#   - no log group at all (function exists, nothing else) -> FAIL
+#     (exit 19). Redundant with the tier-0 `log-group-exists` check by
+#     design (fail-closed), same convention as this file's own
+#     `functions_exist_but_no_log_groups` rule below.
+#
+# RESIDUAL GAP (narrower than the pre-fix state -- see
+# specs/lambda-log-group-ownership-and-retention.yaml's own header
+# comment for the full accounting): an agent who names an UNWIRED log
+# group with the RIGHT PREFIX but the WRONG SUFFIX (e.g.
+# "/aws/lambda/processor" when the function is "event-processor") still
+# evades this rule on awscdk specifically -- both the plain-string and the
+# `Fn::Join`-shaped naming disjuncts below only check the static
+# `^/aws/lambda/` regex, since cfn-guard has no way to compute this
+# function's own expected suffix dynamically. This is why catch 4's
+# awscdk-arm broken fixture uses a name that fails the PREFIX check
+# outright (a wholly unrelated name), not merely a wrong-suffix one -- it
+# stays within what this rule can actually prove.
+# hcl_raw and terraconstructs close this gap fully via Rego's exact-match
+# string comparison (oracles/rego/lambda-log-group-ownership-and-
+# retention/policy.rego).
+#
+# 2026-08-21, ROUND 2 (second adversarial-review fix, same day, on top of
+# the round above -- NOT a separate authoring pass): the rule as first
+# hand-authored matched `Properties.LogGroupName` only as a PLAIN STRING.
+# A genuinely correct solution that names the log group
+# `/aws/lambda/${fn.functionName}` by TypeScript template interpolation
+# off the function's OWN name (rather than a hardcoded literal) --
+# functionally identical to, and no less correct than, this scenario's own
+# reference solution's literal-name shape, and the IDENTICAL authoring
+# idiom the hcl_raw reference solution itself uses
+# (`tasks/anchor/lambda-log-group-ownership-and-retention-hcl-raw/
+# solution/solve.sh`: `name = "/aws/lambda/${aws_lambda_function.
+# event_processor.function_name}"`, accepted there) -- was scored 0.0 here,
+# because aws-cdk-lib 2.263.0 (this arm's own pin) synthesizes a template
+# expression like that as an `Fn::Join` intrinsic object
+# (`{"Fn::Join":["",["/aws/lambda/",{"Ref":"EventProcessorD4153CB5"}]]}`),
+# never a plain string, and cfn-guard's `==` against a string literal never
+# matches an object. This was the exact "alternative shape scored wrong"
+# failure this batch exists to avoid (docs/adding-scenarios.md §1 item 3a)
+# -- and arm-asymmetric, since the identical idiom was already accepted on
+# hcl_raw. Fixed by adding the second `some %log_groups { ... }` disjunct
+# below, which reaches into the `Fn::Join`'s own argument list
+# (`.'Fn::Join'[1][0]`, the first element of the joined-strings array --
+# CDK always emits the literal prefix segment first, then the `{"Ref":...}`
+# to the function, for this exact interpolation shape) and applies the
+# SAME prefix regex to it. Verified directly against cfn-guard 3.2.0,
+# 2026-08-21, before this file was re-saved: a real `cdk synth` of
+# `logGroupName: \`/aws/lambda/${fn.functionName}\`` (aws-cdk-lib
+# 2.263.0, reproduced from the rejected-work reproduction stack) now PASSes
+# (previously FAILed, exit 19, `ComparisonError ... PathAwareValues are not
+# comparable map, Regex`); six hand-built fixtures re-checked against the
+# fixed rule for regression -- wired-only PASS, convention-literal-only
+# PASS, convention-Fn::Join-only PASS (the new case), unrelated-literal-
+# name-no-wiring FAIL, unrelated-Fn::Join-name-no-wiring FAIL (confirms the
+# new disjunct does not overmatch -- a differently-prefixed Fn::Join still
+# fails it), no-log-group-at-all FAIL. This gap does not exist on
+# hcl_raw/terraconstructs at all: Rego reads `.values.name` from
+# `terraform show -json`, always a fully-resolved plan-time-known string
+# (verified directly, this spec's own header comment deviation 2) -- there
+# is no HCL equivalent of an un-evaluated `Fn::Join` surviving into plan
+# output.
+
+let functions = Resources.*[ Type == "AWS::Lambda::Function" ]
+let log_groups = Resources.*[ Type == "AWS::Logs::LogGroup" ]
+
+rule log_group_governs_the_function when %functions !empty {
+	some %log_groups {
+		Properties.LogGroupName exists
+		Properties.LogGroupName == /^\/aws\/lambda/
+	}
+	or
+	some %log_groups {
+		# CDK renders `logGroupName: \`/aws/lambda/${fn.functionName}\``
+		# (template interpolation off the function's OWN name, the same
+		# authoring idiom the hcl_raw reference solution uses via HCL's
+		# `${...}` interpolation) as an `Fn::Join` intrinsic, not a plain
+		# string -- `{"Fn::Join":["",["/aws/lambda/",{"Ref":"..."}]]}` --
+		# so the plain-string disjunct above never matches it even though
+		# the rendered name IS the convention name. This disjunct accepts
+		# that intrinsic shape by checking its own first joined segment
+		# against the same prefix regex. See "2026-08-21, ROUND 2" below.
+		Properties.LogGroupName.'Fn::Join'[1][0] exists
+		Properties.LogGroupName.'Fn::Join'[1][0] == /^\/aws\/lambda/
+	}
+	or
+	some %functions {
+		Properties.LoggingConfig.LogGroup exists
+	}
+}
+
+# Fail-closed: a Lambda function exists but no log group exists anywhere in
+# the template at all -- redundant with the tier-0 `log-group-exists`
+# check by design (mirrors oracles/cfn-guard/s3-lambda-log-retention/
+# policy.guard's own fail-closed convention); never changes an OBSERVED
+# tier for catch 1's own fixture (tier-0 fails first), kept here only so
+# this policy is self-consistent on its own.
+rule functions_exist_but_no_log_groups when %functions !empty {
+	%log_groups !empty
+}

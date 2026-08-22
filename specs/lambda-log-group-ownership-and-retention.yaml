@@ -1,0 +1,855 @@
+# specs/lambda-log-group-ownership-and-retention.yaml
+#
+# Design source: docs/design/batch-a-greenfield-blueprints.md §11 (authored
+# 2026-08-20, "Batch A"). Graded as
+# `auto-created-log-groups-orphan-collide-and-never-expire`. Operator
+# comment on this candidate: "Terraconstructs might actually handle this
+# better today (it did not port the RETAIN policy -- in TF this would be
+# prevent_destroy and errors on destroy of those resources). This does
+# remain a CDK Pain." See "ARM PREDICTION" below (this file's own header,
+# not a separate numbered section -- the blueprint's own §11(e) is
+# reproduced here verbatim/adapted, per the operator's instruction that
+# this scenario's prediction be recorded explicitly) for the pre-registered
+# arm prediction this note demands.
+#
+# ARM PREDICTION (pre-registered, docs/design/batch-a-greenfield-
+# blueprints.md §11(e), reproduced here so this file is self-contained --
+# NOT a forward reference to a section that does not exist in THIS file).
+# Predicted ranking: terraconstructs WINS OUTRIGHT > hcl_raw > awscdk. This
+# is the first scenario in the corpus where the thesis's own CONTROL arm
+# (terraconstructs) is predicted to beat both primaries, not merely tie one
+# of them -- recorded before authoring so a contrary result is a real,
+# visible finding, not something authored around after the fact.
+#   1. terraconstructs -- `compute.LambdaFunction` creates the log group
+#      UNCONDITIONALLY (verified directly, see "terraconstructs 0.2.13"
+#      below); the agent's entire task is raising one prop,
+#      `logRetentionInDays`, from the construct's own default
+#      (RetentionDays.ONE_WEEK = 7) to 30. No orphan risk is even
+#      reachable through this L2's public surface -- RETAIN was never
+#      ported (grepped the whole file, see below), so there is no
+#      deprecated-prop trap and no removalPolicy to forget either.
+#   2. hcl_raw -- must know the group is implicit by default, must name it
+#      `/aws/lambda/<function-name>` exactly (or wire it explicitly), and
+#      must set retention_in_days=30 -- three separate, correct decisions
+#      with no L2 default to lean on, but no misleading typed API luring
+#      the agent toward a wrong answer either.
+#   3. awscdk -- the most work AND the most attractive wrong answer: the
+#      deprecated-but-still-typed, autocompleted `logRetention` prop reads
+#      as the obvious API for "set this function's log retention", passes
+#      `tsc` with no warning, and produces both an orphaned group (its own
+#      custom resource's removalPolicy defaults to RETAIN) and an extra
+#      Lambda-backed custom resource the ticket never asked for.
+# FALSIFIER: if a real measurement run puts awscdk ahead of terraconstructs
+# on this scenario, the "L2 defaults are the product" thesis this
+# benchmark exists to test takes a real, direct hit on this family -- that
+# is precisely why this ranking is written down before authoring rather
+# than after seeing a result.
+#
+# THE MECHANISM (operator-facing -- `id` names the diagnosis, "ownership":
+# a Lambda function's CloudWatch Logs log group is NOT owned by the
+# configuration unless something in the configuration makes THIS function
+# actually write to a log group the configuration declares. There are two
+# genuinely equivalent ways to do that -- EITHER name the declared group
+# exactly `/aws/lambda/<function-name>` (the implicit destination AWS
+# Lambda falls back to when nothing else is wired), OR explicitly wire the
+# function to it via `LoggingConfig.LogGroup` (CFN) / `logging_config.
+# log_group` (TF-shaped arms), a first-class Lambda argument (advanced
+# logging controls, GA'd 2023-11-16) that accepts a log group of ANY name
+# at all -- see "VERIFIER-REJECTED FIX (2026-08-21)" below for the
+# evidence trail; this replaces an earlier draft of this oracle that
+# required the naming convention exclusively). Left alone (neither path
+# taken), AWS Lambda creates a group implicitly on first invoke, outside
+# every IaC tool's management: it never expires, it survives stack
+# deletion, and it collides on any future deploy that tries to create it
+# for real. Every agent-visible name below (`workspace_id`, `title`, the
+# prompt) names only the ticket's two open requirements -- 30-day
+# retention, nothing left behind on teardown -- never the word
+# "ownership", "implicit", or either accepted mechanism's own name.
+#
+# EVIDENCE RE-VERIFICATION (carried from the blueprint's §0.5 finding, not
+# re-litigated here): the three URLs originally graded for this candidate
+# (aws-cdk#22307, #24656, #37797) are ALL about auto-created
+# AWS::Logs::ResourcePolicy objects (account limit of 10 / drift false
+# positives) -- a different CDK footgun entirely, not this scenario's
+# mechanism. Replacement evidence the blueprint found and this spec
+# inherits: aws-cdk#11549 ("delete associated log group when stack is
+# deleted", CLOSED/completed 2023-12-19, 55 (thumbsup), 19 comments -- "those
+# log groups linger after the stack has been deleted" verbatim) and three
+# still-OPEN issues confirming the gap persists into 2026: aws-cdk#21804
+# (13 (thumbsup)), aws-cdk#26553 (7 (thumbsup), last comment 2026-01-13),
+# aws-cdk#33025. aws-cdk#35003 ("migrate from logRetention to logGroup",
+# closed 2026-05-29) documents `logGroup` as the modern recommended path --
+# i.e. the fix exists and the DEFAULT is still the implicit-group path.
+#
+# SOURCE VERIFICATION AT THIS SPEC'S OWN AUTHORING TIME (2026-08-21, not
+# merely inherited from the blueprint -- every claim below was re-read
+# directly against the pinned packages this repo's own arms use):
+#
+# aws-cdk-lib 2.263.0 (read from the installed jsii package cache for this
+# exact pinned version, arms/awscdk/environment/workspace/package.json):
+#   - aws-lambda/lib/function.js: when `props.logGroup`, `props.logRetention`
+#     and the `useCdkManagedLogGroup` feature flag are ALL unset/off, the
+#     Function construct's `_logGroup` field is simply never assigned --
+#     NO `AWS::Logs::LogGroup` is synthesized at all. Confirmed directly
+#     (read the constructor body: the `else` branch that would create one
+#     is gated on `FeatureFlags.of(this).isEnabled(USE_CDK_MANAGED_LAMBDA_LOGGROUP)`,
+#     which is false here).
+#   - arms/awscdk/environment/workspace/cdk.json's own `context` block does
+#     NOT set `@aws-cdk/aws-lambda:useCdkManagedLogGroup` (checked directly)
+#     -- so the default path in THIS arm's own workspace is the
+#     implicit-group path, exactly what this scenario measures.
+#   - `logRetention` prop (`function.d.ts`): `@deprecated use 'logGroup'
+#     instead`, `@default logs.RetentionDays.INFINITE`. When set, the
+#     constructor provisions `new logs.LogRetention(this, "LogRetention",
+#     {logGroupName: `/aws/lambda/${this.functionName}`, retention:
+#     props.logRetention, ..., removalPolicy: props.logRemovalPolicy})` --
+#     a `Custom::LogRetention` custom resource, NOT a plain
+#     `AWS::Logs::LogGroup`. `aws-logs/lib/log-retention.d.ts`:
+#     `removalPolicy` `@default RemovalPolicy.RETAIN`. Since this
+#     scenario's ticket never asks the agent to also set the separate,
+#     equally-deprecated `logRemovalPolicy` prop, an agent reaching for
+#     `logRetention` alone (the attractive, typed, autocompleted move) gets
+#     an orphaned group by construction.
+#   - `logs.LogGroup`'s OWN `removalPolicy` prop (`aws-logs/lib/
+#     log-group.d.ts`) *also* `@default RemovalPolicy.Retain` -- and
+#     `LogGroup.js` wires it via `this.resource.applyRemovalPolicy(props.
+#     removalPolicy)`, which delegates to `CfnResource.applyRemovalPolicy`,
+#     whose own default (verified directly, `core/lib/cfn-resource.js`) is
+#     `policy = policy || options.default || RemovalPolicy.RETAIN` -- i.e.
+#     an agent who correctly authors an explicit `logs.LogGroup` and
+#     forgets `removalPolicy: RemovalPolicy.DESTROY` gets `DeletionPolicy:
+#     Retain` stamped into the template BY THE L2's OWN DEFAULT, not by any
+#     unusual choice. This is what makes `log-group-retained-on-delete`
+#     (catch 3 below) a real, easy-to-fall-into mistake rather than a
+#     contrived one.
+#
+# terraconstructs 0.2.13 (read from a real installed copy of this exact
+# pinned version, terraconstructs@0.2.13 under a project's node_modules;
+# arms/terraconstructs/environment/app/package.json pins the same version):
+#   - lib/aws/compute/function.js: `compute.LambdaFunction`'s constructor
+#     UNCONDITIONALLY runs `const logGroup = new
+#     provider_aws.cloudwatchLogGroup.CloudwatchLogGroup(this, "LogGroup",
+#     {name: `/aws/lambda/${functionName}`, retentionInDays:
+#     logRetentionInDays})` (default `logRetentionInDays = RetentionDays.
+#     ONE_WEEK`), then `dependsOn: [logGroup]` on the function resource and
+#     `loggingConfig: this.getLoggingConfig(this._logGroup.name, props)`.
+#     Grepped the WHOLE file for `removalPolicy`/`prevent_destroy`/`RETAIN`:
+#     zero matches. There is no public prop to suppress this auto-created
+#     group, rename it, or retain it -- the L2 surface offers exactly one
+#     knob, `logRetentionInDays?: RetentionDays` (function.d.ts:92), and
+#     `RetentionDays.ONE_MONTH = 30` is a real enum member
+#     (lib/aws/log-retention.d.ts). CONFIRMS the operator's own prediction
+#     literally, not just directionally: this arm's reference solution is
+#     ONE prop on the function construct, nothing else.
+#
+# TWO DEVIATIONS FROM THE BLUEPRINT'S PROPOSED ORACLE MECHANICS, FOUND BY
+# DIRECT EMPIRICAL TEST AT THIS SPEC'S AUTHORING TIME (2026-08-21, offline,
+# real `hashicorp/aws` 6.58.0 -- the hcl_raw arm's own pin -- against a
+# scratch fixture, no AWS calls):
+#
+# (1) The blueprint's proposed TF-arm check for catch 3
+#     (`log-group-is-deleted-with-the-stack`) was "no `lifecycle {
+#     prevent_destroy = true }` on the group (not_exists)". Verified this
+#     is UNIMPLEMENTABLE: built a minimal `null_resource` with
+#     `lifecycle { prevent_destroy = true }`, ran `terraform init && plan
+#     && show -json` for real, and grepped the entire plan JSON --
+#     `"prevent_destroy"` and `"lifecycle"` appear NOWHERE in the output
+#     (not `.configuration.root_module.resources[].expressions`, not
+#     anywhere else). Terraform's own JSON output format documentation
+#     (developer.hashicorp.com/terraform/internals/json-format, checked the
+#     same day) documents `count_expression`/`for_each_expression` as
+#     represented meta-arguments but says nothing about `lifecycle` at all
+#     -- confirming this is not a fixture artifact, it is the documented
+#     absence of any `lifecycle` representation in the JSON plan format. A
+#     `not_exists` structural_assert against this would be silently
+#     vacuous (always 0 nodes, whether or not the block is present) --
+#     exactly the class of dead tier-0 path SCHEMA.md §4.2.1 exists to
+#     forbid ("never mark a structural_assert tier '0' for an attribute
+#     that can be plan-time-unknown" generalizes here to "... or
+#     plan-time-INVISIBLE").
+#
+#     FIX: `hashicorp/aws` 6.58.0's own `aws_cloudwatch_log_group` resource
+#     has a first-class, PLAN-TIME-VISIBLE argument for exactly this
+#     requirement: `skip_destroy` (Optional, bool; provider docs, read
+#     2026-08-21: "Set to true if you do not wish the log group (and any
+#     logs it may contain) to be deleted at destroy time, and instead just
+#     remove the log group from the Terraform state.") -- confirmed by
+#     `terraform providers schema -json` against the real pinned provider,
+#     and confirmed it resolves in `.planned_values...values.skip_destroy`
+#     (default `false`) for a real plan. This is the closer semantic match
+#     to CDK's `RemovalPolicy.RETAIN` besides: `skip_destroy` orphans
+#     SILENTLY (matching "left behind in the account" from this scenario's
+#     own prompt), where `lifecycle { prevent_destroy = true }` makes
+#     `terraform destroy` ERROR OUT instead (closer to what the operator's
+#     own comment describes -- "errors on destroy of those resources" --
+#     but that is a teardown-time refusal, not a silent orphan, and either
+#     way is invisible to a static plan). `@cdktn/provider-aws` 24.8.0's L1
+#     `CloudwatchLogGroup` binding (this repo's terraconstructs arm's own
+#     pin) mirrors the same `skipDestroy?: boolean` 1:1 (verified directly
+#     against the installed package), so this same tier-0 check covers both
+#     TF-shaped arms uniformly, exactly like every other `tf_jsonpath` in
+#     this spec.
+#
+# (2) The blueprint hedged `log-group-name-matches-the-function` as "tier 1
+#     on the TF arms where the name interpolates the function name --
+#     graph edge", by analogy with s3-lambda-log-retention's SourceArn
+#     case. Checked directly: `aws_lambda_function.function_name` is
+#     `Required` in the pinned provider's own schema (`terraform providers
+#     schema -json`, `"function_name": {"required": true}` -- never
+#     Optional+computed the way an S3 bucket's auto-generated name is), so
+#     it is NEVER plan-time-unknown regardless of whether a correct
+#     solution spells it as a literal or interpolates
+#     `aws_lambda_function.fn.function_name` into the log group's own
+#     `name`. Verified with a real offline plan (literal function name,
+#     log group name built by interpolating `aws_lambda_function.
+#     event_processor.function_name`): `.planned_values...
+#     aws_cloudwatch_log_group.values.name` resolves fully to
+#     `"/aws/lambda/event-processor"`, not `(known after apply)`. So the
+#     PATTERN check (does the name even look like `/aws/lambda/...`) is
+#     tier-0 on every arm -- no G2 contagion here, unlike SourceArn. See
+#     catch 4 below for what the genuinely tier-1 fact turned out to be
+#     instead (exact-match, not existence).
+#
+# A FOURTH CATCH, NOT IN THE BLUEPRINT'S PROPOSED THREE, ADDED BECAUSE IT
+# IS REQUIRED FOR THIS SCENARIO TO BE GRADING-PROOF-ABLE AT ALL: the
+# blueprint's three catches (`log-group-left-implicit`,
+# `retention-via-deprecated-log-retention-prop`,
+# `log-group-retained-on-delete`) are EVERY ONE OF THEM tier "0" on every
+# arm once the two deviations above are folded in -- none of them exercises
+# a Rego/cfn-guard policy at all. `gates/grading_proof.py` hard-fails
+# (`any_tier1_proof`) unless at least one enabled arm produces a fixture
+# genuinely OBSERVED to be caught at tier "1" -- a scenario with zero
+# tier-1 coverage cannot pass `make grading-proof` full stop, regardless of
+# how many tier-0 catches it has. This is not a cosmetic requirement to
+# route around; it reflects a real fact this scenario was otherwise going
+# to leave unchecked: a log group that LOOKS right (exists, named
+# `/aws/lambda/something`, 30-day retention, deletes with the stack) but
+# that is NEITHER this function's own exact convention name NOR explicitly
+# wired to it governs NOTHING -- Lambda still writes to its own separately
+# implicit `/aws/lambda/<real-name>` group, silently reproducing catch 1's
+# failure behind a solution that passes every other check. `log-group-
+# name-diverges-from-function` (catch 4) is that fact, and it is a
+# genuine, realistic mistake (a stale copy-paste, a typo'd suffix, a
+# hand-built log group nobody wired the function to) worth catching on its
+# own terms, not merely a grading-proof formality.
+#
+# VERIFIER-REJECTED FIX (2026-08-21). An earlier draft of this oracle
+# required the naming convention EXCLUSIVELY -- `log-group-name-follows-
+# lambda-convention` (tier 0, every arm) demanded `LogGroupName`/`name`
+# literally match `^/aws/lambda/`, and the tier-1 exact-match check assumed
+# that was the ONLY governing mechanism. An adversarial review rejected
+# this as the exact "alternative shape scored wrong" failure this batch
+# exists to avoid (the `apigw-openapi` "each route is its own resource and
+# method" cautionary example, docs/adding-scenarios.md §1 item 3a): AWS
+# Lambda's own advanced logging controls (GA'd 2023-11-16) let a function
+# write to a log group of ANY name via `LoggingConfig.LogGroup` (CFN) /
+# `logging_config.log_group` (TF-shaped arms) -- a first-class,
+# fully-supported argument, not an obscure escape hatch. `aws-cdk-lib`
+# 2.263.0's own `lambda.Function.logGroup` prop (verified directly,
+# `aws-lambda/lib/function.d.ts:510`, `@default` doc: "Providing a
+# user-controlled log group was rolled out to commercial regions on
+# 2023-11-16") compiles straight to it (`function.js::getLoggingConfig`:
+# `logGroup: props.logGroup?.logGroupRef.logGroupName`, landing at
+# `CfnFunction.Properties.LoggingConfig.LogGroup`, `lambda.generated.d.ts`
+# line 407: "To use a different log group, enter an existing log group or
+# enter a new log group name" -- no naming restriction stated at all).
+# `hashicorp/aws` 6.58.0's `aws_lambda_function.logging_config.log_group`
+# argument and `@cdktn/provider-aws` 24.8.0's 1:1 `logGroup?: string`
+# binding (`lib/lambda-function/index.d.ts:470`) mirror it exactly on the
+# TF-shaped arms. Re-verified directly against this scenario's own pinned
+# packages at fix time (2026-08-21): a hand-built `AWS::Lambda::Function`
+# with `LoggingConfig.LogGroup` set to a `Ref` on an arbitrarily-named
+# `AWS::Logs::LogGroup` -- and, separately, a real offline `terraform
+# plan` with `logging_config { log_group = aws_cloudwatch_log_group.
+# custom.name }` pointed at `aws_cloudwatch_log_group.custom.name =
+# "/platform/event-processor"` -- both fully satisfy this ticket's real
+# intent (30-day retention, deleted with the stack, nothing orphaned,
+# genuinely governing this function's logs) and both were, before this
+# fix, scored 0.0 by the tier-0 `^/aws/lambda/` regex (a bare `LogGroup`
+# Ref/GetAtt value is never a string matching that pattern, and an
+# arbitrarily-named group like `/platform/event-processor` never matches
+# it either). This fix REMOVES the exclusive tier-0 naming gate and
+# replaces the whole "does the declared group govern this function" fact
+# with a single tier-1 OR check, on every enabled arm, implemented in
+# `oracles/rego/.../policy.rego` (TF-shaped arms) and `oracles/cfn-guard/
+# .../policy.guard` (awscdk, now HAND-AUTHORED for real -- see below, this
+# was previously a deliberate `GENERATOR-STUB` on the theory that this
+# fact was unauthorable there at all, which this fix also corrects). See
+# catches[3] (`log-group-name-diverges-from-function`) and
+# `oracle.structural_asserts` (`log-group-governs-the-function-cfn`/`-tf`)
+# below for the resulting shape, and this file's own `oracle.intent` for
+# the corrected natural-language statement of the fact.
+#
+# ORACLE-HONESTY CORRECTION, SAME FIX (aws-cdk#35003 re-cited). The
+# pre-fix `oracle.intent` and this file's own evidence trail asserted
+# "AWS Lambda's log destination is determined ENTIRELY by [the naming]
+# convention, not by any CloudFormation/Terraform-level wiring between the
+# two resources at all" -- FALSE, and self-contradicted by this very file's
+# own terraconstructs evidence two paragraphs above (`function.js:478`:
+# `loggingConfig: this.getLoggingConfig(this._logGroup.name, props)`,
+# wiring by name, when `loggingFormat` is set). `aws-cdk#35003` ("migrate
+# from logRetention to logGroup", closed 2026-05-29) -- already cited
+# above for a DIFFERENT, still-true fact (`logGroup` is the modern
+# replacement for the deprecated `logRetention` custom-resource path,
+# catch 2's own mechanism) -- was ALSO mis-cited as supporting evidence for
+# the naming-convention-only claim. Re-read directly at fix time: it
+# argues the OPPOSITE. Maintainer @mrgrain, 2026-05-29: "Manually created
+# log groups should **not** use the ... `/aws/lambda/GoodFunction` name,
+# unless migrating from an existing log group. Names prefixed with `/aws`
+# are auto-created by services and should be treated as soft-reserved. ...
+# The 'BadLogGroup' isn't even bad at all." @pahud's reproduction: "Both
+# custom log groups work correctly and receive logs, regardless of naming
+# pattern." I.e. the issue that introduced `logGroup` argues an
+# ARBITRARILY-named, explicitly-wired group is the RECOMMENDED shape, not
+# a tolerated edge case -- direct support for this fix's OR check, and the
+# opposite of what the pre-fix oracle cited it for. `logGroup`'s own
+# continued use for the naming-convention path (this scenario's reference
+# solutions' own shape) remains valid and unaffected -- CDK synthesizes it
+# either way; the point above is narrower, that the ISSUE does not support
+# treating the convention as the ONLY correct path, which is what this fix
+# corrects.
+#
+# RESIDUAL, NARROWER TOOL-CAPABILITY GAP (found and accepted the same way
+# this repo already accepts the "cross-collection identity-join" gap in
+# oracles/cfn-guard/iam-managed-policy-exclusive-vs-attachment/policy.guard
+# and oracles/cfn-guard/s3-lambda-log-retention/policy.guard's own header
+# comments): cfn-guard 3.2.0's rule DSL has no string-building operator at
+# all (only EXISTS/EMPTY/comparison/IN/regex against STATIC literals
+# written into the rule file itself), so proving "LogGroupName == '/aws/
+# lambda/' + FunctionName" EXACTLY (as opposed to merely matching the
+# `^/aws/lambda/` prefix) is still not implementable in cfn-guard --
+# trivial in Rego (`sprintf`), used for the TF-shaped arms' half of this
+# same check. This gap is now MUCH NARROWER than the pre-fix draft's: it
+# only affects the convention-path's SUFFIX precision (an agent who
+# declares an unrelated, unwired group literally named `/aws/lambda/
+# something-else` still evades detection on awscdk specifically -- the
+# weak prefix regex the cfn-guard rule uses for that disjunct still
+# matches it); it no longer affects the wiring path at all (`Properties.
+# LoggingConfig.LogGroup exists` is a plain structural existence check,
+# needs no string comparison, and is fully precise on awscdk -- verified
+# directly against cfn-guard 3.2.0, hand-built PASS/FAIL fixtures, before
+# this file was written: wired-only PASS, convention-only-literal PASS,
+# neither-matching-nor-wired FAIL, no-log-group-at-all FAIL). Because the
+# wiring path closes the gap that used to make catch 4 entirely
+# unauthorable on awscdk, catch 4's `applies_to` now INCLUDES awscdk (with
+# its own, narrower broken fixture -- a totally unrelated, unwired name,
+# which the awscdk cfn-guard rule DOES catch, unlike a same-prefix
+# wrong-suffix mismatch, which it still cannot) instead of excluding it.
+
+id: lambda-log-group-ownership-and-retention
+title: "Event processor whose logs are kept for 30 days and cleaned up with the stack"
+workspace_id: event-processor
+difficulty: 2
+services: [lambda, logs, iam]
+
+arms:
+  awscdk: true
+  hcl_raw: true
+  terraconstructs:
+    enabled: true
+    reason: >
+      arms/terraconstructs/README.md §4 ("Per-seed-scenario verdict"),
+      s3-lambda-log-retention row, already confirms `compute.LambdaFunction`
+      (`src/aws/compute/function.ts`) + `cloudwatch.LogGroup`/`RetentionDays`
+      (`src/aws/log-retention.ts`) are real, supported constructs on this
+      pinned 0.2.13 package. This spec goes one step further and re-verifies,
+      directly against the installed 0.2.13 package at THIS spec's own
+      authoring time (2026-08-21, see this file's header comment): unlike
+      s3-lambda-log-retention's own reference solution (which hand-authors a
+      SEPARATE `cloudwatch.LogGroup` alongside `compute.LambdaFunction`),
+      `compute.LambdaFunction`'s constructor (`lib/aws/compute/function.js`)
+      UNCONDITIONALLY creates its OWN `aws_cloudwatch_log_group` named
+      `/aws/lambda/${functionName}` and wires it in via `loggingConfig` +
+      `dependsOn` -- with no `removalPolicy`/`prevent_destroy`/RETAIN
+      anywhere in that code path (grepped the whole file). This is the
+      literal mechanism behind this spec's own pre-registered arm
+      prediction (this file's own header comment, "ARM PREDICTION"): the
+      terraconstructs reference solution for THIS scenario needs no
+      separate log group resource at all, just the L2's own
+      `logRetentionInDays: RetentionDays.ONE_MONTH` prop.
+
+instruction:
+  shared_body: |
+    Add the event-processor Lambda to the platform stack.
+
+    Its logs must be retained for 30 days — not indefinitely, we are paying
+    for that today — and when this stack is torn down, nothing of it may
+    be left behind in the account.
+  placeholders: []
+  per_arm:
+    awscdk:
+      language_line: "Author this as an AWS CDK (TypeScript) app using aws-cdk-lib L2 constructs."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdk.out/ScenarioStack.template.json
+        build_command: "npm run build"
+        synth_command: "npx cdk synth --no-lookups --quiet -o cdk.out"
+        json_fields: []
+    hcl_raw:
+      language_line: "Author this as hand-written Terraform HCL (no modules)."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields: []
+    terraconstructs:
+      language_line: "Author this using terraconstructs (TypeScript) L2 constructs, synthesized via cdktn."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdktf.out/stacks/event-processor/plan.json
+        synth_command: "npx cdktn synth"
+        json_fields: []
+
+catches:
+  # --- Catch 1: the plausible-wrong solution on EVERY arm -----------------
+  - name: log-group-left-implicit
+    taxonomy: graph-dependency
+    description: >
+      No log group is declared anywhere in the configuration at all. The
+      function works, its logs appear (AWS Lambda creates
+      `/aws/lambda/<function-name>` implicitly on first invoke, entirely
+      outside this configuration's management), and every functional test
+      an agent might informally run would look fine -- but the group is
+      never expired (CloudWatch's own implicit default is infinite
+      retention), never deleted with the stack (nothing in this
+      configuration owns it), and collides on any future deploy that tries
+      to create it for real. This is the single most attractive
+      "plausible-wrong" solution on every arm: it is what happens if the
+      agent reads "the event-processor Lambda" and stops at the function
+      itself, since nothing about authoring a Lambda function requires
+      touching CloudWatch Logs at all on awscdk or hcl_raw (terraconstructs'
+      own L2 makes this specific omission harder to reach -- see
+      `applies_to` below). Caught trivially: `log-group-exists` (tier 0)
+      resolves to zero nodes.
+    applies_to: [awscdk, hcl_raw, terraconstructs]
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "0"
+      terraconstructs_override: null
+
+  # --- Catch 2: the attractive wrong answer the operator's own note names -
+  - name: retention-via-deprecated-log-retention-prop
+    taxonomy: anti-L2
+    description: >
+      awscdk only. `logRetention: RetentionDays.ONE_MONTH` on
+      `lambda.Function` is typed, autocompleted, and reads as the obvious
+      API for "set this function's log retention" -- IDE completion
+      surfaces it right next to the non-deprecated alternative with no
+      visual warning at the call site. Verified directly against
+      aws-cdk-lib 2.263.0 (see this file's header comment):  it provisions
+      a `Custom::LogRetention` custom-resource Lambda that calls
+      PutRetentionPolicy imperatively at deploy time rather than declaring
+      a plain `AWS::Logs::LogGroup` resource in the template at all --
+      there is no template-level `AWS::Logs::LogGroup` for a tier-0
+      DeletionPolicy check to even inspect -- and that custom resource's
+      own `removalPolicy` (wired from the separate, equally-deprecated
+      `logRemovalPolicy` prop this ticket never mentions) defaults to
+      `RemovalPolicy.RETAIN`. An agent reaching for `logRetention` alone
+      therefore satisfies the retention half of the ticket (30 days is a
+      valid `RetentionDays` member) while silently failing the teardown
+      half. terraconstructs' `compute.LambdaFunction` has no equivalent
+      deprecated prop at all (verified: `function.d.ts` has no
+      `logRetention` field anywhere) -- structurally unreachable there, not
+      merely undesirable, which is why `applies_to` excludes it. hcl_raw
+      has no CDK-style API surface in the first place. Caught by
+      `no-log-retention-custom-resource` (tier 0, awscdk only): the
+      synthesized template contains a `Custom::LogRetention`-typed
+      resource, which this scenario's oracle requires to be absent.
+    applies_to: [awscdk]
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "0"
+      terraconstructs_override: null
+
+  # --- Catch 3: the group is right, but retained ---------------------------
+  - name: log-group-retained-on-delete
+    taxonomy: nested-attribute
+    description: >
+      The log group is declared correctly (right name, right 30-day
+      retention) but is protected from deletion: `RemovalPolicy.RETAIN`
+      (or simply omitting `removalPolicy`, which is the awscdk L2's OWN
+      default per this file's header comment -- not an unusual mistake, the
+      construct's shipped default) on awscdk; `skip_destroy = true` on the
+      TF-shaped arms. Every functional and retention-shaped check passes;
+      only the teardown half of the ticket fails, silently -- the group
+      survives `cdk destroy`/`terraform destroy` and is left behind in the
+      account exactly as the ticket says must not happen. Caught by
+      `log-group-not-retained-on-stack-delete-cfn`/`-tf` (tier 0): the
+      synthesized `DeletionPolicy` is not `"Delete"` (awscdk), or
+      `skip_destroy` is `true` (TF-shaped arms).
+    applies_to: [awscdk, hcl_raw, terraconstructs]
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "0"
+      terraconstructs_override: null
+
+  # --- Catch 4: looks right, governs nothing (added by this spec; see the -
+  # --- header comment's "A FOURTH CATCH" note for why) ---------------------
+  - name: log-group-name-diverges-from-function
+    taxonomy: graph-dependency
+    description: >
+      The log group exists, has 30-day retention, and deletes with the
+      stack -- every tier-0 fact this scenario checks looks correct. But
+      its name does not EXACTLY match the event-processor function's own
+      convention name (a stale copy-paste from another function, or a
+      typo'd suffix), AND nothing explicitly wires the function to it
+      either (no `LoggingConfig.LogGroup` / `logging_config.log_group`).
+      Neither of this scenario's two accepted "the declared group actually
+      governs this function" mechanisms (exact `/aws/lambda/<function-
+      name>` naming, or explicit wiring -- see this file's header comment,
+      "VERIFIER-REJECTED FIX") is satisfied, so this declared,
+      correctly-shaped, correctly-retained, correctly-deleted log group
+      governs NOTHING: Lambda still writes to its own, separately implicit
+      `/aws/lambda/event-processor` group, silently reproducing catch 1's
+      exact failure mode behind a solution that otherwise looks complete.
+      On hcl_raw and terraconstructs, both the log group's `name` and the
+      function's `logging_config[].log_group` (if wired) or
+      `function_name` (if relying on the convention) are plan-time-known
+      literal string values (`function_name` is Required in the pinned
+      `hashicorp/aws` provider's own schema, verified directly -- never
+      plan-time-unknown), so a Rego rule can compare them for exact
+      equality directly -- this is genuinely NOT tier-0 checkable with a
+      flat JSONPath+op+expected triple (the "expected" value is not a
+      spec-time literal, it's another resource's own resolved value),
+      hence tier 1. On awscdk, the wiring disjunct
+      (`Properties.LoggingConfig.LogGroup exists`) is a precise structural
+      check with no capability gap at all, but the naming disjunct can
+      only be checked at the weaker `^/aws/lambda/` PREFIX level (cfn-guard
+      3.2.0 has no string-concatenation operator to compute the function's
+      own expected suffix -- see this file's header comment, "RESIDUAL,
+      NARROWER TOOL-CAPABILITY GAP"), so this catch's own broken fixture on
+      awscdk uses a name that fails the prefix check outright (an unrelated
+      name, not merely a wrong suffix) to stay within what awscdk's own
+      tier-1 rule can actually prove.
+    applies_to: [awscdk, hcl_raw, terraconstructs]
+    predicted_tier_caught:
+      awscdk: "1"
+      hcl: "1"
+      terraconstructs_override: null
+
+  # --- Catch 5: retention left at the construct's own default (added by ---
+  # --- the 2026-08-21 verifier-fix round -- this scenario's headline value
+  # --- check, `log-group-retention-is-30-days`, previously had NO fixture
+  # --- that isolated it: the only two fixtures that made it fail
+  # --- (`log-group-left-implicit`, `retention-via-deprecated-log-
+  # --- retention-prop`) both do so VACUOUSLY, because neither one
+  # --- declares an `AWS::Logs::LogGroup`/`aws_cloudwatch_log_group` at all
+  # --- (0 resolved nodes -> `eq` fails for a reason unrelated to the
+  # --- retention VALUE). This catch is the missing, non-vacuous one: a
+  # --- correctly-named, correctly-wired, correctly-deleted log group whose
+  # --- retention is simply never set to 30, left at whatever the arm's own
+  # --- construct/provider default is instead. -----------------------------
+  - name: retention-left-at-the-construct-default
+    taxonomy: nested-attribute
+    description: >
+      The log group is correctly named/wired (governs the function) and
+      correctly deleted with the stack -- every OTHER tier-0/tier-1 fact
+      this scenario checks passes -- but its retention is simply never set
+      to 30, left at whatever value the arm's own construct or provider
+      falls back to when the knob is omitted. Each arm's own default is a
+      DIFFERENT wrong value, verified directly, 2026-08-21, against a real
+      synth/plan (not merely read from documentation) before this catch was
+      written: awscdk -- an explicit `logs.LogGroup` with no `retention`
+      prop synthesizes `RetentionInDays: 731` (`aws-logs/lib/log-group.d.ts`:
+      `@default RetentionDays.TWO_YEARS`; the enum member itself,
+      `log-group.d.ts:336`, is `TWO_YEARS = 731`, confirmed directly against
+      the pinned package -- either way, not 30); hcl_raw -- an
+      `aws_cloudwatch_log_group` with no `retention_in_days` argument
+      resolves to a PRESENT `retention_in_days: 0` in `.planned_values`
+      (never expire), not an absent key; terraconstructs -- THIS is the
+      acute case, since this arm's entire reference solution is one prop
+      on `compute.LambdaFunction` (see this file's header comment's
+      terraconstructs evidence) -- omitting `logRetentionInDays` (the ONLY
+      knob this L2 exposes for this fact at all) leaves the function's
+      auto-created log group at the construct's own
+      `RetentionDays.ONE_WEEK` default, confirmed directly to synthesize
+      `retention_in_days: 7`. This is the single most likely real mistake
+      on the pre-registered winning arm: an agent who reasons "the L2
+      already creates the log group, nothing more to do" satisfies the
+      ownership half of the ticket for free and never touches retention at
+      all. Caught by `log-group-retention-is-30-days` (tier 0, `op: eq`,
+      `expected: 30`) on every arm -- non-vacuously this time: the field
+      resolves to exactly one node whose value is wrong (731 / 0 / 7), not
+      to zero nodes.
+    applies_to: [awscdk, hcl_raw, terraconstructs]
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "0"
+      terraconstructs_override: null
+
+oracle:
+  intent: >
+    An AWS Lambda function (the event-processor) exists. A CloudWatch Logs
+    log group exists that GENUINELY GOVERNS this function's logs — either
+    by being named EXACTLY `/aws/lambda/<the function's own name>` (the
+    implicit destination AWS Lambda falls back to whenever nothing else is
+    wired), OR by the function being EXPLICITLY WIRED to it via
+    `LoggingConfig.LogGroup` (awscdk) / `logging_config.log_group`
+    (hcl_raw/terraconstructs), a first-class Lambda argument that accepts a
+    log group of any name at all. Either mechanism makes the declared
+    group the one the function actually writes to; a log group satisfying
+    NEITHER — the wrong name and no explicit wiring — is a decorative,
+    disconnected resource alongside an implicit one Lambda creates on its
+    own, no matter how correctly shaped, retained, or deletable it
+    otherwise is. Its retention is explicitly set to 30 days — never left
+    unset (CloudWatch's own implied default is infinite retention) and
+    never left at some other construct-supplied default. When the stack is
+    deleted, the log group is deleted with it: no `RemovalPolicy.RETAIN`
+    (awscdk) and no `skip_destroy = true` (hcl_raw/terraconstructs) may
+    protect it from deletion. On the awscdk arm specifically, the
+    function's log group must not be provisioned via the deprecated
+    `logRetention` custom-resource path — its own log group defaults to
+    being retained forever regardless of what retention value is passed,
+    and the resource itself is a `Custom::LogRetention` Lambda-backed
+    custom resource rather than a plain, template-visible log group.
+
+  structural_asserts:
+    - name: log-group-exists
+      description: "A CloudWatch Logs log group exists."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Logs::LogGroup')]"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_cloudwatch_log_group')]"
+      op: exists
+
+    - name: lambda-function-exists
+      description: "An AWS Lambda function exists."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Lambda::Function')]"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_function')]"
+      op: exists
+
+    - name: log-group-retention-is-30-days
+      description: >
+        The log group's retention is explicitly set to 30 days -- never
+        left unset (CloudWatch's implied default is infinite retention:
+        RetentionDays.INFINITE on awscdk's own logRetention prop, and a
+        bare 0/omitted retention_in_days on the TF-shaped arms) and never a
+        materially different valid value. 30 is a real CloudWatch retention
+        value on every arm (RetentionDays.ONE_MONTH = 30 in both
+        aws-cdk-lib and terraconstructs' own typed enum; 30 is in
+        hashicorp/aws's own retention_in_days ValidateFunc allow-list) --
+        this scenario is deliberately NOT the s3-lambda-log-retention
+        typed-enum-boundary trap (that scenario's own header comment notes
+        the overlap risk and resolves it by choosing a VALID value here;
+        this scenario's trap is ownership, not the enum).
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Logs::LogGroup')].Properties.RetentionInDays"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_cloudwatch_log_group')].values.retention_in_days"
+      op: eq
+      expected: 30
+
+    - name: log-group-not-retained-on-stack-delete-cfn
+      description: >
+        (awscdk only -- see -tf for the TF-shaped arms.) The log group's
+        CloudFormation `DeletionPolicy` is `"Delete"` (or absent, though
+        `logs.LogGroup`'s own L2 default stamps it explicitly -- see this
+        file's header comment) -- never `"Retain"`. `DeletionPolicy` is a
+        template-level key, always statically present on a synthesized
+        template regardless of arm (no "plan" concept on this arm, SCHEMA.md
+        §4.2.1 does not apply here), so this is a sound tier-0 check.
+      tier: "0"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Logs::LogGroup')].DeletionPolicy"
+      op: absent_or_eq
+      expected: "Delete"
+
+    - name: log-group-not-retained-on-stack-delete-tf
+      description: >
+        (hcl_raw + terraconstructs only -- see -cfn for awscdk.) The log
+        group's `skip_destroy` argument is `false` (or omitted, which
+        defaults to `false`) -- never `true`. `skip_destroy` is a plain,
+        Optional boolean argument on `aws_cloudwatch_log_group` (verified
+        directly against the pinned `hashicorp/aws` 6.58.0 provider schema
+        and a real offline plan -- always present with its resolved value
+        in `.planned_values`, never plan-time-unknown), the load-bearing
+        deviation from the blueprint's original `lifecycle {
+        prevent_destroy = true }` proposal -- see this file's header
+        comment, deviation 1, for why that proposal was unimplementable
+        (invisible to `terraform show -json` entirely) and why
+        `skip_destroy` is both implementable AND the closer semantic match
+        to awscdk's own `RemovalPolicy.RETAIN` (a silent orphan, not a
+        destroy-time error).
+      tier: "0"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_cloudwatch_log_group')].values.skip_destroy"
+      op: absent_or_eq
+      expected: false
+
+    - name: no-log-retention-custom-resource
+      description: >
+        (awscdk only.) No `Custom::LogRetention`-typed resource exists in
+        the synthesized template. This is the deprecated `logRetention`
+        prop's own signature: it provisions this custom resource type
+        instead of a plain `AWS::Logs::LogGroup`, and that custom
+        resource's own default removal policy is RETAIN (verified directly
+        against aws-cdk-lib 2.263.0 -- see this file's header comment).
+        hcl_raw and terraconstructs have no equivalent legacy code path at
+        all (terraconstructs' `compute.LambdaFunction` has no `logRetention`
+        prop, verified directly against `function.d.ts`), so this assert
+        does not apply to them.
+      tier: "0"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='Custom::LogRetention')]"
+      op: not_exists
+
+    # --- log-group-governs-the-function (tier 1, split -cfn/-tf like the
+    # -cfn/-tf pair above -- the REAL check is an OR of two mechanisms
+    # (exact convention-name match, or explicit LoggingConfig/
+    # logging_config wiring), see this file's header comment
+    # ("VERIFIER-REJECTED FIX", 2026-08-21) for the fix this replaced and
+    # why a flat tier-0 JSONPath can no longer express this fact (it used
+    # to, incorrectly, require the naming path exclusively). Each
+    # cfn_jsonpath/tf_jsonpath below documents the CANONICAL,
+    # directly-verified convention-name path (the one every reference
+    # solution in this scenario uses) as SCHEMA.md §4.2.1's split-entry
+    # pattern does for a different reason, mirroring
+    # asg-launch-template-tag-propagation's own
+    # `every-required-tag-reaches-instances` precedent -- the REAL,
+    # tolerant, BOTH-mechanisms OR check is
+    # oracles/rego/.../policy.rego + oracles/cfn-guard/.../policy.guard,
+    # not this jsonpath pair, which is guidance/spec only.
+    - name: log-group-governs-the-function-cfn
+      description: >
+        (awscdk only -- see -tf for the TF-shaped arms.) The declared log
+        group actually governs this function's logs: EITHER its
+        `LogGroupName` matches the `^/aws/lambda/` prefix (the weaker,
+        precision-limited form of the convention-name check on this arm --
+        see this file's header comment, "RESIDUAL, NARROWER
+        TOOL-CAPABILITY GAP", for why cfn-guard cannot verify the exact
+        suffix match without a string-concatenation operator it does not
+        have), OR the function's own `Properties.LoggingConfig.LogGroup`
+        exists (a Ref/GetAtt/literal wiring the function to a log group
+        this template declares -- fully precise, no capability gap, since
+        this is a structural existence check, not a value comparison).
+        Verified directly against cfn-guard 3.2.0 with hand-built
+        fixtures before this file was written: wired-only PASS,
+        literal-convention-name-only PASS, neither PASS-condition met
+        (unrelated name, no wiring) FAIL, no log group at all FAIL.
+      tier: "1"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Logs::LogGroup')].Properties.LogGroupName"
+      op: regex
+      expected: "^/aws/lambda/"
+
+    - name: log-group-governs-the-function-tf
+      description: >
+        (hcl_raw + terraconstructs only -- see -cfn for awscdk.) The
+        declared log group actually governs this function's logs: EITHER
+        its `name` value EXACTLY equals `/aws/lambda/` followed by the SAME
+        `function_name` value the `aws_lambda_function` resource in this
+        configuration uses, OR the function's `logging_config[].log_group`
+        value exactly equals SOME `aws_cloudwatch_log_group` resource's own
+        `name` in this plan (explicit wiring -- accepts a log group of any
+        name at all, since the wiring itself is what makes Lambda write to
+        it, not the name). This `tf_jsonpath` documents the convention-name
+        side of the comparison (the log group's own name); the real
+        check -- both disjuncts, read from the same plan JSON -- is
+        Rego-graded (see rego_hints and
+        oracles/rego/lambda-log-group-ownership-and-retention/policy.rego,
+        the file that actually runs). Every value involved is
+        plan-time-known on every enabled arm (verified directly -- see
+        this file's header comment deviation 2 for `function_name`/log
+        group `name`, and the fix commentary above for `logging_config[].
+        log_group`, itself a plain, Optional, never-computed string
+        argument), so this is a fully-decidable Rego rule, not a
+        documented "not_verifiable" gap the way SCHEMA.md §4.2.1's second
+        bullet describes for a genuinely plan-time-unknown value.
+      tier: "1"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_cloudwatch_log_group')].values.name"
+      op: regex
+      expected: "^/aws/lambda/"
+
+  rego_hints:
+    - >-
+      package cdktn_bench.lambda_log_group_ownership_and_retention, graded
+      against `terraform show -json` PLAN output (input) for hcl_raw AND
+      terraconstructs. Read `input.planned_values.root_module.resources[]`
+      for the `aws_cloudwatch_log_group` entry/entries (`.values.name`),
+      the `aws_lambda_function` entry/entries (`.values.function_name` AND
+      `.values.logging_config[].log_group`, the latter present only when
+      the function is explicitly wired -- absent, never null or [], when no
+      `logging_config` block is authored, verified directly against a real
+      offline plan) -- every one of these is plan-time-known on every
+      correct AND every broken fixture this scenario's catches produce
+      (verified directly, see this spec's own header comment deviation 2
+      for `function_name`/log group `name`, and the "VERIFIER-REJECTED
+      FIX" section for `logging_config[].log_group`, itself a plain,
+      never-computed string argument when present).
+    - >-
+      deny if there is no `aws_cloudwatch_log_group` resource that GOVERNS
+      a given `aws_lambda_function` -- EITHER its `.values.name` equals
+      `sprintf("/aws/lambda/%s", [fn.values.function_name])` (the
+      convention path), OR some entry in `fn.values.logging_config` has a
+      `.log_group` that equals that log group's own `.values.name` (the
+      explicit-wiring path, accepting a log group of ANY name) -- for SOME
+      `aws_lambda_function` resource `fn` in the plan. This is the OR check
+      `log-group-governs-the-function-tf`'s own spec documents (catch 4,
+      `log-group-name-diverges-from-function`); it replaced an
+      exact-match-only rule (2026-08-21 fix, see this spec's own header
+      comment) that scored a genuinely correct, explicitly-wired solution
+      0.0.
+    - >-
+      fail-closed: deny if an `aws_lambda_function` resource exists in the
+      plan but NO `aws_cloudwatch_log_group` resource exists at all
+      (mirrors toy-ssm-parameter's own fail-closed convention -- guards
+      against the comprehension above being vacuously silent when the log
+      group is omitted entirely rather than merely misnamed; this
+      duplicates the tier-0 `log-group-exists` check by design, so it never
+      changes an observed tier, only keeps this rule honest on its own).
+
+  cfn_guard_hints:
+    - >-
+      This scenario's cfn-guard bundle
+      (oracles/cfn-guard/lambda-log-group-ownership-and-retention/
+      policy.guard) is now HAND-AUTHORED for real (2026-08-21 fix -- it was
+      previously a deliberate `GENERATOR-STUB` on the theory that catch 4
+      was entirely unauthorable on awscdk; see this spec's own header
+      comment, "VERIFIER-REJECTED FIX" / "RESIDUAL, NARROWER
+      TOOL-CAPABILITY GAP", for why that theory was wrong). It covers the
+      awscdk-arm-applicable tier-1-SHAPED structural facts this spec
+      declares at tier 0 instead (`log-group-not-retained-on-stack-
+      delete-cfn`, `no-log-retention-custom-resource` are both tier-0 flat
+      checks and need no cfn-guard rule at all -- `tests/static_tiers.sh`
+      runs them directly), PLUS one real rule for catch 4
+      (`log-group-name-diverges-from-function` /
+      `log-group-governs-the-function-cfn`): deny unless EITHER some
+      `AWS::Logs::LogGroup`'s `Properties.LogGroupName` matches the
+      `^/aws/lambda/` prefix regex (cfn-guard CAN do a static regex; it
+      cannot compute the function's own exact expected suffix -- no
+      string-concatenation operator, the one capability gap that survives
+      this fix), OR some `AWS::Lambda::Function`'s
+      `Properties.LoggingConfig.LogGroup` exists (a plain structural
+      existence check -- no capability gap at all for this disjunct).
+      `some %log_groups { ... } or some %functions { ... }` is cfn-guard
+      3's real boolean-OR operator between two `some` blocks, same
+      construct as `oracles/cfn-guard/asg-launch-template-tag-propagation/
+      policy.guard`'s own precedent -- confirmed directly, hand-built
+      PASS/FAIL fixtures, before this file was written (see this spec's own
+      header comment for the transcript summary).
+
+  tier05_jsonata: null
+
+verifier:
+  budget:
+    max_iters: 8
+  live_check:
+    enabled: false
+    module: tests/live_check.py
+
+provenance:
+  author: "Vincent (via Claude Code, Batch A scenario-authoring task)"
+  date: "2026-08-21"
+  prereg_section_refs:
+    - "docs/design/batch-a-greenfield-blueprints.md §11 (lambda-log-group-ownership-and-retention) -- the design source this spec implements, with two evidence-checked oracle-mechanics deviations and one added catch, both recorded in this file's own header comment"
+    - "docs/design/batch-a-greenfield-blueprints.md §0.1-§0.3 (batch-wide identity/prompt/oracle conventions applied throughout), §0.5 (evidence re-verification table, auto-created-log-groups row -- the three originally-graded URLs are falsified; replacement evidence is aws-cdk#11549, #21804, #26553, #33025, #35003, re-cited here)"
+    - "aws-cdk-lib 2.263.0 (pinned, arms/awscdk/environment/workspace/package.json): aws-lambda/lib/function.js (implicit-group / logRetention / logRemovalPolicy paths), aws-lambda/lib/function.d.ts (logRetention/logRemovalPolicy @deprecated + @default annotations), aws-logs/lib/log-retention.d.ts (removalPolicy @default RemovalPolicy.RETAIN), aws-logs/lib/log-group.js + .d.ts (LogGroup's own removalPolicy @default RemovalPolicy.Retain), core/lib/cfn-resource.js (applyRemovalPolicy's own RemovalPolicy.RETAIN fallback), cx-api/lib/features.d.ts (USE_CDK_MANAGED_LAMBDA_LOGGROUP) -- all re-verified directly at this spec's own authoring time, 2026-08-21."
+    - "terraconstructs 0.2.13 (pinned, arms/terraconstructs/environment/app/package.json): lib/aws/compute/function.js + .d.ts (unconditional CloudwatchLogGroup creation, logRetentionInDays prop, no removalPolicy/prevent_destroy/RETAIN anywhere in the file), lib/aws/log-retention.d.ts (RetentionDays.ONE_MONTH = 30) -- re-verified directly at this spec's own authoring time, 2026-08-21, against a real installed copy of this exact pinned version."
+    - "hashicorp/aws 6.58.0 (pinned, arms/hcl-raw's own mirror): `terraform providers schema -json` (function_name Required; skip_destroy Optional bool) and website/docs/r/cloudwatch_log_group.html.markdown (skip_destroy's exact documented semantics), both re-verified directly, 2026-08-21, plus a real offline `terraform init/plan/show -json` run proving (a) `lifecycle { prevent_destroy = true }` is entirely invisible to `terraform show -json` plan output and (b) `skip_destroy` and an interpolated log-group name both resolve fully in `.planned_values` -- see this file's header comment's two numbered deviations for the full transcripts."
+    - "@cdktn/provider-aws 24.8.0 (pinned, arms/terraconstructs/environment/app/package.json): lib/cloudwatch-log-group's own generated `skipDestroy?: boolean` binding, confirmed to mirror the HCL provider's skip_destroy 1:1."
+    - "VERIFIER-REJECTED FIX, 2026-08-21 (same-day adversarial review, not a separate authoring pass): the original tier-0 `log-group-name-follows-lambda-convention` check and the tier-1 exact-match check required the `/aws/lambda/<function-name>` naming convention EXCLUSIVELY, scoring a genuinely correct, explicitly-wired solution (`LoggingConfig.LogGroup` / `logging_config.log_group`, a first-class Lambda argument GA'd 2023-11-16) 0.0 -- the `apigw-openapi` \"alternative shape scored wrong\" failure mode this batch exists to avoid. Re-verified directly against this spec's own pinned packages (aws-lambda/lib/function.d.ts:510 `logGroup` prop + lambda.generated.d.ts:407 `LoggingConfig.LogGroup`; hashicorp/aws 6.58.0 `aws_lambda_function.logging_config.log_group`; @cdktn/provider-aws 24.8.0 lib/lambda-function/index.d.ts:470 `logGroup?: string`) and against real offline `terraform plan`/hand-built CFN + cfn-guard 3.2.0 fixtures (transcripts in this file's own header comment). Also corrected a false claim (\"AWS Lambda's log destination is determined ENTIRELY by naming convention, not any CloudFormation/Terraform-level wiring\") in the pre-fix `oracle.intent`, catch 4's description, and `oracles/rego/.../policy.rego`'s header, and a mis-citation of aws-cdk#35003 (the issue argues AGAINST naming-convention-exclusivity for manually created log groups, not for it). Fixed: `oracle.intent`, catch 4 (`log-group-name-diverges-from-function`, now `applies_to` includes awscdk), `oracle.structural_asserts` (removed `log-group-name-follows-lambda-convention`; replaced `log-group-name-matches-the-function-tf` with `log-group-governs-the-function-cfn`/`-tf`), `rego_hints`, `cfn_guard_hints`, `oracles/rego/lambda-log-group-ownership-and-retention/policy.rego` (OR logic + honest header), `oracles/cfn-guard/lambda-log-group-ownership-and-retention/policy.guard` (hand-authored for real, no longer a `GENERATOR-STUB`), plus a new `solution/broken/log-group-name-diverges-from-function/` fixture on the awscdk arm."
