@@ -26,6 +26,20 @@ resulting rows may be pooled. If you are adding a plain single-step greenfield
 scenario you can read §§1–7 and skip §6.4/§6.5, but read §1 item 2b first to
 be sure that is what you have.
 
+> **Terminology note — "scenario" means two different things here.** An
+> *aws-bench* scenario is a deployed AWS environment bound to exactly one
+> member account — its own `scenario.toml`, `deploy.sh`, region SCP, CFN
+> exports, baselines and reset. We have exactly **one**: `anchor`, and every
+> task this doc's procedure generates declares `scenario_id = "anchor"`
+> (`task.toml [scenario]`). A *cdktn-bench* scenario — what this whole doc is
+> about, in its title and everywhere below — is a `specs/<id>.yaml` spec and
+> the N arm tasks it generates; there are as many of these as there are
+> spec files. `anchor` deploys almost nothing (one SSM parameter + two IAM
+> roles, §2) because it exists only to satisfy aws-bench's requirement that
+> every task have a member account — cdktn-bench itself grades offline. See
+> `ROADMAP.md` M7 for when a *second* aws-bench scenario would become
+> necessary.
+
 ---
 
 ## 1. Author the intent spec
@@ -347,13 +361,20 @@ reintroducing one is explicitly out of bounds — the retired
 `QADeployApplicationRole` is the worked example of why (fake `AccessDenied`
 "agent failures", and one arm's deploy mechanism silently holding more
 authority than another's). A new scenario needing AWS power it does not have
-is therefore a **read-only-role** problem, not a deploy-role problem.
+is therefore a **read-only-role** problem, not a deploy-role problem — for
+the case where the missing thing is *permission*. A different case looks
+similar but isn't: infra that must **pre-exist the trial** (a live RDS
+instance, a second deployed stack, a bucket the agent's principal does not
+own) can't be granted by any role, `workspace_seed`, or multi-step
+`pre_invoke` — no amount of permission conjures a resource into existence.
+That's not a role extension, it's a second aws-bench scenario; see
+`ROADMAP.md` M7.
 
 The remaining legitimate case: a scenario whose agent phase genuinely never
 mutates AWS still needs a *read* or *describe* action that
 `QALocalInvocationApplicationRole` does not grant. That role may be extended
 with read-only actions; it must not grow mutating ones (extending it that way
-defeats its purpose — use the admin role instead). Do not create a fourth ad
+defeats its purpose — use the admin role instead). Do not create a third ad
 hoc role. Procedure:
 
 1. **Propose the diff.** Write out exactly which new actions/resources the

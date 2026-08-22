@@ -1400,15 +1400,19 @@ verifier:
   outside this repo) — required for any scenario whose agent phase performs
   real AWS mutations, or the deployed/modified resources are never reset
   between trials. `agent_role_name` must name a role capable of the
-  mutations the scenario's instruction asks for; `apigw-redeploy` uses
-  `QADeployApplicationRole` (`scenarios/anchor/scenario/cdk_app/stacks/
-  qa_roles_stack.ts`) — a minimally-scoped role added by explicit operator
-  authorization (`DECISIONS.md` "Adding a QADeployApplicationRole"),
-  superseding the earlier `QALocalInvocationApplicationAdmin` (full
-  `AdministratorAccess`) over-grant Amendments 12-15 used while no
-  narrower role existed. See `docs/adding-scenarios.md` for how to pick
-  among the three agent roles, and when/how to extend `QARolesStack` if a
-  future scenario needs a permission none of the three grant.
+  mutations the scenario's instruction asks for. The model is two-tier, not
+  per-scenario (`DECISIONS.md` Amendment 24, which retired the earlier
+  per-scenario scoped deploy role, `QADeployApplicationRole`, and must not
+  be reintroduced — a too-tight deploy role turns harness permission gaps
+  into fake agent failures and breaks arm parity):
+  `QALocalInvocationApplicationRole` (`ReadOnlyAccess`-based) for a scenario
+  whose agent phase never mutates AWS, `QALocalInvocationApplicationAdmin`
+  (`AdministratorAccess`) for one whose agent phase does — `apigw-redeploy`
+  uses the latter. Both are defined in
+  `scenarios/anchor/scenario/cdk_app/stacks/qa_roles_stack.ts`. See
+  `docs/adding-scenarios.md` §2 for how to pick between the two roles, and
+  §4 for when/how to extend `QARolesStack` if a future scenario needs a
+  read-only permission neither grants.
 - `gating` (bool, default `false`): **by default, a live check's result
   never gates `/logs/verifier/reward.txt`** (§8's Phase-2 forward-compat
   note, point 4 below) — written instead to a separate
@@ -1703,7 +1707,9 @@ if the flat grouping was actually intended.
    scenario (e.g. after an instruction wording fix) must not spuriously
    change the task's identity.
 5. `task.toml [scenario].scenario_id = "anchor"` for every v1 generated task
-   (the only scenario that exists); `agent_role_name` defaults to
+   (the only *aws-bench* scenario that exists — see the terminology note
+   below; not to be confused with a *cdktn-bench* scenario, one `specs/*.yaml`
+   spec/task family, of which there are many). `agent_role_name` defaults to
    `"QALocalInvocationApplicationRole"` (read-only) and `[concurrency] mode`
    defaults to `"read-only"` — correct for every scenario whose
    `verifier.live_check.enabled` is `false` (no generated task calls a
@@ -1712,10 +1718,24 @@ if the flat grouping was actually intended.
    override both via `verifier.live_check.agent_role_name`/
    `.concurrency_mode` (§5, Slice G addition) — required for any scenario
    whose agent phase performs real AWS mutations (`apigw-redeploy` is the
-   first: `agent_role_name = "QADeployApplicationRole"`,
+   first: `agent_role_name = "QALocalInvocationApplicationAdmin"`,
    `mode = "mutating"` — see `docs/adding-scenarios.md` for the
    role-selection rule and the maintenance procedure for extending
    `QARolesStack`).
+
+   > **Terminology note — "scenario" is overloaded.** An *aws-bench*
+   > scenario is a deployed AWS environment bound to one member account
+   > (its own `scenario.toml`, `deploy.sh`, region SCP, CFN exports,
+   > baselines and reset) — we have exactly one, `anchor`, and every
+   > generated task binds to it via `scenario_id`. A *cdktn-bench* scenario
+   > is the sense used everywhere in `docs/adding-scenarios.md`: a
+   > `specs/<id>.yaml` spec and the N arm tasks it generates. `anchor`
+   > deploys almost nothing (one SSM parameter + two IAM roles) because it
+   > exists only to satisfy aws-bench's requirement that every task have a
+   > member account — cdktn-bench itself grades offline. See
+   > `docs/adding-scenarios.md`'s own terminology note for more, and
+   > `ROADMAP.md` M7 for when a second aws-bench scenario would become
+   > necessary.
 6. `pre_invoke/` is generated **iff** `instruction.placeholders` contains a
    `source: pre_invoke_random` entry — never for any other reason, in
    particular never to seed starter files into the agent's workspace (that
