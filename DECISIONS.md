@@ -6075,3 +6075,126 @@ not on the grid prefix. The retired scoped-IAM proposal in
 `docs/slice-g-iam-proposal.md` still scopes an ARN to `apigw-redeploy-*` on this
 arm; it is a proposal for a role Amendment 24 already retired, but if it is ever
 revived that pattern must become `hello-version-api-*`.
+
+---
+
+## Amendment 29 (2026-08-22) — physical resource identity is never load-bearing — **DRAFT, pre-registered, not yet exercised live**
+
+**Decision.** The benchmark adopts a stated authoring convention, and grades
+consistently with it:
+
+> **Identity flows through explicit references carrying opaque IDs. Never
+> through a name-based join — whether that join is a hardcoded literal or a
+> data-source lookup.**
+
+Four corollaries:
+
+| axis | rule |
+|---|---|
+| **Identity** | physical names are **generated** (`namePrefix`, `bucket_prefix`, CFN-assigned). Cross-stack wiring uses an explicit reference (export/import, output/input, remote state) — never a literal name, and never a `data` lookup keyed on a human-readable name. |
+| **Convention** | naming standards are expressed as a **prefix**, which preserves auditability without pinning identity. |
+| **Attribution / observability** | **tags**. Mutable, multi-dimensional, and the mechanism actually designed for it. |
+| **Stateful safety** | `prevent_destroy` / deletion protection / `RETAIN` / backups. An **orthogonal** axis — see §3. |
+
+### 1. Why name-joins are implicit dependencies
+
+A literal name in stack B naming stack A's resource creates **no edge in the
+IaC graph**. The consequences are not stylistic: no ordering guarantee, no
+reference counting, no cascade on change, no deletion protection. An
+export/import or output/input reference gives all four. (CloudFormation's
+import-blocks-delete behaviour *is* reference counting — with its own costs, see
+the `cross-stack-export-deadly-embrace` candidate, but it is at least a real
+edge.)
+
+Fixed names also destroy **redeployability**: you cannot stand up a second
+instance of the same stack in one account/region without collision. For S3 the
+namespace is *global*, so the collision domain is every AWS account on earth.
+
+**Data-source lookups keyed on names are the same anti-pattern**, and add a
+second failure mode: they resolve at plan time against live state, so identical
+config silently means different things on different days. An AMI name-filter
+matching a newer image produces an unrequested replacement; a literal at least
+fails loudly when its target is gone. `data "aws_route53_zone" { name = … }`,
+`data "aws_vpc" { tags = … }`, `data "aws_iam_role" { name = … }` are all
+name-joins — pass the opaque `zone_id` / `vpc_id` / role ARN in instead.
+
+*Convergence worth noting:* the harness already forbids context lookups
+(`--no-lookups`, offline provider mirror) for **hermeticity**. That constraint
+enforces this tenet as a side effect, and explains why
+`asg-launch-template-tag-propagation` uses a literal AMI id — the same
+discipline arriving from a different direction.
+
+### 2. The narrow surviving exception
+
+A genuinely **external** consumer outside our IaC — a partner account trusting a
+role ARN, a third party with a baked-in URL. Real, but small, and usually better
+solved by an indirection layer (a DNS record, a CDN alias, a stable façade role
+that assumes rotating ones) than by pinning the underlying resource's physical
+name. It is a migration/contract problem, not an IaC-design preference.
+
+### 3. Statefulness argues AGAINST fixed names, not for them
+
+The common intuition is that stateful resources (S3, RDS, DynamoDB — broadly
+what CloudFormation defaults to `RETAIN`) deserve fixed names as the careful
+choice. **It is exactly backwards.** With a fixed name, create-before-destroy
+is *impossible* — the replacement would collide with the original — so the
+engine is forced into destroy-then-create, guaranteeing downtime and, on a
+stateful resource, data loss. A generated name is what makes CBD available at
+all.
+
+Stateful resources do require more care; that care is `prevent_destroy`,
+deletion protection, `RETAIN`, and backups. None of it requires, or is helped
+by, a fixed physical name.
+
+### 4. What this means for oracles (binding, effective immediately)
+
+1. **No oracle may key identity on a physical name** — not `values.name`, not
+   `Properties.RoleName`, not `bucketName`. Grade **existence + type +
+   properties**, keyed on the plan **address** (TF arms) or **logical id** (CFN
+   arm). A solution that omits the physical name and lets the provider compute
+   one MUST score identically to one that sets it, **on every arm**.
+2. **Where a prompt states a requirement applies to all of N resources, the
+   oracle enforces it per-resource** (set difference over addresses), not
+   "at least one". Name-agnostic and per-resource are compatible.
+3. A deny message must state something the graded artifact actually
+   contradicts. A factually false deny is itself a defect.
+
+Ecosystem evidence that (1) matches practice rather than inventing it:
+terraconstructs' own suite uses existence+property matching (154 of 253 test
+files use `toHaveResourceWithProperties`); `test/assertions.ts:179-184` ships a
+helper documented as *"Get an Array of resources by type, **discarding the
+resource names**"*; `src/aws/iam/role.ts:489-509` defaults to `namePrefix`
+whenever `roleName` is omitted; `bucketName` appears **0 times** in bucket test
+assertions. Its integration tests read physical names only from Terraform
+**outputs** post-deploy, as lookup handles for real AWS API calls, and never
+assert them against hardcoded strings.
+
+### 5. Disclosed confound, and how it is neutralised
+
+This is a **normative stance on IaC practice**, in a benchmark that otherwise
+claims neutrality between tools. It must be disclosed, because idiomatic
+raw-HCL material pushes fixed names heavily (it is how you wire things without a
+reference discipline), so the convention is not equally natural to all arms.
+CDK and terraconstructs default to generated names; raw HCL forces an explicit
+choice.
+
+The neutralisation is a deliberate split between **grading** and **measurement**:
+
+- **Grading is neutral** (§4): oracles never *require* a name and never
+  *penalise* one. Both shapes score 1.0. No arm is advantaged, because nothing
+  is scored on this axis.
+- **The stance is measured, not assumed.** Where load-bearing names cost
+  something real, a scenario measures that cost and the data argues the case.
+  `named-resource-replacement` (Amendment 28) is the first: a fixed name forces
+  destroy-then-create on rename.
+
+**Pre-registered empirical test of the tenet itself** — a scenario that
+**deploys the same stack twice into one account/region**. Fixed names fail on
+collision; generated names pass. Arm-neutral (every arm can do either), cheap,
+and decisive. Queued in `ROADMAP.md` §5. If that scenario does *not* separate
+the shapes, this amendment's premise is weaker than claimed and should be
+revisited.
+
+**Status.** DRAFT until the redeployability scenario runs. §4 is binding on
+oracle authoring now, because it is a consistency requirement (the arms must be
+graded at equal strictness) independent of whether the tenet itself holds.

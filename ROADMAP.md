@@ -404,6 +404,13 @@ needed), `lambda-alias-tracks-unpublished-latest` (hardest — needs pre-deploye
 - `auto-created-security-groups-allow-all-egress`: does aws-cdk-lib still do
   this, and what is terraconstructs' posture?
 
+### Pre-registered test of Amendment 29 (physical identity not load-bearing)
+**** — deploy the same stack twice into one
+account/region. Fixed physical names collide and fail; generated names pass.
+Arm-neutral, cheap, and it makes the Amendment 29 tenet falsifiable rather than
+assumed. If it does not separate the shapes, that amendment's premise is weaker
+than claimed.
+
 ### A family the evidence suggests adding
 **L2-lag by feature age** — pick features by how recently the L2 wrapped them
 and measure the discovery tax as a function of that age. Finding 2 (§3) is a
