@@ -404,6 +404,53 @@ needed), `lambda-alias-tracks-unpublished-latest` (hardest — needs pre-deploye
 - `auto-created-security-groups-allow-all-egress`: does aws-cdk-lib still do
   this, and what is terraconstructs' posture?
 
+### M8 — OPA as the grading engine on all three arms; cfn-guard as a measured capability
+
+**Problem, proven by execution.** cfn-guard 3.2.0 cannot express a cross-resource
+join (no logical-id join between a role and the policy that names it), so the
+awscdk tier-1 for `iam-managed-policy-exclusive-vs-attachment` degraded into a
+count-equality proxy that is unsound **in both directions**: a policy reaching
+only one role scores **1.0** (false PASS, defeating that scenario's own catch)
+while a policy attached to both roles from both sides scores **0.0** (false FAIL,
+contradicted by the template). The byte-equivalent terraconstructs solutions
+score the opposite way in each case. Three opus fix rounds could not close it —
+this is a **tooling ceiling**, not fixer error, and Amendment 29 §4 makes
+equal-strictness grading binding.
+
+**Fix.** Make **OPA/Rego the grading engine on every arm**, including awscdk
+(synth → `ScenarioStack.template.json` → the same OPA engine the TF arms already
+use). One policy language, one identity domain, parity by construction. Backport
+to the awscdk arms that benefit most rather than converting everything at once.
+
+**cfn-guard is retained, but reclassified.** It stays supported as an arm
+capability — it is a real tool an awscdk team actually has. It just cannot be
+the *authority* in a cross-arm comparison, because it grades at a different
+strictness than the engine used on the other arms.
+
+**Caveat on the capability claim.** "awscdk has more guardrail tooling" should
+NOT be evidenced by cfn-guard's existence: Terraform has conftest/OPA, Checkov,
+tfsec and Sentinel, and arguably a richer policy ecosystem. The genuinely
+CDK-specific guardrail is **Aspects / cdk-nag** — programmatic, type-aware,
+running at synth over the construct tree, with no HCL equivalent. If we want to
+claim a guardrail advantage, Aspects is what should be measured (plausibly its
+own scenario: "add a guardrail that fails the build when X"), not the presence
+of a template linter.
+
+### M9 — brownfield ADOPTION scenarios (import existing infrastructure)
+
+Distinct from Amendment 28 brownfield, which seeds *code*. Adoption means the
+agent must **import real, already-deployed resources** (`terraform import` /
+`import` blocks, CloudFormation resource import) and then change them. It is the
+one legitimate case for a fixed physical name (Amendment 29 §6: the name is
+*given*, not chosen), and it is a large, under-tested slice of real IaC work —
+most teams adopt infrastructure long before they green-field it.
+
+**It cannot be served by `workspace_seed` (a file) or multi-step `pre_invoke`
+(per-trial): it needs infrastructure that pre-exists the trial.** It therefore
+joins the M7 cases forcing a **second aws-bench scenario** — and is arguably the
+most compelling of them, since a whole task family depends on it rather than a
+single scenario.
+
 ### Pre-registered test of Amendment 29 (physical identity not load-bearing)
 **** — deploy the same stack twice into one
 account/region. Fixed physical names collide and fail; generated names pass.
