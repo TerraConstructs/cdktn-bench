@@ -1,6 +1,6 @@
 # Oracle intent: Orders table with a per-customer query index
 
-`ddb-gsi-attribute-definitions` — generated verbatim from `specs/ddb-gsi-attribute-definitions.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/ddb-gsi-attribute-definitions/policy.rego` and `../cfn-guard/ddb-gsi-attribute-definitions/policy.guard` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
+`ddb-gsi-attribute-definitions` — generated verbatim from `specs/ddb-gsi-attribute-definitions.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/ddb-gsi-attribute-definitions/policy.rego` and `../rego-cfn/ddb-gsi-attribute-definitions/policy.rego` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
 
 **Do not hand-edit this file.** It is regenerated from the spec on every `emit_oracles` call; edit `oracle.intent` in `specs/ddb-gsi-attribute-definitions.yaml` instead.
 

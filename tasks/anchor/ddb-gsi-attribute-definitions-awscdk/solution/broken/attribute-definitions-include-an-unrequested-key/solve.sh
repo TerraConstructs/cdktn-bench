@@ -10,10 +10,21 @@
 # entry for `status`). Every OTHER structural_assert in this scenario
 # still passes (table HASH key is still orderId; there is still exactly
 # one GSI, still customerId/createdAt/INCLUDE/[status,totalAmount]) --
-# only `attribute-definitions-are-exactly-the-key-attributes` (tier 1,
-# oracles/rego+cfn-guard/ddb-gsi-attribute-definitions) catches this: the
-# resolved attribute set is {orderId, status, customerId, createdAt}, and
-# `status` is not IN the allowlist.
+# only `attribute-definitions-are-exactly-the-key-attributes` (tier 1)
+# catches this. As of REPAIR ROUND 4 (2026-08-23, the awscdk tier-1
+# engine migration -- see specs/ddb-gsi-attribute-definitions.yaml's own
+# header comment) that fact is graded on THIS arm by
+# oracles/rego-cfn/ddb-gsi-attribute-definitions/policy.rego, not by the
+# now-deleted oracles/cfn-guard/.../policy.guard, and it is rule 1 of
+# that file -- "every attribute used as a KEY is one of
+# orderId/customerId/createdAt" -- that fires here, on `status` being a
+# real RANGE key it may not be. Rule 2 (declared => used as a key) and
+# rule 3 (used as a key => declared) both stay silent, `status` being
+# both declared and genuinely used, so this fixture is what
+# independently falsifies rule 1. On the TF-shaped arms the same fact is
+# graded by oracles/rego/ddb-gsi-attribute-definitions/policy.rego's own
+# allowlist rule, over the resolved attribute set {orderId, status,
+# customerId, createdAt}.
 set -euo pipefail
 
 mkdir -p lib

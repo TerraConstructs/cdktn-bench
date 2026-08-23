@@ -48,9 +48,11 @@ failure to a cheaper tier is the mechanism under test.
   per-arm task directories with structurally-enforced prompt parity (identical
   natural-language instruction; only the target-language line differs).
 - Every scenario ships a natural-language intent implemented **twice at equal
-  strictness** — Rego/OPA over `terraform show -json` for the TF arms, cfn-guard over
-  the synthesized CloudFormation for the CDK arm — cross-checked against reference
-  solutions and negative fixtures (`make grading-proof`: correct ⇒ 1.0, planted-bug ⇒
+  strictness** — Rego/OPA over `terraform show -json` for the TF arms, and over the
+  synthesized CloudFormation for the CDK arm either cfn-guard (the default) or, when
+  the intent needs a cross-resource join cfn-guard cannot express, the same Rego/OPA
+  engine (`oracle.awscdk_tier1_engine`, `specs/SCHEMA.md` §4.5) — cross-checked against
+  reference solutions and negative fixtures (`make grading-proof`: correct ⇒ 1.0, planted-bug ⇒
   0.0, on every arm).
 - **Integrity gates** make results hard to game: a toolchain preflight per arm image, a
   trajectory audit proving the agent actually ran the substrate's toolchain, validity
@@ -116,7 +118,7 @@ failure to a cheaper tier is the mechanism under test.
 | `arms/{awscdk,hcl-raw,terraconstructs}/` | Per-arm agent container images (pinned toolchains, offline preflights) |
 | `scenarios/anchor/` | Near-empty scenario satisfying aws-bench's real-AWS-account precondition |
 | `tasks/` | Generated `<scenario>-<arm>` task directories (never hand-edited; `make gen`) |
-| `oracles/{rego,cfn-guard}/` | Static oracle policies + structural / Tier-0.5 libraries |
+| `oracles/{rego,rego-cfn,cfn-guard}/` | Static oracle policies (plan-shaped Rego, CFN-shaped Rego, cfn-guard) + structural / Tier-0.5 libraries |
 | `cdktn_bench/` | The `cdktn-bench` runner — a superset of upstream aws-bench by inheritance, adding multi-step trials; nothing upstream is vendored or modified |
 | `gates/` | preflight / trajectory-audit / result-validity / equipping-hash / falsifiability gates |
 | `metrics/` | Result schema, validation, tokens-to-green + tier-attribution aggregation |

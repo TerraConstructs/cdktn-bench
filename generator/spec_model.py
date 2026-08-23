@@ -815,6 +815,24 @@ class Oracle(BaseModel):
     structural_asserts: list[StructuralAssert]
     rego_hints: list[str] = Field(default_factory=list)
     cfn_guard_hints: list[str] = Field(default_factory=list)
+    # Which engine grades tier-"1" on the `awscdk` arm (specs/SCHEMA.md §4.5;
+    # ROADMAP.md M8, DECISIONS.md Amendment 29 §4). The TF-shaped arms are
+    # ALWAYS graded by OPA/Rego over `terraform show -json`; this field only
+    # picks what runs against awscdk's synthesized CloudFormation template.
+    #
+    #   "cfn_guard" (DEFAULT) -- `cfn-guard validate --data <template.json>
+    #       --rules oracles/cfn-guard/<id>/policy.guard`. The default is
+    #       deliberately the incumbent so every already-generated spec keeps
+    #       regenerating BYTE-IDENTICALLY; nothing about an existing task dir
+    #       changes by adding this field.
+    #   "rego" -- `opa eval` over the SAME template, using this scenario's
+    #       `oracles/rego-cfn/<id>/policy.rego` (a CFN-shaped policy, distinct
+    #       from the TF-shaped `oracles/rego/<id>/policy.rego`). Chosen when
+    #       the scenario's intent needs something cfn-guard 3.2.0 cannot
+    #       express -- notably a cross-resource logical-id join -- or when
+    #       cross-arm equal-strictness grading (Amendment 29 §4) requires one
+    #       policy language across all three arms.
+    awscdk_tier1_engine: Literal["cfn_guard", "rego"] = "cfn_guard"
     tier05_jsonata: Tier05Jsonata | None = None
 
     @model_validator(mode="after")

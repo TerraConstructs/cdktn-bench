@@ -22,9 +22,25 @@
 #   constructs  10.8.1
 #   aws-cdk CLI 2.1135.0  (global install; matches the local devDependency)
 #   cfn-guard   3.2.0     (tier-1 policy grader for generator/gen.py's
-#                          generated tests/static_tiers.sh -- see
+#                          generated tests/static_tiers.sh when a spec leaves
+#                          oracle.awscdk_tier1_engine at its default -- see
 #                          ../../../../DECISIONS.md "tier-1 grading tools
 #                          installed in every arm image")
+#   opa         1.19.0    (the OTHER tier-1 policy grader for this arm, used
+#                          when a spec sets `oracle.awscdk_tier1_engine: rego`
+#                          -- specs/SCHEMA.md sect 4.5, ROADMAP.md M8. Same
+#                          pinned version as arms/hcl-raw and
+#                          arms/terraconstructs, so one OPA behaviour grades
+#                          all three arms.)
+#
+# BOTH tier-1 graders ship here on purpose. cfn-guard 3.2.0 cannot express a
+# cross-resource logical-id join, so it cannot be the grading AUTHORITY in a
+# cross-arm comparison (DECISIONS.md Amendment 29 sect 4 makes equal-strictness
+# grading binding; ROADMAP.md M8 has the executed proof). It is nevertheless
+# RETAINED as a real arm capability -- a tool an awscdk team actually has --
+# and remains the default engine, so removing it would break every existing
+# spec. Which binary a given trial invokes is decided per-scenario by
+# oracle.awscdk_tier1_engine, not by what is installed.
 #
 # Mirrors the aws-bench-datasets environment/Dockerfile convention
 # (docs/aws-bench-guide.md §5, aws-bench-datasets-guide.md §2): a plain,
@@ -111,6 +127,36 @@ RUN set -eu; \
     install -m 0755 /tmp/cfn-guard-v3-*-linux-latest/cfn-guard /usr/local/bin/cfn-guard; \
     rm -rf /tmp/cfn-guard.tar.gz /tmp/cfn-guard-v3-*-linux-latest; \
     cfn-guard --version
+
+# --- opa (Open Policy Agent) 1.19.0: static pinned binary, sha256-verified
+# --- against what was actually downloaded at pin time (opa doesn't publish
+# --- a signed SHA256SUMS file the way terraform does, so this hash is
+# --- pinned from a verified-good download rather than cross-checked against
+# --- an upstream manifest -- see ../../../DECISIONS.md "tier-1 grading
+# --- tools installed in every arm image"). Byte-for-byte the same version,
+# --- URL and checksums as arms/hcl-raw/environment/Dockerfile and
+# --- arms/terraconstructs/environment/Dockerfile install: ROADMAP.md M8
+# --- makes OPA the cross-arm grading engine, which is only a parity claim
+# --- if all three arms run the SAME opa build.
+# --- This is the tool generator/gen.py's generated tests/static_tiers.sh
+# --- runs for this arm's tier-1 when the spec sets
+# --- `oracle.awscdk_tier1_engine: rego` (specs/SCHEMA.md sect 4.5):
+# --- `opa eval -d policy.rego 'data.<pkg>.deny' < ScenarioStack.template.json`
+# --- -- same command as the TF arms, a CloudFormation template as `input`
+# --- instead of `terraform show -json` plan JSON. Absent this binary, such a
+# --- spec's tier-1 reports TOOL_MISSING, which is a hard verifier failure
+# --- (reward 0.0), never a silent pass.
+RUN set -eu; \
+    case "${TARGETARCH}" in \
+      amd64) OPA_SHA256="1dd5c5591ff856f5e20a1d66bafae9511ddf3c5552ed3b5070c70b2b6580ee3f" ;; \
+      arm64) OPA_SHA256="06680087ed236c8c6aaa021660d83178db829a2ad30bdb3482481fada6791b2a" ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /usr/local/bin/opa \
+      "https://github.com/open-policy-agent/opa/releases/download/v1.19.0/opa_linux_${TARGETARCH}_static"; \
+    echo "${OPA_SHA256}  /usr/local/bin/opa" | sha256sum -c -; \
+    chmod 0755 /usr/local/bin/opa; \
+    opa version
 
 # --- Workspace scaffold ---------------------------------------------------
 # /app/project is the agent's working directory: a starting CDK TypeScript

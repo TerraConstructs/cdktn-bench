@@ -158,6 +158,7 @@ gen_sync_check() {
     "tasks/anchor/${id}-terraconstructs"
     "oracles/rego/${id}"
     "oracles/cfn-guard/${id}"
+    "oracles/rego-cfn/${id}"
     "oracles/${id}"
     "local-registry.json"
   )

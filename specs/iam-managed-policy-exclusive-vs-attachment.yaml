@@ -1,0 +1,1849 @@
+# specs/iam-managed-policy-exclusive-vs-attachment.yaml
+#
+# REPAIR PASS 2 (2026-08-21, adversarial-verifier-driven): this file was
+# "authored but never verified" per the batch's own charter, and a first
+# verification pass shipped it with FIVE real defects an adversarial
+# re-review found and this pass fixed IN PLACE (each documented at its own
+# site below and in oracles/rego/.../policy.rego's and oracles/cfn-guard/
+# .../policy.guard's own header comments):
+#   1. [blocker] awscdk's `s3-readonly-policy-attached-cfn` tier-0 assert
+#      detected "some AWS-managed policy was imported by name", not
+#      SPECIFICALLY AmazonS3ReadOnlyAccess -- a wrong-policy mistake scored
+#      1.0. Fixed: identity check moved to a new cfn-guard rule
+#      (`s3_readonly_attached_to_a_role`), tier-0 assert's role narrowed to
+#      documenting the residual weak half.
+#   2. [blocker] `no-deprecated-role-managed-policy-arns` read
+#      `.planned_values...values.managed_policy_arns`, which Terraform
+#      OMITS entirely for an explicit `managed_policy_arns = []` (verified
+#      against real plan JSON) -- the single most destructive variant of
+#      this exact catch scored 1.0. Fixed: retargeted at
+#      `.configuration...expressions.managed_policy_arns`, which correctly
+#      resolves a present (if empty) node for `= []` and no node at all
+#      for a genuinely absent argument.
+#   3. [major] Rego resolved the attachment->role edge via
+#      `expressions.role.references`, undefined for an ordinary
+#      `for_each`-over-roles idiom -- a correct, idiomatically-DRY hcl_raw
+#      solution scored 0.0. Fixed: role coverage is now matched by the
+#      role's own AWS identity (`values.name`/`values.role`, always
+#      plan-time-concrete regardless of count/for_each), not by
+#      Terraform resource address.
+#   4. [major] Blueprint §2(b) says `aws_iam_role_policy_attachments_
+#      exclusive` is "also acceptable, and arguably the most deliberate
+#      answer, so the oracle accepts it" -- this spec unconditionally
+#      rejected it. Fixed: tier-1 Rego now tolerates it (a real
+#      type-conditional branch tier-0's flat grammar could never express);
+#      the tier-0 `s3-readonly-policy-attached-tf` assert (which rejected
+#      shape 2 regardless of tier-1) was retired and its identity fact
+#      folded into the same tier-1 Rego, alongside the metrics-coverage
+#      check.
+#   5. [major] Neither oracle recognized a single shared INLINE policy
+#      (`iam.Policy(..., { roles: [both] })` / `aws_iam_role_policy`
+#      duplicated per role) as satisfying "the same team-defined policy" --
+#      not accepted, and (this pass's fix) now explicitly RECORDED as a
+#      scope-narrowing limitation below rather than silently absent, per
+#      docs/adding-scenarios.md §1 item 3a's preference for an honest,
+#      documented gap over silently forcing one implementation shape.
+# All five re-verified against real toolchain output during this pass
+# (`cdk synth` 2.263.0, `terraform plan` 6.58.0, `cfn-guard validate`
+# 3.2.0, `opa eval`) -- not re-asserted from the first pass's claims.
+#
+# REPAIR PASS 3 (2026-08-21, second adversarial-verifier pass -- REPAIR
+# PASS 2 above was itself reviewed and TWO more real defects were found,
+# each an arm-parity/valid-shape-rejection break of the exact kind
+# DECISIONS.md's "predicted tiers must be evidence-checked, never assumed"
+# lesson exists to catch):
+#   6. [blocker] awscdk: `new iam.ManagedPolicy(this, "TeamMetricsPolicy",
+#      { roles: [batchRunner, reportWriter], statements: [...] })` --
+#      aws-cdk-lib's own `ManagedPolicyProps.roles` prop, declaring the
+#      policy's roles ON THE POLICY instead of via
+#      `role.addManagedPolicy()` on each role -- synthesizes a fully valid
+#      `AWS::IAM::ManagedPolicy.Properties.Roles` list naming BOTH roles,
+#      but oracles/cfn-guard/.../policy.guard's
+#      `customer_policy_attached_to_both_roles` rule, exactly as REPAIR
+#      PASS 2 left it, checked only the ROLES' OWN `ManagedPolicyArns`
+#      list -- so this shape scored reward 0.0 while the byte-identical
+#      terraconstructs construct call (whose L2 always emits the additive
+#      per-role attachment regardless of which side names which) scored
+#      1.0. Fixed: that rule now accepts EITHER the role-side `Ref` check
+#      (unchanged) OR a policy-side cardinality check
+#      (`count(Properties.Roles[*]) == count(roles)`) -- see that rule's
+#      own header comment in policy.guard for the full evidence, the
+#      documented idealization it accepts (cardinality, not true identity
+#      -- cfn-guard 3.2.0 has no logical-id-extraction builtin, confirmed
+#      empirically), and the four-fixture verification matrix.
+#      `tasks/anchor/iam-managed-policy-exclusive-vs-attachment-awscdk/
+#      solution/reference-alt-cdk-roles/solve.sh` is the new reference
+#      proof for this shape.
+#   7. [major] hcl_raw/terraconstructs: `role =
+#      aws_iam_role.<x>.id` instead of `.name`. `.id` on `aws_iam_role` IS
+#      the role name but is PROVIDER-COMPUTED, so Terraform omits it from
+#      `.planned_values...values.role` entirely at plan time (verified
+#      against real `terraform plan`, provider 6.58.0) -- the same four
+#      `role = ` lines in this scenario's own reference solve.sh, spelled
+#      with `.id`, scored reward 0.0 under REPAIR PASS 2's Rego. Fixed:
+#      oracles/rego/.../policy.rego's `attachment_instance_role_name`/
+#      `exclusive_instance_role_name` now fall back to resolving the
+#      referenced role's own (always plan-time-known) `name` via the
+#      attachment block's `expressions.role`/`role_name` `.references`
+#      list when `values.role`/`values.role_name` isn't a plan-time-known
+#      string -- see that file's own header comment ("BUG 4") for the full
+#      evidence and why this is complementary to, not overlapping with,
+#      REPAIR PASS 2's for_each fix. `.id` is a documented accepted
+#      spelling, not silently absorbed.
+# Both re-verified against real toolchain output during this pass (`cdk
+# synth` 2.263.0, `cfn-guard validate` 3.2.0, `terraform plan` 6.58.0,
+# `opa eval`), including re-running the policy-attached-to-one-role-only
+# negative in BOTH newly-accepted spellings to confirm the catch still
+# fires (see the two oracle files' own notes for exact fixture results).
+#
+# REPAIR PASS 4 (2026-08-22, third adversarial-verifier pass -- REPAIR
+# PASS 2 above was itself found to have accepted a shape that provably
+# breaks this scenario's one load-bearing requirement, and a DIFFERENT
+# adjacent gap to REPAIR PASS 3's own fix was found unfixed):
+#   8. [major, REVERSES a graded-1.0 shape] SHAPE 2
+#      (`aws_iam_role_policy_attachments_exclusive`) WAS WRONGLY ACCEPTED.
+#      REPAIR PASS 2 (defect 4 above) widened tier-1 Rego to grade this
+#      shape 1.0, reading blueprint §2(b)'s shape-list annotation
+#      ("...also acceptable, and arguably the most deliberate answer, so
+#      the oracle accepts it") without checking that acceptance against
+#      the SAME blueprint section's own prompt sentence, reproduced
+#      verbatim in this scenario's own instruction.shared_body: "Other
+#      teams attach their own policies to these roles out of band; that
+#      must keep working." `aws_iam_role_policy_attachments_exclusive`
+#      takes exclusive ownership of THAT ROLE's entire managed-policy set
+#      and REMOVES, on every subsequent apply, any attachment not listed
+#      in its own `policy_arns` -- confirmed verbatim against the
+#      provider's own docs, website/docs/r/
+#      iam_role_policy_attachments_exclusive.html.markdown: "This resource
+#      takes exclusive ownership over managed IAM policies attached to a
+#      role. This includes removal of managed IAM policies which are not
+#      explicitly configured." That is EXACTLY the failure the prompt's
+#      out-of-band sentence forbids -- narrower in blast radius than shape
+#      3 (one role instead of every principal account-wide) but identical
+#      in KIND, not a safer, different thing. Blueprint §2(b) pre-approving
+#      it CONTRADICTS the blueprint's OWN prompt text; a citation of one
+#      clause does not resolve a contradiction with the other clause in
+#      its own favor, and the prompt sentence is the ticket's actual
+#      requirement (what this scenario measures), not a shape-list
+#      annotation (a note about what tier-0's grammar can express).
+#      REVERSED: shape 2 is now REJECTED, at the same two-tier strictness
+#      shape 3 already gets -- a new, symmetric tier-0 assert
+#      (no-role-scoped-exclusive-attachment, a bare not_exists on the
+#      resource type, mirroring no-account-exclusive-policy-attachment)
+#      plus an explicit, accurately-worded tier-1 Rego deny rule for
+#      defense in depth (oracles/rego/.../policy.rego's own header comment
+#      has the full before/after). Tier-1's PRIOR "acceptance" code path
+#      (unioning this resource type into the covering sets) is REMOVED,
+#      not merely bypassed. `oracle.intent` is rewritten to state the
+#      out-of-band-survival requirement explicitly -- it never had one
+#      before, which is the root cause an earlier review already
+#      diagnosed and which this pass now actually closes.
+#      `solution/reference-alt-exclusive/` (the now-wrong reference proof
+#      for the reversed reading) is DELETED; its HCL is preserved,
+#      unchanged, as `solution/broken/role-scoped-exclusive-attachment/
+#      solve.sh` -- the new catch's own required negative fixture, same
+#      content, now a negative proof instead of a positive one.
+#   9. [major] AWSCDK ARM PARITY, A SECOND INSTANCE: `iam.ManagedPolicy.
+#      fromManagedPolicyArn(this, id,
+#      "arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess")` -- a first-class
+#      aws-cdk-lib import spelling, equally documented and equally
+#      idiomatic to `fromAwsManagedPolicyName(...)` -- synthesizes a BARE
+#      literal ARN string in ManagedPolicyArns instead of the
+#      partition-templated `Fn::Join`+`Ref` construction both the tier-0
+#      `s3-readonly-policy-attached-cfn` assert and tier-1's
+#      `s3_readonly_attached_to_a_role` rule were keyed to exclusively.
+#      Reproduced directly (aws-cdk-lib 2.263.0, cfn-guard 3.2.0): tier-0
+#      FAILS (no `Ref` node exists anywhere under ManagedPolicyArns for a
+#      bare string), tier-1 FAILS (`RequiredPropertyError`, no `Fn::Join`
+#      key at that path), reward 0.0 for an otherwise fully correct
+#      solution. This is the SAME arm-parity break class REPAIR PASS 3
+#      fixed for `ManagedPolicyProps.roles` (defect 6) -- fixed here for
+#      the adjacent literal-ARN import spelling that fix did not check.
+#      FIXED: `s3_readonly_attached_to_a_role` (tier 1) now accepts EITHER
+#      the `Fn::Join` render OR a bare-string ManagedPolicyArns entry
+#      equal to the literal ARN. The tier-0 `s3-readonly-policy-attached-
+#      cfn` assert -- whose own grammar (recursive-descent `..Ref`) cannot
+#      see a bare string at all, so it cannot be widened to accept both
+#      shapes in one JSONPath -- is RETIRED, the same way
+#      `s3-readonly-policy-attached-tf` was retired in REPAIR PASS 2 for
+#      the identical reason (tier-0's flat grammar has no type-conditional
+#      field selector); the identity fact it used to weakly pre-filter now
+#      lives entirely at tier 1, exactly mirroring the TF-arms' own
+#      history. `solution/reference-alt-cdk-policy-arn/solve.sh` is the
+#      new reference proof for the literal-ARN shape, scoring 1.0.
+# Both re-verified against real toolchain output during this pass (`cdk
+# synth` 2.263.0, `terraform plan` 6.58.0, `cfn-guard validate` 3.2.0,
+# `opa eval`) -- see each changed rule's own header note in
+# oracles/rego/.../policy.rego and oracles/cfn-guard/.../policy.guard for
+# the exact fixture results this pass ran.
+#
+# REPAIR PASS 5 (2026-08-22, fourth adversarial-verifier pass -- ONE more
+# real defect found, on the fix REPAIR PASS 2 shipped for BUG 2 above):
+#   10. [major] hcl_raw/terraconstructs: FOR_EACH-OVER-POLICIES / GRAPH-
+#       EDGE BLINDNESS, the POLICY-side mirror of REPAIR PASS 2's own
+#       for_each fix (which fixed the ROLE side of this exact edge and
+#       left the POLICY side unfixed). A fully correct, additive-only
+#       solution that attaches BOTH policies to BOTH roles via
+#       `for_each` over a map of policy ARNs -- e.g. `locals {
+#       shared_policy_arns = { s3_read_only = "arn:...", team_metrics =
+#       aws_iam_policy.team_metrics.arn } }` plus one
+#       `aws_iam_role_policy_attachment` per role with `for_each =
+#       local.shared_policy_arns; policy_arn = each.value` (or a single
+#       resource for_each'd over role x policy pairs) -- REPRODUCED
+#       DIRECTLY (2026-08-22, real host sandbox, terraform 1.15.8 +
+#       hashicorp/aws 6.58.0, opa 1.19.0): tier0_pass=1,
+#       tier1_status=FAIL, reward=0.0, with `deny`'s own message FALSELY
+#       claiming the policy was "not attached" to either role, for both
+#       idioms. Root cause: `attachment_block_targets_customer_policy`
+#       resolved the attachment->policy edge ONLY via
+#       `expressions.policy_arn.references` naming a `customer_policies`
+#       address directly -- undefined for `policy_arn = each.value`
+#       (`references == ["each.value"]`, never
+#       `"aws_iam_policy.team_metrics"`). FIXED:
+#       oracles/rego/.../policy.rego's new
+#       `attachment_instance_targets_customer_policy` predicate adds a
+#       SCHEMA.md §4.2.1 plan-time-unknown fallback -- when
+#       `count(customer_policies) == 1` (always true for a working
+#       solution to this ticket) and a planned instance's own
+#       `values.policy_arn` did NOT resolve to a known string, attribute
+#       that instance to the customer policy anyway (the ONLY thing that
+#       makes `policy_arn` unknown at plan time in this scenario's world
+#       is a reference to the not-yet-created customer policy's own
+#       `.arn`; the AWS-managed S3-readonly ARN is always a plan-time-
+#       known literal, so it can never be mistaken for this case). See
+#       that predicate's own comment in policy.rego, BUG 6, for the full
+#       evidence and the re-verified negative (the
+#       policy-attached-to-one-role-only catch, re-run in the SAME
+#       for_each-over-policies spelling, still FAILS as required).
+#       `solution/reference-alt-hcl-foreach-policies/solve.sh` is the new
+#       reference proof for this shape, scoring 1.0. No awscdk/
+#       terraconstructs analog exists: terraconstructs' L2 IAM surface
+#       never emits a for_each'd attachment at all (one direct
+#       `IamRolePolicyAttachment` per role, `lib/aws/iam/
+#       managed-policy.js:43`), and awscdk has no HCL-shaped attachment
+#       resource to for_each over in the first place -- so this bug and
+#       its fix are hcl_raw/terraconstructs-shared-oracle-only, matching
+#       REPAIR PASS 2's own BUG 2 in scope.
+# Re-verified against real toolchain output during this pass (`terraform
+# plan` 6.58.0, `opa eval` 1.19.0) -- see policy.rego's own BUG 6 header
+# note for the exact fixture results this pass ran.
+#
+# REPAIR PASS 6 (2026-08-22, fifth adversarial-verifier pass -- ONE more
+# real defect found: `oracle.intent`'s own opening sentence asserted a
+# fact no tier encoded at all):
+#   11. [major] TWO-ROLES-EXIST WAS UNBACKED. `oracle.intent` (below) opens
+#       "Two IAM roles exist: one whose trust policy permits
+#       ecs-tasks.amazonaws.com to assume it, and one whose trust policy
+#       permits lambda.amazonaws.com" -- but no tier-0 assert and no
+#       tier-1 rule, on either oracle file, constrained how many IAM roles
+#       the plan/template creates.
+#       `role-trusts-ecs-tasks-service`/`role-trusts-lambda-service`
+#       (tier 0, below) are both `contains` over the flattened union of
+#       ALL roles' trust-policy principals, so a SINGLE role whose trust
+#       policy lists both service principals satisfies both independently
+#       -- REPRODUCED DIRECTLY, 2026-08-22, on BOTH graded arm families
+#       (hcl_raw: terraform 1.15.8 + hashicorp/aws 6.58.0, opa 1.19.0;
+#       awscdk: aws-cdk-lib 2.263.0, cfn-guard 3.2.0): one role with a
+#       composite ecs-tasks/lambda trust policy, both policies attached
+#       additively -- reward 1.0 on both, despite exactly ONE IAM role
+#       existing, not two. Neither role name the ticket uses
+#       (`batch-runner`, `report-writer`) is graded anywhere either. Also
+#       an undocumented deviation from blueprint §2(c), whose tier-0 plan
+#       explicitly listed a `two-roles-exist` assert that this spec had
+#       silently dropped.
+#       FIXED: a new deny rule in each tier-1 policy file -- Rego's
+#       `count(iam_role_names) != 2` (oracles/rego/.../policy.rego, next
+#       to its other deny rules) and cfn-guard's `rule two_roles_exist {
+#       %roles_count == 2 }` (oracles/cfn-guard/.../policy.guard, using
+#       the `%roles_count` binding already present for the
+#       policy-side-cardinality check) -- both are bare COUNT checks, not
+#       a name match on `{"batch-runner", "report-writer"}"`/`roleName`:
+#       no specific role name is graded anywhere else in this scenario,
+#       and a legitimate solution that renames the roles (TF) or lets CDK
+#       generate physical names (omitting `roleName`) must not be broken
+#       by this fix. Re-verified against every reference/reference-alt
+#       fixture on both arm families after the change (all still PASS,
+#       deny empty / cfn-guard PASS) and against the single-shared-role
+#       negative on both arms (now FAILS, with an accurate message). See
+#       each oracle file's own BUG 7 / `two_roles_exist` header note for
+#       the full evidence.
+# Re-verified against real toolchain output during this pass (`terraform
+# plan` 6.58.0, `cdk synth` 2.263.0, `cfn-guard validate` 3.2.0, `opa
+# eval` 1.19.0).
+#
+# REPAIR PASS 7 (2026-08-22, sixth adversarial-verifier pass -- TWO more
+# real defects, both settled by BINDING OPERATOR RULINGS issued the same
+# day, quoted at their fix sites in each oracle file):
+#   12. [major] ARM-PARITY BREAK ON ROLE IDENTITY. The TF-shaped oracle
+#       built its role-identity set exclusively from
+#       `.planned_values...aws_iam_role.values.name`
+#       (oracles/rego/.../policy.rego's old `iam_role_names`), so a
+#       solution that does not set a physical role name -- which is the
+#       DEFAULT shape on terraconstructs (0.2.13
+#       `lib/aws/iam/role.js:220-221`: `name: props.roleName, namePrefix:
+#       !props.roleName ? namePrefix : undefined`, so omitting `roleName`
+#       yields a provider-computed name Terraform strips from
+#       `.planned_values...values.name`) and an ordinary `name_prefix`
+#       spelling on hcl_raw -- collapsed that set to empty and fired BOTH
+#       the REPAIR PASS 6 role-count deny AND the S3-coverage deny.
+#       REPRODUCED, 2026-08-22, three arms, ONE authoring decision (this
+#       scenario's own reference solve.sh with the two `roleName:` lines
+#       deleted; hcl_raw's `name =` swapped for `name_prefix =`): awscdk
+#       reward 1.0, terraconstructs reward 0.0, hcl_raw reward 0.0 -- with
+#       TWO deny messages the graded plan flatly contradicted ("found 0"
+#       roles for a plan holding exactly two `aws_iam_role` resources; "no
+#       role has ... AmazonS3ReadOnlyAccess attached" for a plan holding
+#       two attachments whose `values.policy_arn` IS that literal ARN).
+#       This spec asserted the OPPOSITE in three places (policy.guard's
+#       `two_roles_exist` note, and this file's own defect-11 text above).
+#       FIXED per operator RULING 1 (physical resource NAMES are never
+#       load-bearing in an oracle; grade role identity by EXISTENCE + TYPE
+#       + PROPERTIES keyed on the plan ADDRESS (TF arms) / logical id (CFN
+#       arm)): policy.rego's role identity is now the planned resource
+#       ADDRESS (`iam_role_addresses`), and the attachment->role edge
+#       resolves to an address by a name JOIN when `values.role` is
+#       plan-time-known, falling back to the attachment block's own
+#       `expressions.role.references` -> the referenced role's ADDRESS
+#       when it is not. `values.name` survives only as a join key, never
+#       as a graded value; every deny message now names plan addresses,
+#       which the artifact always carries. See policy.rego's BUG 8 note.
+#   13. [major] "AT LEAST ONE ROLE" WHERE THE PROMPT SAYS BOTH. The
+#       instruction says "Both roles need read access to our reporting
+#       data in S3 (the AWS managed policy AmazonS3ReadOnlyAccess)", and
+#       blueprint §2(c)'s pre-registered tier-0 plan says the same
+#       ("awscdk: EACH role's ManagedPolicyArns contains the S3 read-only
+#       ARN; TF arms: TWO aws_iam_role_policy_attachment resources whose
+#       policy_arn is that ARN") -- but BOTH oracles graded only "at least
+#       one role" (policy.rego's `count(s3_covered_role_names) == 0`;
+#       policy.guard's flat `some %roles.Properties...`), and
+#       `oracle.intent` recorded the weakening as if it were the intent
+#       rather than a deviation from the pre-registered plan. REPRODUCED,
+#       2026-08-22, both arm families: this scenario's own reference
+#       solution with the SECOND role's S3-readonly attachment deleted
+#       (hcl_raw: the `report_writer_s3_read` block; awscdk/
+#       terraconstructs: the `reportWriter.addManagedPolicy(s3ReadOnly)`
+#       line) scored reward 1.0 on all three arms. FIXED per operator
+#       RULING 2 (where the prompt says a requirement applies to BOTH
+#       roles, the oracle enforces it PER ROLE, not "at least one"):
+#       policy.rego now uses the same per-role set difference over role
+#       ADDRESSES the metrics rule already used, and policy.guard's rule
+#       (renamed `s3_readonly_attached_to_both_roles`) uses the per-role
+#       `%roles { ... }` block form `customer_policy_attached_to_both_
+#       roles` already used. `oracle.intent` below is corrected with them.
+#       The rule was ALSO unfalsified by the shipped fixture set -- no
+#       `solution/broken/` fixture exercised it -- so this pass adds the
+#       `s3-readonly-missing-on-one-role` catch and its three broken
+#       fixtures (one per enabled arm).
+# Re-verified against real toolchain output during this pass (`terraform
+# plan` 1.15.8/aws 6.58.0, `npx cdktn synth` + terraconstructs 0.2.13,
+# `cdk synth` 2.263.0, `cfn-guard validate` 3.2.0, `opa eval` 1.19.0) --
+# every reference/reference-alt fixture still 1.0 on every arm, every
+# broken fixture still 0.0 for its own reason, and the two shapes above
+# now score IDENTICALLY on all three arms.
+#
+# REPAIR PASS 8 (2026-08-23, seventh adversarial-verifier pass -- ONE real
+# defect, the residue REPAIR PASS 7's fix did not cover):
+#   14. [major] ARM-PARITY BREAK ON ROLE IDENTITY, hcl_raw-only remainder.
+#       REPAIR PASS 7 moved role identity onto the plan ADDRESS and gave
+#       the attachment->role edge a reference fallback, but that fallback
+#       reduced every `.references` entry to its resource-BLOCK address
+#       (`aws_iam_role.this`) so it could be looked up in a block-keyed
+#       map, and then required EITHER that the block produced exactly one
+#       instance OR that the ATTACHMENT's own address carried a matching
+#       `["key"]` suffix. Neither holds for the most ordinary
+#       hand-written spelling of a for_each'd role set: two roles from
+#       `for_each = local.roles`, attached by four PLAIN (non-iterated)
+#       `aws_iam_role_policy_attachment` blocks each writing `role =
+#       aws_iam_role.this["batch_runner"].name`. REPRODUCED, 2026-08-23,
+#       that exact config with ONE attribute changed between two runs
+#       (terraform 1.15.8 / hashicorp-aws 6.58.0 / opa 1.19.0): `name =
+#       replace(each.key, "_", "-")` -> reward 1.0; `name_prefix =
+#       "${replace(each.key, "_", "-")}-"` -> reward 0.0, both deny
+#       messages naming both role addresses as uncovered while the graded
+#       plan carried `.runner_s3`/`.writer_s3` with `policy_arn =
+#       "arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess"` and
+#       `.runner_metrics`/`.writer_metrics` pointing at the customer
+#       policy. The SAME authoring decision (DRY loop over a role map, no
+#       physical role name) scored 1.0 on awscdk and 1.0 on
+#       terraconstructs, so this was an hcl_raw-only penalty for omitting
+#       a physical name -- the very thing operator RULING 1 forbids, and
+#       the opposite of what `oracle.intent` below claims.
+#       FIXED: policy.rego gains a fourth edge path (PATH D) that reads
+#       the instance-qualified reference the plan already carries and
+#       emits the edge directly -- no block-address reduction, no
+#       instance-suffix matching. Unambiguous by construction (the
+#       reference names exactly one planned role instance), so it cannot
+#       over-credit a for_each role block the way a block-address
+#       widening would.
+#       RE-VERIFIED, 2026-08-23, real toolchain, on EVERY arm: the two
+#       variants above now both score 1.0; the same DRY-loop/no-role-name
+#       decision scores 1.0 on awscdk and terraconstructs; and the
+#       policy-attached-to-one-role-only catch still fires in the
+#       name-omitted world (for_each roles + `name_prefix` with the
+#       team-metrics attachment written for one key only denies exactly
+#       `{aws_iam_role.this["report_writer"]}`, and the same shape with
+#       one S3 attachment removed denies exactly that one address too).
+#       Nine further no-regression controls all still 1.0: the reference
+#       solve.sh; roles with `name` deleted outright; roles with
+#       `name_prefix`; `.id` role spelling + `name_prefix`; for_each
+#       roles + `for_each = aws_iam_role.this` attachments +
+#       `name_prefix`; for_each roles + `for_each = local.roles` /
+#       `role = aws_iam_role.this[each.key].name` + `name_prefix`;
+#       reference-alt-hcl-foreach-policies with `name` and with
+#       `name_prefix`; the `aws_iam_policy` with its own `name` removed;
+#       and a `data.aws_partition`-templated S3 ARN.
+#
+# REPAIR PASS 9 (2026-08-23, eighth adversarial-verifier pass -- THREE
+# real defects: two more arm-parity breaks, one on each arm family, and
+# one oracle-honesty gap that had survived every previous pass):
+#   15. [major] ARM-PARITY BREAK ON hcl_raw, the residue PATHS B/C/D did
+#       not cover: the fully-DRY "cartesian product of roles x policies"
+#       idiom. One `for_each`ed role block plus ONE `for_each`ed
+#       attachment block whose keyspace is `setproduct(keys(local.roles),
+#       keys(local.policy_arns))`, with a DYNAMICALLY indexed role
+#       reference (`role = aws_iam_role.this[each.value.role_key].name`).
+#       Terraform collapses that reference's `.references` to the BASE
+#       block address (`["aws_iam_role.this", "each.value.role_key",
+#       "each.value"]`), and the attachment instance's own index suffix is
+#       the PAIR key (`["batch_runner:s3_read"]`), which is not a key of
+#       the role block at all -- so PATH B (single-instance block), PATH C
+#       (matching instance-index suffix) and PATH D (instance-qualified
+#       reference) all miss it. REPRODUCED, 2026-08-23 (terraform 1.15.8 /
+#       hashicorp-aws 6.58.0 / opa 1.19.0), that exact config with ONE
+#       attribute changed between two runs: `name = replace(each.key, "_",
+#       "-")` -> reward 1.0; `name_prefix = "${replace(each.key, "_",
+#       "-")}-"` -> reward 0.0, with BOTH deny messages naming both role
+#       addresses as uncovered while the graded plan carried
+#       `aws_iam_role_policy_attachment.this["batch_runner:s3_read"]` and
+#       `.this["report_writer:s3_read"]` with `values.policy_arn ==
+#       "arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess"`. The same
+#       authoring decision (loop over a role map, no physical role name)
+#       scored 1.0 on awscdk and terraconstructs -- again an hcl_raw-only
+#       penalty for omitting a physical name, which operator RULING 1
+#       forbids. The oracle even CLAIMED to support this idiom (REPAIR
+#       PASS 5's own note names "a for_each-over-{role,policy}-pairs
+#       idiom"; only the POLICY half of that edge was actually fixed).
+#       FIXED: policy.rego gains PATH E, a cardinality-matched
+#       block-coverage path (BUG 11 at its own site). When an attachment
+#       BLOCK has no per-instance edge from PATHS A-D at all and its
+#       `.references` name a role BLOCK with N > 1 planned instances, its
+#       own planned instances are grouped by RESOLVED POLICY IDENTITY; a
+#       group of exactly N credits all N role instances for THAT policy
+#       only. Cannot over-credit the one-role-only negatives (1 metrics
+#       instance vs 2 role instances credits nobody).
+#       The two coverage deny messages were reworded in the same edit so
+#       they stay TRUE in the case where the plan genuinely does not state
+#       which role an attachment instance covers: they now say the plan
+#       "does not establish" the attachment and that no attachment
+#       instance "resolves onto" the named addresses, rather than
+#       asserting a bare "is not attached" the artifact could contradict.
+#       New fixtures: `solution/reference-alt-hcl-cartesian/` (1.0) and
+#       `solution/broken/cartesian-metrics-on-one-role-only/` +
+#       `solution/broken/cartesian-s3-on-one-role-only/` (0.0 each, one
+#       {role,policy} pair dropped from `local.pairs`). Those two negatives
+#       have no `catches` entry of their own for the same reason
+#       `solution/broken/foreach-roles-metrics-on-one-role-only/` does not:
+#       they are the SAME mistakes the `policy-attached-to-one-role-only`
+#       and `s3-readonly-missing-on-one-role` catches already name, written
+#       in a different authoring SHAPE, and the catch taxonomy records
+#       distinct MISTAKES rather than distinct spellings.
+#   16. [major] ARM-PARITY BREAK ON awscdk (REPAIR PASS 3's fix was
+#       incomplete). That pass made `customer_policy_attached_to_both_
+#       roles` accept EITHER attachment shape -- every role carrying a
+#       `Ref`, or the ManagedPolicy's own `Roles` list being as long as the
+#       role count -- but disjoined them at RULE level, so a correct MIXED
+#       solution (the team ManagedPolicy declaring ONE role through its
+#       `roles:` prop while the OTHER role uses `addManagedPolicy()`)
+#       matched neither branch. REPRODUCED, 2026-08-23, the same edit
+#       applied to BOTH arms' own solve.sh (aws-cdk-lib 2.263.0 +
+#       cfn-guard 3.2.0; terraconstructs 0.2.13 + cdktn 0.23.0 + terraform
+#       1.15.8 + opa 1.19.0): awscdk reward 0.0, cfn-guard naming
+#       BatchRunnerRole002E307A non-compliant, while that same synthesized
+#       template has `TeamMetricsPolicy....Properties.Roles ==
+#       [{"Ref":"BatchRunnerRole002E307A"}]`; terraconstructs reward 1.0
+#       for BYTE-IDENTICAL TypeScript.
+#       FIXED: the rule is now ONE cardinality equality --
+#       `count(roles whose own ManagedPolicyArns carries no Ref at all) ==
+#       count(every in-template ManagedPolicy's Roles entries)` -- which
+#       holds for the role-side shape (0 == 0), the policy-side shape
+#       (2 == 2) and ANY mixture (1 == 1), and fails for the policy
+#       attached to one role only in either shape (1 != 0 / 2 != 1).
+#       Verified in all five directions. New fixture:
+#       `solution/reference-alt-cdk-mixed-attachment/` on awscdk (1.0),
+#       with `solution/reference-alt-tcons-mixed-attachment/` on
+#       terraconstructs as the cross-arm control that made the break
+#       visible.
+#   17. [major] "AT LEAST ONE ROLE" WHERE THE TICKET PAIRS A PRINCIPAL TO
+#       A ROLE. `oracle.intent` opens "Two IAM roles exist: one whose
+#       trust policy permits ecs-tasks.amazonaws.com to assume it, and one
+#       whose trust policy permits lambda.amazonaws.com", and blueprint
+#       §2(c) pre-registered the `two-roles-exist` row as "...the two
+#       assume_role_policy service principals ecs-tasks.amazonaws.com and
+#       lambda.amazonaws.com (`contains`, PER ROLE)". What was actually
+#       graded was two tier-0 `contains` asserts over the FLATTENED UNION
+#       of every role's trust principals, backed only by REPAIR PASS 6's
+#       bare role COUNT -- which rules out N != 2 but never pairs a
+#       principal to a role. (Defect 11 above claims this was fixed; the
+#       count restored the cardinality, not the pairing.) REPRODUCED,
+#       2026-08-23, both graded arm families: the reference solution with
+#       the first role's principal widened to `["ecs-tasks.amazonaws.com",
+#       "lambda.amazonaws.com"]` and the second role's replaced by
+#       `states.amazonaws.com` -- so `report-writer`, which the ticket
+#       says is assumed by Lambda, cannot be assumed by Lambda at all --
+#       scored reward 1.0, both tier-0 asserts PASS, on hcl_raw and on
+#       awscdk.
+#       FIXED per operator RULING 2 (a requirement the ticket states for
+#       BOTH roles is enforced PER ROLE): three new tier-1 rules on EACH
+#       oracle, with byte-for-byte matching semantics so no arm grades
+#       this fact more strictly than another -- some role trusts
+#       ecs-tasks.amazonaws.com, some role trusts lambda.amazonaws.com,
+#       and NO SINGLE role carries both principals (which is what forces
+#       the two principals onto two DISTINCT roles). Rego keys on role
+#       plan ADDRESSES; cfn-guard on filtered `Resources.*[...]`
+#       collections. Neither reads a role NAME (RULING 1).
+#       WHY TIER 1 AND NOT THE PRE-REGISTERED TIER 0: tier-0's flat
+#       JSONPath+op grammar has no per-element quantifier -- `contains`
+#       is satisfied by ANY ONE matching node anywhere in the resolved
+#       node set, which is exactly the flattening that made the defect
+#       possible. This is the same limitation that already moved this
+#       scenario's two policy-coverage facts to tier 1. The two tier-0
+#       asserts are RETAINED, unchanged, and their descriptions already
+#       say "At least one IAM role's trust policy" -- honest about what
+#       they check, now that the per-role fact is genuinely graded
+#       elsewhere.
+#       New catch `trust-principals-not-split-across-both-roles` with a
+#       broken fixture on each of the three arms -- the two-roles/trust
+#       facts had NO covering broken fixture on any arm before this pass.
+# Re-verified against real toolchain output during this pass (`terraform
+# plan` 1.15.8/aws 6.58.0, `npx cdktn synth` + terraconstructs 0.2.13,
+# `cdk synth` 2.263.0, `cfn-guard validate` 3.2.0, `opa eval` 1.19.0) --
+# every reference/reference-alt fixture 1.0 on every arm, every broken
+# fixture 0.0 for its own reason, and all three shapes above now score
+# IDENTICALLY on all three arms.
+#
+# REPAIR PASS 10 (2026-08-23, ninth adversarial-verifier pass -- the two
+# open findings were ONE root cause, and closing it required changing
+# WHICH ENGINE grades this scenario's awscdk tier-1):
+#   18. [major] ARM PARITY BREAK ON THE POLICY->ROLE EDGE, structural and
+#       unfixable in cfn-guard. cfn-guard 3.2.0 has no cross-collection
+#       identity join: there is no way to state "this AWS::IAM::Managed-
+#       Policy's `Roles` entry references the logical id of THAT
+#       AWS::IAM::Role". Every previous pass on this arm therefore reached
+#       for a PROXY, and every proxy was unsound in BOTH directions in a
+#       scenario whose entire output is a cross-arm comparison:
+#       REPAIR PASS 3's rule-level disjunction rejected the correct MIXED
+#       attachment shape (defect 16); REPAIR PASS 9's replacement fixed
+#       that direction only by abandoning identity entirely for a COUNT
+#       EQUALITY (`count(roles whose own ManagedPolicyArns carries no Ref
+#       at all) == count(every in-template ManagedPolicy's Roles
+#       entries)`), whose own header comment excused the resulting hole as
+#       reachable only by "a contrived template". IT IS NOT CONTRIVED, and
+#       this pass PROVED it: attach the team policy to batch-runner from
+#       BOTH sides at once (`roles: [batchRunner]` on the policy AND
+#       `batchRunner.addManagedPolicy(p)` on the role -- belt-and-braces,
+#       an ordinary thing to write) and to report-writer not at all, and
+#       the counts balance at 1 == 1. RUN 2026-08-23 against cfn-guard
+#       3.2.0 and the real policy.guard: EXIT 0, reward 1.0, for a
+#       template in which report-writer never receives the team-defined
+#       metrics policy the ticket asks for on both roles -- while
+#       byte-equivalent terraconstructs TypeScript scored 0.0 throughout.
+#       That template now ships as `solution/broken/metrics-policy-on-one-
+#       role-from-both-sides/` on BOTH arms (0.0 / 0.0 under the port).
+#       The same proxy additionally credited a role for a `Ref` to ANY
+#       Ref-addressable resource, not specifically to the team-defined
+#       ManagedPolicy. The TF-shaped arms never had either
+#       hole -- oracles/rego/.../policy.rego resolves both edges for real.
+#       FIXED per binding ruling (DECISIONS.md Amendment 29 §4 makes
+#       equal-strictness cross-arm grading binding; specs/SCHEMA.md §4.5
+#       "When to select `rego`" names this exact situation as the reason
+#       the engine selector exists): this spec now sets
+#       `oracle.awscdk_tier1_engine: rego`, the awscdk tier-1 policy is
+#       ported to oracles/rego-cfn/iam-managed-policy-exclusive-vs-
+#       attachment/policy.rego (a real logical-id join --
+#       `references_logical_id(entry, lid)` over `{"Ref": ...}` /
+#       `{"Fn::GetAtt": [...]}`, unioned across BOTH attachment shapes
+#       before any cardinality is looked at), and
+#       oracles/cfn-guard/iam-managed-policy-exclusive-vs-attachment/
+#       policy.guard is DELETED -- not left behind as an orphan claiming
+#       a grader nothing runs. Strictness is pinned to the TF-shaped
+#       oracle deliberately and in both directions: the join unions over
+#       every in-template ManagedPolicy exactly as policy.rego unions over
+#       every customer `aws_iam_policy`, so no fact is graded more
+#       strictly on one arm than another (that shared, deliberate limit is
+#       recorded at both sites rather than closed on one arm).
+#       cfn-guard STAYS installed in arms/awscdk/environment/Dockerfile
+#       as a measured arm capability; it is simply no longer the authority
+#       in a cross-arm comparison.
+#       RE-VERIFIED, 2026-08-23, real toolchain, EVERY arm (`cdk synth`
+#       aws-cdk-lib 2.263.0 / aws-cdk 2.1135.0, `npx cdktn synth` +
+#       terraconstructs 0.2.13 / cdktn 0.23.0, `terraform plan` 1.15.8 /
+#       hashicorp-aws 6.58.0, `opa eval` 1.19.0): the two shapes the
+#       verifier's findings named now score IDENTICALLY across arms:
+#       the team policy attached to BOTH roles declared from both sides
+#       (awscdk reference-alt-cdk-mixed-attachment 1.0, terraconstructs
+#       reference-alt-tcons-mixed-attachment 1.0); the team policy
+#       reaching ONE role declared from both sides (awscdk 0.0,
+#       terraconstructs 0.0, both newly shipped as
+#       `solution/broken/metrics-policy-on-one-role-from-both-sides/`);
+#       and the role-physical-name-omitted shape (1.0 on all three arms,
+#       ruling 1, newly shipped as `reference-alt-cdk-no-role-name/`,
+#       `reference-alt-tcons-no-role-name/` and
+#       `reference-alt-hcl-no-role-name/` so the parity claim is
+#       re-runnable rather than asserted).
+#   19. [major] UNFALSIFIED RULES ON THE PORTED BUNDLE. Auditing every
+#       rule of the new bundle for a covering negative found FOUR with no
+#       fixture on any arm: the role-count rule (REPAIR PASS 6 hand-built
+#       its negative and never shipped it), the fail-closed
+#       "no AWS::IAM::ManagedPolicy exists" rule, and the two
+#       some-role-trusts-<service> rules. An unfalsified rule is untested,
+#       so this pass adds four awscdk `solution/broken/` fixtures --
+#       `single-role-for-both-workloads`, `no-team-metrics-policy`,
+#       `both-roles-trust-ecs-tasks-only`, `both-roles-trust-lambda-only`
+#       -- each scoring 0.0 for its own rule's own reason, alongside
+#       `metrics-policy-on-one-role-from-both-sides` (defect 18's own
+#       counterexample) on awscdk and terraconstructs. They carry no
+#       `catches` entry (the catch taxonomy records distinct MISTAKES an
+#       agent makes, and these are rule-coverage proofs), which is the
+#       same treatment `foreach-roles-metrics-on-one-role-only` and the
+#       two `cartesian-*` fixtures already get on hcl_raw;
+#       gates/oracle_falsifiability.py's extra-broken loop requires each
+#       of them to score 0.0 exactly as it requires a catch's fixture to.
+# Re-verified against real toolchain output during this pass (`cdk synth`
+# 2.263.0, `npx cdktn synth` + terraconstructs 0.2.13, `terraform plan`
+# 1.15.8/aws 6.58.0, `opa eval` 1.19.0) -- every reference/reference-alt
+# fixture 1.0 on every arm, every broken fixture 0.0 for its own reason.
+
+# Batch A greenfield scenario. Design source:
+# docs/design/batch-a-greenfield-blueprints.md §2 (authored 2026-08-20,
+# while a live trial was running against 886312446417 -- no generation, no
+# AWS calls, no tasks/ writes were made producing that blueprint). Read in
+# full at authoring time alongside docs/adding-scenarios.md §1 item 3a
+# (prompt-writing rules), specs/SCHEMA.md (field reference, esp. §0.1
+# identity separation, §3 catches/applies_to, §4.2/§4.2.1 structural
+# asserts + plan-time-unknown), DECISIONS.md Amendments 23-28, and
+# specs/s3-lambda-log-retention.yaml (structural template).
+#
+# ---------------------------------------------------------------------
+# THE TRAP (operator-facing; never written where the agent can read it):
+# ---------------------------------------------------------------------
+# Terraform models "policy X is attached to role Y" three ways with
+# different ownership semantics, two of which are AUTHORITATIVE / exclusive
+# rather than additive:
+#   - aws_iam_role_policy_attachment  -- additive, correct for this ticket.
+#   - aws_iam_role_policy_attachments_exclusive -- exclusive, but scoped to
+#     ONE role and DECLARED as exclusive by its own name. REJECTED (the
+#     role-scoped-exclusive-attachment catch, REPAIR PASS 4): "role-scoped"
+#     is not "safe" -- it still removes, on the next apply, any attachment
+#     to that role it did not itself list, which is exactly what this
+#     scenario's "other teams attach their own policies... out of band;
+#     that must keep working" sentence forbids. See the "Oracle must
+#     tolerate/defend" section below for the full reasoning.
+#   - aws_iam_policy_attachment -- takes exclusive ownership of a POLICY's
+#     entire account-wide attachment set. `roles = [both roles]` plans
+#     clean, applies clean, and satisfies every *functional* assert in this
+#     scenario -- but silently detaches that managed policy from every
+#     OTHER principal in the account that happens to reference it, now or
+#     in the future. This is the plausible-wrong solution (catch
+#     account-exclusive-policy-attachment): the resource name most closely
+#     resembles the question ("attach a policy" -> aws_iam_policy_attachment),
+#     a name-similarity failure, not a knowledge failure.
+#   - aws_iam_role.managed_policy_arns -- deprecated, takes exclusive
+#     ownership of a ROLE's entire managed-policy set. Mixing it with an
+#     additive attachment on the same role/policy produces attach/detach
+#     churn on every apply (catch deprecated-exclusive-role-attribute).
+# CloudFormation has exactly one attachment surface (ManagedPolicyArns on
+# the role) and no additive alternative -- the mistake is structurally
+# UNREACHABLE there. This is a narrower-API "advantage" for the CDK-shaped
+# arms, not a smarter-tool advantage, and the scenario states that plainly
+# rather than dressing it up (blueprint §2(e)).
+#
+# EVIDENCE (blueprint §2(d) re-verification, 2026-08-20; the graded
+# candidate's original evidence -- three discuss.hashicorp.com threads --
+# is UNVERIFIABLE via `gh` and is replaced here with primary sources read
+# directly on the hashicorp/terraform-provider-aws repo's `main` branch):
+#   - website/docs/r/iam_role.html.markdown: `managed_policy_arns` is
+#     "(Optional, Deprecated)", "Set of EXCLUSIVE IAM managed policy ARNs".
+#     Its own note: "this resource will take over exclusive management of
+#     the role's respective policy types... incompatible with...
+#     aws_iam_policy_attachment, aws_iam_role_policy_attachment... you will
+#     get resource cycling and/or errors"; migration guidance names
+#     aws_iam_role_policy_attachment and
+#     aws_iam_role_policy_attachments_exclusive as the replacements.
+#   - website/docs/r/iam_role_policy_attachments_exclusive.html.markdown
+#     exists (2,674 bytes) -- the purpose-built, role-scoped exclusive
+#     resource, carrying its own "removal of managed IAM policies which are
+#     not explicitly configured" warning.
+#   - tfp-aws#39376 (OPEN, 2024-09-18 -> 2026-01-30, 11 (thumbsup), 29
+#     comments) -- HashiCorp's own meta-issue "[Provider]: Implement
+#     exclusive relationship management resources", cataloguing this exact
+#     additive-vs-exclusive pattern across IAM inline policies, IAM
+#     customer-managed policies, Organizations policies, Route53 records,
+#     SSO managed policies, VPC prefix lists, route tables and security
+#     groups. The strongest single artifact in the whole Batch A set;
+#     anchors this spec's provenance.
+#
+# terraconstructs immunity, VERIFIED DIRECTLY against the pinned 0.2.13
+# package at authoring time (not assumed -- DECISIONS.md's own
+# "s3-lambda-log-retention catch is falsified by the pinned provider"
+# lesson):
+#   - lib/aws/iam/role.js:212-215 -- `managedPolicyArns` is commented OUT
+#     of the synthesized IamRole props, with the construct's own citation
+#     to the provider's exclusive-relationship-management-resources design
+#     doc (the same doc website/docs/r/iam_role.html.markdown's migration
+#     note points at). Confirmed by direct read of the installed package.
+#   - lib/aws/iam/managed-policy.js:43 -- `ManagedPolicy.attachToRole()`
+#     emits one `iamRolePolicyAttachment.IamRolePolicyAttachment` (the
+#     ADDITIVE resource) per attached role, inside `onPrepare()`'s
+#     `for (let i = 0; i < this.roles.length; i++)` loop. Confirmed by
+#     direct read.
+#   - There is no L2 path to `aws_iam_policy_attachment`, nor to
+#     `aws_iam_role_policy_attachments_exclusive`, at all on this arm
+#     (only an L1 `@cdktn/provider-aws` escape hatch exists for either,
+#     which is true of every AWS resource type on this arm and is not
+#     "ordinary use" -- SCHEMA.md §3's own applies_to bar). RE-VERIFIED
+#     DIRECTLY, REPAIR PASS 4 (2026-08-22): `npm pack terraconstructs@
+#     0.2.13` and a direct read of the unpacked `lib/aws/iam/**` tree
+#     confirms no file exports anything wrapping either resource type --
+#     the only "exclusive"-adjacent text anywhere in that tree is the
+#     doc-comment citations already quoted above. All three catches
+#     (account-exclusive-policy-attachment, deprecated-exclusive-role-
+#     attribute, role-scoped-exclusive-attachment) are therefore N/A here
+#     too, matching awscdk's structural immunity, not merely a coincidence
+#     of API-surface narrowness on ONE typed arm.
+#
+# ---------------------------------------------------------------------
+# ORACLE MUST TOLERATE / DEFEND (blueprint §2(b), operator-facing --
+# behavioralized where the schema allows it; REVERSED for shape (2) in
+# REPAIR PASS 4, 2026-08-22 -- see this file's header comment, defect 8,
+# for the full evidence and why blueprint §2(b)'s pre-approval of shape
+# (2) does not survive contact with the blueprint's OWN prompt sentence):
+# ---------------------------------------------------------------------
+# Three TF-shaped resource choices satisfy this ticket's FUNCTIONAL intent
+# (both roles trust the right service, both get the S3-readonly and
+# team-metrics policies) -- but functional intent is not this ticket's
+# WHOLE intent. The prompt's closing sentence ("Other teams attach their
+# own policies to these roles out of band; that must keep working.") is a
+# SURVIVAL requirement, independent of and additional to the attachment
+# facts above, and it is the one this scenario actually measures:
+#   (1) aws_iam_role_policy_attachment  -- additive; never removes an
+#       attachment it did not itself create, on this role or any other.
+#       GRADED 1.0.
+#   (2) aws_iam_role_policy_attachments_exclusive -- role-scoped exclusive,
+#       declared as such by its own name. Blueprint §2(b) calls this "also
+#       acceptable, and arguably the most deliberate answer" -- REJECTED
+#       here despite that text, because "role-scoped" does not mean
+#       "safe": this resource takes exclusive ownership of THAT ROLE's
+#       entire managed-policy set and REMOVES, on every subsequent apply,
+#       any policy attached to it that is not listed in its own
+#       `policy_arns` -- verified verbatim against the provider's own
+#       docs, website/docs/r/iam_role_policy_attachments_exclusive.
+#       html.markdown: "This resource takes exclusive ownership over
+#       managed IAM policies attached to a role. This includes removal of
+#       managed IAM policies which are not explicitly configured." An
+#       out-of-band policy some OTHER team attaches to `batch-runner` or
+#       `report-writer` is exactly the kind of "managed IAM policy which
+#       is not explicitly configured" this resource removes -- narrower in
+#       blast radius than shape (3) below (one role instead of every
+#       principal account-wide that references the policy), but identical
+#       in KIND: an authoritative resource silently detaching something
+#       the ticket's own prompt says must survive. GRADED 0.0 (the
+#       role-scoped-exclusive-attachment catch).
+#   (3) aws_iam_policy_attachment -- account-wide exclusive. REJECTED (the
+#       account-exclusive-policy-attachment catch).
+# The deprecated aws_iam_role.managed_policy_arns is also REJECTED
+# (deprecated-exclusive-role-attribute) -- role-scoped exclusive too, same
+# reasoning as (2), and additionally a deprecated argument.
+#
+# WHY BLUEPRINT §2(b)'S PRE-APPROVAL OF SHAPE (2) DOES NOT STAND: the
+# blueprint's own prompt text (§2(b), reproduced verbatim in this spec's
+# `instruction.shared_body`) is "Other teams attach their own policies to
+# these roles out of band; that must keep working" -- unqualified by
+# anything like "except via a role-scoped-exclusive resource". §2(b)'s
+# shape-list clause then calls shape (2) acceptable without checking it
+# against that sentence; the two clauses of the SAME blueprint section
+# contradict each other, and citing one does not resolve a contradiction
+# with the other in its own favor. REPAIR PASS 2 (defect 4, above)
+# resolved the contradiction toward "accept" by reading only the
+# shape-list clause; this pass resolves it toward "reject" by reading the
+# prompt-sentence clause as controlling, because it is the ticket's own
+# stated requirement -- what this scenario is FOR -- rather than a
+# shape-list annotation, which (re-read carefully) is really a note about
+# what TIER-0's flat grammar can or cannot express, not an independent
+# behavioural judgement. See this file's header comment, REPAIR PASS 4,
+# defect 8, for the full before/after.
+#
+# HOW SHAPE (2) IS REJECTED: a new tier-0 assert,
+# `no-role-scoped-exclusive-attachment` (symmetric with the pre-existing
+# `no-account-exclusive-policy-attachment` -- both are a bare
+# resource-type-absence check, well within tier-0's flat grammar; the
+# grammar limitation that forced the S3-identity fact off tier-0 in REPAIR
+# PASS 2 -- specs/SCHEMA.md §4.2's jsonpath grammar has no type-
+# conditional field selector -- does not apply here, since a bare
+# "does this resource type exist at all" check needs no field-name
+# branching), plus an explicit, accurately-worded tier-1 Rego deny rule
+# (oracles/rego/.../policy.rego's own header comment has the full
+# before/after) for defense in depth -- the SAME two-tier redundancy
+# shape (3) already gets, not a weaker one. Tier-1's PRIOR "acceptance"
+# code path (unioning `aws_iam_role_policy_attachments_exclusive` into the
+# covering sets) is REMOVED, not merely bypassed, so shape (2) cannot
+# score 1.0 through either oracle by any path. Adding the new tier-0
+# assert does not disturb `make tier1-coverage`'s numeric floor (it is a
+# tier-0 entry, not tier-1) -- confirmed by re-running `make
+# tier1-coverage SPEC=specs/iam-managed-policy-exclusive-vs-attachment.yaml`
+# after the change (see this repair pass's own proof log).
+#
+# On awscdk/terraconstructs the ticket is satisfied identically by
+# `role.addManagedPolicy(policy)` on both roles for both policies -- shape
+# (2)/(3)'s distinction does not exist as a typed-arm authoring choice at
+# all (SCHEMA.md §3's applies_to: those two catches are N/A, not MISSING,
+# on both typed arms -- see applies_to below and the immunity evidence
+# above).
+#
+# AWSCDK'S OWN SECOND AUTHORING CHOICE (fixed in REPAIR PASS 3 -- see this
+# file's own header comment, defect 6): the team-defined policy's
+# roles can be declared on EITHER side of aws-cdk-lib's IAM API --
+# `role.addManagedPolicy(policy)` per role (the reference solve.sh's own
+# shape), or `new iam.ManagedPolicy(this, "TeamMetricsPolicy", { roles:
+# [batchRunner, reportWriter], ... })` (`ManagedPolicyProps.roles`) in one
+# call. Both are ordinary, idiomatic, equally-documented aws-cdk-lib API
+# and both are GRADED 1.0, as is ANY MIXTURE of the two (one role named
+# from each side). Since REPAIR PASS 10 that is true BY CONSTRUCTION
+# rather than by a rule-level disjunction or a balanced count:
+# oracles/rego-cfn/.../policy.rego's `metrics_covered_role_ids` unions the
+# role-side and policy-side edges, both resolved by LOGICAL ID, before any
+# cardinality is looked at. See solution/reference-alt-cdk-roles/solve.sh
+# for the policy-side shape's reference proof and
+# solution/reference-alt-cdk-mixed-attachment/solve.sh for the mixed
+# shape's. No TF-arm analog of this specific two-sided-API choice
+# exists (`aws_iam_role_policy_attachment` only ever lists one role; there
+# is no "list several roles in one attachment block" HCL resource), so
+# this is an awscdk-only authoring-shape fact, unrelated to shapes (1)-(3)
+# above.
+#
+# REMAINING, HONEST SCOPE-NARROWING (recorded, not fixed, in this pass --
+# a documented limitation per docs/adding-scenarios.md §1 item 3a's
+# preference for an honest gap over forcing one implementation shape via
+# prompt prose): a single SHARED INLINE policy --
+# `new iam.Policy(this, "TeamMetricsPolicy", { roles: [batchRunner,
+# reportWriter], statements: [...] })` on awscdk (synthesizes a standalone
+# `AWS::IAM::Policy`, not `AWS::IAM::ManagedPolicy`), or
+# `aws_iam_role_policy` duplicated per role on the TF arms -- is NOT
+# accepted by either oracle. Nothing in this ticket requires the
+# team-defined policy to be CUSTOMER-MANAGED rather than inline; "both
+# need the same team-defined policy allowing them to write metrics to
+# CloudWatch" is satisfied by this shape too, and it does not disturb
+# out-of-band attachments any more than the graded shape does.
+# DEMONSTRATED (2026-08-21, and again 2026-08-23 under the ported
+# engine): an awscdk stack granting the metrics permission without a real
+# `AWS::IAM::ManagedPolicy` resource is REJECTED, reward 0.0 -- in 2026-08-21
+# via cfn-guard's `customer_policy_exists_when_roles_present`, and since
+# REPAIR PASS 10 via the same fail-closed rule ported into
+# oracles/rego-cfn/.../policy.rego. As of REPAIR PASS 10 that limitation
+# is no longer only demonstrated by hand: it ships as
+# `solution/broken/no-team-metrics-policy/` on the awscdk arm (the
+# `role.addToPolicy(...)` inline spelling), which is both the covering
+# negative for that rule and this gap's executable proof. Left unfixed this pass
+# because closing it properly means either (i) widening BOTH oracles to
+# treat an inline-policy-referencing-both-roles as a second covering shape
+# (a real, larger Rego/cfn-guard change, symmetric with shape (2)'s fix
+# above but for a resource FAMILY tier-0 cannot even name uniformly across
+# arms -- `AWS::IAM::Policy` has no TF-arm analog shaped the same way,
+# since `aws_iam_role_policy` is per-role with no `roles` list, so "shared"
+# means something structurally different on each arm), or (ii) adding an
+# in-world sentence to the prompt that forces "a policy other teams can
+# also attach" (i.e. customer-managed) -- both are real authoring work
+# this pass's scope (fixing the FIVE identified defects) does not extend
+# to. Tracked here as a known gap for a follow-on revision, exactly the
+# way shape (2) used to be tracked before this same pass closed it.
+#
+# ---------------------------------------------------------------------
+# RISK NOTE carried over verbatim from the blueprint (§2(f)): the prompt's
+# closing sentence ("Other teams attach their own policies to these roles
+# out of band; that must keep working.") is the ONE in-world motivating
+# sentence docs/adding-scenarios.md §1 item 3a allows. It is a fact about
+# the environment, not a mechanism constraint and not a description of the
+# fix -- without it the additive-vs-exclusive distinction is unobservable
+# in a GREENFIELD plan (nothing else is attached yet) and this scenario
+# would measure nothing; with it, every arm's task is identical. If future
+# review judges this sentence a hint, the documented alternative is to move
+# this scenario to the brownfield queue (a seed already carrying an
+# out-of-band attachment) -- a different form, a different metric stratum,
+# and no longer this spec.
+
+id: iam-managed-policy-exclusive-vs-attachment
+workspace_id: batch-service-roles
+title: "Two service roles that share the same managed policies"
+difficulty: 2
+services: [iam]
+
+arms:
+  awscdk: true
+  hcl_raw: true
+  terraconstructs:
+    enabled: true
+    reason: >
+      arms/terraconstructs/README.md §4 lists `iam` ("Roles, users, groups,
+      managed/inline policies, policy statements, grants, principals,
+      OIDC/SAML providers, instance profiles") as a covered service.
+      RE-VERIFIED DIRECTLY against the pinned 0.2.13 package at authoring
+      time (2026-08-20, not assumed): `lib/aws/iam/role.js` exports a real
+      `Role` L2 construct with `assumedBy`/`roleName`/`addManagedPolicy()`
+      matching aws-cdk-lib's own API; `lib/aws/iam/managed-policy.js`
+      exports `ManagedPolicy` with `fromAwsManagedPolicyName(scope, id,
+      managedPolicyName)` (a 3-arg static, unlike aws-cdk-lib's newer
+      1-arg form -- confirmed against the installed .js, not just its
+      possibly-stale .d.ts doc comment) and `attachToRole()`/`addStatements()`.
+      Both constructs are the ones this scenario's reference solution uses.
+      Separately (not part of this enable/reason but recorded since it was
+      verified at the same time): this arm's own `managedPolicyArns` is
+      commented out of the synthesized `IamRole` resource
+      (`lib/aws/iam/role.js:212-215`, citing the provider's own
+      exclusive-relationship-management-resources design decision) and
+      `ManagedPolicy.attachToRole()` always emits the additive
+      `IamRolePolicyAttachment` resource
+      (`lib/aws/iam/managed-policy.js:43`) -- this arm is immune to this
+      scenario's first two catches BY CONSTRUCTION, not merely by not
+      having tried yet. See catches[].applies_to below.
+
+instruction:
+  shared_body: |
+    Our batch platform needs two IAM roles:
+
+    - `batch-runner`, assumed by ECS tasks, and
+    - `report-writer`, assumed by Lambda.
+
+    Both roles need read access to our reporting data in S3 (the AWS managed
+    policy AmazonS3ReadOnlyAccess), and both need the same team-defined policy
+    allowing them to write metrics to CloudWatch. Other teams attach their own
+    policies to these roles out of band; that must keep working.
+  placeholders: []
+  per_arm:
+    awscdk:
+      language_line: "Author this as an AWS CDK (TypeScript) app using aws-cdk-lib L2 constructs."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdk.out/ScenarioStack.template.json
+        build_command: "npm run build"
+        synth_command: "npx cdk synth --no-lookups --quiet -o cdk.out"
+        json_fields: []
+    hcl_raw:
+      language_line: "Author this as hand-written Terraform HCL (no modules)."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields: []
+    terraconstructs:
+      language_line: "Author this using terraconstructs (TypeScript) L2 constructs, synthesized via cdktn."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdktf.out/stacks/batch-service-roles/plan.json
+        synth_command: "npx cdktn synth"
+        json_fields: []
+
+catches:
+  - name: account-exclusive-policy-attachment
+    taxonomy: graph-dependency
+    description: >
+      Uses ONE `aws_iam_policy_attachment` resource (the account-wide
+      exclusive form) with `roles = [batch_runner, report_writer]` for the
+      team-defined CloudWatch-metrics policy, instead of two
+      `aws_iam_role_policy_attachment` resources. This is the PLAUSIBLE-
+      WRONG solution: it plans clean, applies clean, and satisfies every
+      functional assert this scenario declares (both roles trust the right
+      service, both get the team policy, S3-readonly is attached) -- the
+      damage is invisible to a synth/plan-only oracle by the mechanism
+      itself: `aws_iam_policy_attachment` becomes the CANONICAL, exclusive
+      owner of every principal attached to that specific policy ARN
+      account-wide, silently detaching the team-metrics policy from any
+      OTHER role/user/group that references it now or attaches to it later
+      via any other mechanism (the "other teams attach their own policies
+      out of band" sentence in the prompt is what makes this consequence
+      real rather than moot in a greenfield plan). Predicted to be the most
+      likely real mistake: `aws_iam_policy_attachment` is the resource
+      whose NAME most closely resembles "attach a policy to these roles" --
+      a name-similarity failure, not a knowledge failure (blueprint §2(e)'s
+      own secondary prediction). Structurally unreachable on awscdk (CFN
+      has one attachment surface, ManagedPolicyArns on the role -- no
+      separate attachment resource type exists to reach for) and on
+      terraconstructs (its L2 IAM surface only ever emits
+      IamRolePolicyAttachment or the commented-out-by-design
+      managedPolicyArns path -- see this spec's header comment's
+      "terraconstructs immunity" evidence) through ordinary use.
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "0"
+      terraconstructs_override: null
+    applies_to: [hcl_raw]
+
+  - name: deprecated-exclusive-role-attribute
+    taxonomy: nested-attribute
+    description: >
+      Sets `managed_policy_arns` directly on one or both `aws_iam_role`
+      resources (the deprecated, role-scoped-exclusive attribute) AND
+      separately adds an `aws_iam_role_policy_attachment` for one of the
+      same policies on the same role -- the detach/reattach churn shape
+      the provider's own docs warn about verbatim ("this resource will
+      take over exclusive management of the role's respective policy
+      types... incompatible with... aws_iam_role_policy_attachment... you
+      will get resource cycling and/or errors", website/docs/r/
+      iam_role.html.markdown). The fixture (`solution/broken/
+      deprecated-exclusive-role-attribute/`) sets `managed_policy_arns =
+      []` specifically (REPAIR PASS 2, replacing a non-empty-list form) --
+      the EMPTIENT-set variant, per the same provider docs page's own
+      example ("If someone attaches a policy out-of-band, on the next
+      apply, Terraform will detach that policy... configuring an empty
+      set... will cause Terraform to remove ALL managed policy
+      attachments"), is the single most destructive shape of this
+      mistake, and is also the one the FIRST-pass `no-deprecated-role-
+      managed-policy-arns` assert failed to catch at all (see that
+      assert's own note) -- this fixture now exercises exactly the
+      variant that bug required. Structurally unreachable on awscdk/
+      terraconstructs: aws-cdk-lib's Role construct has no
+      `managedPolicyArns`-as-a-settable-prop escape hatch that isn't
+      itself `addManagedPolicy()` (which never renders this literal
+      attribute name), and terraconstructs' own `lib/aws/iam/role.js`
+      comments the equivalent Terraform argument OUT of what it ever
+      synthesizes (see this spec's header comment) -- through ordinary
+      use, an agent on either typed arm cannot reach for the mistake even
+      by trying the "obvious" L2 API path.
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "0"
+      terraconstructs_override: null
+    applies_to: [hcl_raw]
+
+  - name: role-scoped-exclusive-attachment
+    taxonomy: graph-dependency
+    description: >
+      Uses `aws_iam_role_policy_attachments_exclusive` (the purpose-built,
+      role-scoped-exclusive resource, correctly named and self-describing
+      as exclusive -- unlike deprecated-exclusive-role-attribute's mistake,
+      this is not a deprecation trap) for one or both roles' managed-policy
+      set, instead of individual `aws_iam_role_policy_attachment` resources.
+      ADDED IN REPAIR PASS 4 (2026-08-22; this spec's own header comment,
+      defect 8): a prior pass's oracle accepted this shape, reading
+      blueprint §2(b)'s shape-list annotation ("also acceptable") without
+      checking it against the SAME blueprint section's own prompt
+      sentence, reproduced verbatim in this scenario's own
+      `instruction.shared_body`: "Other teams attach their own policies to
+      these roles out of band; that must keep working."
+      `aws_iam_role_policy_attachments_exclusive` takes exclusive
+      ownership of THE ROLE's entire managed-policy set and REMOVES, on
+      the next apply, any attachment not listed in its own `policy_arns`
+      -- verified verbatim against the provider's own docs,
+      website/docs/r/iam_role_policy_attachments_exclusive.html.markdown:
+      "This resource takes exclusive ownership over managed IAM policies
+      attached to a role. This includes removal of managed IAM policies
+      which are not explicitly configured." An out-of-band policy some
+      other team attaches to either role is exactly what this resource
+      would remove on the next apply -- narrower in blast radius than
+      account-exclusive-policy-attachment (one role, not every principal
+      account-wide referencing the policy) but identical in KIND: like
+      that catch, it plans clean, applies clean, and satisfies every
+      *functional* assert this scenario declares -- the damage is
+      invisible to a synth/plan-only oracle by the mechanism itself.
+      Structurally unreachable on awscdk (CFN's single ManagedPolicyArns
+      surface is inherently additive; no exclusive attachment surface
+      exists at all) and on terraconstructs (its L2 IAM surface has no
+      path to this resource type either -- confirmed by direct read of
+      the pinned 0.2.13 package's `lib/aws/iam/**` tree, 2026-08-22, see
+      this spec's own header comment's terraconstructs-immunity note)
+      through ordinary use.
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "0"
+      terraconstructs_override: null
+    applies_to: [hcl_raw]
+
+  - name: policy-attached-to-one-role-only
+    taxonomy: graph-dependency
+    description: >
+      The team-defined CloudWatch-metrics policy is attached to only ONE
+      of the two roles (`batch-runner`, say) -- the other role never
+      receives it. Every tier-0 assert this scenario declares passes
+      identically to a correct solution (both roles exist with the right
+      trust principals; no forbidden exclusive-attachment resource/attribute
+      is used; the S3-readonly policy's own attachment is unaffected by
+      this catch) -- this is a real cross-resource wiring omission, not a
+      typed-value or enum mistake, and needs a graph-shaped check that
+      accounts for BOTH roles independently, which tier-0's flat
+      JSONPath+op grammar cannot express (see the customer-metrics-
+      policy-attached-to-both-roles-* asserts' own notes for exactly why:
+      `contains`/`exists` pass on ANY ONE matching node, `set_eq` collapses
+      duplicates -- none of tier-0's ops can distinguish "attached once"
+      from "attached to both"). Reachable, and equally easy to make by
+      accident, on every arm: an awscdk/terraconstructs solution that
+      simply forgets the second `role.addManagedPolicy(metricsPolicy)`
+      call is just as functionally-broken as an hcl_raw solution missing
+      the second `aws_iam_role_policy_attachment` resource -- there is no
+      typed-arm advantage for THIS catch, unlike the first two.
+    predicted_tier_caught:
+      awscdk: "1"
+      hcl: "1"
+      terraconstructs_override: null
+    applies_to: [awscdk, hcl_raw, terraconstructs]
+
+  - name: s3-readonly-missing-on-one-role
+    taxonomy: graph-dependency
+    description: >
+      The AWS managed policy AmazonS3ReadOnlyAccess is attached to only
+      ONE of the two roles -- the other role gets the team-defined metrics
+      policy but no S3 read access at all. The sibling of
+      policy-attached-to-one-role-only, on the OTHER of the two policies
+      the ticket names, and an equally plain omission of a stated
+      requirement: the prompt's second paragraph opens "Both roles need
+      read access to our reporting data in S3 (the AWS managed policy
+      AmazonS3ReadOnlyAccess)".
+
+      ADDED IN REPAIR PASS 7 (2026-08-22; this spec's own header comment,
+      defect 13). Until this pass BOTH oracles graded this fact as "at
+      least one role" (the TF oracle's `count(s3_covered_role_names) ==
+      0`; on awscdk, then-cfn-guard's flat `some
+      %roles.Properties.ManagedPolicyArns[*]...`),
+      so this mistake scored reward 1.0 on every arm -- reproduced
+      directly on all three. The rule was also the only graded fact in
+      this scenario with NO covering broken fixture, i.e. unfalsified by
+      the shipped fixture set even after it was tightened; this catch and
+      its three fixtures close both halves.
+
+      Every tier-0 assert passes identically to a correct solution (both
+      roles exist with the right trust principals, no exclusive-ownership
+      resource or attribute is used anywhere), and so does the
+      metrics-policy tier-1 rule -- exactly like
+      policy-attached-to-one-role-only, this is a per-role coverage fact
+      that tier-0's flat JSONPath+op grammar cannot express. Reachable and
+      equally easy to make by accident on every arm: one missing
+      `role.addManagedPolicy(s3ReadOnly)` call on the typed arms, one
+      missing `aws_iam_role_policy_attachment` block on hcl_raw. No typed-
+      arm advantage.
+    predicted_tier_caught:
+      awscdk: "1"
+      hcl: "1"
+      terraconstructs_override: null
+    applies_to: [awscdk, hcl_raw, terraconstructs]
+
+  - name: trust-principals-not-split-across-both-roles
+    taxonomy: nested-attribute
+    description: >
+      Two IAM roles are created and both policies are attached to both of
+      them, but the two service principals the ticket pairs to the two
+      roles are not split across them: the FIRST role's trust policy names
+      both ecs-tasks.amazonaws.com and lambda.amazonaws.com, and the
+      SECOND role's names states.amazonaws.com instead. The role the
+      ticket describes as "assumed by Lambda" therefore cannot be assumed
+      by Lambda at all, while the flattened union of both roles' trust
+      principals still contains both service names.
+
+      ADDED IN REPAIR PASS 9 (2026-08-23; this spec's own header comment,
+      defect 17). Until this pass the two trust facts were graded ONLY by
+      two tier-0 `contains` asserts over that flattened union, plus a bare
+      role COUNT at tier 1 -- so this mistake scored reward 1.0 on both
+      graded arm families, reproduced directly on each. It was also the
+      last graded fact in this scenario with NO covering broken fixture on
+      any arm.
+
+      Every tier-0 assert passes identically to a correct solution, which
+      is the whole point: `contains` has no per-element quantifier, so a
+      union that holds both principals satisfies both asserts however the
+      principals are distributed. Reachable and equally easy to make by
+      accident on every arm -- one `CompositePrincipal` on the typed arms,
+      one `Principal.Service` list on hcl_raw. No typed-arm advantage.
+    predicted_tier_caught:
+      awscdk: "1"
+      hcl: "1"
+      terraconstructs_override: null
+    applies_to: [awscdk, hcl_raw, terraconstructs]
+
+oracle:
+  intent: >
+    Two IAM roles exist: one whose trust policy permits
+    ecs-tasks.amazonaws.com to assume it, and a SECOND, DISTINCT one whose
+    trust policy permits lambda.amazonaws.com to assume it. That pairing
+    is graded per role, not over the flattened union of both roles'
+    principals: no single role may carry both service principals, because
+    a plan in which one role is assumable by both and the other by neither
+    leaves the role this ticket describes as assumed by Lambda unable to
+    be assumed by Lambda at all. Because other teams attach
+    their own managed policies to these roles out of band, and those
+    attachments must survive every future apply of this configuration,
+    neither role's managed-policy attachments may be declared through ANY
+    exclusive-ownership resource or attribute -- not the account-wide-
+    exclusive aws_iam_policy_attachment, not the role-scoped-exclusive
+    aws_iam_role.managed_policy_arns (including an explicit empty set),
+    and not the purpose-built, role-scoped-exclusive
+    aws_iam_role_policy_attachments_exclusive either: all three take
+    ownership of a set of attachments and remove, on the next apply,
+    whatever they do not themselves list, which is precisely the failure
+    this scenario's one load-bearing prompt sentence forbids. Every
+    managed-policy attachment in this configuration is additive instead --
+    aws_iam_role_policy_attachment on the TF-shaped arms, or
+    CloudFormation's ManagedPolicyArns list (the only surface
+    CloudFormation has, and inherently additive: CFN never removes an
+    attachment it did not itself add). The AWS managed policy
+    AmazonS3ReadOnlyAccess, specifically (not merely "some" AWS-managed
+    policy), is attached to BOTH roles -- as either a
+    partition-templated Fn::Join/Ref construction or a bare literal ARN
+    string on awscdk (both are legitimate, equally-idiomatic renders of
+    the same import; neither is preferred), or as a plan-time-known
+    literal ARN on the TF-shaped arms. A single team-defined managed
+    policy, created in this configuration and granting a CloudWatch
+    metrics-write action, is attached to BOTH roles as well. Either
+    policy reaching only one of the two roles, or covering a role only
+    through Terraform-address indirection that a for_each/count idiom
+    breaks, is what this scenario's tier-1 checks exist to find.
+
+    No role's PHYSICAL NAME is graded, on any arm, and neither is the
+    team-defined policy's: identity here is existence + type +
+    properties, keyed on the plan address (TF-shaped arms) or the
+    template logical id (awscdk). A solution that omits the role's
+    physical name and lets the provider or CDK compute one -- the DEFAULT
+    shape on terraconstructs, whose L2 falls back to `namePrefix`
+    whenever `roleName` is not supplied -- scores exactly the same as one
+    that sets it, on every arm.
+
+  # REPAIR PASS 10 (2026-08-23), specs/SCHEMA.md §4.5. This scenario's
+  # tier-1 fact is a CROSS-RESOURCE JOIN ("the team-defined managed policy
+  # is attached to BOTH of the roles this template creates"), stated on
+  # the CFN side through logical ids -- exactly what cfn-guard 3.2.0
+  # cannot express and what three previous repair passes each had to
+  # approximate with a proxy that was unsound in both directions (see this
+  # file's header comment, defect 18). DECISIONS.md Amendment 29 §4 makes
+  # equal-strictness cross-arm grading binding, and this scenario's entire
+  # output IS a cross-arm comparison, so its awscdk tier-1 is graded by
+  # the same engine the TF-shaped arms use, over the same synthesized
+  # CloudFormation template cfn-guard used to read.
+  # The bundle: oracles/rego-cfn/iam-managed-policy-exclusive-vs-
+  # attachment/policy.rego. oracles/cfn-guard/iam-managed-policy-
+  # exclusive-vs-attachment/policy.guard is DELETED (the generator will
+  # not remove a hand-authored file, so flipping this field leaves an
+  # orphan unless it is deleted by hand -- oracles/emit.py says so at its
+  # own site). cfn-guard remains installed in the awscdk arm image as a
+  # measured arm capability.
+  awscdk_tier1_engine: rego
+
+  structural_asserts:
+    - name: role-trusts-ecs-tasks-service
+      description: >
+        At least one IAM role's trust policy (AssumeRolePolicyDocument /
+        assume_role_policy) permits the ecs-tasks.amazonaws.com service
+        principal to assume it. principal is always a plan-time-known,
+        agent-authored literal (never provider-computed) regardless of arm.
+
+        DELIBERATELY "at least one", and honest about it: this assert
+        resolves the FLATTENED UNION of every role's trust principals, and
+        tier-0's grammar has no per-element quantifier (`contains` is
+        satisfied by any one matching node anywhere in the resolved set).
+        Blueprint §2(c) pre-registered this row as "(`contains`, PER
+        ROLE)"; the per-role PAIRING -- one role trusted by ecs-tasks, a
+        DIFFERENT role trusted by lambda -- is graded at tier 1 instead,
+        by matching rules on both oracle files (the deny rules over
+        `ecs_trusting_role_ids` / `lambda_trusting_role_ids` /
+        `roles_trusting_both_ids` in oracles/rego-cfn/<id>/policy.rego,
+        and the three deny rules over `ecs_trusting_role_addresses` /
+        `lambda_trusting_role_addresses` /
+        `roles_trusting_both_addresses` in oracles/rego/<id>/policy.rego).
+        REPAIR PASS 10 ported the awscdk half off cfn-guard onto Rego;
+        the two halves' semantics were byte-for-byte matched before that
+        port and still are. See this spec's
+        header comment, REPAIR PASS 9 defect 17, for the reproduction that
+        forced the move and why tier 0 cannot express it.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::IAM::Role')].Properties.AssumeRolePolicyDocument.Statement[*].Principal.Service"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_iam_role')].values.assume_role_policy|fromjson.Statement[*].Principal.Service"
+      op: contains
+      expected: "ecs-tasks.amazonaws.com"
+
+    - name: role-trusts-lambda-service
+      description: >
+        At least one IAM role's trust policy permits the
+        lambda.amazonaws.com service principal to assume it. Same
+        plan-time-known rationale as role-trusts-ecs-tasks-service, and
+        the same deliberate, tier-0-grammar-bound "at least one" scope --
+        see that assert's own note for where the per-role pairing is
+        actually graded (tier 1, both oracle files, matching semantics).
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::IAM::Role')].Properties.AssumeRolePolicyDocument.Statement[*].Principal.Service"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_iam_role')].values.assume_role_policy|fromjson.Statement[*].Principal.Service"
+      op: contains
+      expected: "lambda.amazonaws.com"
+
+    - name: no-account-exclusive-policy-attachment
+      description: >
+        No `aws_iam_policy_attachment` resource (the account-wide-exclusive
+        form) exists anywhere in the plan -- the account-exclusive-policy-
+        attachment catch's own falsifying fact. CloudFormation has no such
+        resource type at all, so this has no cfn_jsonpath / no awscdk
+        entry; the corresponding terraconstructs fact is covered by this
+        same tf_jsonpath (its L2 surface never emits this type either --
+        see this spec's header comment -- so a correct terraconstructs
+        solution trivially passes it too).
+      tier: "0"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_iam_policy_attachment')]"
+      op: not_exists
+
+    - name: no-role-scoped-exclusive-attachment
+      description: >
+        No `aws_iam_role_policy_attachments_exclusive` resource (the
+        purpose-built, role-scoped-exclusive form) exists anywhere in the
+        plan -- the role-scoped-exclusive-attachment catch's own
+        falsifying fact.
+
+        ADDED IN REPAIR PASS 4 (2026-08-22): a prior pass's oracle
+        accepted this resource type at tier 1 (see this spec's own header
+        comment, defect 8, and oracles/rego/.../policy.rego's own header
+        comment for the full before/after) -- this scenario's one
+        load-bearing prompt sentence ("Other teams attach their own
+        policies to these roles out of band; that must keep working.")
+        forbids it just as surely as it forbids `aws_iam_policy_attachment`
+        below, since both remove an out-of-band attachment the sentence
+        requires to survive; only the blast radius differs (one role vs.
+        account-wide), not the mechanism -- so this assert is symmetric
+        with `no-account-exclusive-policy-attachment`, not a weaker
+        cousin of it. CloudFormation has no such resource type at all, so
+        this has no cfn_jsonpath / no awscdk entry; the corresponding
+        terraconstructs fact is covered by this same tf_jsonpath (its L2
+        surface never emits this type either -- re-verified directly
+        against the pinned 0.2.13 package, see this spec's header comment
+        -- so a correct terraconstructs solution trivially passes it too).
+      tier: "0"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_iam_role_policy_attachments_exclusive')]"
+      op: not_exists
+
+    - name: no-deprecated-role-managed-policy-arns
+      description: >
+        No `aws_iam_role` resource sets `managed_policy_arns` (the
+        deprecated, role-scoped-exclusive attribute) -- the deprecated-
+        exclusive-role-attribute catch's own falsifying fact.
+
+        BUG FOUND AND FIXED, REPAIR PASS 2 (2026-08-21): the ORIGINAL
+        `tf_jsonpath` read `.planned_values...values.managed_policy_arns`,
+        which is UNSOUND for exactly the most destructive form of this
+        mistake -- Terraform OMITS an explicitly-empty
+        `managed_policy_arns = []` from `.planned_values...values`
+        ENTIRELY (verified directly against a real `terraform show -json`
+        plan, provider 6.58.0: `.planned_values...aws_iam_role.values |
+        has("managed_policy_arns")` -> `false` for a role with `= []`
+        set), so the old path resolved 0 nodes for that role -- identical
+        to a role that never touched the attribute at all -- and
+        `not_exists` (wrongly) PASSED. This matters precisely because
+        `= []` is the WORST case, per the provider's own docs
+        (website/docs/r/iam_role.html.markdown: "If someone attaches a
+        policy out-of-band, on the next apply, Terraform will detach that
+        policy... configuring an empty set... will cause Terraform to
+        remove ALL managed policy attachments") -- it is the exact
+        "other teams attach their own policies out of band" failure mode
+        this scenario's one load-bearing prompt sentence exists to test,
+        and the original assert could not see it.
+
+        THE FIX: retargeted at
+        `.configuration...expressions.managed_policy_arns` instead (the
+        CONFIGURATION tree, not planned values) -- verified directly
+        against real plan JSON both ways: a role with `managed_policy_arns
+        = []` resolves `{"constant_value": []}` (a present, non-null node
+        -- `not_exists` correctly FAILS), a role that never sets the
+        argument has NO `managed_policy_arns` key under `.expressions` at
+        all (jq/jsonpath-ng both resolve nothing for a genuinely-missing
+        object key, as opposed to a key present with value `null` --
+        confirmed for both the jq translation `tests/_assert_lib.sh`'s
+        `assert_check` actually runs, via its own `map(select(. !=
+        null))` null-filtering, and the `oracles/lib/structural.py`
+        `resolve()` path this repo's own gates use) -- `not_exists`
+        correctly PASSES. Re-verified against this scenario's own
+        reference solution (PASSES, unchanged) and the
+        deprecated-exclusive-role-attribute broken fixture, which now
+        uses the `= []` form specifically (see that catch's own updated
+        description) -- FAILS, as required.
+      tier: "0"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_iam_role')].expressions.managed_policy_arns"
+      op: not_exists
+
+    # s3-readonly-policy-attached-cfn (tier 0, awscdk-only, RETIRED in
+    # REPAIR PASS 4, 2026-08-22) used to live here. Its FIRST two bug
+    # fixes (recursive-descent `..Ref` to reach the bracket-quoted
+    # `Fn::Join` key at all, then narrowing "some AWS-managed policy" down
+    # to "specifically AmazonS3ReadOnlyAccess" by moving the strict check
+    # to tier 1) are unchanged history, preserved in full in
+    # customer-metrics-policy-attached-to-both-roles-cfn's own description
+    # below. REPAIR PASS 4 found a THIRD problem this assert's own grammar
+    # could not survive: `iam.ManagedPolicy.fromManagedPolicyArn(...)`, an
+    # equally first-class aws-cdk-lib import spelling, renders a BARE
+    # literal ARN string (no `Ref` node anywhere) instead of the
+    # `Fn::Join`+`Ref` construction this assert's `..Ref` extraction
+    # requires -- an otherwise fully correct solution using that spelling
+    # FAILED this assert (reproduced directly: aws-cdk-lib 2.263.0,
+    # `grep -c '"Ref"' template.json` inside ManagedPolicyArns for that
+    # role = 0). Unlike the second bug, this one cannot be fixed by
+    # narrowing the SAME jsonpath -- accepting a bare string OR a nested
+    # `Ref` is exactly the type-conditional-field-selector case
+    # generator/jsonpath_jq.py's grammar cannot express (see
+    # s3-readonly-policy-attached-tf's own retirement note, REPAIR PASS 2,
+    # for the identical class of limitation on the TF side). RETIRED for
+    # the same reason and in the same way that assert was: the identity
+    # fact now lives entirely at tier 1
+    # (in the awscdk-side bundle: `s3_readonly_attached_to_both_roles` in
+    # policy.guard, widened to accept EITHER render in REPAIR PASS 4 and
+    # tightened from "at least one role" to per-role in REPAIR PASS 7,
+    # then ported in REPAIR PASS 10 to
+    # `s3_readonly_covered_role_ids` in oracles/rego-cfn/<id>/policy.rego,
+    # which accepts both renders and an Fn::Sub one with a single
+    # suffix match -- see that file's own header note), not
+    # as a standalone `structural_asserts` entry (folded into
+    # the SAME already-existing awscdk-side bundle
+    # customer-metrics-policy-attached-to-both-roles-cfn already runs, so
+    # `make tier1-coverage`'s numeric floor is unaffected).
+
+    # --- policy-attached-to-one-role-only (tier 1) --------------------------
+    # Split cfn/tf per specs/SCHEMA.md §4.2's own "different artifact
+    # families need a real second expression" rule (mirrors
+    # s3-lambda-log-retention's lambda-permission-scoped-to-bucket-cfn/-tf
+    # pair and toy-ssm-parameter's policy-resource-scoped-not-wildcard-cfn/
+    # -tf pair) -- but for a DIFFERENT underlying reason than either of
+    # those precedents' plan-time-unknown-ness: here it is that tier-0's
+    # flat JSONPath+op grammar cannot express "for EACH of N roles,
+    # independently, a matching attachment exists" (a per-element
+    # quantification), which Rego's set-comprehension CAN. The
+    # cfn_jsonpath/tf_jsonpath below are real, RESOLVABLE
+    # spec-documentation for the policy files that actually run
+    # (oracles/rego-cfn/iam-managed-policy-exclusive-vs-attachment/
+    # policy.rego on awscdk since REPAIR PASS 10 -- see
+    # `oracle.awscdk_tier1_engine` above -- and
+    # oracles/rego/iam-managed-policy-exclusive-vs-attachment/policy.rego
+    # on the TF-shaped arms) -- not an exhaustive, mechanically-sufficient
+    # check on their own, exactly the documentation-only role
+    # specs/SCHEMA.md §4.2.1 point 1's own caveat describes for a
+    # multi-hop graph-edge check.
+    - name: customer-metrics-policy-attached-to-both-roles-cfn
+      description: >
+        (awscdk only -- see customer-metrics-policy-attached-to-both-roles-tf
+        for the TF-shaped arms.) A customer-authored AWS::IAM::ManagedPolicy
+        resource exists in the template (the team-defined CloudWatch-
+        metrics policy this scenario asks for), and it is attached to BOTH
+        AWS::IAM::Role resources the template creates -- not just one (the
+        policy-attached-to-one-role-only catch). This cfn_jsonpath
+        documents only the weaker "the policy resource itself exists"
+        half, which check-paths can verify resolves against a real
+        fixture; the real per-role fact is a CROSS-RESOURCE JOIN and lives
+        in the tier-1 policy bundle.
+
+        WHICH BUNDLE, AND WHY IT CHANGED (REPAIR PASS 10, 2026-08-23):
+        this arm's tier-1 is now graded by OPA/Rego --
+        `oracle.awscdk_tier1_engine: rego` above,
+        oracles/rego-cfn/iam-managed-policy-exclusive-vs-attachment/
+        policy.rego -- over the SAME synthesized CloudFormation template
+        cfn-guard used to read. oracles/cfn-guard/iam-managed-policy-
+        exclusive-vs-attachment/policy.guard is DELETED. The reason is
+        structural, not stylistic: cfn-guard 3.2.0 has no cross-collection
+        identity join, so it cannot state "this ManagedPolicy's `Roles`
+        entry references the logical id of THAT Role", and each of the
+        three rules that tried was a proxy unsound in both directions --
+        REPAIR PASS 3's rule-level disjunction rejected the correct MIXED
+        attachment shape (defect 16), and REPAIR PASS 9's replacement
+        count equality (`count(roles whose own ManagedPolicyArns carries
+        no Ref at all) == count(every in-template ManagedPolicy's Roles
+        entries)`) accepted a policy-side `Roles` list naming the SAME
+        role twice and credited a role for a `Ref` to any Ref-addressable
+        resource at all. The Rego bundle performs the real join
+        (`references_logical_id` over `{"Ref": ...}` / `{"Fn::GetAtt":
+        [...]}`, unioned across the role-side and policy-side attachment
+        shapes before any cardinality is looked at), so the mixed shape,
+        the role-side shape and the policy-side shape all pass, and the
+        one-role-only shape fails in every spelling. See this spec's
+        header comment, defect 18, and that file's own header.
+
+        HISTORICAL RECORD, retained because the fixtures it produced are
+        still shipped and still graded: the ORIGINAL cfn-guard rule
+        checked `'Fn::GetAtt' EXISTS` and FAILED against this scenario's
+        own oracle-CORRECT reference solution. Root cause, confirmed
+        against AWS's own CloudFormation resource-reference docs
+        (`AWS::IAM::ManagedPolicy`, "Return values", read 2026-08-21):
+        *"When you pass the logical ID of this resource to the intrinsic
+        Ref function, Ref returns the ARN"* -- unlike most resource types,
+        this one's `Ref` IS the ARN, and aws-cdk-lib's
+        `Role.addManagedPolicy()` emits a bare `{"Ref": "<ManagedPolicy
+        LogicalId>"}` for exactly that reason (verified directly against
+        `cdk synth`, aws-cdk-lib 2.263.0). The Rego bundle's join accepts
+        `Ref` (the CDK-emitted spelling) and `Fn::GetAtt` (a legitimate
+        escape-hatch spelling) alike, so that class of bug cannot recur by
+        picking the wrong one of the two.
+
+        The residual gap the old cfn-guard rule had to accept -- "cannot
+        verify a role's `Ref` target is SPECIFICALLY this ManagedPolicy
+        and not some other Ref-addressable resource" -- is CLOSED by the
+        port: the join credits a role only for a reference naming an
+        actual in-template AWS::IAM::ManagedPolicy.
+
+        Two facts share this bundle rather than declaring
+        `structural_asserts` entries of their own, both folded in for the
+        same reason (tier-0's flat JSONPath+op grammar has no per-element
+        quantifier and no type-conditional field selector, so neither can
+        be expressed there): the AmazonS3ReadOnlyAccess IDENTITY check
+        (see the s3-readonly-policy-attached-cfn retirement note above
+        this entry -- REPAIR PASS 2 introduced it, REPAIR PASS 4 widened
+        it to accept `fromManagedPolicyArn`'s bare-literal render, REPAIR
+        PASS 7 tightened it from "at least one role" to PER ROLE), and the
+        two-roles/trust-principal-pairing checks (REPAIR PASS 6 and 9).
+        The Rego port preserves all of them at exactly the strictness the
+        TF-shaped oracle grades the same facts at, and REPAIR PASS 10 adds
+        the four broken fixtures that finally falsify the four of them
+        that had none.
+      tier: "1"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::IAM::ManagedPolicy')].Properties.PolicyDocument"
+      op: exists
+
+    - name: customer-metrics-policy-attached-to-both-roles-tf
+      description: >
+        (hcl_raw + terraconstructs only -- see
+        customer-metrics-policy-attached-to-both-roles-cfn for awscdk.)
+        Graph-edge check, documentation-only (see this entry group's own
+        header note above for why a flat path cannot fully express this
+        fact): an `aws_iam_role_policy_attachment` resource's `policy_arn`
+        expression REFERENCES a customer-authored `aws_iam_policy` resource
+        created in this configuration (as opposed to a hardcoded/AWS-owned
+        literal ARN, which has no `.references` entry at all). The real
+        check -- that the SET of role IDENTITIES covered by such
+        attachments equals every role this plan creates, not just one --
+        is Rego's job (oracles/rego/iam-managed-policy-exclusive-vs-
+        attachment/policy.rego's `metrics_covered_role_addresses` /
+        `iam_role_addresses` rules). Those role identities are plan
+        ADDRESSES, not physical names, as of REPAIR PASS 7 -- see this
+        spec's own header comment, defect 12, and policy.rego's BUG 8.
+
+        REPAIR PASS 2 (2026-08-21) -- TWO fixes, both documented in full
+        in policy.rego's own header comment (not re-derived here):
+          1. SHAPE-2 TOLERANCE, ITSELF REVERSED IN REPAIR PASS 4
+             (2026-08-22 -- see this spec's own header comment, defect 8,
+             and policy.rego's own header comment for the full
+             before/after). This pass had widened policy.rego to
+             recognize `aws_iam_role_policy_attachments_exclusive`
+             (role-scoped exclusive) as a SECOND covering shape alongside
+             the additive `aws_iam_role_policy_attachment`, reading
+             blueprint §2(b)'s "also acceptable" clause literally without
+             checking it against the same blueprint section's own prompt
+             sentence ("Other teams attach their own policies... out of
+             band; that must keep working") -- which that resource type
+             VIOLATES by design (it removes any out-of-band attachment to
+             that role its own `policy_arns` list does not name). REPAIR
+             PASS 4 removed the union entirely: policy.rego no longer
+             treats `aws_iam_role_policy_attachments_exclusive` as
+             covering ANYTHING, and instead denies outright when it is
+             present at all (mirroring the pre-existing account-wide
+             `aws_iam_policy_attachment` rejection), backed by the new
+             tier-0 `no-role-scoped-exclusive-attachment` assert above as
+             the primary defense. This tf_jsonpath's own
+             `aws_iam_role_policy_attachment`-only documentation is
+             UNCHANGED (still real, resolvable spec-documentation for the
+             one now-accepted shape).
+          2. FOR_EACH BLINDNESS. The first pass resolved the
+             attachment->role edge via `expressions.role.references`
+             matched against a role's Terraform ADDRESS -- undefined for
+             an ordinary `for_each`-over-roles idiom (DEMONSTRATED: a real
+             `terraform plan` for a `for_each`-shaped, otherwise-correct
+             hcl_raw solution scored 0.0). Fixed: role coverage was
+             matched by the role's own AWS identity (its `name`, read
+             from `.planned_values`) instead of by resource address.
+             REPAIR PASS 7 (2026-08-22) REPLACED that with a two-path
+             resolution keyed on the role's plan ADDRESS -- the `name`
+             join is retained as one of the two paths (so every shape
+             this fix rescued still scores 1.0), but a role whose
+             physical name is provider-computed (`name_prefix`, or
+             terraconstructs' `roleName`-omitted default) now resolves
+             through the attachment block's own
+             `expressions.role.references` instead of failing closed.
+             REPAIR PASS 8 (2026-08-23) widened that fallback again
+             (BUG 10, defect 14 in this file's own header comment): a
+             reference to a for_each'd role is INSTANCE-qualified
+             (`aws_iam_role.this["batch_runner"].name`), so it names the
+             covered role instance outright and is now read at face
+             value instead of being reduced to a block address the
+             block-keyed lookup could not match. Four resolution paths
+             in total; see policy.rego's PATH A-D note.
+             See this spec's header comment, defects 12 and 14, and
+             policy.rego's BUG 8 / BUG 10.
+          3. The SAME policy.rego file now ALSO carries the S3-readonly
+             identity check (folded in, not a new tier-1
+             `structural_asserts` entry -- see s3-readonly-policy-
+             attached-cfn's sibling note for the awscdk-side half of this
+             same class of fix; the retired `s3-readonly-policy-attached-
+             tf` tier-0 assert's history is preserved in this file's own
+             prior-pass record, DECISIONS.md-adjacent).
+
+        REPAIR PASS 5 (2026-08-22) -- BUG 6, the POLICY-side mirror of
+        REPAIR PASS 2's fix 2 above, which fixed the ROLE side of this
+        exact attachment edge and left the POLICY side unfixed: a
+        `for_each`-over-a-map-of-policy-ARNs idiom (`policy_arn =
+        each.value`) or a for_each-over-{role,policy}-pairs idiom
+        (`policy_arn = each.value.policy_arn`) made
+        `expressions.policy_arn.references` resolve to `["each.value"]`
+        (or similar), never `"aws_iam_policy.team_metrics"` -- a fully
+        correct, additive, idiomatically-DRY solution using either idiom
+        scored reward 0.0, `deny` FALSELY claiming the policy was
+        unattached. Fixed: policy.rego's new
+        `attachment_instance_targets_customer_policy` adds a SCHEMA.md
+        §4.2.1 plan-time-unknown fallback per PLANNED INSTANCE (not just
+        per configured block) -- see that predicate's own comment, BUG 6,
+        for the full evidence and re-verified negative.
+
+        SCOPE CORRECTION (REPAIR PASS 9, 2026-08-23): REPAIR PASS 5 fixed
+        only the POLICY half of the {role,policy}-pairs idiom's edge. That
+        idiom's ROLE half -- resolving WHICH role each pair instance
+        covers, when the role's own physical name is provider-computed --
+        stayed broken until this pass's PATH E (policy.rego, BUG 11; this
+        spec's header comment, defect 15). Read REPAIR PASS 5's claim as
+        "the policy edge of that idiom", not "that idiom".
+
+        REPAIR PASS 9 (2026-08-23) -- BUG 11, PATH E: an attachment BLOCK
+        with no per-instance role edge from PATHS A-D, whose
+        `.references` name a role BLOCK with N > 1 planned instances, has
+        its own planned instances grouped by resolved POLICY IDENTITY; a
+        group of exactly N credits all N role instances of that block for
+        that policy. That is what makes the fully-DRY cartesian
+        `setproduct(roles, policies)` idiom score 1.0 without crediting a
+        one-role-only negative (1 instance vs 2 role instances credits
+        nobody). The two coverage deny messages were reworded in the same
+        edit to stay TRUE in the ambiguous case: they now say the plan
+        "does not establish" the attachment and that no attachment
+        instance "resolves onto" the named addresses. Fixtures:
+        `solution/reference-alt-hcl-cartesian/` (1.0),
+        `solution/broken/cartesian-metrics-on-one-role-only/` and
+        `solution/broken/cartesian-s3-on-one-role-only/` (0.0).
+      tier: "1"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_iam_role_policy_attachment')].expressions.policy_arn.references[*]"
+      op: regex
+      expected: "^aws_iam_policy\\."
+
+  rego_hints:
+    - >-
+      package cdktn_bench.iam_managed_policy_exclusive_vs_attachment, graded
+      against `terraform show -json` PLAN output (input) for hcl_raw AND
+      terraconstructs. Read attachment/policy/role identity from
+      input.configuration.root_module.resources (the graph-edge facts,
+      plan-time-known regardless of whether the referenced ARNs themselves
+      are) -- SCHEMA.md §4.2.1, same rationale as s3-lambda-log-retention's
+      and toy-ssm-parameter's own Rego.
+    - >-
+      REPAIR PASS 2 (2026-08-21) rewrote this policy substantially, then
+      REPAIR PASS 4 (2026-08-22) reversed ONE of that rewrite's decisions
+      -- see oracles/rego/iam-managed-policy-exclusive-vs-attachment/
+      policy.rego's own header comment for the full before/after evidence
+      on all bugs fixed across both passes (for_each role-identity
+      blindness, S3-readonly identity fold-in, the shape-2 tolerance
+      REPAIR PASS 4 removed, and the `.id`-vs-`.name` fallback). The
+      hints below describe the CURRENT design.
+    - >-
+      Collect aws_iam_role (from .planned_values...resources, for role
+      ADDRESS identity -- always present, and never a physical name; see
+      the identity hint below) and aws_iam_policy (customer_policies, from
+      .configuration...resources, for graph-edge references) resources.
+      Collect the ADDITIVE attachment family from
+      .configuration...resources: aws_iam_role_policy_attachment ONLY.
+      `aws_iam_role_policy_attachments_exclusive` (role-scoped exclusive)
+      is REJECTED, not collected as a covering shape (REPAIR PASS 4,
+      2026-08-22): it removes any out-of-band attachment to that role its
+      own `policy_arns` list does not name, which is exactly what this
+      scenario's one load-bearing prompt sentence forbids -- deny
+      outright when any such resource exists in the configuration, mirror
+      the account-wide `aws_iam_policy_attachment` rejection (a different
+      resource type, still rejected by this scenario's tier-0
+      no-account-exclusive-policy-attachment assert) at tier 1 too, for
+      defense in depth alongside the primary tier-0
+      no-role-scoped-exclusive-attachment assert.
+    - >-
+      For each additive attachment RESOURCE BLOCK (one `.configuration`
+      entry per for_each/count resource, covering every instance), resolve
+      whether its policy_arn expression REFERENCES a customer_policies
+      address (bare address or an attribute-qualified form, e.g.
+      "aws_iam_policy.team_metrics" or "aws_iam_policy.team_metrics.arn"
+      -- both occur in real plan output, same as toy-ssm-parameter's own
+      G2 fix note documents for a different attribute). PER PLANNED
+      INSTANCE (REPAIR PASS 5, BUG 6, policy.rego's own header comment):
+      when the block-level reference resolution above is undefined (e.g.
+      `policy_arn = each.value`, a for_each-over-policies idiom, whose
+      `.references` names only the iteration variable, never the customer
+      policy's own address) AND exactly one customer_policies resource
+      exists, ALSO treat an instance whose own `values.policy_arn` did NOT
+      resolve to a plan-time-known string as covering the customer policy
+      (SCHEMA.md §4.2.1's plan-time-unknown class -- the only thing that
+      makes `policy_arn` unknown in this scenario's world is a reference to
+      the not-yet-created customer policy's own `.arn`). For each covering
+      instance (either path), resolve WHICH ROLE it covers as that role's
+      plan ADDRESS (REPAIR PASS 7, BUG 8 -- physical names are never
+      load-bearing here): join on `values.role` against a planned role's
+      `values.name` when that string is plan-time-known (the ordinary
+      case, and the one that keeps every for_each idiom working), and
+      otherwise resolve the attachment BLOCK's own
+      `expressions.role.references` down to the referenced role
+      resource's address (the case where the role's physical name is
+      provider-computed -- `name_prefix`, terraconstructs' `roleName`-
+      omitted default, or BUG 4's `.id` spelling -- and `values.role` is
+      therefore unknown or absent). Union those addresses into
+      metrics_covered_role_addresses. A parallel set
+      (s3_covered_via_attachment, matched against the literal
+      AmazonS3ReadOnlyAccess ARN instead of a customer-policy reference,
+      unaffected by the plan-time-unknown fallback since that ARN is
+      always a known literal) gives s3_covered_role_addresses.
+    - >-
+      iam_role_addresses := the SET of plan ADDRESSES of the aws_iam_role
+      instances this plan creates, from .planned_values (REPAIR PASS 7,
+      BUG 8: role identity is existence + type + properties keyed on the
+      address -- NOT `values.name`, which is absent whenever the physical
+      name is provider-computed, and which nothing in this scenario
+      grades as a value on any arm). Four deny rules, all keyed on that
+      same address domain: (1) any address in iam_role_addresses but not
+      in metrics_covered_role_addresses (fail-closed by construction --
+      when NO customer policy was created at all,
+      metrics_covered_role_addresses is empty and every role is
+      "missing", no second rule needed); (2) any address in
+      iam_role_addresses but not in s3_covered_role_addresses (the
+      folded-in AmazonS3ReadOnlyAccess identity check -- PER ROLE as of
+      REPAIR PASS 7, matching the prompt's own "Both roles need read
+      access..." sentence and blueprint §2(c)'s pre-registered tier-0
+      plan; it used to fire only when ZERO roles were covered, which let
+      a role with no S3 access at all score 1.0 -- see this spec's header
+      comment, defect 13); (3) any
+      aws_iam_role_policy_attachments_exclusive resource exists at all
+      (the REPAIR PASS 4 rejection, defense-in-depth alongside tier-0's
+      own not_exists check); (4) REPAIR PASS 6 (2026-08-22):
+      `count(iam_role_addresses) != 2` -- oracle.intent's own opening
+      sentence ("Two IAM roles exist...") was previously unbacked by any
+      check; a single role carrying both trust principals satisfied every
+      pre-existing assert. A bare count, not a name match on
+      `{"batch-runner", "report-writer"}` -- neither literal name is
+      graded anywhere in this scenario, on any arm, so a legitimate
+      renaming (or omitting the name entirely) must not be broken by this
+      fix. See policy.rego's own BUG 7 and BUG 8 header notes.
+
+  # NOTE (REPAIR PASS 10, 2026-08-23): these are the CFN-SHAPE hints, and
+  # specs/SCHEMA.md §4.3/§4.5 says they apply to this scenario's awscdk-
+  # side bundle WHICHEVER ENGINE READS THEM. That bundle is now
+  # oracles/rego-cfn/iam-managed-policy-exclusive-vs-attachment/policy.rego
+  # (`oracle.awscdk_tier1_engine: rego`), not a `.guard` file, so every
+  # hint below was rewritten in Rego terms in the same edit. The previous
+  # hints described `%roles { ... }` block forms and `%roles_without_ref_
+  # count == %policy_role_ref_count` cardinality equalities in a file that
+  # no longer exists; leaving them would have left the spec documenting a
+  # grader nothing runs. (`rego_hints` above stay what they always were:
+  # the PLAN-JSON-shape hints for oracles/rego/<id>/policy.rego.)
+  cfn_guard_hints:
+    - >-
+      Graded against the awscdk arm's synthesized CloudFormation template
+      (cdk.out/ScenarioStack.template.json). `input.Resources` is an
+      OBJECT keyed by LOGICAL ID; `iam_role_ids` and `managed_policy_ids`
+      are the sets of logical ids whose `.Type` is "AWS::IAM::Role" and
+      "AWS::IAM::ManagedPolicy" respectively. Every set this policy
+      differences is a set of LOGICAL IDS -- never a physical
+      `Properties.RoleName` (Amendment 29 §4 / operator ruling 1), which
+      is the CFN-side twin of the plan ADDRESS the TF-shaped policy.rego
+      keys on. Read every optional property through `object.get(...,
+      default)`: an absent ManagedPolicyArns or Roles list must make the
+      enclosing deny FIRE, not go undefined (fail-closed).
+    - >-
+      THE JOIN (the whole reason this scenario selects the `rego` engine
+      -- specs/SCHEMA.md §4.5): `references_logical_id(node, lid)` is true
+      when `node` is `{"Ref": lid}` or `{"Fn::GetAtt": [lid, ...]}` (list
+      or dotted-string form). `metrics_covered_role_ids` is the UNION of
+      the two attachment shapes aws-cdk-lib offers -- role-side (a role's
+      own ManagedPolicyArns entry referencing an in-template ManagedPolicy,
+      what `role.addManagedPolicy(p)` emits; note AWS::IAM::ManagedPolicy's
+      Ref intrinsic itself returns the policy ARN, per AWS's own CFN docs,
+      so the entry is a bare `Ref`, never an `Fn::GetAtt ... Arn`) and
+      policy-side (an in-template ManagedPolicy's own `Roles` entry
+      referencing a role, what `ManagedPolicyProps.roles` emits). Taking
+      the union over BOTH shapes before any cardinality is looked at is
+      what makes a MIXED solution -- one role named from each side --
+      correct by construction, with no rule-level disjunction to fall
+      between.
+    - >-
+      Deny, per role (operator ruling 2 -- the prompt says BOTH roles, so
+      the check is a SET DIFFERENCE, never "at least one"): `iam_role_ids
+      - metrics_covered_role_ids`, non-empty -> deny naming the uncovered
+      logical ids. Strictness is pinned to the TF-shaped oracle in BOTH
+      directions: the union runs over every in-template ManagedPolicy,
+      exactly as oracles/rego/<id>/policy.rego's
+      `metrics_covered_via_attachment` unions over every customer-authored
+      `aws_iam_policy` (`attachment_block_targets_customer_policy` is
+      satisfied by ANY `some p in customer_policies`). A solution creating
+      a separate team policy per role is therefore accepted on every arm
+      alike; requiring one single policy to cover both roles HERE -- which
+      the join could easily express -- would make this arm stricter than
+      the other two, the very asymmetry Amendment 29 §4 forbids.
+    - >-
+      Fail-closed companion (the port's preservation of the retired
+      `customer_policy_exists_when_roles_present` cfn-guard rule): roles
+      present but zero AWS::IAM::ManagedPolicy resources in the template
+      -> deny. Guarded so exactly one of it and the coverage rule above
+      fires. Covering negative:
+      `solution/broken/no-team-metrics-policy/` (the metrics permission
+      granted as an INLINE policy per role instead), which also makes
+      oracle.intent's documented inline-policy scope limit executable.
+    - >-
+      AmazonS3ReadOnlyAccess identity, per role: `iam_role_ids -
+      s3_readonly_covered_role_ids`, non-empty -> deny. A role is covered
+      when some entry of its ManagedPolicyArns has ANY string leaf (via
+      `walk`) ENDING WITH ":iam::aws:policy/AmazonS3ReadOnlyAccess". One
+      rule covers all three renders aws-cdk-lib produces or an agent may
+      write -- `fromAwsManagedPolicyName`'s `Fn::Join` + `{"Ref":
+      "AWS::Partition"}`, `fromManagedPolicyArn`'s bare literal ARN, and
+      an `Fn::Sub`-templated partition -- instead of enumerating them,
+      which is the mistake REPAIR PASS 4 already had to repair once when a
+      third spelling appeared. Anchoring at the END of the leaf is what
+      keeps a different AWS-managed policy from ever satisfying it. This
+      is the CFN-side twin of the TF oracle's tolerance for a
+      `data.aws_partition`-templated ARN; neither render is preferred,
+      and oracle.intent says so.
+    - >-
+      Trust principals, per role -- byte-for-byte the same semantics as
+      the TF-shaped oracle's `ecs_trusting_role_addresses` /
+      `lambda_trusting_role_addresses` / `roles_trusting_both_addresses`,
+      mirrored onto logical ids so no arm grades this fact more strictly
+      than another: some role trusts ecs-tasks.amazonaws.com, some role
+      trusts lambda.amazonaws.com, and the INTERSECTION of those two sets
+      is empty (which is what forces the two principals onto two DISTINCT
+      roles). `Principal.Service` is accepted as a bare string or a list;
+      `AssumeRolePolicyDocument` is accepted as an object (what CDK
+      emits) or a JSON string (which CloudFormation also accepts). Role
+      CARDINALITY is a bare `count(iam_role_ids) != 2` -- a resource
+      count, never a `roleName`/`RoleName` match, so a solution that lets
+      CDK compute the physical names scores exactly what one that sets
+      them scores, on this arm and on the other two.
+    - >-
+      Every rule above has a covering `solution/broken/` fixture on this
+      arm (REPAIR PASS 10 added the four that had none:
+      `single-role-for-both-workloads` for the role count,
+      `no-team-metrics-policy` for the fail-closed existence rule, and
+      `both-roles-trust-ecs-tasks-only` / `both-roles-trust-lambda-only`
+      for the two some-role-trusts-<service> rules -- plus
+      `metrics-policy-on-one-role-from-both-sides`, the shape that proved
+      the retired cfn-guard count-equality accepted a template leaving one
+      role without the team policy). An unfalsified rule
+      is untested; do not add a rule here without one.
+  tier05_jsonata: null
+
+verifier:
+  budget:
+    max_iters: 8
+  live_check:
+    enabled: false
+    module: tests/live_check.py
+
+provenance:
+  author: "Vincent (via Claude Code, Batch A scenario-authoring task)"
+  date: "2026-08-20"
+  prereg_section_refs:
+    - "docs/design/batch-a-greenfield-blueprints.md §2 (iam-managed-policy-exclusive-vs-attachment) -- the pre-spec this scenario implements. Repair pass 2 (2026-08-21) brought shape-2 (aws_iam_role_policy_attachments_exclusive) tolerance INTO line with blueprint §2(b) after a first pass had it as a documented deviation; this file's own header comment carries the full before/after."
+    - "docs/design/batch-a-greenfield-blueprints.md §0.1-§0.3 (batch-wide identity/prompt/oracle conventions applied here), §0.5 (evidence re-verification table, iam-managed-policy-exclusive row)"
+    - "hashicorp/terraform-provider-aws (main, read 2026-08-20 and re-read 2026-08-21 for the managed_policy_arns=[] omission-from-planned_values fix): website/docs/r/iam_role.html.markdown (managed_policy_arns deprecation note, incl. its own empty-set example), website/docs/r/iam_role_policy_attachments_exclusive.html.markdown, tfp-aws#39376 (exclusive-relationship-management-resources meta-issue) -- primary sources replacing the graded candidate's unverifiable discuss.hashicorp.com evidence"
+    - "terraconstructs 0.2.13, lib/aws/iam/role.js:212-215 and lib/aws/iam/managed-policy.js:43 -- re-verified directly at THIS spec's own authoring time (2026-08-20), not merely inherited from the blueprint's citation"
+    - "Repair pass 2 (2026-08-21, adversarial-verifier-driven): five defects found and fixed against real toolchain output (cdk synth 2.263.0, terraform plan 6.58.0, cfn-guard validate 3.2.0, opa eval) -- see this file's own header comment for the itemized list, oracles/rego/.../policy.rego and oracles/cfn-guard/.../policy.guard's own header comments for the mechanism-level detail."
+    - "Repair pass 6 (2026-08-22, fifth adversarial-verifier pass): oracle.intent's own 'Two IAM roles exist' opening sentence was unbacked by any check on either oracle -- a single role carrying both trust principals scored reward 1.0 on both graded arm families. Fixed by a bare role-count deny/rule in each tier-1 policy file (policy.rego's `count(iam_role_names) != 2`, policy.guard's `two_roles_exist { %roles_count == 2 }`); re-verified against every reference/reference-alt fixture on both arm families (still PASS) and against a hand-built single-shared-role negative on both arm families (now FAILS, reproduced directly: opa eval and cfn-guard validate against real terraform plan / cdk synth output)."
+    - "Repair pass 7 (2026-08-22, sixth adversarial-verifier pass; two binding operator rulings applied): (a) ARM PARITY -- policy.rego graded role identity through `.planned_values...aws_iam_role.values.name`, so omitting the role's physical name (the DEFAULT terraconstructs shape, per 0.2.13 lib/aws/iam/role.js:220-221; `name_prefix` on hcl_raw) scored 1.0 on awscdk and 0.0 on both TF arms, with two deny messages the graded plan contradicted. Re-keyed onto the plan ADDRESS (ruling 1: physical names are never load-bearing), reproduced fixed on all three arms. (b) ORACLE HONESTY -- both oracles graded 'AmazonS3ReadOnlyAccess attached to at least one role' where the prompt and blueprint §2(c) both say BOTH roles; a solution leaving report-writer with no S3 access scored 1.0 on all three arms. Tightened to per-role on both oracles (ruling 2), oracle.intent corrected, and the previously-unfalsified rule given its own catch (`s3-readonly-missing-on-one-role`) with a broken fixture on each enabled arm."
+    - "Repair pass 10 (2026-08-23, ninth adversarial-verifier pass; ENGINE CHANGE): the awscdk tier-1 moved from cfn-guard to OPA/Rego (`oracle.awscdk_tier1_engine: rego`, specs/SCHEMA.md 4.5; oracles/rego-cfn/iam-managed-policy-exclusive-vs-attachment/policy.rego added, oracles/cfn-guard/iam-managed-policy-exclusive-vs-attachment/policy.guard DELETED). Reason: cfn-guard 3.2.0 cannot express the policy->role logical-id join this scenario's one tier-1 fact IS, so every rule that tried was a proxy unsound in both directions (repair pass 3's rule-level disjunction rejected the correct mixed attachment shape; repair pass 9's count equality accepted a Roles list naming the same role twice and credited a role for a Ref to any resource at all), while the byte-equivalent Terraform solution scored the opposite way -- which DECISIONS.md Amendment 29 sect 4 makes binding to fix. Re-verified on all three arms against real toolchain output (cdk synth 2.263.0/aws-cdk 2.1135.0, npx cdktn synth + terraconstructs 0.2.13, terraform plan 1.15.8/aws 6.58.0, opa 1.19.0): reference and every reference-alt 1.0 on every arm, every broken fixture 0.0 for its own reason, and the three shapes the findings named (mixed-side attachment, policy reaching one role only, role physical name omitted) now score IDENTICALLY across arms. Also added the four awscdk solution/broken/ fixtures that falsify the four rules no fixture on any arm had ever exercised (role count, fail-closed managed-policy existence, and the two some-role-trusts-<service> rules)."
