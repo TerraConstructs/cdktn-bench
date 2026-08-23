@@ -6195,6 +6195,29 @@ and decisive. Queued in `ROADMAP.md` §5. If that scenario does *not* separate
 the shapes, this amendment's premise is weaker than claimed and should be
 revisited.
 
+### 6. Addendum (2026-08-23) — the tenet governs resources you CREATE, not ones you ADOPT
+
+The rule as first written missed **brownfield adoption**: importing existing
+infrastructure (`terraform import` / `import` blocks, CloudFormation resource
+import, `CfnResource` adoption). An imported resource *already has* a physical
+name, assigned by whoever created it. The config must state that name to match
+the live resource — that is not a design choice, it is a fact being recorded.
+
+So the boundary is **create vs adopt**:
+
+- **Creating** a resource: never pin the physical name (§1-§4 apply in full).
+- **Adopting** an existing one: the name is **given**. Stating it is correct,
+  and an oracle must not penalise it. What the tenet still asks is that
+  *downstream* wiring reference the adopted resource, rather than re-hardcoding
+  its name at every use site.
+
+This is a materially different task shape from the brownfield form of
+Amendment 28, which seeds *code* into the workspace. Adoption requires **real
+pre-deployed infrastructure** for the agent to import — which cannot be served
+by `workspace_seed` (a file) or by multi-step `pre_invoke` (per-trial). It
+therefore joins the cases in `ROADMAP.md` M7 that force a **second aws-bench
+scenario**.
+
 **Status.** DRAFT until the redeployability scenario runs. §4 is binding on
 oracle authoring now, because it is a consistency requirement (the arms must be
 graded at equal strictness) independent of whether the tenet itself holds.
