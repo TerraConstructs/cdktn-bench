@@ -473,6 +473,52 @@ single accidental instance of exactly this.
 
 ---
 
+## 5b. Technical debt — reference-resolution heuristics
+
+**`config_reaches_arn_of` and its dependents are retired debt, not design.**
+Recorded here so they are never copied into a new scenario as a pattern.
+
+`terraform show -json` does not carry the `locals` map, and for an attribute of
+a resource being *created* the value is unknown at plan time — so the plan shows
+only a SYMBOL (`local.arns.media_bucket`), never its referent. Lacking a way to
+resolve that, `oracles/rego/s3-notification-authoritative-singleton/policy.rego`
+grew a family of proximity heuristics:
+
+| symbol | what it actually asked | why that is wrong |
+|---|---|---|
+| `config_reaches_arn_of` | "does the plan depend on SOME `aws_s3_bucket.*["arn"]` anywhere?" | attaches no symbol to the attribute, so an ordinary unrelated resource satisfies it for a laundering symbol |
+| `references_bucket` clause 2 | same proximity test, second use site | inherits the defect |
+| `bucket_denoting_indirections` | treats a symbol as bucket-denoting if the above holds | launders a wrong-type ARN into an accepted one |
+| `references_this_topic` clause 2 | corroboration: the symbol must ALSO appear in a slot that wires the topic | denies a *correct* mixed spelling (hoisted for one slot, direct in another) |
+
+Both directions were proven by execution: a wrong-type ARN behind a local scored
+**1.0** as soon as any ordinary correct resource touched the real bucket ARN,
+and a fully correct solution scored **0.0**. See
+`docs/design/conftest-hcl-traversal-spike.md` §1.
+
+**Superseded by** `hcl2json`-based static traversal resolution (that memo's
+verdict: adopt the technique, drop conftest — its HCL2 parser *is* `hcl2json`,
+byte-identical output at 4.1 MB vs 68 MB, and `opa` stays the engine). The
+heuristics are to be **deleted, not left beside** the resolved path, where they
+could still fire.
+
+**The rule this leaves behind:** a reference-resolution question must be
+answered from the artifact that actually carries the referent — resolved
+traversal on the TF arms, the explicit `Ref`/`Fn::GetAtt` logical id on the CFN
+arm. A proximity test ("something nearby mentions the right resource") is not a
+resolution and must not be graded as one. Where resolution is genuinely
+impossible, the honest outcome is a three-valued verdict —
+resolved / **ambiguous** / **unresolvable** — with the latter two *denying and
+naming what failed*, never guessing in either direction.
+
+**Known open residual (not created by this work, and currently ungraded by any
+layer):** a same-type/wrong-instance defect — a notification on bucket A with
+the permission scoped to bucket B's ARN — scores **1.0** today, whether written
+through a local or directly. The existing
+`lambda-permission-scoped-to-a-different-bucket` fixture does *not* cover it (its
+`source_arn` is a zero-reference string literal, caught by the arity gate rather
+than by instance discrimination).
+
 ## 6. Backlog
 
 - **#12 community contribution path** — CONTRIBUTING.md, proposal template,
