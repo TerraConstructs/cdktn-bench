@@ -681,7 +681,14 @@ MECHANISM_PATTERNS = (
 BROWNFIELD_BOILERPLATE = (
     # arms/awscdk/environment/workspace/lib/example-stack.ts, describing what
     # the generator does to the placeholder stack it ships:
-    "replaced by the generator",
+    # NOTE: "replaced by the generator" was allowlisted here while every awscdk
+    # task shipped the arm's lib/example-stack.ts, whose docstring carried that
+    # phrase. That file is no longer copied into generated tasks (it was an
+    # answer-key leak and an arm asymmetry -- see the generator fix that deletes
+    # it), so the phrase no longer appears in any greenfield control's
+    # environment/ and the allowlist entry is now stale. Removed rather than
+    # kept, because this test exists precisely to prove every allowlisted phrase
+    # is REAL arm boilerplate and not scenario-specific text being scrubbed.
     # arms/hcl-raw/environment/workspace/provider.tf, on the live-mode env var:
     "explicitly export",
 )

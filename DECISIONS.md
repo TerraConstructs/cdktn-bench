@@ -6221,3 +6221,74 @@ scenario**.
 **Status.** DRAFT until the redeployability scenario runs. §4 is binding on
 oracle authoring now, because it is a consistency requirement (the arms must be
 graded at equal strictness) independent of whether the tenet itself holds.
+
+---
+
+## Amendment 30 (2026-08-23) — awscdk tier-1 may be graded by OPA/Rego; train/holdout re-split at 14 scenarios
+
+Two changes, both mechanical consequences of Batch A landing.
+
+### 1. OPA/Rego is now available as the awscdk tier-1 engine (ROADMAP M8)
+
+**Cause, proven by execution.** cfn-guard 3.2.0 cannot express a cross-resource
+join (no logical-id join between an IAM role and the `AWS::IAM::ManagedPolicy`
+that names it). The awscdk tier-1 for
+`iam-managed-policy-exclusive-vs-attachment` therefore degraded into a
+count-equality proxy, unsound in **both** directions:
+
+- a policy reaching only ONE role, declared from both sides, balanced the counts
+  and scored **1.0** — a false PASS that defeated that scenario's own
+  `policy-attached-to-one-role-only` catch — while the byte-equivalent
+  terraconstructs solution scored 0.0;
+- a policy attached to BOTH roles from both sides scored **0.0** — a false FAIL
+  the synthesized template flatly contradicts — while terraconstructs scored 1.0.
+
+Three consecutive opus fix rounds failed to close it. This was a **tooling
+ceiling**, not an authoring defect, and Amendment 29 §4 makes equal-strictness
+cross-arm grading binding.
+
+**Decision.** A spec may select the awscdk tier-1 engine. Rego policies for the
+awscdk arm live in `oracles/rego-cfn/<id>/` and are evaluated against the
+synthesized CloudFormation template — a different input shape from the TF arms'
+`terraform show -json`, hence a separate path rather than one shared policy file.
+All existing tier-1 failure semantics are preserved unchanged
+(`SKIPPED_NO_ASSERTS`, `TOOL_MISSING` + `tier1-unavailable`, `SKIPPED_STUB` +
+`tier1-unauthored`, and the hard reward gate); each exists because it once
+allowed a silent false pass. `opa` is added to the awscdk arm image.
+
+**cfn-guard is RETAINED, and reclassified.** It stays installed and supported —
+it is a real tool an awscdk team has. It is simply not the *authority* for a
+cross-arm comparison, because it grades at a different strictness than the engine
+used on the other arms. Specs already using it are unchanged and regenerate
+byte-identically.
+
+**Caveat on the capability claim.** "awscdk has more guardrail tooling" must NOT
+be evidenced by cfn-guard's existence — Terraform has conftest/OPA, Checkov,
+tfsec and Sentinel. The genuinely CDK-specific guardrail is **Aspects / cdk-nag**
+(programmatic, type-aware, running at synth over the construct tree, no HCL
+equivalent). Any guardrail-advantage claim should be measured there.
+
+**Immediate evidence the diagnosis was right:** after migrating,
+`iam-managed-policy-exclusive-vs-attachment` passed adversarial verification in a
+**single** round.
+
+### 2. Train/holdout re-split (Amendment 10 procedure)
+
+Batch A took the non-toy spec set from 6 to 14, so `generator/split.py --write`
+was run per Amendment 10's documented re-split procedure.
+
+**No id flipped.** Every pre-existing scenario kept its group, so the
+train→holdout taint rule in that procedure is not engaged — and no tuned
+skill/MCP equipping exists yet in any case (the equipping factorial is ROADMAP
+M2, still unbuilt), so there is nothing that could have been tainted.
+
+| group | scenarios |
+|---|---|
+| **train** (8) | `acm-dns-validation-record-wiring`*, `apigw-openapi`, `ddb-gsi-attribute-definitions`*, `ecs-swappiness`, `named-resource-replacement`, `s3-bucket-hardening-decomposition`*, `s3-lambda-log-retention`, `s3-notification-custom-resource-tax`* |
+| **holdout** (6) | `apigw-redeploy`, `asg-launch-template-tag-propagation`*, `iam-managed-policy-exclusive-vs-attachment`*, `lambda-log-group-ownership-and-retention`*, `s3-notification-authoritative-singleton`*, `sfn-jsonata` |
+
+`*` = new in Batch A. Ratio 8/6 matches the 60 % round-half-up rule for n=14.
+
+**Freeze note.** Per `generator/split.py`'s own procedure, `--write` should stop
+being run once real equipping-tuning work begins for a phase. That point is
+ROADMAP M2; until then, re-splitting as scenarios land is expected and cheap.
