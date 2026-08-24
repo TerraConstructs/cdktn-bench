@@ -369,6 +369,12 @@ From the 225-candidate mining pass, graded to 26 by the operator
 (`docs/scenario-grades/2026-08-20-summary.md`). Batched by form.
 
 ### Batch A — greenfield, ready with today's harness (12)
+
+**Status 2026-08-24: 8 of 12 authored and committed**, each passing
+`make falsifiability` on every arm it declares. Remaining 4:
+`caller-identity-arn-as-principal`, `lambda-function-url-partner-scoped-invoke`,
+`apigwv2-route-settings-zero-vs-unset`, `ecr-repo-destroy-force-delete`.
+
 Blueprints: `docs/design/batch-a-greenfield-blueprints.md` (identity, lean
 prompt, tier plan, catches, verified evidence, arm predictions, per-arm risk).
 Authoring order: §1 → §6 → §2 → §9 → §10 → §4 → §8 → §11 → §3 → §7 → §5 → §12.
@@ -496,11 +502,14 @@ Both directions were proven by execution: a wrong-type ARN behind a local scored
 and a fully correct solution scored **0.0**. See
 `docs/design/conftest-hcl-traversal-spike.md` §1.
 
-**Superseded by** `hcl2json`-based static traversal resolution (that memo's
-verdict: adopt the technique, drop conftest — its HCL2 parser *is* `hcl2json`,
-byte-identical output at 4.1 MB vs 68 MB, and `opa` stays the engine). The
-heuristics are to be **deleted, not left beside** the resolved path, where they
-could still fire.
+**RESOLVED (2026-08-24, `dd789e3` + `460629a`).** Superseded by `hcl2json`-based
+static traversal resolution (the memo's verdict: adopt the technique, drop
+conftest — its HCL2 parser *is* `hcl2json`, byte-identical output at 4.1 MB vs
+68 MB, and `opa` stays the engine). Every heuristic in the table above is
+**deleted, not deprecated** — `grep` finds no live call site; only history
+comments remain. The capability is `oracle.hcl_traversal: true`
+(`SCHEMA.md` §4.6), hcl_raw-only, default false, so it is dormant for every
+scenario that does not opt in.
 
 **The rule this leaves behind:** a reference-resolution question must be
 answered from the artifact that actually carries the referent — resolved
@@ -511,13 +520,34 @@ impossible, the honest outcome is a three-valued verdict —
 resolved / **ambiguous** / **unresolvable** — with the latter two *denying and
 naming what failed*, never guessing in either direction.
 
-**Known open residual (not created by this work, and currently ungraded by any
-layer):** a same-type/wrong-instance defect — a notification on bucket A with
-the permission scoped to bucket B's ARN — scores **1.0** today, whether written
-through a local or directly. The existing
-`lambda-permission-scoped-to-a-different-bucket` fixture does *not* cover it (its
-`source_arn` is a zero-reference string literal, caught by the arity gate rather
-than by instance discrimination).
+**The residual recorded here is CLOSED.** The same-type/wrong-instance defect —
+a notification on bucket A with the permission scoped to bucket B's ARN — scored
+**1.0** under every layer when this section was written. It now scores 0.0,
+direct and behind a local, and the fixtures that pin it are checked in
+(`lambda-permission-scoped-to-a-decoy-bucket-directly`,
+`...-with-a-literal-notification-bucket`, `...-decoy-for-each-instance`). Closing
+it needed two fixes the first attempt missed: the type-only widening in
+`slot_names_arn_of` clause 2, and `instance_of` slicing only two path segments,
+which collapsed every `for_each`/`count` key of one block into a single
+"instance".
+
+**What four adversarial rounds actually taught — carry this forward.** Each
+round closed its blocker and the next found a NEW one in the same family: the
+launder survived by MOVING (clause 2 → `for_each` → mention-not-position → the
+condition's OR-ed value list). The generalisable lesson is not any one fix but
+the shape of the mistake: **grading a policy document by provenance instead of
+by position**, and **using one quantifier where the domain uses two** (IAM
+AND-s distinct condition positions and OR-s the values within one — `some`
+across positions, `every` within one). Both were written into the oracles as
+virtues before they were found to be defects.
+
+**And the cost is a signal, not just a bill.** The result is a 2,677-line policy
+plus a 952-line shared library for ONE scenario, still with no proof that a
+fifth round would find nothing — falsifiability proves every *declared* catch
+fires, never that no undeclared hole remains. That is the strongest evidence
+yet for the oracle-authority inversion (M5): where a property is behavioural,
+re-deriving it structurally approaches the "slowly reimplementing the evaluator"
+boundary, and a live check would be both cheaper and more authoritative.
 
 ## 6. Backlog
 
