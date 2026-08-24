@@ -83,12 +83,32 @@ s3_buckets := [r |
 
 # principal is always plan-time-known (a static agent-authored literal,
 # never provider-computed -- same rationale as apigw-openapi's own
-# `permitted_principals`), so read it from `.planned_values`, joined by
-# `.address` to the `.configuration` resource below for the source_arn
-# graph-edge check.
-principal_by_addr := {r.address: r.values.principal |
+# `permitted_principals`), so read it from `.planned_values` and join back
+# to the `.configuration` resource below for the source_arn graph-edge
+# check. See the ROUND 15 note under this comment for why that join is on
+# `[type, name]` and not on `.address`.
+# ROUND 15 (2026-08-24) -- THE JOIN IS ON `[type, name]`, NOT ON `.address`.
+#
+# The `.address` join above was latent-broken in exactly the way
+# oracles/rego/s3-notification-authoritative-singleton/policy.rego's was,
+# and it is fixed here at the same time so the pattern does not survive by
+# being copied: a `count`/`for_each` meta-argument on the permission makes
+# the PLANNED address `aws_lambda_permission.<name>[0]` while the
+# CONFIGURATION address stays `aws_lambda_permission.<name>`. The lookup
+# never matches, `s3_invoke_permissions` comes back EMPTY, the source_arn
+# scoping rule is silently disabled, and the fail-closed fallback fires with
+# a message the plan flatly contradicts. A fully correct solution with
+# `count = 1` added scored REWARD 0.0 on the sibling scenario, executed.
+#
+# A SET of `[type, name]` pairs, not an object keyed by them: a
+# `for_each`-expanded permission has N planned instances sharing one key,
+# and an object rule binding one key to two different principals raises
+# `eval_conflict_error`, which ABORTS evaluation and scores a correct
+# solution 0.0 with no deny message at all. A set cannot conflict.
+s3_invoke_principal_keys := {[r.type, r.name] |
 	some r in planned_resources
 	r.type == "aws_lambda_permission"
+	object.get(r, ["values", "principal"], null) == "s3.amazonaws.com"
 }
 
 permission_configs := [r |
@@ -98,7 +118,7 @@ permission_configs := [r |
 
 s3_invoke_permissions := [r |
 	some r in permission_configs
-	principal_by_addr[r.address] == "s3.amazonaws.com"
+	[r.type, r.name] in s3_invoke_principal_keys
 ]
 
 source_arn_references(rp) := object.get(rp.expressions.source_arn, "references", [])

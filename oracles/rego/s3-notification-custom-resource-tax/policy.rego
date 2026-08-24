@@ -30,8 +30,10 @@
 #      anywhere.
 #
 # `principal` is read from `.planned_values` (always plan-time-known -- a
-# literal, never provider-computed), joined by `.address` to the
-# `.configuration` resource for the source_arn graph-edge check --
+# literal, never provider-computed) and joined back to the `.configuration`
+# resource -- on `[type, name]` since round 15, NOT on `.address`, which a
+# `count`/`for_each` meta-argument silently breaks -- for the source_arn
+# graph-edge check --
 # mirrors s3-lambda-log-retention/policy.rego's own CORRECTION (never read
 # `.expressions.principal.constant_value`, which is silently empty for an
 # equally-correct `local`/`var`-indirected principal).
@@ -72,12 +74,32 @@ notifications := [r |
 ]
 
 # principal is always plan-time-known (a static agent-authored literal,
-# never provider-computed), so read it from `.planned_values`, joined by
-# `.address` to the `.configuration` resource below for the source_arn
-# graph-edge check -- identical pattern to s3-lambda-log-retention/policy.rego.
-principal_by_addr := {r.address: r.values.principal |
+# never provider-computed), so read it from `.planned_values` and join back
+# to the `.configuration` resource below for the source_arn graph-edge
+# check -- identical pattern to s3-lambda-log-retention/policy.rego,
+# including the ROUND 15 fix to the join key immediately below.
+# ROUND 15 (2026-08-24) -- THE JOIN IS ON `[type, name]`, NOT ON `.address`.
+#
+# The `.address` join above was latent-broken in exactly the way
+# oracles/rego/s3-notification-authoritative-singleton/policy.rego's was,
+# and it is fixed here at the same time so the pattern does not survive by
+# being copied: a `count`/`for_each` meta-argument on the permission makes
+# the PLANNED address `aws_lambda_permission.<name>[0]` while the
+# CONFIGURATION address stays `aws_lambda_permission.<name>`. The lookup
+# never matches, `s3_invoke_permissions` comes back EMPTY, the source_arn
+# scoping rule is silently disabled, and the fail-closed fallback fires with
+# a message the plan flatly contradicts. A fully correct solution with
+# `count = 1` added scored REWARD 0.0 on the sibling scenario, executed.
+#
+# A SET of `[type, name]` pairs, not an object keyed by them: a
+# `for_each`-expanded permission has N planned instances sharing one key,
+# and an object rule binding one key to two different principals raises
+# `eval_conflict_error`, which ABORTS evaluation and scores a correct
+# solution 0.0 with no deny message at all. A set cannot conflict.
+s3_invoke_principal_keys := {[r.type, r.name] |
 	some r in planned_resources
 	r.type == "aws_lambda_permission"
+	object.get(r, ["values", "principal"], null) == "s3.amazonaws.com"
 }
 
 permission_configs := [r |
@@ -87,7 +109,7 @@ permission_configs := [r |
 
 s3_invoke_permissions := [r |
 	some r in permission_configs
-	principal_by_addr[r.address] == "s3.amazonaws.com"
+	[r.type, r.name] in s3_invoke_principal_keys
 ]
 
 source_arn_references(rp) := object.get(rp.expressions.source_arn, "references", [])
