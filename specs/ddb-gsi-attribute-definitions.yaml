@@ -398,9 +398,12 @@
 # [the table's own attribute-definition set]") was already-false for the
 # STANDALONE-GSI shape the prior round's fix tolerates, a spec-honesty gap
 # independent of the two grading regressions above (SCHEMA.md §4.1: this
-# field is the single source of truth both policy.rego and policy.guard
-# are checked against, so it must state what the fully-tolerant oracle
-# actually requires, not a stricter fiction).
+# field is the single source of truth both tier-1 policy bundles are
+# checked against -- `oracles/rego/` for the TF-shaped arms and, as of
+# REPAIR ROUND 4 below, `oracles/rego-cfn/` for awscdk (it was
+# `oracles/cfn-guard/.../policy.guard` when this paragraph was written)
+# -- so it must state what the fully-tolerant oracle actually requires,
+# not a stricter fiction).
 #
 # ---------------------------------------------------------------------
 # REPAIR ROUND 3 (adversarial verification, 2026-08-22, same session):
@@ -469,6 +472,73 @@
 #   `gsi-projection-type-is-keys-only-not-include`, `gsi-missing-entirely`.
 #   `arms.terraconstructs.reason` below is corrected to no longer imply
 #   `storage.Table` is the arm's only DynamoDB-GSI-producing surface.
+#
+# ---------------------------------------------------------------------
+# REPAIR ROUND 4 (2026-08-23): AWSCDK TIER-1 ENGINE MIGRATION
+# (cfn-guard -> Rego), per DECISIONS.md Amendment 29 sections 4-6 and
+# specs/SCHEMA.md section 4.5. `oracle.awscdk_tier1_engine: rego` is set
+# below; `oracles/cfn-guard/ddb-gsi-attribute-definitions/policy.guard` is
+# DELETED and `oracles/rego-cfn/ddb-gsi-attribute-definitions/policy.rego`
+# replaces it.
+#
+#   THE DEFECT, REPRODUCED (not inferred). This scenario's oracle.intent
+#   states a JOIN between two lists inside one resource: every attribute
+#   definition must be a key of the table or of one of its indexes, AND
+#   every key attribute must have a matching definition. cfn-guard 3.2.0
+#   has no cross-list correlation operator (the same limit ROADMAP.md M8
+#   records for `AWS::IAM::ManagedPolicy.Roles` -> a role's logical id),
+#   so the retired rule stated a PROXY instead -- a hard-coded allowlist,
+#   `AttributeName IN ["orderId", "customerId", "createdAt"]`. That proxy
+#   PASSES a template the intent forbids, and this round built the shape
+#   and ran it, fully offline, on the arm's own pinned toolchain
+#   (aws-cdk-lib 2.263.0, aws-cdk 2.1135.0, cfn-guard 3.2.0):
+#   the reference solution's own L2 `dynamodb.Table` +
+#   `addGlobalSecondaryIndex()`, plus one CDK escape hatch --
+#   `(table.node.defaultChild as dynamodb.CfnTable).addPropertyOverride(
+#   "AttributeDefinitions", [orderId, customerId])`, i.e. `createdAt`
+#   dropped while the GSI still ranges on it. `npm run build` compiles and
+#   `npx cdk synth` EXITS 0 (only a `CloudFormation-Validate::E3039`
+#   WARNING: "GSI KeySchema attribute 'createdAt' is not defined in
+#   AttributeDefinitions"), so the template is produced and graded. All
+#   five awscdk tier-0 asserts PASS (not one of them reads
+#   AttributeDefinitions) and `cfn-guard validate --rules policy.guard`
+#   PASSES (an allowlist cannot see a MISSING name) -> tier0_pass=1,
+#   tier1_status=PASS, REWARD 1.0 -- for the exact mistake this spec's own
+#   `gsi-key-attribute-not-declared` catch names, which `terraform plan`
+#   rejects outright on hcl_raw ("all indexes must match a defined
+#   attribute") for REWARD 0.0. A 1.0-vs-0.0 cross-arm split on one intent
+#   violation is precisely what Amendment 29 section 4 forbids.
+#
+#   THE FIX. `oracles/rego-cfn/ddb-gsi-attribute-definitions/policy.rego`
+#   states the join directly, in three per-table rules quantified over
+#   `input.Resources[<LogicalId>]` (logical id, never `Properties.
+#   TableName` -- Amendment 29 R1; and universally over every DynamoDB
+#   table in the template, never "at least one" -- R2): (1) every KEY
+#   attribute is one of orderId/customerId/createdAt; (2) every DECLARED
+#   attribute definition is used as a key by this same table or one of its
+#   indexes; (3) every key attribute has a matching definition. Rules 1+2
+#   together imply -- strictly more strongly than the retired allowlist --
+#   the tier-1 structural_assert `attribute-definitions-are-exactly-the-
+#   key-attributes` this spec declares. Post-fix, the reproduction above
+#   scores REWARD 0.0 on awscdk (tier0_pass=1, tier1_status=FAIL), matching
+#   hcl_raw's 0.0, and both reference shapes (`solution/solve.sh`'s
+#   `dynamodb.Table` and `solution/reference-alt-tablev2/solve.sh`'s
+#   `dynamodb.TableV2` -> AWS::DynamoDB::GlobalTable) still score 1.0.
+#
+#   TWO CATCHES WIDENED TO awscdk, each with a new broken/ fixture, so no
+#   rule is left unfalsified: `gsi-key-attribute-not-declared` (rule 3)
+#   and `attribute-definitions-include-non-key-attributes` (rule 2) were
+#   `applies_to: [hcl_raw]` on the belief that both are structurally
+#   unreachable on awscdk. That is true of the L2 API only. The arm ships
+#   `dynamodb.CfnTable` and `Construct.node.defaultChild` -- the same
+#   "the arm's OTHER surface reaches this shape" correction REPAIR ROUND 3
+#   made for terraconstructs's `@cdktn/provider-aws` L1 binding -- and both
+#   shapes synth clean, so the oracle, not the toolchain, has to reject
+#   them. Each fixture fires EXACTLY ONE of the three rules (verified by
+#   direct `opa eval` per fixture), so all three are independently
+#   falsified: `attribute-definitions-include-an-unrequested-key` -> rule 1
+#   only, `attribute-definitions-include-non-key-attributes` -> rule 2
+#   only, `gsi-key-attribute-not-declared` -> rule 3 only.
 
 id: ddb-gsi-attribute-definitions
 workspace_id: orders-table
@@ -573,11 +643,39 @@ catches:
       any structural_assert or policy ever runs (same convention
       specs/s3-lambda-log-retention.yaml's own
       log-retention-not-a-valid-enum-value catch documents).
+      REPAIR ROUND 4 (2026-08-23, this file's header comment): the
+      "structurally unreachable on awscdk" clause above is true of
+      `aws-cdk-lib`'s L2 API only, and is now corrected for the ARM. The
+      awscdk workspace also ships `dynamodb.CfnTable` and
+      `Construct.node.defaultChild`, so one escape hatch on the otherwise
+      correct reference solution --
+      `(table.node.defaultChild as dynamodb.CfnTable).addPropertyOverride(
+      "AttributeDefinitions", [... shippingAddress, lineItems,
+      paymentReference])` -- declares exactly the dangling attribute
+      definitions this catch names, and `npm run build && npx cdk synth`
+      both EXIT 0 (LIVE-VERIFIED this round, aws-cdk-lib 2.263.0: not even
+      a warning, since CloudFormation's own validator only flags the
+      MISSING direction). This is the same "the arm's OTHER surface
+      reaches this shape" correction REPAIR ROUND 3 made for
+      terraconstructs's `@cdktn/provider-aws` L1 binding. Because nothing
+      in the awscdk toolchain rejects it, the ORACLE must: it is caught at
+      TIER 1 on awscdk, by
+      `oracles/rego-cfn/ddb-gsi-attribute-definitions/policy.rego`'s rule 2
+      ("every declared attribute definition must be used as a key by this
+      table or one of its indexes") -- and by that rule ALONE, which is
+      what makes rule 2 independently falsifiable (rule 1 stays silent:
+      the KEY attributes are still exactly orderId/customerId/createdAt).
+      LIVE-VERIFIED end to end this round: tier0_pass=1, tier1_status=FAIL,
+      reward 0.0. terraconstructs is UNCHANGED and still excluded from
+      `applies_to` -- its own L1 surface would reach the shape too, but no
+      fixture is authored there and this round's scope is the awscdk
+      tier-1 engine; hcl_raw's tier-"0" toolchain rejection above is
+      likewise unchanged.
     predicted_tier_caught:
-      awscdk: "0"
+      awscdk: "1"
       hcl: "0"
       terraconstructs_override: null
-    applies_to: [hcl_raw]
+    applies_to: [hcl_raw, awscdk]
 
   - name: include-projection-without-non-key-attributes
     taxonomy: typed-value-trap
@@ -653,13 +751,35 @@ catches:
       terraconstructs.js :783-784), so an agent using the idiomatic API
       cannot add a GSI key without its attribute definition being added
       alongside it automatically. No dedicated structural_assert exists
-      for this catch either, for the same reason as the first catch: the
-      toolchain step itself fails before any structural_assert runs.
+      for this catch on hcl_raw, for the same reason as the first catch:
+      the toolchain step itself fails before any structural_assert runs.
+      REPAIR ROUND 4 (2026-08-23, this file's header comment): as for
+      attribute-definitions-include-non-key-attributes above, the
+      "structurally unreachable on awscdk" clause holds for the L2 API
+      only. `(table.node.defaultChild as dynamodb.CfnTable)
+      .addPropertyOverride("AttributeDefinitions", [orderId, customerId])`
+      drops `createdAt` while `addGlobalSecondaryIndex()` still ranges on
+      it, and `npx cdk synth` EXITS 0 (LIVE-VERIFIED this round: only a
+      `CloudFormation-Validate::E3039` WARNING, "GSI KeySchema attribute
+      'createdAt' is not defined in AttributeDefinitions"), so the
+      template IS produced and IS graded. THIS EXACT SHAPE IS THE
+      REPRODUCTION that condemned the retired cfn-guard rule: all five
+      awscdk tier-0 asserts pass and the allowlist `.guard` rule passed
+      too (an allowlist cannot see a name that is ABSENT), for reward 1.0
+      against hcl_raw's 0.0 on the identical mistake. It is now caught at
+      TIER 1 on awscdk by
+      `oracles/rego-cfn/ddb-gsi-attribute-definitions/policy.rego`'s rule 3
+      ("every key attribute must have a matching attribute definition on
+      the same table") -- and by that rule ALONE, so rule 3 is
+      independently falsified. LIVE-VERIFIED end to end this round:
+      tier0_pass=1, tier1_status=FAIL, reward 0.0. terraconstructs stays
+      excluded from `applies_to`, unchanged, for the same reason given on
+      the catch above.
     predicted_tier_caught:
-      awscdk: "0"
+      awscdk: "1"
       hcl: "0"
       terraconstructs_override: null
-    applies_to: [hcl_raw]
+    applies_to: [hcl_raw, awscdk]
 
   - name: attribute-definitions-include-an-unrequested-key
     taxonomy: typed-value-trap
@@ -785,6 +905,17 @@ catches:
       terraconstructs_override: "1"
 
 oracle:
+  # REPAIR ROUND 4 (2026-08-23), specs/SCHEMA.md section 4.5: tier 1 on the
+  # awscdk arm is graded by OPA/Rego over the synthesized CloudFormation
+  # template (`oracles/rego-cfn/ddb-gsi-attribute-definitions/policy.rego`),
+  # not by cfn-guard. This scenario's intent is a cross-list join that
+  # cfn-guard 3.2.0 cannot express -- see this file's header comment,
+  # "REPAIR ROUND 4", for the reproduction that proved the cfn-guard proxy
+  # awarded reward 1.0 to a template hcl_raw scores 0.0 for. The retired
+  # `oracles/cfn-guard/ddb-gsi-attribute-definitions/policy.guard` is
+  # deleted; all three arms are now graded at tier 1 by the same engine.
+  awscdk_tier1_engine: rego
+
   intent: >
     A DynamoDB table exists whose primary (hash) key is orderId. A global
     secondary index exists, keyed on customerId as its partition key and
@@ -834,11 +965,19 @@ oracle:
         index key. The actually-enforced rego rule is an ALLOWLIST (see
         below), not a full `set_eq` -- this is the "and nothing else" fact
         that catches attribute-definitions-include-an-unrequested-key (an
-        extra, unintended value would pass a subset-only op) -- NOT
+        extra, unintended value would pass a subset-only op). On the
+        TF-shaped arms it is also NOT what catches
         attribute-definitions-include-non-key-attributes or
-        gsi-key-attribute-not-declared, both of which are caught earlier,
-        by the toolchain itself failing before any structural_assert runs
-        (see each catch's own description).
+        gsi-key-attribute-not-declared: there both are caught earlier, by
+        the toolchain itself failing before any structural_assert runs
+        (see each catch's own description). CORRECTED IN REPAIR ROUND 4
+        (2026-08-23, this file's header comment): on awscdk those two
+        mistakes are NOT toolchain-caught -- both synth clean through the
+        arm's `dynamodb.CfnTable` escape hatch -- so on that arm they are
+        caught at tier 1, by rules 2 and 3 of
+        `oracles/rego-cfn/ddb-gsi-attribute-definitions/policy.rego`, the
+        two rules that state this fact's underlying JOIN directly rather
+        than through an allowlist proxy (see the awscdk paragraph below).
 
         `op`/`expected` below (`set_eq` / the full three-name list) reflect
         this fact's `tf_jsonpath`/`cfn_jsonpath` resolved against the
@@ -858,8 +997,11 @@ oracle:
         SHAPE-AWARE paragraph immediately below. Treat `op`/`expected`
         here as documentation of the canonical-shape check, not an
         exhaustive spec of tier-1 behavior across every tolerated shape --
-        the hand-authored `policy.rego`/`policy.guard` are the actual
-        source of enforced truth for this tier-1 fact, per SCHEMA.md §4.1.
+        the two hand-authored `policy.rego` bundles
+        (`oracles/rego/ddb-gsi-attribute-definitions/` for the TF-shaped
+        arms, `oracles/rego-cfn/ddb-gsi-attribute-definitions/` for
+        awscdk as of REPAIR ROUND 4) are the actual source of enforced
+        truth for this tier-1 fact, per SCHEMA.md §4.1.
 
         SHAPE-AWARE as of the STANDALONE-GSI SHAPE-TOLERANCE FIX (this
         file's header comment): on the standalone-`aws_dynamodb_global_
@@ -885,7 +1027,9 @@ oracle:
         header comment for the live, offline reproduction.
 
         Graded at TIER 1
-        (Rego/cfn-guard), not tier 0's direct jsonpath check, even though
+        (OPA/Rego on every arm as of REPAIR ROUND 4; Rego on the TF arms
+        and cfn-guard on awscdk before it), not tier 0's direct jsonpath
+        check, even though
         every value read here is a static, plan-time-known echo of
         agent-supplied config (op=set_eq would be a perfectly sound tier-0
         check on that basis alone, same as every other assert in this
@@ -895,13 +1039,50 @@ oracle:
         see that catch's own description), so it is the one fact in this
         scenario nothing else already catches earlier -- promoting it to
         tier 1 and hand-authoring `oracles/rego/ddb-gsi-attribute-
-        definitions/policy.rego` (hcl_raw + terraconstructs) and
-        `oracles/cfn-guard/ddb-gsi-attribute-definitions/policy.guard`
-        (awscdk) around it gives this scenario a real, falsifiable
+        definitions/policy.rego` (hcl_raw + terraconstructs) and, as of
+        REPAIR ROUND 4 (2026-08-23, this file's header comment),
+        `oracles/rego-cfn/ddb-gsi-attribute-definitions/policy.rego`
+        (awscdk -- `oracle.awscdk_tier1_engine: rego`, specs/SCHEMA.md
+        section 4.5; the retired
+        `oracles/cfn-guard/ddb-gsi-attribute-definitions/policy.guard` is
+        DELETED) around it gives this scenario a real, falsifiable
         tier-1 proof obligation (`gates/grading_proof.py`'s own
         `any_tier1_proof` requirement) instead of leaving every catch
-        caught earlier and the Rego/cfn-guard chain permanently
-        unexercised.
+        caught earlier and the Rego chain permanently unexercised.
+
+        HOW THE awscdk BUNDLE ENCODES THIS FACT (REPAIR ROUND 4). It does
+        NOT restate the allowlist. `oracles/rego-cfn/ddb-gsi-attribute-
+        definitions/policy.rego` states the JOIN this assert's own opening
+        sentence describes, in three rules quantified per TABLE LOGICAL ID
+        (`input.Resources[<LogicalId>]`; never `Properties.TableName` --
+        Amendment 29 R1 -- and universally over every DynamoDB table in
+        the template, never "at least one" -- R2):
+        (1) every attribute used as a KEY (the table's own `KeySchema`, or
+        any `GlobalSecondaryIndexes[*]`/`LocalSecondaryIndexes[*]`
+        `KeySchema`) is one of orderId/customerId/createdAt;
+        (2) every DECLARED `AttributeDefinitions` entry is used as a key by
+        that same table or one of its indexes;
+        (3) every key attribute has a matching `AttributeDefinitions`
+        entry on the same table.
+        Rules 1 and 2 together IMPLY this assert (a declared name must be
+        a key, and a key must be one of the three, so a declared name must
+        be one of the three) and imply it STRICTLY MORE STRONGLY than the
+        retired cfn-guard allowlist, which could state neither direction
+        of the join and therefore passed a template missing a key's
+        definition entirely -- the reproduction in this file's header
+        comment, "REPAIR ROUND 4". Rule 3, composed with this arm's own
+        tier-0 asserts (which independently require a HASH key orderId, a
+        GSI HASH key customerId and a GSI RANGE key createdAt to resolve),
+        supplies the converse half this assert's `set_eq`/`expected` pair
+        documents for the canonical shape. The awscdk bundle deliberately
+        does NOT restate the four GSI facts the TF bundle carries (keys,
+        projection, existence): on awscdk those are tier-0 asserts with
+        their own fixtures, executed before this policy runs, so restating
+        them would add rules no fixture could ever falsify AT TIER 1 (a
+        fixture violating one fails tier 0 first, and `observed_tier` is
+        then "0"). CFN has no standalone-GSI resource type, so the
+        `tf_jsonpath`-grammar pressure that forced those four facts into
+        the TF bundle has no analogue here.
 
         This is also the ONE tier-1 structural_assert this spec declares
         by name -- but `policy.rego`'s `deny` set now additionally encodes
@@ -1147,22 +1328,74 @@ oracle:
       never touching the unknown value itself.
   cfn_guard_hints:
     - >-
+      NOTE ON THIS FIELD'S NAME: as of REPAIR ROUND 4 (2026-08-23) this
+      scenario sets `oracle.awscdk_tier1_engine: rego`, so the bundle
+      these hints describe is
+      `oracles/rego-cfn/ddb-gsi-attribute-definitions/policy.rego`, NOT a
+      `.guard` file -- `cfn_guard_hints` is, per specs/SCHEMA.md §4.5,
+      the CFN-SHAPE hint list whichever engine reads it (`rego_hints`
+      describe the plan-JSON shape and belong to `oracles/rego/`). The
+      previous contents of this field described a cfn-guard allowlist rule
+      that has been deleted; they are replaced, not appended to, because
+      that rule was unsound (see below) and describing it here would be a
+      false claim about how this arm grades.
+    - >-
       Graded against the awscdk arm's synthesized CloudFormation template
-      (`cdk.out/ScenarioStack.template.json`). Encodes the SAME tier-1
-      fact as `../rego/ddb-gsi-attribute-definitions/policy.rego`, at the
-      same strictness: every `AWS::DynamoDB::Table` (and, for the
-      TableV2-tolerance fix this file's header comment documents, every
-      `AWS::DynamoDB::GlobalTable`) resource's
-      `Properties.AttributeDefinitions[*].AttributeName` must be IN
-      [orderId, customerId, createdAt] -- cfn-guard's `IN` operator over a
-      literal allowlist, the same idiom
-      `../toy-ssm-parameter/policy.guard`'s `Action[*] IN [...]` rules
-      already use in this repo, applied here to `AttributeName` instead of
-      `Action`. CFN's synthesized template is always fully static (no
-      "plan" concept, no provider-computed value ever appears in
-      `AttributeDefinitions`), so this is a literal-value check with no
-      SCHEMA.md §4.2.1 caveat to carry, unlike some other scenarios'
-      tier-1 awscdk rules.
+      (`cdk.out/ScenarioStack.template.json`); `input` at policy-evaluation
+      time is that template. Resources live at
+      `input.Resources[<LogicalId>]` with `.Type`/`.Properties`. Both
+      `AWS::DynamoDB::Table` and `AWS::DynamoDB::GlobalTable` are graded
+      (the TableV2-tolerance fix this file's header comment documents;
+      RE-VERIFIED in REPAIR ROUND 4 against a real `cdk synth` of
+      `solution/reference-alt-tablev2/solve.sh`: `AttributeDefinitions`,
+      `KeySchema` and `GlobalSecondaryIndexes[*].KeySchema` sit at
+      identical paths and shapes on both types).
+    - >-
+      Encodes this spec's ONE declared tier-1 fact,
+      `attribute-definitions-are-exactly-the-key-attributes`, as the JOIN
+      that fact's own opening sentence states, in three rules quantified
+      PER TABLE LOGICAL ID -- never on `Properties.TableName` (Amendment 29
+      R1: a solution that sets an explicit table name and one that omits
+      it must score identically, and this policy never reads that property
+      at all), and universally over every DynamoDB table in the template
+      rather than existentially (R2): (1) every attribute used as a KEY --
+      `Properties.KeySchema[*].AttributeName`, plus every
+      `GlobalSecondaryIndexes[*].KeySchema[*].AttributeName` and
+      `LocalSecondaryIndexes[*].KeySchema[*].AttributeName` -- is one of
+      orderId/customerId/createdAt; (2) every declared
+      `AttributeDefinitions[*].AttributeName` is used as a key by that
+      same table or one of its indexes; (3) every key attribute has a
+      matching `AttributeDefinitions` entry on the same table. Rules 1+2
+      imply the declared assert strictly more strongly than an allowlist
+      over `AttributeDefinitions` alone.
+    - >-
+      WHY NOT cfn-guard: an allowlist (`AttributeName IN [orderId,
+      customerId, createdAt]`) is a PROXY for that join, and it is unsound
+      in the "passes what the intent forbids" direction -- it cannot see
+      an attribute definition that is MISSING, nor one that is present but
+      used by no key. REPRODUCED live, offline, in REPAIR ROUND 4: a
+      template with `createdAt` dropped from `AttributeDefinitions` while
+      the GSI still ranges on it passes all five awscdk tier-0 asserts AND
+      passes the allowlist rule, for reward 1.0, while the byte-equivalent
+      hcl_raw solution is rejected by `terraform plan` for reward 0.0.
+      See this file's header comment, "REPAIR ROUND 4", for the full
+      reproduction and the fixtures that now falsify each of the three
+      rules independently.
+    - >-
+      `Replicas[*].GlobalSecondaryIndexes[*]` (an `AWS::DynamoDB::
+      GlobalTable`-only property) is deliberately NOT read: those entries
+      carry an `IndexName` and no key material at all -- confirmed
+      directly in the TableV2 reference template. Excluding them is
+      correct, not a gap.
+    - >-
+      No SCHEMA.md §4.2.1 (plan-time-unknown) caveat applies. A
+      synthesized CFN template has no "plan" phase: `AttributeName` and
+      `KeyType` are literal strings emitted from typed construct props,
+      never `{"Ref": ...}`/`{"Fn::GetAtt": [...]}` objects. The
+      `object.get(..., "AttributeName", "")` defaults in the policy are
+      fail-CLOSED backstops for a malformed entry (an empty name matches
+      neither the allowlist nor any declared name, so the corresponding
+      rule fires), not a tolerance for an unresolved value.
   tier05_jsonata: null
 
 verifier:
@@ -1183,4 +1416,5 @@ provenance:
     - "hashicorp/terraform-provider-aws, website/docs/r/dynamodb_table.html.markdown, read LIVE from `main` again this session (adversarial-verification repair round, 2026-08-22) -- evidence for the STANDALONE-GSI SHAPE-TOLERANCE FIX this file's header comment documents: line 19, the FULL sentence (this spec's earlier citation of the same line was truncated mid-sentence) -- \"...Adding attributes not used in these scenarios causes an infinite plan loop. When using [`aws_dynamodb_global_secondary_index`](/docs/providers/aws/r/dynamodb_global_secondary_index.html), you do not need to define attributes for externally managed GSIs in the `aws_dynamodb_table` resource.\" Confirms the provider's own standalone-resource GSI form, named by the same paragraph this spec already cites as primary evidence for its trap"
     - "hashicorp/terraform-provider-aws, `terraform providers schema -json` run directly against the filesystem-mirrored hashicorp/aws 6.58.0 provider (this session, adversarial-verification repair round) -- confirms `aws_dynamodb_global_secondary_index`'s real schema: required `table_name`/`index_name`; `key_schema` block list (`attribute_name`, `attribute_type`, `key_type`, all required); `projection` block list (`projection_type` required, `non_key_attributes` optional). Cross-checked against `gh api search/issues` on hashicorp/terraform-provider-aws: PR #44999 added the resource 2026-01-06, PR #47747 removed its experimental flag 2026-05-05 -- a real, GA, in-mirror resource on this scenario's pinned provider version, not a hypothetical"
     - "REPAIR ROUND 2 (2026-08-22, this session): the STANDALONE-GSI fix's own tolerance was verified directly to be too wide -- a table with NO global secondary index at all, and separately a standalone GSI resource with no `projection` block, both plan clean and (pre-this-round) scored reward 1.0 against the then-current policy.rego. Reproduced fully offline (terraform 1.15.8 + the darwin_arm64 hashicorp/aws 6.58.0 plugin cache at `~/.terraform.d/plugin-cache`, dummy credentials, no AWS API contacted) for both fixtures, before and after this round's fix, via direct `opa eval -d oracles/rego/ddb-gsi-attribute-definitions/policy.rego` against real `terraform show -json` plan JSON -- see `oracles/rego/ddb-gsi-attribute-definitions/policy.rego`'s own header comment, section \"EXISTENCE + TOTAL-PROJECTION FIX\", for the full argument"
+    - "REPAIR ROUND 4 (2026-08-23, this session): AWSCDK TIER-1 ENGINE MIGRATION, cfn-guard -> Rego (`oracle.awscdk_tier1_engine: rego`, specs/SCHEMA.md section 4.5; DECISIONS.md Amendment 29 sections 4-6). The retired `oracles/cfn-guard/ddb-gsi-attribute-definitions/policy.guard` stated an ALLOWLIST (`AttributeName IN [orderId, customerId, createdAt]`) as a proxy for a cross-list JOIN cfn-guard 3.2.0 cannot express (`AttributeDefinitions` correlated against `KeySchema` + `GlobalSecondaryIndexes[*].KeySchema` + `LocalSecondaryIndexes[*].KeySchema`), and the proxy was unsound in the passes-what-the-intent-forbids direction. REPRODUCED end to end, fully offline, on the arm's own pinned toolchain (aws-cdk-lib 2.263.0, aws-cdk 2.1135.0, cfn-guard 3.2.0, real `npm run build && npx cdk synth --no-lookups --quiet -o cdk.out`): the reference solution plus one CDK escape hatch, `(table.node.defaultChild as dynamodb.CfnTable).addPropertyOverride(\"AttributeDefinitions\", [orderId, customerId])` -- `createdAt` dropped while `addGlobalSecondaryIndex()` still ranges on it -- synths with EXIT 0 (only a `CloudFormation-Validate::E3039` warning), passes all five awscdk tier-0 asserts (none reads AttributeDefinitions) and PASSES `cfn-guard validate --rules policy.guard`, for tier0_pass=1/tier1_status=PASS/reward 1.0, against reward 0.0 for the byte-equivalent hcl_raw mistake this spec already declares as `gsi-key-attribute-not-declared` (rejected by `terraform plan`: \"all indexes must match a defined attribute\"). Fixed by `oracles/rego-cfn/ddb-gsi-attribute-definitions/policy.rego`, which states the join in three rules quantified per table LOGICAL ID: key-attribute allowlist; declared => used-as-a-key; used-as-a-key => declared. Post-fix that reproduction scores reward 0.0 on awscdk (tier0_pass=1, tier1_status=FAIL) and both reference shapes (`dynamodb.Table` and `dynamodb.TableV2`/AWS::DynamoDB::GlobalTable) still score 1.0. Two catches were widened from `applies_to: [hcl_raw]` to `[hcl_raw, awscdk]` with new awscdk broken/ fixtures so that no rule is left unfalsified -- `gsi-key-attribute-not-declared` (rule 3 only) and `attribute-definitions-include-non-key-attributes` (rule 2 only), joining `attribute-definitions-include-an-unrequested-key` (rule 1 only); each was confirmed by direct `opa eval` to fire EXACTLY ONE rule. The `structurally unreachable on awscdk` claim both catches previously carried is corrected in place: it holds for `aws-cdk-lib`'s L2 API, not for the arm, which also ships `dynamodb.CfnTable` and `Construct.node.defaultChild` -- the same correction REPAIR ROUND 3 made for terraconstructs's `@cdktn/provider-aws` L1 binding. See `oracles/rego-cfn/ddb-gsi-attribute-definitions/policy.rego`'s own header comment for the full argument"
     - "REPAIR ROUND 3 (2026-08-22, this session): two more findings against the REPAIR ROUND 2 state. (1) TABLE-ASSOCIATION FIX -- `table_gsis`'s standalone-resource fallback matched EVERY `aws_dynamodb_global_secondary_index` resource in the plan to EVERY table with no `table_name` check, so an ORPHAN standalone GSI resource (naming an unrelated table) made a table with NO real index score ALLOW. Reproduced fully offline (same toolchain/flags as REPAIR ROUND 2): `aws_dynamodb_table.orders` with no GSI of its own, plus a separate `aws_dynamodb_global_secondary_index` resource whose `table_name = \"totally-unrelated-table\"`, plans clean and (pre-this-round) scored reward 1.0. Also confirmed directly, same session: `table_name` written as `aws_dynamodb_table.orders.name` resolves to the literal string in `planned_values` (plan-time-known); written as `aws_dynamodb_table.orders.id` it resolves to `null` (plan-time-unknown, omitted/nulled not placeholdered) -- the fix matches on either the known-equal literal or the absent/null case, never an unconditional match. (2) TERRACONSTRUCTS TOLERANCE FIX -- the STANDALONE-GSI fix narrowed `gsi-hash-key-is-customerId`/`gsi-range-key-is-createdAt`/`gsi-projection-is-include`/`gsi-projects-exactly-status-and-total` off hcl_raw's `applies_to` but left terraconstructs on them, on the assumption terraconstructs's `storage.Table` L2 cannot produce the standalone-resource shape -- true of `storage.Table` itself, but the terraconstructs task's own `environment/app/package.json` also ships `@cdktn/provider-aws`, whose L1 `DynamodbGlobalSecondaryIndex` binding produces the identical shape. The adversarial-verification finding itself reproduced this end to end through the terraconstructs arm's own `tests/static_tiers.sh`: a `storage.Table` partition key plus a sibling L1 `DynamodbGlobalSecondaryIndex` construct plans clean (\"Plan: 2 to add\") but scored reward 0.0 (four `jq: error ... Cannot iterate over null` failures) before this fix. This repair round independently re-confirmed reachability (a local install of the arm's own exact pinned `@cdktn/provider-aws@24.8.0` was inspected directly: `DynamodbGlobalSecondaryIndex`'s `tfResourceType` is literally `\"aws_dynamodb_global_secondary_index\"`) and mechanically re-confirmed the fix composes to reward 1.0 (regenerated `tests/static_tiers.sh` now declares only 1 tier-0 assert for terraconstructs, matching hcl_raw; its `tests/policy.rego` is byte-identical to the file this round edited) without re-running the arm's own `npm ci`/`cdktn synth` a second time -- same four facts narrowed to `applies_to: [awscdk]`, terraconstructs graded at tier 1 by the same already-shape-tolerant `policy.rego`, unchanged rule bodies. See `oracles/rego/ddb-gsi-attribute-definitions/policy.rego`'s own header comment, sections \"TABLE-ASSOCIATION FIX\" and \"TERRACONSTRUCTS TOLERANCE FIX\", for the full argument"
