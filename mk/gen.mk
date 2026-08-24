@@ -34,6 +34,14 @@ parity:
 # solution/broken/<catch-name>/solve.sh scoring reward 0.0, for every
 # enabled arm. A scenario whose solve.sh is still a generator stub reports
 # NOT_AUTHORED (non-gating, Slice D pending) rather than failing.
+#
+# HOST-TOOLCHAIN NOTE (2026-08-23): a spec that sets
+# `oracle.hcl_traversal: true` (specs/SCHEMA.md §4.6) additionally needs
+# `hcl2json` on PATH -- the hcl_raw arm's generated tests/static_tiers.sh runs
+# it over the agent's own *.tf before `opa eval`. Missing, tier-1 reports
+# TOOL_MISSING, which is a HARD failure by design, so this gate goes red
+# rather than silently grading that scenario on plan JSON alone. Pin +
+# checksum: arms/hcl-raw/environment/Dockerfile.
 falsifiability:
 	@if [ -z "$(SPEC)" ]; then echo "usage: make falsifiability SPEC=specs/foo.yaml" >&2; exit 2; fi
 	uv run python gates/oracle_falsifiability.py $(SPEC)

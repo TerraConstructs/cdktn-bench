@@ -17,7 +17,9 @@ name: ci
 #   check-paths, falsifiability, and grading-proof (all four require
 #   terraform/node/npm/jq on PATH -- see generator/check_reference_paths.py
 #   and gates/oracle_falsifiability.py's own module docstrings), plus
-#   opa/cfn-guard for the tier-1 policy checks those gates shell out to
+#   opa/cfn-guard for the tier-1 policy checks those gates shell out to,
+#   plus hcl2json for the hcl_raw HCL pre-parse a spec with
+#   `oracle.hcl_traversal: true` adds ahead of `opa eval`
 #   (generator/gen.py's generated tests/static_tiers.sh). Docker itself is
 #   used for exactly one thing across this whole battery -- extracting each
 #   arm image's pre-baked terraform provider mirror via `docker cp`
@@ -106,6 +108,29 @@ jobs:
           echo "${OPA_SHA256}  /usr/local/bin/opa" | sha256sum -c -
           sudo chmod 0755 /usr/local/bin/opa
           opa version
+
+      # Pinned to the exact version + sha256 arms/hcl-raw/environment/Dockerfile
+      # installs (hcl2json 0.6.9) -- the tool the hcl_raw arm's generated
+      # tests/static_tiers.sh invokes BEFORE `opa eval` for any spec that sets
+      # `oracle.hcl_traversal: true` (specs/SCHEMA.md §4.6). Without it that
+      # scenario's tier-1 reports TOOL_MISSING, which is a HARD failure by
+      # design ("the grading tool is absent from this image" is a broken
+      # environment, never a silent pass) -- so this step is required for
+      # `make falsifiability`/`make grading-proof` to mean anything on that
+      # scenario, exactly like the opa step above.
+      #
+      # Unlike opa, upstream publishes a checksums manifest
+      # (hcl2json_0.6.9_checksums.txt) and the hash below was taken from it
+      # and re-verified against the downloaded bytes.
+      - name: Install hcl2json 0.6.9 (pinned, sha256-verified — matches arms/hcl-raw Dockerfile)
+        run: |
+          set -eu
+          HCL2JSON_SHA256="b609e37094948c0b77cd8c6c0baaf8af2bd168c685c6e3334d671cc9692c34a5"  # linux_amd64 (ubuntu-latest runner arch)
+          curl -fsSL -o /usr/local/bin/hcl2json \
+            "https://github.com/tmccombs/hcl2json/releases/download/v0.6.9/hcl2json_linux_amd64"
+          echo "${HCL2JSON_SHA256}  /usr/local/bin/hcl2json" | sha256sum -c -
+          sudo chmod 0755 /usr/local/bin/hcl2json
+          hcl2json -version
 
       # Pinned to the exact version + sha256 arms/awscdk/environment/Dockerfile
       # installs (cfn-guard 3.2.0) -- the tool tests/static_tiers.sh invokes

@@ -61,6 +61,12 @@
 #
 # Host-toolchain requirement (same as `make check-paths`/`make falsifiability`/
 # `make grading-proof` individually): terraform, node, npm, jq on PATH, plus
+# opa/cfn-guard for the tier-1 policy checks, plus -- for any spec that sets
+# `oracle.hcl_traversal: true` (specs/SCHEMA.md §4.6) -- hcl2json, which the
+# hcl_raw arm's generated tests/static_tiers.sh runs BEFORE `opa eval`. Its
+# absence is deliberately a HARD tier-1 failure (TOOL_MISSING), not a silent
+# pass, so a runner without it will report that scenario red rather than
+# quietly grading it on partial information. Plus
 # network the first time `npm ci`/`terraform init` populate their local
 # caches. `make test-gates`/`make check` (pure Python + the schema/pytest
 # suites) need none of that and always run.

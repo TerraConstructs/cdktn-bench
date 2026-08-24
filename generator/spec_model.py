@@ -833,6 +833,38 @@ class Oracle(BaseModel):
     #       cross-arm equal-strictness grading (Amendment 29 §4) requires one
     #       policy language across all three arms.
     awscdk_tier1_engine: Literal["cfn_guard", "rego"] = "cfn_guard"
+    # HCL symbol resolution for the hcl_raw arm's tier-1 (specs/SCHEMA.md
+    # §4.6; docs/design/conftest-hcl-traversal-spike.md).
+    #
+    # False (DEFAULT) -- unchanged, and deliberately the default so every
+    #     already-generated task regenerates BYTE-IDENTICALLY. `opa eval` is
+    #     handed `terraform show -json` plan JSON and nothing else.
+    # True -- the hcl_raw arm's generated tests/static_tiers.sh additionally
+    #     parses the agent's own `*.tf` / `*.tf.json` files with `hcl2json`
+    #     (pinned + sha256-verified in arms/hcl-raw/environment/Dockerfile)
+    #     and merges them into that same plan document under ONE reserved key,
+    #     `_hcl`, before `opa eval` runs. The ENGINE does not change and
+    #     `input` stays byte-identical for every pre-existing rule -- only new
+    #     rules read `_hcl`. The shared resolver library
+    #     `oracles/rego/lib/hcl_traversal.rego` is copied into the task's
+    #     tests/ and loaded with a second `-d`.
+    #
+    # WHY A SPEC NEEDS THIS: `terraform show -json` does not emit `locals`, so
+    # a plan's `.configuration...references` list dead-ends on `local.x` -- it
+    # records that an argument was SET to that symbol and nothing about what
+    # the symbol HOLDS. A scenario whose tier-1 grades a DEDICATED SINGLE-ARN
+    # ARGUMENT SLOT (an invoke permission's `source_arn`, a topic policy's
+    # `arn`) cannot tell an ordinary DRY hoist from a laundered wrong-resource
+    # ARN without it; both directions of that error have been reproduced by
+    # execution on a real scenario.
+    #
+    # SCOPE: hcl_raw only. Confirmed by synthesis on the other two arms
+    # (spike memo §9) -- awscdk resolves TS variables at synth and the
+    # template names its referent in an `Fn::GetAtt`, and cdktn does the same
+    # and emits no `locals` block at all, so neither arm has anything to
+    # resolve. Setting this true with hcl_raw disabled is therefore a spec
+    # bug, not a no-op, and is rejected below.
+    hcl_traversal: bool = False
     tier05_jsonata: Tier05Jsonata | None = None
 
     @model_validator(mode="after")
@@ -1465,6 +1497,26 @@ class Spec(BaseModel):
                 "non-poisoned -- still green, still parity-clean, no longer "
                 "carrying the pitfall the scenario exists to measure -- and no "
                 "gate would notice (SCHEMA.md §2.7, design memo §4.1 point 3)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _hcl_traversal_requires_hcl_raw(self) -> "Spec":
+        """`oracle.hcl_traversal` is an hcl_raw-only capability.
+
+        The merge step it turns on is emitted into the hcl_raw arm's
+        tests/static_tiers.sh and nowhere else, so setting it on a spec that
+        does not enable hcl_raw is a spec bug that would silently do nothing
+        -- not a harmless flag. Rejected loudly rather than ignored, the same
+        way `terraconstructs_per_arm_required_iff_enabled` treats its own
+        arm-conditional field.
+        """
+        if self.oracle.hcl_traversal and not self.arms.hcl_raw:
+            raise ValueError(
+                "oracle.hcl_traversal is true but arms.hcl_raw is disabled — "
+                "the HCL pre-parse is emitted only into the hcl_raw arm's "
+                "generated tests/static_tiers.sh (specs/SCHEMA.md §4.6), so "
+                "this flag would do nothing at all on this spec"
             )
         return self
 

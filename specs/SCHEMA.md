@@ -970,6 +970,7 @@ oracle:
   rego_hints: [<string>, ...]        # optional, default []
   cfn_guard_hints: [<string>, ...]   # optional, default []
   awscdk_tier1_engine: cfn_guard | rego   # optional, default cfn_guard — §4.5
+  hcl_traversal: false | true        # optional, default false — §4.6 (hcl_raw only)
   tier05_jsonata:                    # optional, default null
     expressions_from: <string, JSONPath into the synthesized artifact locating every `{% ... %}` string>
     sample_inputs:
@@ -1417,6 +1418,188 @@ failure**), `SKIPPED_STUB` (the policy still carries its `GENERATOR-STUB`
 marker; writes `/logs/verifier/tier1-unauthored`; **hard failure**), `PASS`,
 `FAIL`. Selecting `rego` only changes which binary is probed with `command -v`
 and which policy filename is read.
+
+### 4.6 `hcl_traversal` (optional, default `false`)
+
+Turns on **HCL symbol resolution** for the `hcl_raw` arm's tier-`"1"`.
+
+`terraform show -json` does not emit `locals`. A plan's
+`.configuration.root_module.resources[].expressions.<attr>.references` list
+therefore dead-ends on `local.x`: it records that an argument was **set to**
+that symbol and says nothing at all about what the symbol **holds**. Any
+scenario whose tier-1 grades a *dedicated single-ARN argument slot* (a Lambda
+permission's `source_arn`, an SNS topic policy's `arn`) is blind on exactly
+that hop — and blind in **both** directions, which has been reproduced by
+execution on `s3-notification-authoritative-singleton`:
+
+- **false PASS** — an ARN of the *wrong resource* laundered through a local,
+  accepted because the only available evidence (`relevant_attributes`) is
+  configuration-wide rather than per-slot.
+- **false FAIL** — an ordinary DRY hoist the oracle could not follow, denied
+  with a message that was factually false about the artifact.
+
+With `hcl_traversal: true`, the `hcl_raw` arm's generated
+`tests/static_tiers.sh` gains one step before `opa eval`: it globs the agent's
+own `*.tf` and `*.tf.json`, parses each with **`hcl2json` 0.6.9** (pinned +
+sha256-verified in `arms/hcl-raw/environment/Dockerfile`, 4.1 MB, no network at
+trial time), and merges the result into the same plan document under **one
+reserved key, `_hcl`**:
+
+```jsonc
+{ "planned_values": {...}, "configuration": {...},
+  "_hcl": { "main.tf": {...}, "provider.tf": {...} } }   // additive, nothing else touched
+```
+
+**The engine does not change and the reward contract does not change.** `input`
+stays byte-identical for every pre-existing rule in every scenario; only rules
+that reach for `input._hcl` see anything new. The shared resolver library
+`oracles/rego/lib/hcl_traversal.rego` is copied into the task's `tests/` beside
+`policy.rego` and loaded with a second `-d`.
+
+##### `#jsonencode` — position recovered from an opaque argument (round 16)
+
+The merge step writes ONE further reserved key, `#jsonencode`, onto each parsed
+document. `#` cannot occur in an HCL identifier, so it can never collide with a
+block type `hcl2json` emits, and `locals_blocks` reads `doc["locals"]` only.
+
+```jsonc
+"_hcl": { "main.tf": { "resource": {...}, "locals": [...],
+  "#jsonencode": [ { "path": ["resource","aws_sns_topic_policy","audit",0,"policy"],
+                     "doc":  { "Version": "2012-10-17", "Statement": [ ... ] } } ] } }
+```
+
+**Why it exists.** An IAM policy written `policy = jsonencode({...})` is ONE
+opaque expression: `terraform show -json` reports its references as a FLAT
+UNION with no position, and `values.policy` is plan-time-unknown whenever any
+ARN inside it is provider-computed. A rule can then only ask *"does this
+document MENTION the bucket"* — and a bucket reference interpolated into a
+statement's `Sid` answers yes. That was an **executed reward-1.0 launder of a
+checked-in 0.0 fixture, by one cosmetic line**, on every arm at once.
+
+**How.** `hcl2json` hands the argument back as exactly `"${jsonencode(<body>)}"`,
+so stripping that fixed prefix and suffix is exact (not paren-matching, not a
+regex). `<body>` is an HCL object-construction expression, so it is re-parsed by
+**the same `hcl2json`** over `locals { v = <body> }` — no second parser, no
+evaluation, and every leaf comes back still wrapped as `"${...}"` source for the
+resolver. `hcl.resource_jsonencode(type, name, attr)` exposes it.
+
+**RETRACTED (round 17), and the sentence it replaces was executably false.**
+This paragraph used to read: *"A body that cannot be re-parsed
+(`jsonencode(local.doc)`, a conditional) contributes NO entry, so a policy finds
+no readable document and must DENY naming the shape."* Both named examples
+re-parse **fine** — `locals { v = local.doc }` is valid HCL — and the harness
+stores an entry whose recovered body is the **string** `"${local.doc}"`. A
+policy that took `hcl.resource_jsonencode` raw therefore found a "document",
+never reached its unreadable branch, and graded an ordinary DRY hoist as a
+document with zero statements: **executed at REWARD 0.0 on a fully correct
+solution**, with a deny message the artifact refutes.
+
+**What is actually true.** Re-parsing almost always succeeds; the failure the
+harness must handle is a **recovered body of the wrong SHAPE**. A caller must
+therefore (a) guard `is_object(...)` on the recovered body itself, and (b)
+decide what to do with a bare symbol. Both are the CALLER's job, not the
+merge step's. `oracles/rego/s3-notification-authoritative-singleton/policy.rego`
+does both: it dereferences a lone `local.` symbol against the same parsed
+`locals` (`hcl.deref_local`, which is undefined for an ambiguous or non-`local.`
+expression), and DENIES loudly — quoting the recovered body — when what comes
+back is still not an object. The genuinely-unre-parsable case (`jsonencode(`
+followed by something that is not an HCL expression at all) is deliberately NOT
+the `ENGINE_ERROR` path below: `ENGINE_ERROR` means terraform and `hcl2json`
+disagree about a whole FILE (toolchain skew, run invalid); this means an
+ordinary artifact shape, which must be graded loudly rather than crashed on.
+
+#### TWO SCOPES — the library and the merge are not the same set of arms
+
+This distinction is easy to miss and getting it wrong is an executed FALSE FAIL
+on a *correct* solution, in either direction:
+
+| | which arms | why |
+|---|---|---|
+| the **library** (`-d hcl_traversal.rego`) | **hcl_raw AND terraconstructs** | `oracles/rego/<id>/policy.rego` is ONE file that grades both TF-shaped arms. The moment it says `import data.cdktn_bench.hcl`, every arm loading it needs the file: without it `hcl.slot(...)` is UNDEFINED, the acceptance rule never matches, and the **reference solution is denied**. |
+| the **`_hcl` merge** (`hcl2json` over `*.tf`) | **hcl_raw only** | terraconstructs synthesizes `cdk.tf.json` and has no `.tf` files. Running the merge there globs nothing, writes an **empty** `_hcl`, and trips the policy's own "no `.tf` source was supplied" fail-closed deny — a second false fail from the opposite mistake. |
+
+`generator/gen.py::build_static_tiers_sh` calls these `hcl_lib` and
+`hcl_merge`; the terraconstructs branch emits
+`build_hcl_lib_only_block()` (library path + `LIB_MISSING` check, no parse).
+
+#### Why not conftest
+
+conftest's HCL2 parser **is** `tmccombs/hcl2json` — same code, byte-identical
+output, verified — at 68 MB instead of 4.1 MB. Worse, adopting conftest as the
+*engine* would reshape `input` into an array of `{path, contents}` documents
+for **every existing rule in every scenario** and replace a proven
+`deny == []` reward contract with conftest's own exit semantics. Its one
+genuine advantage (`--combine` doing the file glob) is four lines of shell.
+See `docs/design/conftest-hcl-traversal-spike.md` §7.
+
+#### The glob is in the shell, never in the policy
+
+A Rego policy can neither glob nor list a directory, and `parse_config_file` on
+a missing file is **UNDEFINED, not an error** — i.e. a policy that merely looks
+and moves on fails *open*. The agent owns `main.tf` but nothing stops them
+putting the `locals` block in a second file they created; executed, that made
+every symbol unresolvable and DENIED a correct solution. `*.tf.json` is globbed
+explicitly (terraform accepts it; a `*.tf` glob misses it) and read as JSON.
+
+**The two routes do not produce the same `locals` shape, and that bit once.**
+`hcl2json` emits `locals` as a **list of blocks**; terraform's own JSON syntax
+writes it as an **object** of name → value (and also accepts the list form).
+The library reads both (`locals_blocks`), so a policy sees one contract
+regardless of route. Reading only the list spelling silently dropped every
+local in an object-spelled `main.tf.json` and scored a **fully correct**
+solution 0.0, with a deny message the artifact contradicted ("no `locals`
+block in any supplied .tf file defines local.…" about a file that plainly
+did). Executed; fixed 2026-08-24; one regression test per spelling in
+`oracles/tests/test_hcl_traversal.py`.
+
+#### The three-valued contract is binding on the policy
+
+`oracles/rego/lib/hcl_traversal.rego` classifies every symbol into exactly one
+of `resolved` (one canonical referent) / `ambiguous` (N>1) / `unresolvable`
+(0, opaque, literal, container, missing, cyclic). **Ambiguous and unresolvable
+both DENY**, naming the symbol and quoting what stood in the way. There is no
+fourth bucket and no silent outcome in either direction. The **arity gate lives
+in the library** (`hcl.slot`, `count(deepest) == 1`) so a calling rule cannot
+omit it — that omission has twice shipped as an executed silent PASS. Read that
+file's header before writing a rule against it.
+
+#### Failure semantics: `ENGINE_ERROR`
+
+Inside this opt-in block only, the generated script adds a status the rest of
+the repo does not yet have: **`ENGINE_ERROR`** — *the oracle did not run*. It
+fires when `hcl2json` cannot parse a `.tf` that terraform itself accepted
+(parser skew between the two pinned builds), when the library file is missing,
+or when `opa eval` **aborts** rather than returning a verdict. It writes
+`/logs/verifier/tier1-engine-error` with the engine's own stderr and is a hard
+failure, exactly like `TOOL_MISSING`.
+
+This matters because the un-hardened gate pipes `opa eval` straight into
+`jq -e 'length == 0'`, and an aborted evaluation writes nothing to stdout —
+`jq -e` on empty stdin exits 4, so the gate records `tier1_status=FAIL` and
+scores a **correct** solution 0.0 with no message naming what failed. That is
+an oracle bug charged to the agent.
+
+> **KNOWN RESIDUAL, stated in operator-facing text rather than left implicit:**
+> the `ENGINE_ERROR` branch is emitted **only** for a spec that sets
+> `hcl_traversal: true`. Every other scenario still runs the un-hardened
+> `opa eval | jq -e` gate, so an oracle crash there is still graded as the
+> agent's failure. Promoting the hardening repo-wide changes every scenario's
+> `tests/static_tiers.sh` and belongs in its own change with its own
+> regeneration sweep.
+
+#### Scope: `hcl_raw` only, and that is verified rather than assumed
+
+Setting `hcl_traversal: true` with `arms.hcl_raw` disabled is a **spec error**
+(`spec_model.Spec._hcl_traversal_requires_hcl_raw`), not a no-op. The other two
+arms were checked by synthesis and need nothing:
+
+- **awscdk** — `cdk synth` resolves TS variables, so the template names its
+  referent explicitly (`"SourceArn": {"Fn::GetAtt": ["MediaBucket…", "Arn"]}`).
+- **terraconstructs** — cdktn does the same and emits **no `locals` block at
+  all** (verified across five real `cdk.tf.json` documents). It is graded by
+  the same `oracles/rego/<id>/policy.rego`, and simply never takes the
+  `local.` path; a `TerraformLocal` on that arm would resolve to UNRESOLVABLE
+  and DENY, which is fail-closed and loud.
 
 ## 5. `verifier`
 

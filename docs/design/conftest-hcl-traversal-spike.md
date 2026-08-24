@@ -1,11 +1,77 @@
 # Spike: can Conftest's HCL2 parser give a Rego policy the traversal
 # information `terraform show -json` loses?
 
-**Status:** timeboxed spike, complete; **three rounds of adversarial
-verification, three executed defects in the prototype's own safety
-contract** (§5.7, §5.8, §5.9 — the last one falsifies the totality claim
-earlier revisions of this memo made, and is the single most important thing
-in it). **Date:** 2026-08-23.
+**Status: LANDED 2026-08-23; AMENDED 2026-08-24 after the landing round was
+REJECTED by adversarial verification, AMENDED AGAIN 2026-08-24 (round 15)
+after the round-14 amendment was REJECTED in turn, AMENDED A THIRD TIME
+2026-08-24 (round 16) after round 15 was REJECTED in turn, and AMENDED A
+FOURTH TIME 2026-08-24 (round 17) after round 16 was REJECTED in turn** —
+see §0.0 for what shipped, what this memo got wrong, and the residuals that
+are still open.
+The round-17 amendment records two executed defects round 16 shipped, both
+of which round 16's own text asserted were handled:
+**(1)** the `Sid` launder round 16 claimed to close **had only MOVED** — into
+the condition's VALUE LIST. IAM OR-s the values inside one condition
+position and AND-s distinct positions, and round 16 used `some` for both, so
+`"aws:SourceArn" = [local.arns.media_bucket, "arn:aws:s3:::*"]` graded as
+scoped at **REWARD 1.0**, on all three document routes AND on the CFN arm,
+on a policy letting any S3 bucket in any account publish (residual 13);
+**(2)** a policy document the reader could not turn into statements was
+graded as *"0 granting statements"* rather than as UNREADABLE, so **four
+ordinary CORRECT DRY spellings scored REWARD 0.0**, each with a message the
+artifact refutes — this memo's own §1 defect **(b)**, the false FAIL on a
+DRY hoist the whole library exists to close, reintroduced one level down
+inside the policy document (residual 14). Both are fixed; the claim in §6
+that a `jsonencode(local.doc)` body "contributes no entry" is **retracted**
+here, in `specs/SCHEMA.md` and in
+`specs/s3-notification-authoritative-singleton.yaml`, because it was false
+and a caller believed it.
+The round-16 amendment records four executed defects round 15 shipped, two
+of which this memo's own text asserted were handled:
+**(1)** the policy-DOCUMENT rule was a bare *mention* test on **every arm** —
+no position requirement at all — and ONE cosmetic line
+(`Sid = "AllowS3Publish${aws_s3_bucket.media.id}"`) took a checked-in **0.0**
+fixture to **REWARD 1.0** on an artifact that still grants
+`s3.amazonaws.com` `sns:Publish` unconditionally (residual 11);
+**(2)** the tokenizer's whole refusal path was **DEAD CODE** — a Rego
+comprehension over an undefined body returns the empty collection, so
+`parse_traversal` was *defined* for an untokenizable string and every
+`not parse_traversal(x)` guard was always false; untokenizable references
+were **silently dropped**, which falsifies this memo's "genuinely loud (the
+deny quotes the reference it could not read)" in §0.0 residual 2 and §5.1;
+**(3)** both topic-policy rules were quantified over **every**
+`aws_sns_topic_policy`, so a correct solution that also declares an unrelated
+ops topic was DENIED with a message its own artifact refutes (residual 12);
+**(4)** `for_each` on the GRADED `aws_lambda_permission` was an undeclared
+live false FAIL — residual 10 declared that family FIXED and reasoned
+explicitly about it, but the only natural `source_arn` spelling
+(`each.value.arn`) was refused with a message claiming `each.value` names no
+resource, on an artifact where it names the wired bucket. All four are fixed;
+see residuals 2, 10, 11 and 12.
+The round-15 amendment retracts residual 2 (the `count`/`for_each` claim was
+true only of the numeric spelling; the quoted-key spelling was an executed
+**silent PASS worth reward 1.0**, not the loud FALSE FAIL this memo twice
+described), retracts residual 4's "closed on all three arms as of round 14"
+for the **second** time, and records three further executed defects the
+round-14 text did not mention at all: a topic anchor that could be laundered
+by adding one `topic` block, a `configured_resources` bare reference that
+made the **whole** tier-1 policy fail open, and a config↔plan address join
+that a `count` meta-argument silently disabled. The 2026-08-24
+amendment retracts §5.3's "residual of the closure" in full: the type-only
+fallback it declared was a **live silent PASS** (executed at reward 1.0 on a
+genuinely broken artifact, reachable from an ordinary literal `bucket`
+argument), and its stated mitigation — "already denied at tier 0" — was
+false. It also records that the `*.tf.json` glob this memo advertised
+produced a **false FAIL with a false message** until the same date. Before that: timeboxed
+spike, complete; **three rounds of adversarial verification, three executed
+defects in the prototype's own safety contract** (§5.7, §5.8, §5.9 — the
+last one falsifies the totality claim earlier revisions of this memo made,
+and is the single most important thing in it), **plus two further
+corrections found at landing time**: a coverage claim in §4 that overstated
+by one fixture, and a §5.3 residual that read as a prototype limitation when
+in fact **neither** the prototype **nor** the shipped policy covered it, on
+any arm — an executed FALSE PASS worth reward 1.0 on a genuinely broken
+solution. **Date:** 2026-08-23.
 **Verdict: ADOPT NARROWLY — but adopt `hcl2json`, not `conftest`.**
 The capability is real and it fixes both proven defects. Conftest is the
 wrong packaging of it, and the parser gives *less* than the question
@@ -15,6 +81,653 @@ text**.
 Everything below was executed. Prototype and scratch live in `/tmp/spike`
 (deliberately outside the repo); nothing in `oracles/`, `specs/`, `tasks/`,
 `arms/` or `generator/` was touched.
+
+---
+
+## 0.0 LANDED — 2026-08-23. What shipped, and what this memo got wrong.
+
+This spike is no longer a proposal. It landed, narrowly, exactly as
+recommended: `hcl2json 0.6.9` (**not** conftest) in the `hcl-raw` image, `opa
+1.19.0` unchanged as the engine, the parsed `.tf` merged into the existing plan
+document under one reserved key `_hcl`, and one scenario
+(`s3-notification-authoritative-singleton`) migrated to it.
+
+| what | where |
+|---|---|
+| pinned tool | `arms/hcl-raw/environment/Dockerfile` (sha256-verified, cross-checked against upstream `hcl2json_0.6.9_checksums.txt`) |
+| **shared library** — recommendation point 7, the thing that was to *gate* the decision | `oracles/rego/lib/hcl_traversal.rego`, copied into each opted-in task's `tests/` by `generator/gen.py::write_tests_dir` and loaded with a second `-d`. Loaded on **both** TF-shaped arms (one `policy.rego` grades both); the `_hcl` **merge** is hcl_raw-only. Conflating those two scopes was an executed false FAIL on the terraconstructs reference solution, caught by `make falsifiability` — the loud direction, but a reminder that "hcl_raw only" is true of the parse and false of the library. |
+| harness merge (shell glob, `*.tf` through hcl2json + `*.tf.json` loaded raw) | `generator/gen.py::build_hcl_merge_block`. **The `*.tf.json` half did not work as advertised until 2026-08-24** — terraform's JSON syntax spells `locals` as an object, hcl2json as a list, and only the list spelling was read, so a correct `.tf.json` solution scored 0.0 with a message the artifact contradicted. See residual 7 below. |
+| spec opt-in | `oracle.hcl_traversal: true` — `specs/SCHEMA.md` §4.6 |
+| `ENGINE_ERROR` gate (recommendation point 8) | emitted **only** inside the opt-in block — see the residual below |
+| one-process-per-shape totality probe + randomised hunt | `oracles/tests/test_hcl_traversal.py` |
+
+**THE RETRACTION, restated once here so it cannot be missed.** Two revisions of
+this memo said `verdict` was *"total by construction — the language guarantees
+it is defined for every possible argument"*. **That is false, and it was the
+claim the whole recommendation rested on.** A Rego `default` clause guarantees
+a rule is *defined*; it guarantees nothing when a rule that rule **depends on**
+raises a **runtime error**, because evaluation aborts before any clause —
+`default` included — can run. §5.9 executed exactly that: a three-line `locals`
+block with a dotted map key made the flattened-locals rule raise
+`eval_conflict_error`, `opa eval` wrote nothing to stdout, the harness's
+`… | jq -e 'length == 0'` saw empty stdin and exited 4, and a **fully correct
+solution scored 0.0 with no deny message at all**. Everywhere this memo says
+"total", read **"total against undefinedness, and only provided evaluation
+completes"**. The retraction is repeated at the TL;DR row, §3, §5.8 and
+recommendation point 5.
+
+**What shipped is stronger than the fix §5.9 proposed.** §5.9's fix was to key
+the flattened locals table by `json.marshal` of the path array, which is
+injective and does remove *that* conflict. The landed library goes one step
+further and **does not use an object rule for anything data can key at all**:
+`node` is a **SET of `[path, value]` pairs**, so two distinct paths are two
+distinct elements and two bindings of the *same* path with *different* values
+are also two elements — reported as N>1 → **AMBIGUOUS → DENY**, which is the
+honest verdict, instead of a conflict. It therefore also survives a shape
+`json.marshal` keying would still have crashed on: the same local defined twice
+across two `locals` blocks or two files.
+
+Classification likewise no longer rests on a `default` clause plus
+hand-checked disjointness. Every classifier is one function with an ordered
+`else` chain ending in an unconditional catch-all: ordered and mutually
+exclusive **by construction**, so it can neither go undefined nor have two
+clauses fire with different values — which is the other way to reach
+`eval_conflict_error`, and the way this memo's own fix for §5.9 accidentally
+reintroduced it once (§5.9, "a conflict I introduced while fixing this").
+
+**KNOWN RESIDUALS AT LANDING**, in operator-facing text rather than only in
+prose:
+
+1. **The `ENGINE_ERROR` hardening is scoped to the opt-in, not repo-wide.**
+   Every other scenario still runs `opa eval … | jq -e 'length == 0'`, so an
+   oracle crash there is still graded as the agent's failure. Recommendation
+   point 8 says this should land "whether or not the resolver does" and it is
+   right; it was held back because promoting it changes every scenario's
+   generated `tests/static_tiers.sh` and this landing's blast radius outside
+   the one scenario is contractually zero. It needs its own change and its own
+   regeneration sweep.
+2. **RETRACTED AT ROUND 15 — this residual was stated in the safe direction
+   and half of it was in the dangerous one.** It read: *"A `count`/`for_each`
+   index on the REFERENT is a live FALSE FAIL. `media_bucket =
+   aws_s3_bucket.media[0].arn` is a correct solution and the resolver refuses
+   it … **Loud, not silent**"*. That is true of the **numeric** spelling only.
+
+   The tokenizer parses the **quoted-key** form deliberately
+   (`traversal_pattern` has a `\["([^"\\]*)"\]` alternative, added so
+   terraform's own `local.arns["media.bucket"]` spelling could be read), and
+   `instance_of` was `array.slice(segs, 0, 2)` — the first two segments, full
+   stop. So `aws_s3_bucket.b["…-decoy"].arn` **resolved cleanly** and then
+   collapsed to `["aws_s3_bucket","b"]`, byte-identical to what the media
+   instance yields. **Executed, real `hcl-raw` image, `--network none`,
+   generated `tests/static_tiers.sh` verbatim:** one `aws_s3_bucket` block
+   with `for_each = toset(["…-media","…-decoy"])`, the notification on
+   `b["…-media"]`, the invoke permission and the topic-policy condition on
+   `b["…-decoy"]` — `tier0_pass=1 tier1_status=PASS`, `opa` rc=0, deny `[]`,
+   **REWARD 1.0**, reproduced twice. The byte-identical **correct** variant
+   also scored 1.0: the oracle could not tell the two apart at all. The plan
+   itself disagrees — it lists `aws_s3_bucket.b["…-decoy"]` and
+   `aws_s3_bucket.b["…-media"]` as separate instances with separate `.index`
+   values.
+
+   **A parse that SUCCEEDS and then throws information away is the silent
+   shape.** The numeric spelling never parsed, which is why it was loud, and
+   generalising from it is what produced two rounds of a wrong residual. The
+   same wrong sentence stood in `oracles/rego/lib/hcl_traversal.rego`'s header
+   and in the scenario spec's operator-facing RESIDUALS block; both are
+   corrected.
+
+   **Round-15 status, split by spelling:**
+   - **quoted key — CLOSED.** `instance_of` takes the referent's *source
+     string* (never the lossy segment array) and returns
+     `["aws_s3_bucket","b","…-decoy"]`; the plan-value anchor route keys on
+     each planned instance's own `.index`. Fixture:
+     `…/solution/broken/lambda-permission-scoped-to-a-decoy-for-each-instance/`.
+     Its **positive twin** — same artifact, permission on the media key, must
+     deny nothing — is asserted by execution in
+     `oracles/tests/test_hcl_traversal.py::test_for_each_instance_key_discriminates`,
+     because the falsifiability gate has exactly one positive slot. A "fix"
+     that closed the fixture by refusing every `for_each` referent outright
+     passes the fixture and fails that test.
+   - **numeric index — STILL OPEN.** `aws_s3_bucket.media[0].arn` does not
+     tokenize → UNRESOLVABLE → DENY on a solution that may well be correct. A
+     live FALSE FAIL. Pinned by
+     `::test_a_numeric_index_on_the_referent_is_still_refused_out_loud`, so a
+     future "parse numeric indices too" change cannot reopen the silent half
+     by forgetting to carry the index into the instance identity.
+
+     > **ROUND-16 RETRACTION of "genuinely loud (the deny quotes the
+     > reference it could not read)". IT DID NOT, AND IT WAS NOT LOUD — IT
+     > WAS SILENTLY DROPPED.** `parse_traversal` was written as a bare
+     > comprehension, `[seg | some m in _parse_ms(t); seg := _segment(m)]`.
+     > A Rego comprehension whose body is undefined evaluates to the EMPTY
+     > COLLECTION, not to undefined, so for an untokenizable string the
+     > function returned `[]` — **defined** — and **every `not
+     > parse_traversal(x)` guard in the library was dead code**. Executed on
+     > opa 1.19.0 with the library loaded alone:
+     >
+     > ```
+     > hcl._unparseable(["aws_s3_bucket.media[0].arn", "not a traversal !!"])
+     >   -> []                                       (should be 2 elements)
+     > hcl.slot(["aws_s3_bucket.media[0].arn", "aws_s3_bucket.media[0]",
+     >           "aws_s3_bucket.media"])
+     >   -> {"kind":"resolved", "referent":"aws_s3_bucket.media", ...}
+     > ```
+     >
+     > The two references the tokenizer could not read were dropped by
+     > `_deepest` (`[]` is a prefix of every parse), leaving the one it could
+     > as a confidently-resolved lone survivor — the exact silent outcome
+     > `slot()`'s unparseable clause exists to prevent. End to end on a real
+     > `count = 1` plan the deny read *"it resolves to `aws_s3_bucket.media`,
+     > which names the instance but no attribute of it — an ARN slot needs
+     > `.arn`"*, about an artifact that plainly writes `.arn`, and **never
+     > quoted the reference it could not read** (Amendment 29 RULING 3).
+     > `resolve()`'s "is not a traversal this resolver can tokenize" clause
+     > was unreachable for the same reason, so `format("%s/*", …)` was
+     > reported as an undefined **local** — a factually false reason.
+     >
+     > The old pinning test passed throughout, and *why* is the lesson: it
+     > called `hcl.resolve` on a bare symbol with `_hcl={}` and asserted
+     > nothing about the reason, so it landed in the "reaches no concrete
+     > reference" catch-all and reported `unresolvable` for the wrong reason.
+     > **FIXED** — `parse_traversal(t) := segs if { ms := _parse_ms(t); segs
+     > := [_segment(m) | some m in ms] }`, which makes the rule genuinely
+     > undefined for a no-parse. Four new tests pin the SHIPPED path rather
+     > than the isolated one: `::test_parse_traversal_is_UNDEFINED_for_an_
+     > untokenizable_string`, `::test_unparseable_reports_the_references_it_
+     > cannot_tokenize`, `::test_slot_refuses_a_whole_slot_holding_an_
+     > untokenizable_reference` (asserts the numeric reference appears in
+     > `.reason`), and `::test_an_opaque_expression_gets_the_tokenizer_
+     > reason_not_a_locals_reason`. The residual itself is unchanged and
+     > still open; only the claim that it was loud is retracted.
+3. **Modules are out of scope** and `module.x.out` is now refused BY NAME
+   rather than mis-reported as a resolved referent (§5.2 unchanged).
+4. **Same-type/wrong-instance is closed on ALL THREE arms *as of round 14*,
+   but ships fixtures on two of them.** The closure is mirrored into
+   `oracles/rego-cfn/<id>/policy.rego` as well (that arm needed no new tooling
+   — a CloudFormation template already names its referent in an
+   `Fn::GetAtt`/`Ref`; it had the identical TYPE-test hole), because closing it
+   on two arms out of three would have converted a closed gap into a NEW
+   one-sided cross-arm strictness difference, which is the failure class this
+   scenario's history is about. Fixtures ship on `hcl_raw` (**seven** after
+   round 14) and `awscdk` (two). **`terraconstructs` is graded by the same
+   `oracles/rego/` policy and the same rule, so the rule is live there, but no
+   terraconstructs fixture exercises it** — a coverage gap, not a rule gap,
+   stated as such in the scenario spec.
+
+   > **"Closed" first appeared here at round 13 and was NOT true then.** Round
+   > 13 shipped the instance join beside a **type-only fallback** taken
+   > whenever the artifact's own notification resource did not name exactly
+   > one instance — reachable from an ordinary literal `bucket` argument, and
+   > executed at **reward 1.0** on a genuinely broken artifact. The full
+   > retraction, the executed counterexample and the fix are in §5.3. Read
+   > "closed" as "closed as of 2026-08-24".
+
+   > **RETRACTED A SECOND TIME AT ROUND 15.** "Closed on all three arms as of
+   > round 14" was *still* overstated: it was closed only **between separate
+   > resource blocks**. Two **instances of one block**, reached through an
+   > ordinary `for_each` key, were indistinguishable — see residual 2 above
+   > for the executed reward-1.0 artifact. No fixture and no library unit
+   > test used `for_each` or `count` **at all** (grep over
+   > `…/solution/broken/**` and `oracles/tests/test_hcl_traversal.py`: zero
+   > hits), which is how the same sentence survived a third round of review.
+   > Read "closed" as: **closed as of round 15**, for separate blocks *and*
+   > for quoted `for_each`/`count` keys; still open for the numeric-index
+   > spelling, in the loud direction.
+
+5. **NEW (round 14) — a notification `topic_arn` the resolver cannot follow is
+   a live, LOUD FALSE FAIL.** The bucket half of the instance anchor has a
+   second, plan-value route (that argument takes a *name*, which is
+   plan-time-known), so an ordinary literal is accepted. A topic ARN is
+   provider-computed and absent from the plan, so there is no equivalent
+   route: an opaque or pasted-literal `topic_arn` has no anchor and **denies**
+   even though the artifact may be correct. Deliberate — the alternative is
+   the round-13 hole — and in the loud direction, but not fixed. Fixture:
+   `sns-topic-policy-attached-to-a-decoy-topic-with-an-opaque-notification-topic-arn`.
+6. **NEW (round 14) — the plan-value bucket route is name-based.** A
+   notification whose `bucket` name belongs to no bucket *this* configuration
+   creates (a pre-existing bucket adopted by name; a typo) has no anchor and
+   denies. Correct for this scenario; a future ADOPTION scenario reusing the
+   policy would need a third route.
+7. **FIXED at round 14, recorded because the landing table below overstated
+   it — `*.tf.json` did not actually work.** Terraform's own JSON syntax
+   writes `"locals"` as an **object** of name → value; `hcl2json` emits a
+   **list** of blocks. `locals_blocks` read only the list spelling, so every
+   local in an object-spelled `main.tf.json` was silently dropped and a
+   **fully correct** solution scored 0.0 — denied with *"no `locals` block in
+   any supplied .tf file defines local.arns.media_bucket"* about a supplied
+   file that plainly defined it, and which the merge log listed under `_hcl`.
+   That is a deny message the artifact contradicts (Amendment 29 RULING 3),
+   and it made acceptance silently depend on which of two valid spellings the
+   agent chose. Both spellings are read now, one regression test per spelling
+   (`oracles/tests/test_hcl_traversal.py`).
+8. **NEW (round 15) — the topic anchor was a UNION and the acceptance test
+   only asked for MEMBERSHIP, so adding ONE `topic` block laundered a
+   checked-in catch.** `notification_topic_instances` unioned every `topic`
+   block of every notification resource, and `references_this_topic` asked
+   only whether a policy's `arn` named *some member* of that set. Nothing
+   required the graded policy to cover **every** wired topic. **Executed** in
+   the built image, `--network none`: one `aws_s3_bucket_notification` with
+   two `topic` blocks (audit + decoy) and a single `aws_sns_topic_policy`
+   attached to the **decoy** — `aws_sns_topic.audit`, the topic the ticket is
+   about, left with **no resource policy at all**, so S3 cannot publish to it
+   — scored `tier0_pass=1 tier1_status=PASS`, deny `[]`, **REWARD 1.0**. The
+   shipped negative fixture
+   `sns-topic-policy-attached-to-a-decoy-topic-directly` denies for exactly
+   this defect; one extra block bypassed it. The gate `_has_topic_anchor` did
+   not help: it was satisfied if **any** block resolved.
+   **FIXED** by grading **per wired topic** rather than per policy resource
+   (`every`, not `some`), and by gating each `topic` **block** separately so
+   an unresolvable second block cannot ride on a resolvable first one. The
+   same quantifier fix is applied to the bucket half. Fixture:
+   `…/solution/broken/audit-topic-wired-but-only-a-decoy-topic-carries-a-policy/`;
+   unit tests `::test_an_extra_topic_block_cannot_launder_a_decoy_policy` and
+   `::test_an_unresolvable_second_topic_block_is_not_carried_by_the_first`.
+   *Cross-arm note:* the awscdk mirror was already immune, for a **stricter**
+   reason — it denies outright unless `notification_topic_ids` is exactly 1.
+   The TF arms now accept N wired topics provided every one carries a policy.
+9. **NEW (round 15) — `configured_resources` was a BARE reference, so the
+   whole tier-1 policy failed OPEN.** `input.configuration.root_module.resources`
+   sat nine lines above a `planned_resources` whose own comment already
+   explained that a bare reference "makes EVERY rule downstream of it
+   UNDEFINED … an undefined `deny` rule does not deny". **Executed** on the
+   real merged oracle input captured from this scenario's reference solution:
+   deleting `.configuration.root_module.resources` → `deny` length **0**;
+   setting it to a string → **0**; deleting `.configuration` entirely → **0**.
+   **Agent-reachable**: everything inside a `module` block lands under
+   `module_calls`/`child_modules` and leaves `root_module.resources` absent —
+   executed with all wiring in `./modules/wiring` and a decoy-scoped
+   `source_arn`: `tier1_status=PASS`, deny `[]`. Reward was 0.0 only because
+   tier 0 errored, i.e. the sole thing preventing a 1.0 was the *"already
+   denied at tier 0"* mitigation §5.3 retracted as unsound.
+   **FIXED**: `object.get(…, [])` **plus an `is_array` guard** — the guard is
+   load-bearing, since a key present with a non-list value has `count() > 0`
+   and sailed past the default alone — and two fail-closed denies: modules are
+   refused **BY NAME**, the way the resolver already refuses `module.x.out`,
+   and an empty configuration list against a non-empty plan is refused too.
+   **The cost, declared rather than sold as a win:** a solution that
+   legitimately organises its wiring into a module is now DENIED. That is a
+   deliberate FALSE FAIL in the loud direction — this oracle reads the root
+   module only, and an ungraded resource must not read as a correct one.
+   Fixture: `…/solution/broken/all-wiring-hidden-inside-a-module/`.
+10. **NEW (round 15) — a `count`/`for_each` on the GRADED
+    `aws_lambda_permission` deleted the rule that grades it, and produced a
+    deny message the artifact contradicts.** `principal_by_addr` keyed on the
+    **planned** address, `s3_invoke_permissions` looked that key up with the
+    **configuration** address. `count = 1` makes those differ
+    (`…allow_s3_invoke[0]` vs `…allow_s3_invoke`), the join never matched,
+    `s3_invoke_permissions` came back empty, the `source_arn` scoping rule was
+    silently disabled, and the fail-closed fallback fired with *"no
+    aws_lambda_permission resource granting principal s3.amazonaws.com exists
+    anywhere in the plan"* about a plan whose `.planned_values` contains
+    exactly `{"address":"aws_lambda_permission.allow_s3_invoke[0]",
+    "principal":"s3.amazonaws.com"}` (Amendment 29 RULING 3). **Executed on a
+    FULLY CORRECT solution** with only `count = 1` added: **REWARD 0.0**.
+    Note this is a *different* residual from number 2 — that one is an index
+    on the **referent**, this one is an index on the **graded resource**, and
+    nothing recorded it anywhere.
+    **FIXED**: the join is on `[type, name]`, held as a **SET of pairs** and
+    never an object (a `for_each`-expanded permission has N planned instances
+    sharing one key; an object rule binding one key to two principals raises
+    `eval_conflict_error`, which aborts evaluation — the §5.9 shape), and the
+    fallback message now QUOTES both lists it looked at. The identical latent
+    join in `oracles/rego/s3-lambda-log-retention/policy.rego` and
+    `oracles/rego/s3-notification-custom-resource-tax/policy.rego` is fixed the
+    same way. Unit tests `::test_a_counted_permission_is_graded_not_vanished`
+    and `::test_a_counted_permission_scoped_to_the_wrong_bucket_still_denies`.
+
+    > **ROUND-16 ADDITION — this item declared the `for_each` half FIXED and
+    > it was not.** The text above reasons explicitly about "a
+    > `for_each`-expanded permission [with] N planned instances", so a reader
+    > would take `for_each` on the graded permission to be handled. The
+    > config↔plan JOIN was fixed; the `source_arn` **spelling** a `for_each`
+    > permission naturally uses was not. Executed, real terraform 1.15.8
+    > plan:
+    >
+    > ```hcl
+    > resource "aws_s3_bucket" "b" { for_each = toset(["media"]) … }
+    > resource "aws_lambda_permission" "allow_s3_invoke" {
+    >   for_each   = aws_s3_bucket.b
+    >   principal  = "s3.amazonaws.com"
+    >   source_arn = each.value.arn
+    > }
+    > ```
+    >
+    > → **TIER1=FAIL, reward 0.0**, with *"`each.value.arn` starts with the
+    > reserved HCL root `each`, which this resolver does not follow (… `count`
+    > /`each`/`self`/`path`/`terraform` name no resource at all)"* — a
+    > sentence the graded artifact flatly refutes, since `each.value` **is**
+    > the `aws_s3_bucket` instance the notification wires (RULING 3). The
+    > control (`count = 1` + `source_arn = local.arns.media_bucket`) passed,
+    > so the round-15 join fix itself was sound. Nothing in this memo or in
+    > `specs/s3-notification-authoritative-singleton.yaml` recorded it: both
+    > named only the numeric index on the **referent** and module boundaries.
+    >
+    > **CLOSED at round 16**, and closed by resolution rather than by
+    > widening. `hcl.for_each_referent(rtype, rname)` returns the resource a
+    > block iterates **only** when the block's `for_each` argument is exactly
+    > one whole-resource reference (`for_each = aws_s3_bucket.b`); a
+    > `toset([…])`, a `for` comprehension, a `merge()` or a conditional all
+    > fail its `count(segs) == 2` test and leave the slot UNRESOLVABLE, i.e.
+    > still denied and still loud. When it does return one, the plan's own
+    > `.index` on each planned instance of the permission gives the instance
+    > key, and the scenario policy's `each_value_arn_instances` requires
+    > **every** instance the block expands to to land on a wired bucket
+    > (`count(insts - anchors) == 0`) — "some" would have been the same silent
+    > pass the round-15 per-wired-bucket rule closed from the other side.
+    > Executed: the artifact above now **PASSES**; the two-key variant whose
+    > notification wires only `media` **DENIES**, naming the decoy instance;
+    > `for_each = toset(["media"])` with `source_arn =
+    > aws_s3_bucket.b[each.key].arn` **DENIES** as ambiguous. The library's
+    > `each` reason is also split out of the `count`/`self`/`path`/`terraform`
+    > group so it no longer claims `each.value` names no resource
+    > (`::test_each_value_gets_its_own_reason_not_names_no_resource_at_all`).
+
+11. **NEW (round 16) — THE POLICY-DOCUMENT RULE WAS A BARE MENTION TEST, ON
+    EVERY ARM, AND ONE COSMETIC LINE LAUNDERED A CHECKED-IN 0.0 FIXTURE TO
+    REWARD 1.0.** `policy_document_names_the_bucket` required only that
+    **some** reference **anywhere** in the whole policy document resolve to
+    the wired bucket instance. There was no position requirement of any kind,
+    so a reference in a `Sid` string satisfied it. Executed, image built from
+    the task's own Dockerfile, `docker run --network none`, generated
+    `tests/static_tiers.sh` verbatim:
+
+    | artifact | result |
+    |---|---|
+    | `solution/broken/sns-topic-policy-not-scoped-to-bucket`, **unmodified** | `tier0_pass=1 tier1_status=FAIL`, **reward 0.0** |
+    | the same file with **one** line changed, `Sid = "AllowS3Publish"` → `Sid = "AllowS3Publish${aws_s3_bucket.media.id}"` | `tier0_pass=1 tier1_status=PASS`, **reward 1.0**, deny `[]` |
+
+    The laundered artifact still grants `s3.amazonaws.com` `sns:Publish` with
+    **no `aws:SourceArn` condition** — the exact defect that fixture's own
+    header describes. The same edit flipped
+    `inline-sns-topic-policy-not-scoped-to-bucket` too, because the two
+    accepted TF policy shapes were the same mention test written twice. It
+    was **cross-arm**: `oracles/rego-cfn/<id>/policy.rego`'s
+    `policy_document_targets` ran `expr_names` over the whole
+    `Properties.PolicyDocument` with the identical no-position acceptance,
+    and an `Fn::Sub`-ed `Sid` does the same thing there.
+
+    **This is §4's "the prototype is silent on every fixture whose defect is
+    outside its two slots (8 of 19)" coming home.** The policy-document
+    defects were counted, correctly, as *outside* the resolver's slots — and
+    then graded anyway, by a test that had no position to grade against. A
+    reference union that "assumes no fixed JSON path", which both this memo
+    and the CFN policy's own header presented as a virtue, is exactly what
+    makes a `Sid` indistinguishable from a `Condition`.
+
+    **CLOSED at round 16, by recovering the position rather than by
+    narrowing the union.** The graded question is now, per **statement**: for
+    every statement that grants the S3 service principal `sns:Publish`, does
+    that statement carry a condition on `aws:SourceArn` whose value resolves
+    to a bucket instance this configuration's own notification wires?
+    "Every granting statement", so a correctly-scoped statement beside an
+    unconditioned one launders nothing. Three routes produce a structured
+    document, and a document **none** of them can read is DENIED naming the
+    shape rather than graded on a mention:
+
+    * **`policy = jsonencode({…})`** — `terraform show -json` reports its
+      references as a flat union with no position, and `values.policy` is
+      **plan-time-unknown** for this scenario (every ARN in it is
+      provider-computed, verified on the reference plan), so there is nothing
+      in the plan to read. The harness re-parses the body with **the same
+      hcl2json**, over `locals { v = <body> }` — the argument arrives from
+      hcl2json as exactly `"${jsonencode(<body>)}"`, so stripping that fixed
+      prefix/suffix is exact rather than paren-matching — and stores the
+      result under one reserved key `#jsonencode` on the file's own document
+      (`generator/gen.py::build_hcl_merge_block`, `hcl.resource_jsonencode`).
+      Every leaf comes back still wrapped as `"${…}"` source; nothing is
+      evaluated. **RETRACTED (round 17): this bullet used to end "A body that
+      cannot be re-parsed (`jsonencode(local.doc)`, a conditional)
+      contributes no entry and is graded as an unreadable document." Both
+      named examples re-parse fine — the recovered body is the STRING
+      `"${local.doc}"` — and a caller that did not guard `is_object` on it
+      graded a correct DRY hoist as a document with zero statements, at
+      REWARD 0.0 (residual 14).** What the caller must do is guard the SHAPE
+      of the recovered body and dereference a bare `local.` symbol
+      (`hcl.deref_local`); only then is the fail-closed branch reachable, and
+      it is deliberately **not** the `ENGINE_ERROR` path, which is for
+      terraform/hcl2json skew on a whole FILE.
+    * **a literal JSON string** — `json.unmarshal`, guarded by
+      `json.is_valid` (unguarded it *raises*, and a runtime error is the §5.9
+      shape: evaluation aborts, stdout is empty, a correct solution scores
+      0.0 with no message).
+    * **`policy = data.aws_iam_policy_document.x.json`** — the position is in
+      the plan's own configuration at `statement[*].condition[*]`, verified
+      against a real terraform 1.15.8 plan. This is the shape terraconstructs
+      synthesizes.
+
+    All three funnel into ONE acceptance: a reference list per `aws:SourceArn`
+    condition position, graded by `hcl.slot` + `slot_names_arn_of` — the same
+    audited arity gate and the same instance-discriminating test the two
+    dedicated ARN slots use. Operators whose name contains `Not` are excluded
+    (`ArnNotLike aws:SourceArn = <this bucket>` scopes to every bucket
+    *except* this one). Fixtures, so the closure is proven rather than
+    asserted: `sns-topic-policy-bucket-named-only-in-the-sid` and
+    `inline-sns-topic-policy-bucket-named-only-in-the-sid` on `hcl_raw`,
+    `hand-authored-topic-policy-bucket-named-only-in-the-sid` on `awscdk`.
+
+    **A SECOND DEAD GUARD, of the same family as (2), found and fixed while
+    writing these predicates and recorded because the family is the point:**
+    the "a statement with no `Principal`/`Action` at all still counts as
+    granting" clauses were first written `not object.get(st, "Principal",
+    null)`. `object.get` returns its DEFAULT when the key is missing and
+    **`null` is TRUTHY in Rego**, so that expression is false whether the key
+    is absent or present — the clause was dead, and a statement omitting
+    `Principal` would have escaped the scoping requirement silently. Written
+    `object.get(st, "Principal", null) == null` now, and pinned by
+    `::test_a_statement_missing_its_principal_or_action_still_counts_as_granting`.
+    `Effect` is likewise tested `!= "deny"` rather than `== "allow"`, so an
+    `Effect` the rule cannot read counts as granting rather than exempting
+    the statement (`::test_an_unreadable_effect_counts_as_granting`, with
+    `::test_an_explicit_deny_statement_needs_no_source_arn_condition` as the
+    other side). **The generalisation worth carrying out of round 16: in
+    Rego, an expression that "looks like a check" and is built from a
+    total builtin is a prime candidate for being ALWAYS FALSE. Both defects
+    this round — the comprehension and the `object.get` default — are that
+    same shape, and neither is visible in review.**
+
+    **Residual of THIS closure, declared:** `Effect`/`Principal`/`Action` are
+    now read, but only to decide **which** statements must be scoped, never
+    as an independent requirement; every predicate errs towards "this
+    statement grants", which can only add a statement that must be scoped. An
+    `aws:SourceArn` built by string concatenation
+    (`"arn:aws:s3:::${aws_s3_bucket.media.id}"`) is not a lone interpolation,
+    so it is UNRESOLVABLE → DENY — consistent with how `source_arn` is
+    already graded on this scenario (`lambda-permission-scoped-via-an-
+    interpolated-literal` is a checked-in **broken** fixture), and loud.
+
+12. **NEW (round 16) — the two topic-policy rules were quantified over EVERY
+    `aws_sns_topic_policy` in the configuration, which is a live FALSE FAIL
+    with a RULING-3 message.** A correct solution that also declares an
+    unrelated ops/alarms topic with its own policy was DENIED with *"…nothing
+    in this topic policy scopes sns:Publish to the bucket this
+    configuration's own notification resource wires … Without an
+    aws:SourceArn-shaped condition naming this bucket, any S3 bucket in any
+    account can publish to the audit topic"* — while the artifact's
+    `aws_sns_topic_policy.audit` demonstrably **did** carry that condition.
+    Executed on a real plan: TIER1=FAIL, reward 0.0.
+    **FIXED**: both denies are narrowed to `graded_topic_policies` — policies
+    whose `arn` slot resolves to a topic the notification wires. The
+    per-policy `references_this_topic` deny is **DELETED**, not narrowed:
+    narrowed it would be vacuous by construction, denying for non-attachment
+    exactly the policies selected for being attached. Its coverage is carried
+    in full by round 15's `_wired_topic_has_policy`, whose message names the
+    **uncovered topic** (a fact about the artifact) instead of accusing a
+    policy of being misdirected (an inference the artifact can refute). The
+    CFN arm is mirrored, including a new per-wired-topic coverage rule so the
+    narrowing gives nothing up there either. Pinned by
+    `::test_a_topic_policy_off_the_notification_path_is_not_graded`.
+
+13. **NEW (round 17) — THE ROUND-16 `Sid` LAUNDER WAS NOT CLOSED. IT MOVED
+    ONE LEVEL DOWN, INTO THE CONDITION'S VALUE LIST, AND IT WAS CROSS-ARM.**
+    Round 16 replaced the *mention* test with a *position* test, and that
+    part is right. But it emitted **one slot per VALUE**
+    (`some e in _as_list(v)`) and accepted a statement on `some` slot. IAM
+    **OR**s the values inside ONE condition position and **AND**s distinct
+    positions, so the two quantifiers are different logical connectives and
+    the rule used the same one for both. One line took the reference
+    solution to a policy that lets **any S3 bucket in any account** publish
+    to the audit topic:
+
+    ```hcl
+    ArnLike = { "aws:SourceArn" = [local.arns.media_bucket, "arn:aws:s3:::*"] }
+    ```
+
+    **Executed**: `tier0_pass=1 tier1_status=PASS`, `deny []`,
+    `/logs/verifier/reward.txt = 1.0`, in the real hcl-raw image under
+    `--network none`. Reproduced on **all three document routes**
+    (`jsonencode({...})`, the inline `policy` on `aws_sns_topic`, and
+    `data "aws_iam_policy_document"` with `values = [local.x, "arn:aws:s3:::*"]`)
+    and on the **CFN arm** (`"aws:SourceArn": [{"Fn::GetAtt":
+    ["MediaBucket","Arn"]}, "arn:aws:s3:::*"]` graded identically to its
+    correctly-scoped twin, both `deny []`). A second, unwired bucket in the
+    same config (`[local.arns.media_bucket, aws_s3_bucket.decoy.arn]`) reads
+    the same way.
+
+    **FIXED**: the unit of grading is now one **POSITION** — an
+    `(operator, condition key)` pair carrying its **whole value list** — and
+    the two quantifiers are split to match the two connectives.
+    `_position_is_scoped` requires the position to carry **at least one**
+    value and **EVERY** value in it to resolve to the `arn` of a wired bucket
+    instance (a literal, a wildcard, or an unresolvable value FAILS the
+    position rather than being skipped); `_statement_is_scoped` then accepts
+    on `some` **position**, which is sound because an extra AND-ed condition
+    can only narrow a grant. Mirrored in `oracles/rego-cfn/`, where
+    pseudo-parameters (`AWS::Partition`) are dropped from a value's name set
+    rather than failing it, so `Fn::Sub "arn:${AWS::Partition}:s3:::${Bucket}"`
+    stays correct. Route 3 additionally moved OFF the plan and onto the parsed
+    `.tf`: `terraform show -json` reports a `condition`'s `values` as a flat
+    `.references` list with **every literal dropped**, so
+    `values = [local.x, "arn:aws:s3:::*"]` and `values = [local.x]` are
+    indistinguishable there — the literal is not in `.references` at all.
+    `hcl.data_blocks` reads the value list where the literals still exist.
+
+    **The arm that supplies no parsed source at all.** terraconstructs loads
+    the library but runs no `hcl2json` merge (it synthesizes `cdk.tf.json`
+    and has no `.tf`; see §6 "TWO SCOPES"), so the HCL route finds nothing
+    there and moving route 3 wholesale would have DENIED that arm's own
+    reference solution. A plan-based reader is kept for exactly that case,
+    guarded by `not hcl.hcl_supplied` — never by "the HCL route found
+    nothing", so an arm that DOES supply source cannot fall back to the
+    weaker reader by hiding its data block. And the weaker reader is not
+    blind: `.configuration` drops the literals, but **`.planned_values`
+    keeps the arity** — one entry per value, `null` for an unknown, the
+    literal verbatim otherwise, so `values = [x, "arn:aws:s3:::*"]` comes
+    back as `[null, "arn:aws:s3:::*"]`. The fallback reads both halves and
+    refuses any position `.planned_values` shows holding a literal. Executed
+    both ways on a real terraform 1.15.8 plan with `_hcl` stripped: correct
+    → `deny []`, OR-ed → deny.
+
+    > **KNOWN OPEN RESIDUAL, and it is narrow.** If terraform defers the
+    > `data "aws_iam_policy_document"` entirely there is no planned list to
+    > check, and on that path the reference slot alone decides — i.e. a value
+    > list of `[<the wired bucket>, <a literal>]` would not be caught. Not
+    > observed on any reference or fixture plan of this scenario (the data
+    > source is always partially evaluated), and unreachable on hcl_raw,
+    > which always supplies parsed source. Recorded here and in
+    > `specs/s3-notification-authoritative-singleton.yaml`'s
+    > operator-facing residual list rather than declared closed.
+
+    Fixtures, one per route: `sns-topic-policy-source-arn-ored-with-a-
+    wildcard`, `sns-topic-policy-source-arn-ored-with-a-decoy-bucket`,
+    `inline-sns-topic-policy-source-arn-ored-with-a-wildcard`,
+    `iam-policy-document-source-arn-ored-with-a-wildcard` (hcl_raw) and
+    `topic-policy-source-arn-ored-with-a-wildcard` (awscdk). Pinned at the
+    policy level by
+    `::test_a_wildcard_beside_the_wired_bucket_is_not_scoping`,
+    `::test_a_second_and_ed_condition_position_does_not_break_scoping` and
+    `::test_a_condition_position_with_no_readable_value_list_is_refused`.
+
+14. **NEW (round 17) — A POLICY DOCUMENT THE READER COULD NOT TURN INTO
+    STATEMENTS WAS GRADED AS "0 GRANTING STATEMENTS" INSTEAD OF AS
+    UNREADABLE, so FOUR ordinary, CORRECT DRY spellings scored REWARD 0.0,
+    each with a deny message the artifact refutes (Amendment 29 RULING 3).**
+    This is defect **(b)** of §1 — the false FAIL on a DRY hoist that this
+    whole library exists to close — reintroduced one level down, inside the
+    policy document. Executed at `tier1_status=FAIL`, `reward.txt = 0.0`, all
+    four with the *identical* message *"has 0 statement(s) granting the
+    s3.amazonaws.com service principal sns:Publish, and not every one of them
+    is scoped …"*:
+    `policy = jsonencode(local.topic_doc)`, `Statement = local.stmts`,
+    `Principal = local.s3_principal`, `Action = local.publish_action`.
+    Three separate causes:
+
+    * `_policy_structured_docs` took `hcl.resource_jsonencode` **raw, with no
+      `is_object` guard**, so the recovered body — the *string*
+      `"${local.topic_doc}"` — counted as a document and the promised loud
+      "unreadable" deny never fired. See the retraction in §6 below: this
+      memo's claim that such a body "contributes no entry" was **false**.
+    * `policy_document_scopes_to_the_bucket` carried
+      `count(granting_statements(r)) > 0`, which made "zero granting
+      statements" borrow the "not every one of them is scoped … any S3 bucket
+      in any account can publish" message. That message is false on both
+      counts for a document granting nothing, and it mis-described the
+      genuinely-broken case too (a policy granting only
+      `events.amazonaws.com`). The CFN mirror had a dedicated zero-granting
+      deny; the TF policy did not — a cross-arm strictness asymmetry.
+    * `_principal_covers_s3` / `_action_covers_publish` fell back to "covers"
+      only when the key was **absent** (`== null`), never when it was present
+      but **unreadable**. So the spec's own sentence *"every predicate erring
+      towards 'this statement grants'"* was false, and a hoisted `Principal`
+      or `Action` silently removed a real grant from grading.
+
+    **FIXED**, three ways, and one of them is new capability rather than a
+    guard: `hcl.deref_local(v)` reads what a lone `local.` symbol **holds**
+    out of the same parsed `locals` every other hop already reads (nothing is
+    evaluated — the value comes back as raw `"${…}"` source and every leaf
+    still goes through `hcl.slot`), and is **undefined** for an ambiguous,
+    cyclic or non-`local.` expression. The policy applies it at the
+    `jsonencode` body, at `Statement`, at `Principal`/`Action`/`Effect`, at
+    `Condition` and at every condition **value**, so all four DRY spellings
+    now score **1.0**. What `deref_local` cannot resolve still hits the two
+    fail-closed branches, which are now correct: `is_object` is required of
+    the recovered body, a `Statement` key present but unreadable routes to
+    the LOUD unreadable deny (not to "zero statements"), and zero granting
+    statements has its own honest message on **both** TF shapes. Both
+    predicates are rewritten as *"unless this reader can read the value AND
+    that readable value excludes the grant"*, so **any** unreadable spelling
+    counts as granting.
+
+    **Where each half is pinned.** The four CORRECT DRY spellings must score
+    **1.0**, and a 1.0 shape cannot live under `solution/broken/` — the
+    falsifiability gate has exactly one positive slot, the reference
+    solution — so they are pinned in
+    `oracles/tests/test_hcl_traversal.py`, one process per shape:
+    `::test_a_policy_document_hoisted_into_a_local_is_read_not_refused`,
+    `::test_a_statement_list_hoisted_into_a_local_is_read_not_refused`,
+    `::test_a_hoisted_principal_or_action_does_not_delete_the_grant`, plus
+    the fail-closed twins
+    `::test_an_unreadable_principal_or_action_still_counts_as_granting`,
+    `::test_a_document_that_is_still_not_an_object_denies_loudly` and
+    `::test_zero_granting_statements_gets_its_own_message`. All four were
+    ALSO executed end to end in the real hcl-raw image under
+    `--network none` at REWARD 1.0. The two DENY halves ship as ordinary
+    broken fixtures: `topic-policy-document-not-readable`
+    (`jsonencode(var.topic_doc)` — nothing in the parsed `locals` can
+    resolve it) and `topic-policy-granting-only-a-non-s3-principal`.
+
+    **Three adjacent holes found while fixing these, closed in the same
+    round, each with an executed negative control:**
+
+    * **The CFN mirror of (iii), where it was a LAUNDER rather than a false
+      FAIL.** `walk` reaches a literal leaf whatever intrinsic wraps it, so
+      the CFN reading was believed safe — but an intrinsic that does not
+      resolve to a literal (`Principal: {"Service": {"Ref": "P"}}`) has no
+      literal leaf to reach and the statement was DROPPED. Beside one
+      correctly-scoped statement, an unconditioned `sns:Publish` grant
+      simply vanished: `deny []` executed on a template carrying both.
+    * **Condition operators that do not RESTRICT.** Only the `…Not…` family
+      was excluded. `ArnLikeIfExists` is satisfied vacuously when the
+      request carries no `aws:SourceArn` at all, and so is
+      `ForAllValues:ArnLike`; both read as perfect scoping. Executed: the
+      reference solution with `ArnLike` → `ArnLikeIfExists` scored REWARD
+      1.0 on hcl_raw and `deny []` on awscdk. `ForAnyValue:` is deliberately
+      NOT excluded — it requires a present value to match.
+    * **`policy = local.doc_json`** where the local holds
+      `data.aws_iam_policy_document.x.json`. terraform reports that
+      argument's references as `["local.doc_json"]` and stops, so the
+      document was invisible and an ordinary DRY solution was DENIED for
+      holding an unreadable document. The data-document name is now also
+      read from the parsed `.tf` by dereferencing the symbol.
 
 ---
 
@@ -284,9 +997,20 @@ Further adversarial shapes, all executed:
 **No regression on the existing fixture set.** All 19 `solution/broken/*`
 fixtures were extracted, planned, and run against the prototype. The
 prototype is **silent on every fixture whose defect is outside its two
-slots** (8 of 19) and denies exactly the ones inside them (11 of 19,
-including all four `...-behind-a-local` fixtures). It introduced **zero**
-new false denies *on this fixture set*.
+slots** (8 of 19) and denies exactly the ones inside them (11 of 19). It
+introduced **zero** new false denies *on this fixture set*.
+
+> **CORRECTION (landing round, 2026-08-23).** The sentence above used to end
+> "…(11 of 19, **including all four `...-behind-a-local` fixtures**)". That
+> parenthetical was **false, and it flattered the coverage**: only THREE of
+> the four deny. The fourth,
+> `sns-topic-policy-unscoped-behind-a-local`, is a policy-DOCUMENT defect —
+> the topic policy is not scoped to the bucket — which lives outside both of
+> the prototype's two dedicated single-ARN slots. It belongs in the count of
+> 8 genuine silences, not in the 11 denies, and it was counted correctly in
+> those totals; only the parenthetical was wrong. Recorded here rather than
+> quietly deleted, because a coverage claim that overstates by one fixture is
+> exactly the kind of error that makes a residual look closed.
 
 > **Correction (round 13).** "Zero new false denies" was measured over
 > fixtures, and the fixtures did not contain the shape that breaks it. On a
@@ -345,19 +1069,132 @@ These are measured, not estimated.
      breaks it a second way — see §5.8.** The "always a false fail, never
      a false pass" guarantee is a property of the resolver *being total*,
      which it was not; it is only true now because `verdict` carries a
-     `default` clause.
+     `default` clause. **(Retracted, same retraction as everywhere else in
+     this memo: a `default` clause guarantees definedness only when the
+     rules `verdict` depends on evaluate without a RUNTIME ERROR — see §5.9
+     and §0.0. The landed library does not rest on `default` at all; every
+     classifier is an ordered `else` chain ending in an unconditional
+     catch-all, and no rule that data can key is an object rule.)**
 2. **Modules.** A `module "x"` whose locals live under `./modules/x/` is
    outside the root `.tf` glob. `module.x.out` → UNRESOLVABLE → DENY on a
    correct solution. Would need the glob widened, and module input/output
    plumbing is a second resolver on top of this one. This is directly
    relevant to open decision #4 (`hcl-modules` as a fourth arm) — **that arm
    would need materially more than this prototype**.
-3. **Same-type, wrong-instance is untouched.** Resolution answers *"what does
-   this symbol point at"*, not *"is that the right one of two buckets"*. A
-   topic-policy `arn` that resolves cleanly to `aws_sns_topic.decoy.arn`
-   when the scenario wanted `aws_sns_topic.audit.arn` is *resolved*, and the
-   prototype passes it; discriminating **which** topic stays the full
-   policy's job.
+
+   > **ROUND-15 ADDITION, and it is a bigger hole than this item described.**
+   > The RESOLVER refused `module.x.out` by name, which is what this item is
+   > about, and that reads as though modules were merely out of reach. They
+   > were worse than out of reach: a `module` block also leaves
+   > `.configuration.root_module.resources` **absent**, and the scenario
+   > policy read that as a bare reference, so the whole tier-1 policy went
+   > undefined and **denied nothing at all**. Executed: every resource in
+   > `./modules/wiring`, `source_arn` on a decoy bucket → `tier1_status=PASS`,
+   > deny `[]`. The policy now refuses modules **BY NAME** with a deny (see
+   > §0.0 residual 9); the resolver's own limitation, as stated above, is
+   > unchanged.
+3. **Same-type, wrong-instance — covered by NEITHER layer, and it was a live
+   FALSE PASS on a scenario we intend to ship. NOW CLOSED (landing round).**
+   Resolution answers *"what does this symbol point at"*, not *"is that the
+   right one of two buckets"*. A topic-policy `arn` that resolves cleanly to
+   `aws_sns_topic.decoy.arn` when the scenario wanted
+   `aws_sns_topic.audit.arn` is *resolved*, and the prototype passes it.
+
+   > **CORRECTION (landing round, 2026-08-23) — this item understated the
+   > problem in the one way that matters.** It read as a limitation of the
+   > *prototype* ("discriminating which topic stays the full policy's job"),
+   > which implies the shipped policy does that job. **It does not.** Both
+   > layers are silent, on both spellings, and the executed proof is:
+   >
+   > ```hcl
+   > locals { arns = { media_bucket = aws_s3_bucket.decoy.arn, ... } }
+   > resource "aws_s3_bucket_notification" "media" { bucket = aws_s3_bucket.media.id ... }
+   > ```
+   >
+   > — an S3 invoke permission scoped to a bucket the notification does not
+   > wire, i.e. S3 can never invoke the function. Round-12 policy: **silent**.
+   > Prototype: **silent**. A genuinely broken solution scored **1.0**. The
+   > same defect written **directly** (`source_arn = aws_s3_bucket.decoy.arn`,
+   > no local at all) was silent too, on **all three arms** — the awscdk
+   > `oracles/rego-cfn/` policy's `scoped_to_a_bucket` is a TYPE test as well.
+   >
+   > The existing fixture `lambda-permission-scoped-to-a-different-bucket`
+   > does **not** cover it: its `source_arn` is a hardcoded ARN *string*
+   > carrying zero references, so it is caught by the arity gate, never by
+   > instance discrimination. No fixture on any arm exercised this.
+   >
+   > **CLOSED in the landing round**, and closing it is new capability that
+   > resolution is what makes possible: the slot must resolve to the `.arn` of
+   > the SAME resource INSTANCE that this configuration's own
+   > `aws_s3_bucket_notification` wires (`bucket` for the bucket half,
+   > `topic[*].topic_arn` for the topic half), keyed on the components of
+   > terraform's own plan address, never on a physical cloud name. **(Round-15
+   > correction to the wording that stood here: it said "keyed on type +
+   > configuration label (the plan address)". Type + label is NOT the plan
+   > address — the plan address of a `for_each`/`count` instance includes the
+   > key, `aws_s3_bucket.b["…-decoy"]`, and the code matched the wording
+   > rather than the parenthetical. See residual 2 in §0.0 for the executed
+   > reward-1.0 artifact that gap allowed. The identity now carries the key.)**
+   > Fixtures:
+   > `lambda-permission-scoped-to-a-decoy-bucket-behind-a-local`,
+   > `lambda-permission-scoped-to-a-decoy-bucket-directly`,
+   > `sns-topic-policy-attached-to-a-decoy-topic-behind-a-local`.
+   >
+   > **Residual of the closure, declared:** when the notification's own slot
+   > does not resolve to exactly one instance there is nothing to join
+   > against, and the rule falls back to the type-only test — logged in
+   > `not_verifiable`, never silent. Every artifact that reaches that fallback
+   > is already denied at tier 0.
+
+   > **RETRACTED 2026-08-24 (round 14). BOTH SENTENCES OF THAT RESIDUAL WERE
+   > WRONG, AND TOGETHER THEY WERE A LIVE SILENT PASS — the headline new
+   > capability of round 13, disabled by an ordinary spelling of the
+   > notification's own `bucket` argument.**
+   >
+   > * **"logged in `not_verifiable`, never silent" is not a mitigation.**
+   >   `not_verifiable` is informational by contract; the generated
+   >   `tests/static_tiers.sh` says so in the script itself — *"does NOT deny
+   >   the plan and does NOT affect tier1_status/reward"*. The log **was** the
+   >   silent pass.
+   > * **"already denied at tier 0" is FALSE.** The two asserts named at the
+   >   site (`exactly-one-notification-resource-per-bucket-tf`,
+   >   `object-removed-notification-targets-a-topic`) are jq over
+   >   `.planned_values`: one counts notification resources, the other
+   >   whitelists the topic target's event strings. Neither reads what the
+   >   `bucket` argument resolves to.
+   >
+   > **Executed counterexample** (real `hcl-raw` image, `--network none`,
+   > generated `tests/static_tiers.sh` verbatim): two buckets `media` and
+   > `decoy`; `aws_s3_bucket_notification.media` with
+   > `bucket = "cdktn-bench-media-ingest-media"` — a plain literal bucket
+   > name, which is what that argument takes, and which carries **zero**
+   > references; `aws_lambda_permission.allow_s3_invoke.source_arn =
+   > aws_s3_bucket.decoy.arn`; topic-policy condition `aws:SourceArn =
+   > aws_s3_bucket.decoy.arn`. S3 can never invoke the Lambda. Result:
+   > `tier0_pass=1 tier1_status=PASS`, `opa` rc=0, deny `[]`, **reward 1.0**.
+   > Reproduced twice more: `bucket = local.notif_bucket` where
+   > `notif_bucket = format("%s", aws_s3_bucket.media.id)`; and the topic half
+   > via `topic_arn = local.opaque_topic` plus an `aws_sns_topic_policy`
+   > attached to a decoy topic. `bucket = var.x` reads the same way.
+   >
+   > **FIXED 2026-08-24.** The `count(anchors) != 1` clause is **deleted**
+   > from `slot_names_arn_of` and from `_names_anchor_instance` in
+   > `oracles/rego/<id>/policy.rego`, and from `names_the_wired_instance` in
+   > `oracles/rego-cfn/<id>/policy.rego`. The anchor is now established by
+   > two **positive** routes and DENIES when neither identifies exactly one
+   > instance: (1) the `bucket` argument references a bucket this
+   > configuration creates; (2) the notification's **plan-time-known**
+   > `bucket` value is the planned `bucket` name of exactly one created
+   > bucket. Route 2 is what keeps the ordinary literal spelling a PASS rather
+   > than trading a silent pass for a false FAIL — proved by a positive
+   > control alongside the three new fixtures.
+   >
+   > Two new residuals fall out of that choice and are recorded in the
+   > KNOWN RESIDUALS list in §0.0 rather than only here: there is **no route
+   > 2 for the topic half** (a topic ARN is provider-computed, so the plan
+   > carries no value to match), so an opaque `topic_arn` is a loud FALSE
+   > FAIL; and route 2 is name-based, so a notification naming a bucket this
+   > configuration does not create has no anchor and denies.
    *(Correction: this item originally cited
    `sns-topic-policy-attached-to-a-different-topic` as its example. That
    citation was wrong and is withdrawn. Despite the fixture's name its `arn`
@@ -1073,6 +1910,21 @@ Specifically:
      caught by the in-query one.
    * **Make the gate distinguish "denied" from "did not evaluate"** (see
      point 8).
+   * **ADDED 2026-08-24 (round 14): totality binds the DENY MESSAGE too, not
+     only the resolver.** A `deny` rule whose `msg` expression goes
+     UNDEFINED does not deny — it silently does not fire. Round 14's first
+     draft of the new fail-closed anchor rule read `hcl.slot(...).reason`
+     (absent on a `resolved` verdict) and
+     `count(buckets_planned_named(planned_bucket_argument(addr)))`
+     (undefined when the planned value is not a string); both went undefined
+     on an executed counterexample and the diagnostic deny vanished. Every
+     helper reached from a `msg` must have an unconditional `else`.
+   * **ADDED 2026-08-24 (round 14): "logged in `not_verifiable`" is NOT a
+     mitigation for a widening.** `not_verifiable` is informational by
+     contract — the generated `static_tiers.sh` says so in the script
+     itself. A rule that widens its acceptance and records the widening
+     there has shipped a silent PASS with a paper trail. If a degradation
+     changes what is accepted, it must DENY.
 
    **§5.7, §5.8 and §5.9 are all landing preconditions.**
 

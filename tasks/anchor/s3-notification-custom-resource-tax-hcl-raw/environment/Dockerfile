@@ -5,6 +5,24 @@
 # `terraform validate` need zero network access at trial time. See
 # environment/terraformrc and README.md for how the offline guarantee works.
 #
+# Grading tools installed here, all pinned + sha256-verified, all offline:
+#   terraform 1.15.8  — the arm's own toolchain (plan/validate/show)
+#   opa       1.19.0  — tier-1 engine (`opa eval -d policy.rego 'data.<pkg>.deny'`)
+#   hcl2json  0.6.9   — tier-1 HCL pre-parse, 4.1 MB. Turns the `*.tf` in
+#                       the working directory into JSON so a Rego policy can
+#                       resolve a `local.` symbol to the resource attribute
+#                       it actually names: `terraform show -json` emits no
+#                       `locals` at all, so a plan's reference list dead-ends
+#                       on `local.x` and an oracle grading a dedicated
+#                       single-ARN argument slot is blind on that hop. See
+#                       ../../../docs/design/conftest-hcl-traversal-spike.md.
+#                       NOT conftest: conftest EMBEDS this exact parser
+#                       (`github.com/tmccombs/hcl2json`) and produces
+#                       byte-identical output at 68 MB instead of 4.1 MB, and
+#                       adopting it as the ENGINE would reshape `input` for
+#                       every existing Rego rule in the repo.
+#   aws CLI v2        — agent-container parity only; no grading path uses it
+#
 # Base image is digest-pinned (not just tag-pinned) so a rebuild months from
 # now can't silently swap the OS layer under an already-measured toolchain —
 # see ../../DECISIONS.md "Pinning standard". Re-pin by running
@@ -104,6 +122,42 @@ RUN set -eu; \
     echo "${OPA_SHA256}  /usr/local/bin/opa" | sha256sum -c -; \
     chmod 0755 /usr/local/bin/opa; \
     opa version
+
+# --- hcl2json (tmccombs/hcl2json) 0.6.9: static pinned binary, sha256-
+# --- verified. UNLIKE the opa pin above, this one CAN be cross-checked
+# --- against an upstream manifest — the project publishes
+# --- hcl2json_0.6.9_checksums.txt alongside the release, and both hashes
+# --- below were taken from it (and re-verified against the bytes actually
+# --- downloaded), so the caveat in the opa block does not apply here.
+# ---
+# --- The binaries are published UNARCHIVED, so this is a straight
+# --- curl + `sha256sum -c` with no unpack step — the same shape as the opa
+# --- block, one step shorter than terraform's zip.
+# ---
+# --- WHAT IT IS FOR: `generator/gen.py::build_hcl_merge_block` emits a step
+# --- into this arm's tests/static_tiers.sh (only for a spec that opts in via
+# --- `oracle.hcl_traversal`) that runs `hcl2json` over every `*.tf` in
+# --- /app/project and merges the result into the plan JSON under one
+# --- reserved key before `opa eval` runs. The ENGINE stays opa and the
+# --- reward contract is unchanged. It does no I/O beyond reading the file it
+# --- is handed — no network at trial time, same as opa.
+# ---
+# --- NOT INSTALLED IN THE OTHER TWO ARMS, deliberately: awscdk resolves TS
+# --- variables at synth time and the CloudFormation template names its
+# --- referent in an `Fn::GetAtt`; cdktn does the same and emits no `locals`
+# --- block at all (verified across five real cdk.tf.json documents). Neither
+# --- arm has anything left to resolve, so neither pays the 4.1 MB.
+RUN set -eu; \
+    case "${TARGETARCH}" in \
+      amd64) HCL2JSON_SHA256="b609e37094948c0b77cd8c6c0baaf8af2bd168c685c6e3334d671cc9692c34a5" ;; \
+      arm64) HCL2JSON_SHA256="cb2ccf59a830829fe122e8dfb85d6ef2500aceda5af45a7c1052a4d2c46541f9" ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /usr/local/bin/hcl2json \
+      "https://github.com/tmccombs/hcl2json/releases/download/v0.6.9/hcl2json_linux_${TARGETARCH}"; \
+    echo "${HCL2JSON_SHA256}  /usr/local/bin/hcl2json" | sha256sum -c -; \
+    chmod 0755 /usr/local/bin/hcl2json; \
+    hcl2json -version
 
 # --- pre-warm the hashicorp/aws provider filesystem mirror. This step needs
 # --- network (image build time only); nothing after this layer does.
