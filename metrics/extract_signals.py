@@ -29,11 +29,36 @@ ESCAPE = {
 MUTATORS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 
 
+ARMS = ("terraconstructs", "hcl-raw", "awscdk")
+
+
 def arm_of(name):
-    for a in ("terraconstructs", "hcl-raw", "awscdk"):
-        if a in name or (a == "terraconstructs" and "terracon" in name):
+    """Arm for a trial dir name, tolerating a TRUNCATED arm suffix.
+
+    Harbor caps the task-name portion of a trial dir, so a long scenario
+    name eats the arm: `named-resource-replacement` yields
+    `...-awscd__H8AcBrb`, `...-hcl-r__FXNwjAy`, `...-terra__x2vFoyx`.
+    The old substring test needed the WHOLE arm name, so all three
+    returned "?" and every row silently dropped out of the per-arm
+    rollup -- an empty rollup that looks exactly like "no trials ran".
+    Same failure class as the verifier-region bug: wrong output, no error.
+
+    Matched against the stem (before `__`) and anchored at the END, so a
+    scenario whose own name contains an arm word cannot steal the match.
+    """
+    stem = name.split("__", 1)[0]
+    for a in ARMS:
+        if stem.endswith(a):
             return a
-    return "?"
+    # Truncated: accept the longest arm PREFIX the stem ends with. The
+    # three arms start with distinct letters, so this cannot be
+    # ambiguous; the 3-char floor is what stops it matching noise.
+    best = None
+    for a in ARMS:
+        for n in range(len(a) - 1, 2, -1):
+            if stem.endswith("-" + a[:n]) and (best is None or n > best[1]):
+                best = (a, n)
+    return best[0] if best else "?"
 
 
 def sessions_for(d):
@@ -133,6 +158,14 @@ def main(job_dirs):
         print(f"{'PER-ARM ROLLUP (valid rows only)':44s} {'n':>3s} {'out_tok':>8s} "
               f"{'rbw%':>6s} {'green':>6s} {'esc':>4s}")
         print("-" * 80)
+        # An unresolved arm must be LOUD. Silently skipping these rows is
+        # how the truncation bug above stayed invisible: the rollup simply
+        # printed nothing and read as "no trials ran".
+        unknown = [r for r in agg if r["arm"] == "?"]
+        if unknown:
+            print(f"{'!! UNRESOLVED ARM -- NOT IN ANY ROLLUP ROW BELOW':44s} {len(unknown):3d}")
+            for r in unknown:
+                print(f"   {r['trial']}")
         for arm in ("awscdk", "terraconstructs", "hcl-raw"):
             rows = [r for r in agg if r["arm"] == arm and r["reward"] is not None]
             if not rows:
