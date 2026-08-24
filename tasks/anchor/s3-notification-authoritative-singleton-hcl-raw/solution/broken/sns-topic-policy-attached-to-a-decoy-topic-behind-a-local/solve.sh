@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# Deliberately-BAD reference solution -- HAND-AUTHORED (SCHEMA.md §8.2
+# point 8). EXTRA (non-catch-named) negative fixture, discovered and
+# required to score reward 0.0 by gates/oracle_falsifiability.py's own
+# "extra broken/ fixture" loop.
+#
+# ROUND 13 (2026-08-23) -- SAME-TYPE / WRONG-INSTANCE, topic half, laundered
+# through a local. The `aws_sns_topic_policy` grants s3.amazonaws.com
+# sns:Publish and scopes it to the right bucket -- but it is ATTACHED to a
+# decoy topic, while the notification publishes to the audit topic. The
+# audit topic is left with no resource policy at all, so S3 silently drops
+# every delete notification and the compliance half of this ticket never
+# works.
+#
+# ROUND 12 DID deny this one, and that is worth recording accurately rather
+# than claiming a new catch: it denied via its CORROBORATION proxy ("no slot
+# that WIRES a topic carries this symbol"), not by discriminating the two
+# topics. That proxy is the same rule that produced this scenario's proven
+# FALSE FAIL -- it denies a correct solution that hoists the topic ARN for
+# `arn` and spells the notification's `topic_arn` directly -- so it is
+# deleted at round 13 and replaced by the real instance join. This fixture
+# exists to prove the replacement did not lose the catch.
+#
+# Its DIRECT twin, `sns-topic-policy-attached-to-a-decoy-topic-directly`,
+# is the one round 12 genuinely missed.
+#
+# ISOLATION NOTE. Unlike most fixtures in this directory, this one does NOT
+# reproduce the reference solution's `locals` map verbatim: the topic
+# policy's `aws:SourceArn` condition is spelled DIRECTLY
+# (`aws_s3_bucket.media.arn`) rather than through `local.arns.media_bucket`.
+# That is deliberate and it is what makes the fixture prove what it claims.
+# With the hoisted spelling, the defect below ALSO knocks the policy-
+# document rule over (the same symbol feeds both), so the artifact denies
+# twice and one cannot tell which rule is doing the work -- and under the
+# round-12 oracle the ONLY deny it produced was the knock-on one, which is
+# how this class of defect looked "caught" while the rule that grades it was
+# silent. Spelled this way, the document rule is satisfied on its own and
+# exactly ONE deny fires: the one this fixture is about.
+set -euo pipefail
+
+printf 'placeholder-lambda-package-not-a-real-zip-plan-only-oracle-never-reads-it' > function.zip
+
+cat > main.tf <<'HCL'
+locals {
+  # media_bucket is referenced twice below (the invoke permission and the
+  # topic policy's condition); audit_topic three times (the topic policy's
+  # own `arn`, that policy's `Resource`, and the notification's
+  # `topic_arn`). One map, the ordinary DRY spelling.
+  arns = {
+    media_bucket = aws_s3_bucket.media.arn
+    audit_topic  = aws_sns_topic.audit.arn
+    decoy_topic  = aws_sns_topic.decoy.arn
+  }
+}
+
+resource "aws_s3_bucket" "media" {
+  bucket = "cdktn-bench-media-ingest-media"
+}
+
+resource "aws_iam_role" "ingest" {
+  name = "cdktn-bench-media-ingest-handler-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+      Action    = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_lambda_function" "ingest" {
+  function_name = "cdktn-bench-media-ingest-transcode"
+  role          = aws_iam_role.ingest.arn
+  handler       = "index.handler"
+  runtime       = "nodejs22.x"
+  filename      = "function.zip"
+}
+
+resource "aws_lambda_permission" "allow_s3_invoke" {
+  statement_id  = "AllowS3Invoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.ingest.function_name
+  principal     = "s3.amazonaws.com"
+  source_arn    = local.arns.media_bucket
+}
+
+resource "aws_sns_topic" "audit" {
+  name = "cdktn-bench-media-ingest-audit"
+}
+
+# S3 cannot publish to a topic with no resource policy granting it
+# sns:Publish -- part of "the topic must receive a notification"
+# (this scenario's own oracle.intent), not an add-on. Scoped via
+# aws:SourceArn to this specific bucket -- the sns-topic-policy-not-
+# scoped-to-bucket catch's own target.
+resource "aws_sns_topic_policy" "audit" {
+  arn = local.arns.decoy_topic
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid       = "AllowS3Publish"
+      Effect    = "Allow"
+      Principal = { Service = "s3.amazonaws.com" }
+      Action    = "SNS:Publish"
+      Resource  = local.arns.audit_topic
+      Condition = {
+        ArnLike = { "aws:SourceArn" = aws_s3_bucket.media.arn }
+      }
+    }]
+  })
+}
+
+# ONE authoritative notification resource -- the headline catch of this
+# scenario is declaring TWO of these (one per stakeholder ask) instead.
+resource "aws_s3_bucket_notification" "media" {
+  bucket = aws_s3_bucket.media.id
+
+  lambda_function {
+    lambda_function_arn = aws_lambda_function.ingest.arn
+    events              = ["s3:ObjectCreated:Put"]
+  }
+
+  topic {
+    topic_arn = local.arns.audit_topic
+    events    = ["s3:ObjectRemoved:*"]
+  }
+
+  depends_on = [aws_lambda_permission.allow_s3_invoke, aws_sns_topic_policy.audit]
+}
+resource "aws_sns_topic" "decoy" {
+  name = "cdktn-bench-media-ingest-decoy-topic"
+}
+
+HCL
+
+bash tests/static_tiers.sh
