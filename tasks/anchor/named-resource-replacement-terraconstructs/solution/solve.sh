@@ -119,7 +119,13 @@ if [ "$LIVE" = "1" ]; then
   echo "== LIVE: real cdktn deploy against this account =="
   export CDKTN_BENCH_LIVE=1
   npx tsc -p tsconfig.json
-  npx cdktn deploy --auto-approve named-resource-replacement
+  # The positional argument is the STACK id -- main.ts constructs
+  # `new ScenarioStack(app, "internal-services-network", ...)`, i.e. the
+  # spec's `workspace_id`, not its `id`. This line named the spec id until
+  # 2026-08-25 and therefore named a stack that does not exist: this LIVE=1
+  # path cannot ever have worked. Found while tracing the deploy commands
+  # for workspace_seed.deploy (docs/design/single-step-seed-deploy.md §10).
+  npx cdktn deploy --auto-approve internal-services-network
   python3 tests/live_check.py --expect ok
 fi
 

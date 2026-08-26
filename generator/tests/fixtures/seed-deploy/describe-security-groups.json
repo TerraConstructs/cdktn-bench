@@ -1,0 +1,33 @@
+{
+    "SecurityGroups": [
+        {
+            "GroupId": "sg-05c33a26cbf19bef8",
+            "GroupName": "internal-services-ssm-endpoint",
+            "Description": "Ingress to the SSM interface endpoint from inside the VPC",
+            "VpcId": "vpc-05c33a26cbf19bef8",
+            "OwnerId": "111122223333",
+            "IpPermissions": [
+                {
+                    "IpProtocol": "tcp",
+                    "FromPort": 443,
+                    "ToPort": 443,
+                    "IpRanges": [
+                        {
+                            "CidrIp": "10.20.0.0/16"
+                        }
+                    ],
+                    "Ipv6Ranges": [],
+                    "PrefixListIds": [],
+                    "UserIdGroupPairs": []
+                }
+            ],
+            "IpPermissionsEgress": [],
+            "Tags": [
+                {
+                    "Key": "Name",
+                    "Value": "internal-services-ssm-endpoint"
+                }
+            ]
+        }
+    ]
+}

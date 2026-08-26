@@ -1,0 +1,32 @@
+{
+    "VpcEndpoints": [
+        {
+            "VpcEndpointId": "vpce-0a1b2c3d4e5f60718",
+            "VpcEndpointType": "Interface",
+            "VpcId": "vpc-05c33a26cbf19bef8",
+            "ServiceName": "com.amazonaws.us-east-1.ssm",
+            "State": "available",
+            "Groups": [
+                {
+                    "GroupId": "sg-05c33a26cbf19bef8",
+                    "GroupName": "internal-services-ssm-endpoint"
+                }
+            ],
+            "OwnerId": "111122223333"
+        },
+        {
+            "VpcEndpointId": "vpce-0badbadbadbadbad0",
+            "VpcEndpointType": "Interface",
+            "VpcId": "vpc-0999999999aaaaaaa",
+            "ServiceName": "com.amazonaws.us-east-1.ssm",
+            "State": "available",
+            "Groups": [
+                {
+                    "GroupId": "sg-0abcabcabcabcabc0",
+                    "GroupName": "leftover-from-an-earlier-trial"
+                }
+            ],
+            "OwnerId": "111122223333"
+        }
+    ]
+}

@@ -10,6 +10,18 @@ keywords = []
 [scenario]
 scenario_id = "anchor"
 agent_role_name = "QALocalInvocationApplicationAdmin"
+# BROWNFIELD (specs/SCHEMA.md §2.7.1): the role
+# pre_invoke/pre_invoke.sh deploys this task's SEED under, before
+# the agent's first token. It is the AGENT'S OWN ROLE, and that is a
+# RULE, not a convenience: aws_bench/utils/aws_creds.py falls back to
+# OrganizationAccountAccessRole when this key is unset, and deploying
+# the seed with a BROADER role than the agent gets can create
+# resources the agent cannot then modify or delete -- a harness
+# privilege asymmetry wearing the costume of an agent failure, which
+# is exactly what DECISIONS.md Amendment 24 retired
+# QADeployApplicationRole to avoid. A seed the harness can deploy
+# must be a seed the agent can change.
+pre_invoke_role_name = "QALocalInvocationApplicationAdmin"
 
 [concurrency]
 # MUTATING: this scenario's agent phase performs real AWS deploys
@@ -72,7 +84,24 @@ timeout_sec = 900.0
 # self.environment.exec(command=command, env=env) -- this genuinely
 # reaches tests/test.sh's own process environment in a real trial,
 # not a documented no-op.
-env = { SPEC_LIVE_CHECK_ENABLED = "true", SPEC_LIVE_CHECK_GATING = "true", SPEC_IDEMPOTENCE_ENABLED = "true", SPEC_IDEMPOTENCE_GATING = "true" }
+env = { SPEC_LIVE_CHECK_ENABLED = "true", SPEC_LIVE_CHECK_GATING = "true", SPEC_IDEMPOTENCE_ENABLED = "true", SPEC_IDEMPOTENCE_GATING = "true", SPEC_SEED_DEPLOY_REQUIRED = "true" }
+
+# --- aws-bench extension --- BROWNFIELD seed-deploy budget
+# specs/SCHEMA.md §2.7.1. pre_invoke/pre_invoke.sh runs a REAL
+# deploy (terraform apply / cdk deploy / cdktn deploy) plus a live
+# proof that it landed. aws-bench's own default is 600.0 s
+# (aws_bench/dataset/task_config.py), which an apply that has to
+# wait for an interface VPC endpoint to reach `available` exceeds.
+#
+# NOT scaled by --timeout-multiplier: aws_trial.py's
+# _run_phase_script passes phase.timeout_sec STRAIGHT to
+# ScriptRunner, unlike the [agent]/[verifier] timeouts which go
+# through Trial._resolve_timeout_sec. An operator who raises the
+# multiplier for a slow runner stretches those windows and not this
+# one -- and a seed timeout ABORTS the trial rather than slowing it.
+# Size it for the slowest runner you will ever use.
+[pre_invoke]
+timeout_sec = 2400.0
 
 # --- Harbor standard ---
 [environment]

@@ -1,0 +1,25 @@
+{
+    "VpcEndpoints": [
+        {
+            "VpcEndpointId": "vpce-0a1b2c3d4e5f60718",
+            "VpcEndpointType": "Interface",
+            "VpcId": "vpc-05c33a26cbf19bef8",
+            "ServiceName": "com.amazonaws.us-east-1.ssm",
+            "State": "available",
+            "PrivateDnsEnabled": true,
+            "SubnetIds": [
+                "subnet-0f1e2d3c4b5a69788"
+            ],
+            "Groups": [
+                {
+                    "GroupId": "sg-0d9c8b7a6f5e40312",
+                    "GroupName": "platform-internal-services-ssm-endpoint"
+                }
+            ],
+            "NetworkInterfaceIds": [
+                "eni-0123456789abcdef0"
+            ],
+            "OwnerId": "111122223333"
+        }
+    ]
+}

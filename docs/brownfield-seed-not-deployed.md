@@ -1,9 +1,12 @@
 # The brownfield seed is never deployed — `named-resource-replacement` does not measure its own trap
 
-**Status: OPEN. Blocks promoting DECISIONS.md Amendment 28 out of DRAFT.**
-Found 2026-08-25, on the first live brownfield battery
+**Status: RESOLVED BY DESIGN — see `docs/design/single-step-seed-deploy.md`
+(implemented 2026-08-25; `specs/SCHEMA.md` §2.7.1, `DECISIONS.md` Amendment 31).
+Still blocks promoting Amendment 28 until the first live run under that
+mechanism.** Found 2026-08-25, on the first live brownfield battery
 (`jobs/rerun-named-resource-replacement/2026-08-25__01-43-17`, and the voided
-`…__00-42-05` before it).
+`…__00-42-05` before it). Everything below is left as it was written — it is the
+record of the defect, and the three rows it voided stay voided.
 
 ## The claim the scenario makes
 
@@ -97,15 +100,60 @@ a local `terraform.tfstate` that nothing seeded.
 3. **Withdraw the scenario** until the seeding mechanism exists, and promote
    Amendment 28 on a different brownfield scenario built seed-first.
 
+## What was decided (2026-08-25)
+
+**Option 1.** `workspace_seed.deploy` (`specs/SCHEMA.md` §2.7.1) makes
+`AwsBenchSingleStepTrial._prepare` deploy the seed for real, inside the agent
+container, under the agent's own role, before the agent's first token — and then
+prove it landed — three ways in `_prepare`, plus a **fourth** at verify time
+that refuses to grade a trial whose seed script never ran at all (added by the
+same-day adversarial review, `DECISIONS.md` Amendment 31 §10 finding M3) —
+every one of which **aborts** the trial rather than scoring it 0.0. (A 0.0 is a measurement about the agent; a seed that never
+deployed produced no measurement at all.) The full contract is
+`docs/design/single-step-seed-deploy.md`; Options 2 and 3 are rejected and not
+revisited.
+
+The design required **no runner change at all** — the task-level `pre_invoke`
+hook already ran unconditionally for any task carrying the file, which this
+write-up did not know.
+
+Two findings this write-up also did not have, both load-bearing and both fixed
+in the same pass:
+
+1. **The terraconstructs state path published in Amendment 28 §4 was wrong.**
+   State does not live at `cdktf.out/stacks/<id>/terraform.tfstate`; `cdktn`
+   installs a `LocalBackend` whose default path is
+   ``path.join(process.cwd(), `terraform.${stackId}.tfstate`)`` — i.e.
+   `/app/project/terraform.<workspace_id>.tfstate`, an absolute path baked into
+   `cdk.tf.json` at synth time. That wrong path is the **whole** of the
+   `not_verifiable` verdict this scenario's terraconstructs row returned despite
+   an apply AWS itself confirmed: the probe failed, not the deploy. Corrected in
+   `gen.py::IDEMPOTENCE_STATE_PROBE`, and recorded as an Amendment 28 §4
+   correction.
+2. **A deployed seed broke `hcl-raw`'s tier-0 outright.** That arm's
+   `plan_command` had no `-refresh=false`, so the moment a `terraform.tfstate`
+   exists the *offline* verifier plan refreshes through dummy credentials and
+   dies (`Refreshing state... [id=vpc-05c33a26cbf19bef8]` / `PLAN FAILED`, in
+   this very battery's `verifier/test-stdout.txt:42-46`). The hcl-raw 0.0 in the
+   table below was read as an agent failure; it was the verifier failing on
+   state the agent's own *successful* apply created. Any seed-deploy design that
+   did not fix this would have scored every hcl-raw brownfield trial 0.0 before
+   the agent was judged. The generator now hard-errors on it.
+
 ## Consequences now
 
 * **Amendment 28 stays DRAFT.** Its promotion criterion is a first live
-  brownfield run; this was not one.
+  brownfield run; this was not one. The mechanism above does not promote it —
+  it makes that criterion **reachable for the first time**, and the same run
+  promotes Amendment 31 alongside it.
 * The three rows above must not enter `docs/live-results.md` as brownfield
   measurements, and must never be pooled into the brownfield stratum
   (Amendment 28 §6).
-* Batch B (4 remaining brownfield scenarios) is **blocked on the same
+* Batch B (4 remaining brownfield scenarios) was **blocked on the same
   mechanism** — every one of them would inherit this defect, because every one
-  of them assumes a deployed seed.
+  of them assumes a deployed seed. It is unblocked as of 2026-08-25, and each
+  inherits every rule in §2.7.1: its own `deploy` block, its own `live_asserts`
+  with a `pins_catch`, and its own `-refresh=false`. All three are generator-
+  enforced, not review-time conventions.
 * The `ecs-swappiness` rows from the same battery are unaffected and valid:
   it is a static scenario with no live check and no seed.

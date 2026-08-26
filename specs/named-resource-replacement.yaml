@@ -40,6 +40,21 @@
 # path that passes vacuously on a seed AND on a fixed solution alike — this
 # spec deliberately does not carry it, and the `seed-parity` gate would have
 # caught it if it did.
+#
+# THE SEED IS NOW DEPLOYED BY THE HARNESS (2026-08-25, `workspace_seed.deploy`
+# below; specs/SCHEMA.md §2.7.1, docs/design/single-step-seed-deploy.md).
+# Everything above describes a trap that needs the security group to exist in
+# AWS *and in state* before the agent starts. Until that block existed nothing
+# put it there: the premise "It is already deployed in this account" was a lie
+# the spec told, and `tests/live_check.py`'s discriminating assertion ("fail if
+# the OLD group survives") was therefore satisfied VACUOUSLY on an empty
+# account — a `pass` that proved nothing, on all three arms
+# (docs/brownfield-seed-not-deployed.md; three published rows voided). The
+# `deploy` block makes the premise a FACT, deploying under the agent's own role
+# before the agent's first token, and then proving it landed three ways — deploy
+# exit code, arm-specific state artifact, and live AWS asserts — every one of
+# which ABORTS the trial rather than scoring it 0.0. A 0.0 is a measurement
+# about the AGENT; a seed that never deployed produced no measurement at all.
 
 id: named-resource-replacement
 # HOST-SIDE ONLY. `title` is never stamped into `environment/` for this spec --
@@ -373,6 +388,136 @@ workspace_seed:
       op: set_eq
       expected: ["10.20.0.0/16"]
 
+  # -------------------------------------------------------------------------
+  # §2.7.1 deploy — THE PREMISE IS MADE TRUE BY THE HARNESS
+  # -------------------------------------------------------------------------
+  #
+  # Until 2026-08-25 the `premise` above said "It is already deployed in this
+  # account" and NOTHING deployed it (docs/brownfield-seed-not-deployed.md).
+  # That is not a cosmetic gap on THIS scenario: the trap is a REPLACEMENT trap
+  # — renaming a literally-named security group forces destroy-then-create, and
+  # the interface endpoint holding that group turns the destroy into a
+  # `DependencyViolation` — so every step of it needs the group to exist in AWS
+  # AND in state. With nothing deployed the trap could not fire on any arm, and
+  # `tests/live_check.py`'s discriminating assertion ("fail if the OLD group
+  # survives") was satisfied VACUOUSLY: the oracle reported `pass` while proving
+  # nothing. Three published rows were voided by that finding.
+  #
+  # This block makes `aws_bench/task/aws_trial.py::AwsBenchSingleStepTrial.
+  # _prepare` deploy the seed for real, inside the agent container, before the
+  # agent's first token — and then prove it landed, three ways, fail-closed.
+  # docs/design/single-step-seed-deploy.md is the full contract.
+  deploy:
+    # Sized for a real apply PLUS an interface VPC endpoint reaching
+    # `available` (~2-3 min on its own). aws-bench's default is 600.0 s and is
+    # not enough. NOT scaled by --timeout-multiplier — a seed timeout aborts the
+    # trial, so this is deliberately generous headroom, not an estimate.
+    timeout_sec: 2400.0
+    live_asserts:
+      - name: old-group-is-live
+        description: >
+          The security group the change request renames exists in the account
+          RIGHT NOW, and it is the ONLY group by that name. This is the exact
+          negation of live_check.py's own
+          discriminating assertion ("no group named
+          `internal-services-ssm-endpoint` remains"). If this is false
+          pre-agent, that assertion is satisfied vacuously and the live oracle
+          reports `pass` while proving nothing — which is precisely the defect
+          docs/brownfield-seed-not-deployed.md was filed for.
+        aws:
+          - ec2
+          - describe-security-groups
+          - --filters
+          - Name=group-name,Values=internal-services-ssm-endpoint
+        jsonpath: "$.SecurityGroups[*].GroupName"
+        # `eq`, NOT `set_eq` (finding B, adversarial review round 3,
+        # 2026-08-25, REPRODUCED). `set_eq`'s compiled filter runs `unique`
+        # before comparing (gen.py::ASSERT_LIB_SH), so N objects with the SAME
+        # name collapse to ONE element and the assert PASSES. That is legal
+        # AWS: EC2 security-group names are unique per-VPC, not per-account,
+        # and `--filters Name=group-name` above is account-wide, so two groups
+        # called `internal-services-ssm-endpoint` in two VPCs is a state this
+        # query really can return.
+        #
+        # It is not hypothetical, and it corrupts the measurement in the
+        # OPPOSITE direction to the vacuity bug: a reset whose fastscan leaves
+        # the previous trial's group behind but still reports success
+        # (aws_trial.py::_reset_scenario_account only flags contamination when
+        # reset_result.success is false) -> this trial's seed deploys a second,
+        # fresh, identically-named group -> `unique` collapses them -> the
+        # proof passes -> the agent renames ITS group correctly -> the leftover
+        # still carries the OLD name -> live_check.py's discriminating
+        # assertion sees the old name survive -> `fail_stale` -> a PERFECT
+        # agent scored 0.0 and published as an agent failure.
+        #
+        # `eq` is `($v | length) == 1 and ($v[0] == $e)`: EXACTLY one resolved
+        # node, so multiplicity cannot be collapsed. What it proves, precisely:
+        # this account holds exactly one security group by this name, and it is
+        # the one the change request renames. Executed against
+        # fixtures/seed-deploy/describe-security-groups{,-empty,-duplicate-vpcs}.json
+        # in generator/tests/test_seed_deploy.py.
+        op: eq
+        expected: "internal-services-ssm-endpoint"
+        pins_catch: rename-replaces-an-in-use-security-group
+
+      - name: endpoint-holds-the-old-group
+        description: >
+          This account holds EXACTLY ONE security-group attachment on exactly
+          one interface VPC endpoint, and it is THE old group. That attachment
+          is the dependency that turns the rename's destroy into a
+          DependencyViolation; without it the trap is inert even with the group
+          deployed. Exactly one, not "at least one": a second, identically
+          named attachment left behind by a failed reset would make the trap
+          fire on the wrong object and score a correct agent 0.0. Deliberately reads the attached groups and NOT
+          `State`: an interface endpoint can still be `pending` at the moment
+          `apply` returns, and the generator has no poll primitive today
+          (design §12 risk 3) — the attachment, unlike the state, is true the
+          instant the endpoint object exists.
+        aws:
+          - ec2
+          - describe-vpc-endpoints
+          - --filters
+          - Name=vpc-endpoint-type,Values=Interface
+        jsonpath: "$.VpcEndpoints[*].Groups[*].GroupName"
+        # NOT `contains` (finding M2, adversarial review 2026-08-25,
+        # REPRODUCED). This read `op: contains` with expected
+        # "internal-services-ssm-endpoint" until that review. On a STRING node
+        # `contains` is jq's literal SUBSTRING test
+        # (gen.py::ASSERT_LIB_SH: `elif (type == "string") then ($e | type ==
+        # "string") and contains($e)`), and the solution's NEW group name,
+        # `platform-internal-services-ssm-endpoint`, is a strict SUPERSTRING of
+        # the old one. So the one assert whose entire job is to prove the trap
+        # is ARMED passed, verbatim, against the exact post-solution account in
+        # which the trap is DISARMED — the same shape of free pass this whole
+        # block exists to abolish.
+        #
+        # `eq`, NOT `set_eq` (finding B, adversarial review round 3,
+        # 2026-08-25). `set_eq` runs `unique` before comparing
+        # (gen.py::ASSERT_LIB_SH), so two interface endpoints each attached to
+        # a group of the SAME name -- the seed's own plus a leftover the reset
+        # failed to remove -- collapse to one element and PASS. `eq` is
+        # `($v | length) == 1 and ($v[0] == $e)`: EXACTLY one resolved node.
+        #
+        # What `eq` proves here, precisely: this account holds exactly ONE
+        # security-group attachment on exactly ONE interface VPC endpoint, and
+        # it is the old group. That is strictly stronger than the set claim it
+        # replaces -- the renamed group is a FAILURE (the M2 case), a stray
+        # SECOND endpoint is a FAILURE whatever it holds, and a duplicate of
+        # the seed's own group is a FAILURE too, which `set_eq` could not see.
+        #
+        # Finding m5 (neither assert can be scoped to this trial's VPC, because
+        # `aws` argv is static spec text with no placeholder-substitution
+        # surface and the seed's VPC id does not exist until the deploy runs)
+        # is narrowed but NOT closed by this: `eq` bounds the COUNT, so a
+        # contaminated account is loud instead of silent, but a same-named
+        # group in a foreign VPC is still indistinguishable from this trial's
+        # own. Executed every way in generator/tests/test_seed_deploy.py
+        # against fixtures/seed-deploy/describe-vpc-endpoints{,-renamed-only,
+        # -empty,-stray-extra-group,-duplicate-vpcs}.json.
+        op: eq
+        expected: "internal-services-ssm-endpoint"
+        pins_catch: rename-replaces-an-in-use-security-group
+
 instruction:
   shared_body: |
     Our security-group naming convention changed: every security group must now
@@ -393,21 +538,78 @@ instruction:
         artifact_path: cdk.out/ScenarioStack.template.json
         build_command: npm run build
         synth_command: npx cdk synth --no-lookups --quiet -o cdk.out
+        # §2.7.1: the seed deploy runs this VERBATIM with cwd=/app/project.
+        # No `-o` and no `--app`: it must use the workspace's own cdk.json
+        # ("app": "npx tsc -p tsconfig.json && node bin/app.js", which
+        # self-builds), so the seed and the agent deploy the same app
+        # definition. No stackName override anywhere — bin/app.ts is
+        # generator-owned and non-agent-editable and fixes the physical CFN
+        # stack name to `ScenarioStack`, which is exactly what makes the agent's
+        # own later `cdk deploy` an UpdateStack against THIS stack rather than a
+        # fresh create. This arm keeps no local state at all.
+        deploy_command: npx cdk deploy --require-approval never ScenarioStack
     hcl_raw:
       language_line: "This workspace is hand-written Terraform HCL (no modules)."
       output_contract:
         entry_file: main.tf
         artifact_path: plan.json
+        # `-refresh=false` is MANDATORY on a brownfield spec, and the
+        # generator hard-errors without it (Spec._brownfield_plan_must_not_
+        # refresh). MEASURED, not predicted: with a state file present in
+        # /app/project this plan REFRESHES, the verifier runs OFFLINE so
+        # provider.tf is in dummy-credential mode, the refresh signs a real EC2
+        # call with a fake key, and the plan dies —
+        #   aws_vpc.internal_services: Refreshing state... [id=vpc-05c33a26cbf19bef8]
+        #   Planning failed. ... / PLAN FAILED
+        # (jobs/rerun-named-resource-replacement/2026-08-25__01-43-17/
+        #  named-resource-replacement-hcl-r__rtmpCyN/verifier/test-stdout.txt:42-46).
+        # That row's 0.0 was read as "the agent's config is bad"; it was the
+        # VERIFIER failing on state the agent's own SUCCESSFUL apply created.
+        # With workspace_seed.deploy seeding state deliberately it would fire on
+        # EVERY hcl-raw trial here, including a perfect one. Grading is
+        # unaffected: every tf_jsonpath below reads $.planned_values /
+        # $.configuration, which carry the full desired end state of every
+        # resource — not a changeset.
         plan_command: >-
           terraform init && terraform validate &&
-          terraform plan -input=false -out=plan.tfplan &&
+          terraform plan -input=false -refresh=false -out=plan.tfplan &&
           terraform show -json plan.tfplan > plan.json
+        # §2.7.1. TF_VAR_cdktn_bench_live=1 is MANDATORY: provider.tf hardcodes
+        # dummy access_key/secret_key otherwise, and the AWS provider ranks an
+        # explicit access_key ABOVE every ambient credential source, so the seed
+        # apply would fail InvalidClientTokenId. State lands at
+        # /app/project/terraform.tfstate — Terraform's implicit local backend
+        # (provider.tf's `terraform {}` block declares no `backend` sub-block),
+        # i.e. the agent's own cwd, which is the whole handoff.
+        deploy_command: >-
+          TF_VAR_cdktn_bench_live=1 terraform init -input=false &&
+          TF_VAR_cdktn_bench_live=1 terraform apply -input=false -auto-approve
     terraconstructs:
       language_line: "This workspace is a terraconstructs (TypeScript) app using its AWS L2 constructs."
       output_contract:
         entry_file: lib/scenario-stack.ts
         artifact_path: cdktf.out/stacks/internal-services-network/plan.json
         synth_command: npx cdktn synth
+        # §2.7.1. The positional argument is the STACK id — i.e. `workspace_id`
+        # above, the construct id environment/app/main.ts passes to
+        # ScenarioStack — NOT this spec's `id`. The two differ here BY DESIGN
+        # (§0.1), and confusing them is a real shipped bug: this arm's
+        # solution/solve.sh named `named-resource-replacement`, a stack that
+        # does not exist, so its LIVE=1 path cannot ever have worked.
+        #
+        # State does NOT land under cdktf.out/. cdktn's TerraformStack installs
+        # a LocalBackend for any stack declaring no backend of its own, whose
+        # default path is path.join(process.cwd(), `terraform.${stackId}.tfstate`)
+        # (packages/cdktn/src/backends/local-backend.ts:23,
+        #  packages/cdktn/src/terraform-stack.ts:340-341) — an ABSOLUTE path
+        # baked into cdk.tf.json at synth time. So the seed's state lands at
+        # /app/project/terraform.internal-services-network.tfstate, and every
+        # later synth from /app/project — live or offline, harness or agent —
+        # resolves that same file. CDKTN_BENCH_LIVE only strips the dummy
+        # credentials and the mock-STS endpoint from providerConfig; the backend
+        # is installed either way, which is what makes the handoff work.
+        deploy_command: >-
+          CDKTN_BENCH_LIVE=1 npx cdktn deploy --auto-approve internal-services-network
 
 catches:
   - name: rename-replaces-an-in-use-security-group

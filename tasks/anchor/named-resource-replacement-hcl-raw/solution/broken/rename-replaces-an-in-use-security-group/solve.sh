@@ -160,7 +160,55 @@ if [ "${LIVE:-0}" = "1" ]; then
   echo "== LIVE: this apply is EXPECTED to fail with DependencyViolation =="
   export TF_VAR_cdktn_bench_live=1
   terraform init -input=false
-  terraform apply -input=false -auto-approve || true
+  # FIXTURE SELF-PROOF (finding M5, adversarial review 2026-08-25). This pair
+  # of lines used to be
+  #     terraform apply -input=false -auto-approve || true
+  #     python3 tests/live_check.py --expect stale
+  # and that pair CANNOT tell the catch from a
+  # no-op. `--expect stale` requires only `outcome == "fail_stale"`, and
+  # live_check.observe() reports fail_stale for ANY unsatisfied assertion --
+  # including "the apply never ran". That is not a hypothetical: this exact
+  # line named a NONEXISTENT stack for its entire life (see the stack-id note
+  # above, fixed 2026-08-25) and nothing anywhere went red. It is now strictly
+  # WORSE than hypothetical, because workspace_seed.deploy has the HARNESS put
+  # the old security group in the account before this script starts -- so
+  # `fail_stale` is true BY CONSTRUCTION, before the fixture does anything at
+  # all.
+  #
+  # So the fixture proves the SPECIFIC failure it exists to pin, in two parts,
+  # before it is allowed to consult the live oracle:
+  #   1. the apply must exit NON-ZERO -- it ran, and it lost;
+  #   2. its log must name `DependencyViolation` -- it lost for the reason this
+  #      catch is ABOUT (EC2 refusing to delete a security group an interface
+  #      endpoint's ENI still holds), not for some unrelated reason such as
+  #      expired credentials, a typo'd stack id, or a missing toolchain.
+  # Only then does `--expect stale` run, and by that point it is corroboration
+  # rather than the whole proof.
+  DEPLOY_LOG=/tmp/named-resource-replacement-broken-hcl-raw.log
+  set +e
+  terraform apply -input=false -auto-approve > "$DEPLOY_LOG" 2>&1
+  deploy_rc=$?
+  set -e
+  cat "$DEPLOY_LOG"
+  if [ "$deploy_rc" -eq 0 ]; then
+    echo "FIXTURE PROOF FAILED: the apply SUCCEEDED (exit 0)." >&2
+    echo "This fixture exists to pin a rename that CANNOT apply -- the interface" >&2
+    echo "VPC endpoint still holds the old security group, so EC2 must refuse the" >&2
+    echo "destroy half of the destroy-then-create. A clean exit means the trap did" >&2
+    echo "not fire: either the seed is not in the account (workspace_seed.deploy /" >&2
+    echo "pre_invoke/pre_invoke.sh), or this catch is no longer real and the spec" >&2
+    echo "must be re-tiered." >&2
+    exit 1
+  fi
+  if ! grep -q "DependencyViolation" "$DEPLOY_LOG"; then
+    echo "FIXTURE PROOF FAILED: the apply failed (exit $deploy_rc) but its log" >&2
+    echo "never mentions DependencyViolation, so it did NOT fail for the reason this" >&2
+    echo "fixture pins. Anything else -- bad credentials, a wrong stack id, a broken" >&2
+    echo "toolchain -- would also reach live_check.py's 'fail_stale' and would be" >&2
+    echo "laundered into a green '--expect stale'. Log: $DEPLOY_LOG" >&2
+    exit 1
+  fi
+  echo "== apply failed with DependencyViolation, as this fixture requires =="
   python3 tests/live_check.py --expect stale
 fi
 

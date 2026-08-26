@@ -22,6 +22,15 @@ from typing import Annotated, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+# Same directory, and every entry point puts generator/ on sys.path before it
+# imports this module (gen.py, check_reference_paths.py, gates/*, the test
+# suites). Imported HERE, at spec-LOAD time, because SeedLiveAssert's
+# falsifiability rule (finding A, adversarial review round 3, 2026-08-25) is a
+# rule about the COMPILED jq filter, not about the JSONPath text -- and
+# because compiling at load turns an untranslatable `jsonpath` into a spec
+# error instead of a generation-time crash three commands later.
+from jsonpath_jq import jsonpath_to_jq
+
 TierStr = Literal["0", "0.5", "1"]
 # "live" added by Slice G (apigw-redeploy, 2026-08-06): a catch whose
 # mistake is invisible to EVERY static tier by construction (the only
@@ -438,6 +447,19 @@ _SEED_COMMENT_BANNED_TOKENS = (
 # (HCL `#`, TS `//`, and the inside of a TS/JSDoc block comment `*` or `/*`).
 _COMMENT_LINE_RE = re.compile(r"^\s*(#|//|/\*|\*)")
 
+# `terraform [<global flags>] plan` -- the PLAN SUBCOMMAND, not the literal
+# string "terraform plan" (finding G, adversarial review round 3, 2026-08-25).
+# terraform accepts its global flags between the binary and the subcommand
+# (`terraform -chdir=... plan`), so a substring test silently exempted a real,
+# documented invocation from `Spec._brownfield_plan_must_not_refresh`.
+#
+# ONE owner, TWO consumers: this pattern and the one in
+# generator/tests/test_seed_deploy.py::_TF_PLAN must agree, because the
+# validator speaks for the spec FIELD and the test speaks for the emitted
+# BYTES -- the emitted-bytes test is the only thing that covers the arms whose
+# plan command the spec does not carry at all.
+_TF_PLAN_RE = re.compile(r"\bterraform\b(?:\s+-\S+)*\s+plan\b")
+
 
 def _seed_comment_violations(body: str) -> list[str]:
     """Every banned token found in a COMMENT line of `body`, in order."""
@@ -480,6 +502,12 @@ class SeedAssert(BaseModel):
     pins_catch: str | None = None
     cfn_jsonpath: str | None = None
     tf_jsonpath: str | None = None
+    # SAME nine-op vocabulary as `StructuralAssert`/`SeedAssert` at the TYPE
+    # level, deliberately: one table, one translator, one evaluator. Three of
+    # the nine are then rejected in `_wellformed` below with a message that
+    # explains WHY -- a spec author who copies an op straight out of
+    # `oracle.structural_asserts` (where all nine are legal) has to be told
+    # what is different HERE, not handed a bare "input should be one of ...".
     op: Literal[
         "exists", "not_exists", "eq", "in", "contains", "regex", "set_eq",
         "absent_or_eq", "not_regex",
@@ -593,12 +621,331 @@ class PerArmSeedExtraFiles(BaseModel):
     terraconstructs: list[SeedExtraFile] = Field(default_factory=list)
 
 
+# The ops from SCHEMA.md §4.2's nine-op table whose compiled jq filter is TRUE
+# when the path resolves to zero nodes -- i.e. the ops that PASS on a
+# completely empty AWS account. Legal on a `StructuralAssert` (where "this key
+# is absent from the template" is a real, falsifiable fact about an artifact
+# that definitely exists) and REJECTED on a `SeedLiveAssert`, where the whole
+# question is whether the artifact -- the account state -- exists at all.
+#
+# REJECTING THESE DOES NOT MAKE A LIVE ASSERT FALSIFIABLE. It closes one of
+# two known routes to a free pass; the other is a `jsonpath` that names a
+# collection instead of iterating it, closed separately in
+# `SeedLiveAssert._wellformed` (finding A, round 3, 2026-08-25). Neither rule
+# is a decision procedure and this comment does not claim one.
+_VACUOUS_ON_AN_EMPTY_ACCOUNT = frozenset({"not_exists", "absent_or_eq", "not_regex"})
+
+
+@_strict
+class SeedLiveAssert(BaseModel):
+    """One fact about the REAL AWS ACCOUNT that must hold after the harness has
+    deployed the seed and BEFORE the agent's first token (SCHEMA.md §2.7.1).
+
+    This is the anti-vacuity gate, and it is a different instrument from
+    `SeedAssert` -- which never enters a container at all. A `seed_assert` is a
+    GENERATION-time parity gate (`make seed-parity`) resolved against the
+    offline, never-deployed workspace: it answers "do the three seeds declare
+    the same system?". A `SeedLiveAssert` is resolved at TRIAL time, inside the
+    agent container, against a real `aws` CLI response, and answers "does the
+    account actually hold it?".
+
+    Why both are mandatory: the defect this whole mechanism exists to fix
+    (docs/brownfield-seed-not-deployed.md) is an oracle that passed for FREE.
+    `tests/live_check.py`'s discriminating assertion for
+    named-resource-replacement is "no security group named
+    `internal-services-ssm-endpoint` remains" -- which a never-deployed account
+    satisfies vacuously. A contradicted live assert ABORTS the trial in
+    `_prepare`, so that vacuous pass is unreachable.
+
+    Deliberately ARM-AGNOSTIC (no `applies_to`): the account does not know which
+    arm produced its resources, which is the same principle that makes
+    `tests/live_check.py` byte-identical across all three arms.
+
+    `op`/`expected` reuse `StructuralAssert`/`SeedAssert`'s vocabulary verbatim
+    -- same nine-op table (§4.2), same `generator/jsonpath_jq.py` compilation,
+    resolved by the SAME `_assert_lib.sh::assert_check` bash function a real
+    trial's tier-0 runs. One `jsonpath`, not a `{cfn,tf}` pair: the artifact is
+    an AWS API response, which has no arm-shaped dialect.
+    """
+
+    name: str
+    description: str
+    # argv tokens appended to `aws`, as a LIST -- never a shell string. The
+    # generator single-quotes each token when it emits the call, so no quoting
+    # or word-splitting question exists at any point. The harness owns
+    # --profile (staged credentials), --region (the script's own export) and
+    # --output (always json, because the compiled jq filter assumes it), so
+    # those are rejected rather than silently overridden.
+    aws: Annotated[list[str], Field(min_length=1)]
+    jsonpath: str
+    op: Literal[
+        "exists", "not_exists", "eq", "in", "contains", "regex", "set_eq",
+        "absent_or_eq", "not_regex",
+    ]
+    expected: object = None
+    # Back-reference to `catches[].name`. At least one live assert per spec must
+    # set it (see `Spec._workspace_seed_deploy_coverage`). Meaning: "the named
+    # catch's LIVE oracle is vacuous unless this fact holds before the agent
+    # starts." Without it the live asserts drift into proving that SOMETHING got
+    # deployed rather than that the POISONED thing got deployed -- which is the
+    # same vacuity this mechanism exists to close, one level up. Mirrors
+    # `SeedAssert.pins_catch` exactly.
+    pins_catch: str | None = None
+
+    @model_validator(mode="after")
+    def _wellformed(self) -> "SeedLiveAssert":
+        if not self.name.strip():
+            raise ValueError("workspace_seed.deploy.live_asserts: name must be non-empty")
+        if not self.jsonpath.strip() or not self.jsonpath.startswith("$"):
+            raise ValueError(
+                f"seed live assert {self.name!r}: jsonpath must be non-empty and "
+                "start with '$' -- it is compiled by generator/jsonpath_jq.py, "
+                "the same translator oracle.structural_asserts uses (SCHEMA.md "
+                "§2.7.1/§4.2)"
+            )
+        # VACUITY IS REACHABLE THROUGH THE PATH, NOT ONLY THROUGH THE OP
+        # (finding A, adversarial review round 3, 2026-08-25, REPRODUCED).
+        # `_VACUOUS_ON_AN_EMPTY_ACCOUNT` below rejects the three ops that pass
+        # on zero resolved nodes. It does NOT make the live proof falsifiable,
+        # because a `jsonpath` that stops at the CONTAINER instead of
+        # descending INTO it hands even `exists` one node on an empty account:
+        #
+        #     $ echo '{"SecurityGroups":[]}' > /tmp/empty.json
+        #     $ assert_check probe '.SecurityGroups' exists '' /tmp/empty.json
+        #       PASS [probe]                                          # rc=0
+        #
+        # `[ .SecurityGroups ]` is `[[]]` -- length 1, and `map(select(. !=
+        # null))` does not drop an empty ARRAY. So a `workspace_seed.deploy`
+        # whose ENTIRE live proof passed on a completely empty account was
+        # still expressible, accepted at load, emitted, and reported
+        # `seed_deployed`. That is the same defect M1 was filed for, reached
+        # through the other half of the assert.
+        #
+        # THE RULE, EXACTLY: the compiled filter must contain at least one
+        # `.[]` stage -- i.e. the JSONPath must carry a `[*]` or a `[?(...)]`
+        # segment and therefore ITERATE a collection rather than name it. On an
+        # empty collection an iterating filter resolves to ZERO nodes, which is
+        # what every accepted op needs in order to be contradictable.
+        #
+        # THIS IS A NARROWING, NOT A DECISION PROCEDURE, and the distinction is
+        # the whole reason M1's own comment was a defect: nothing here proves a
+        # path is falsifiable in general. It is a conservative SHAPE rule that
+        # makes the known-vacuous shape unexpressible and rejects some
+        # falsifiable paths as collateral -- notably recursive descent
+        # (`$..GroupName`), which compiles to `.. | objects | .GroupName?` and
+        # iterates nothing. A live assert that genuinely needs one of those
+        # should widen this rule deliberately, with its own executed
+        # empty-account proof, rather than have the rule quietly bent.
+        try:
+            compiled = jsonpath_to_jq(self.jsonpath)
+        except ValueError as exc:
+            raise ValueError(
+                f"seed live assert {self.name!r}: jsonpath {self.jsonpath!r} "
+                f"cannot be compiled by generator/jsonpath_jq.py ({exc}). It is "
+                "baked into the emitted pre_invoke.sh as a jq filter at "
+                "generation time, so an untranslatable path is a spec error, "
+                "not a generator crash (SCHEMA.md §2.7.1/§4.2)"
+            ) from exc
+        stages = [s.strip() for s in compiled.split("|")]
+        if not any(s == ".[]" for s in stages):
+            raise ValueError(
+                f"seed live assert {self.name!r}: jsonpath {self.jsonpath!r} "
+                f"compiles to {compiled!r}, which never ITERATES a collection "
+                "-- it names one. A path that resolves to the CONTAINER gives "
+                "even `exists` one node on a completely EMPTY account (jq: "
+                "`[ .SecurityGroups ]` on `{\"SecurityGroups\":[]}` is `[[]]`, "
+                "length 1), so the whole live proof can pass with nothing "
+                "deployed -- the exact vacuity this mechanism exists to close "
+                "(docs/brownfield-seed-not-deployed.md). Descend into the "
+                "collection: use `[*]` or a `[?(...)]` filter segment, e.g. "
+                "`$.SecurityGroups[*].GroupName` rather than `$.SecurityGroups`. "
+                "This is a conservative SHAPE rule, not a proof of "
+                "falsifiability (SCHEMA.md §2.7.1)"
+            )
+        for token in self.aws:
+            if not token or not token.strip():
+                raise ValueError(
+                    f"seed live assert {self.name!r}: empty `aws` argv token"
+                )
+            if "\n" in token or "\r" in token:
+                raise ValueError(
+                    f"seed live assert {self.name!r}: `aws` argv token {token!r} "
+                    "contains a newline -- each token is emitted single-quoted on "
+                    "one line of the generated pre_invoke.sh"
+                )
+            if "'" in token:
+                raise ValueError(
+                    f"seed live assert {self.name!r}: `aws` argv token {token!r} "
+                    "contains a single quote -- the generator emits each token "
+                    "single-quoted, and there is no reason for an AWS CLI "
+                    "argument to need one (SCHEMA.md §2.7.1)"
+                )
+        if self.aws[0].startswith("-"):
+            raise ValueError(
+                f"seed live assert {self.name!r}: the first `aws` argv token "
+                f"({self.aws[0]!r}) is a flag -- it must be the SERVICE name "
+                "(e.g. 'ec2'), because the generator emits `aws <tokens>`"
+            )
+        for banned in ("--profile", "--region", "--endpoint-url", "--output"):
+            for token in self.aws:
+                if token == banned or token.startswith(banned + "="):
+                    raise ValueError(
+                        f"seed live assert {self.name!r}: `aws` argv token "
+                        f"{token!r} is harness-owned. --profile is set by the "
+                        "staged credentials file, --region by the generated "
+                        "script's own AWS_DEFAULT_REGION export, --output is "
+                        "always json (the compiled jq filter assumes it), and "
+                        "--endpoint-url would point the proof somewhere other "
+                        "than the account under test (SCHEMA.md §2.7.1)"
+                    )
+        # Copied verbatim from SeedAssert._jsonpaths_required_per_applies_to's
+        # tail: one op table, one expected-ness rule, three consumers.
+        needs_expected = self.op in {
+            "eq", "in", "contains", "regex", "set_eq", "absent_or_eq", "not_regex"
+        }
+        if needs_expected and self.expected is None:
+            raise ValueError(
+                f"seed live assert {self.name!r}: op={self.op!r} requires 'expected'"
+            )
+        if not needs_expected and self.expected is not None:
+            raise ValueError(
+                f"seed live assert {self.name!r}: op={self.op!r} must not set 'expected'"
+            )
+        # THE OP HALF of the falsifiability narrowing (finding M1, adversarial
+        # review 2026-08-25). The PATH half is enforced above; NEITHER is a
+        # decision procedure, and saying so is the point -- M1 was filed
+        # against a comment that claimed a property the code did not enforce,
+        # and finding A (round 3) was filed against M1's own fix for doing it
+        # again. What is enforced here, exactly: three of the nine ops PASS on
+        # ZERO resolved nodes (verified against gen.py::ASSERT_LIB_SH and
+        # pinned by an EXECUTED test -- generator/tests/test_seed_deploy.py::
+        # test_the_rejected_ops_really_do_pass_on_an_empty_account), so a spec
+        # could declare a deploy whose ENTIRE live proof was satisfied by a
+        # completely empty account. This rule removes that route and the path
+        # rule removes the other known one; together they do not prove that an
+        # accepted assert can fail. min_length=1 and `pins_catch` are counting
+        # rules, not falsifiability rules.
+        #
+        #   not_exists   -> `($v | length) == 0`                  -- true on []
+        #   absent_or_eq -> `($v | length) == 0 or ...`            -- true on []
+        #   not_regex    -> `$v | all(...)`; jq's all/1 over []    -- true on []
+        #
+        # So they are rejected HERE, on every live assert, not merely on the
+        # `pins_catch`-bearing one. Narrowing it to the pinning assert was the
+        # other option and is weaker for a reason worth writing down: the
+        # non-pinning entries are read by an operator as part of the same
+        # proof, and one that cannot fail dilutes the verdict rather than
+        # strengthening it -- "3 live asserts held" must mean three facts about
+        # the account, not two facts and a tautology.
+        #
+        # `set_eq` needs the same treatment for a different reason: its filter
+        # compares SETS, so `expected: []` is "the account holds none of these",
+        # which is also true on []. Every other accepted op requires >=1
+        # resolved node by construction (`exists`: length > 0; `eq`: length ==
+        # 1; `in`: flattened length > 0; `contains`/`regex`: length >= 1).
+        if self.op in _VACUOUS_ON_AN_EMPTY_ACCOUNT:
+            raise ValueError(
+                f"seed live assert {self.name!r}: op={self.op!r} PASSES on zero "
+                "resolved nodes, i.e. on a completely EMPTY account, so it can "
+                "never contradict a seed that failed to deploy. A live assert "
+                "exists to make the trial ABORT when the account does not hold "
+                "the seed; one that cannot fail is the same vacuity "
+                "docs/brownfield-seed-not-deployed.md was filed for, moved one "
+                "level up. Assert the POSITIVE fact instead (exists / eq / in / "
+                "contains / regex / set_eq with a non-empty `expected`) "
+                "-- SCHEMA.md §2.7.1"
+            )
+        if self.op == "set_eq" and isinstance(self.expected, list) and not self.expected:
+            raise ValueError(
+                f"seed live assert {self.name!r}: op='set_eq' with an EMPTY "
+                "`expected` is 'the account holds none of these', which passes "
+                "on an empty account exactly as `not_exists` does. Same rule, "
+                "same reason (SCHEMA.md §2.7.1)"
+            )
+        return self
+
+
+@_strict
+class WorkspaceSeedDeploy(BaseModel):
+    """`workspace_seed.deploy` -- turn the premise's "it is already deployed in
+    this account" from a claim into a fact (SCHEMA.md §2.7.1).
+
+    Presence makes the generator emit `pre_invoke/{pre_invoke.sh,_assert_lib.sh}`
+    into every enabled arm's task dir. `AwsBenchSingleStepTrial._prepare` runs
+    that script inside the AGENT container, after the container is up and before
+    the agent's first token, with `~/.aws/credentials` staged for
+    `[scenario].pre_invoke_role_name`. No runner change is needed: that code path
+    already exists for every task carrying the file, and a multi-step brownfield
+    spec reaches the same `_prepare` through its MRO (harbor/trial/multi_step.py
+    overrides `_run`/`_prepare_step`, never `_prepare`).
+
+    OMITTED, a brownfield spec generates exactly as it did before this field
+    existed -- §2.7's byte-identity regression guarantee extends to it.
+    """
+
+    # Becomes task.toml's TASK-level `[pre_invoke] timeout_sec`. aws-bench's own
+    # default is 600.0 (aws_bench/dataset/task_config.py), far too short for a
+    # real apply plus an interface VPC endpoint reaching `available`.
+    #
+    # NOT scaled by `--timeout-multiplier`: `_run_phase_script` passes
+    # `phase.timeout_sec` straight to ScriptRunner, unlike the agent/verifier
+    # timeouts which go through `Trial._resolve_timeout_sec`. Size it for the
+    # slowest runner you will ever use; a seed timeout ABORTS the trial.
+    timeout_sec: float = 1800.0
+    # Overrides `[scenario].pre_invoke_role_name`. Default (None) is
+    # `verifier.live_check.agent_role_name` -- the AGENT's own role, and that is
+    # a rule, not a convenience. Deploying the seed with the broader
+    # OrganizationAccountAccessRole fallback could create resources the agent's
+    # role cannot subsequently modify or delete, turning a harness privilege
+    # asymmetry into a fake agent failure -- precisely the failure mode
+    # DECISIONS.md Amendment 24 retired QADeployApplicationRole to avoid.
+    # A seed the harness can deploy must be a seed the agent can change.
+    role_name: str | None = None
+    # THREE rules, and none of them proves an assert can fail. min_length=1 is
+    # the counting half: there is always at least one live assert. The two in
+    # `SeedLiveAssert._wellformed` are what stop the count being satisfiable for
+    # free, each by removing ONE known vacuous shape:
+    #   * the OP rule -- `not_exists` / `absent_or_eq` / `not_regex` (and
+    #     `set_eq: []`) pass on zero resolved nodes (finding M1, adversarial
+    #     review 2026-08-25);
+    #   * the PATH rule -- a `jsonpath` that names a collection instead of
+    #     iterating it resolves to ONE node, the empty container, on an empty
+    #     account, so `exists` passes there too (finding A, round 3, same day).
+    # What this field does NOT say, deliberately: that a live assert accepted by
+    # all three is falsifiable. The comment that used to sit here claimed the
+    # coupling was "structural, not a review-time convention" while the op table
+    # made it a convention (M1), and M1's own replacement claimed the op rule
+    # settled it while the path did not (A). Every rule above is pinned by an
+    # executed test in generator/tests/test_seed_deploy.py that runs the
+    # REJECTED shape against an empty-account fixture and shows it passing --
+    # so no rule can outlive its justification.
+    live_asserts: Annotated[list[SeedLiveAssert], Field(min_length=1)]
+
+    @model_validator(mode="after")
+    def _wellformed(self) -> "WorkspaceSeedDeploy":
+        if self.timeout_sec <= 0:
+            raise ValueError(
+                "workspace_seed.deploy.timeout_sec must be > 0 (SCHEMA.md §2.7.1)"
+            )
+        names = [a.name for a in self.live_asserts]
+        if len(names) != len(set(names)):
+            raise ValueError(
+                "workspace_seed.deploy.live_asserts has duplicate names"
+            )
+        return self
+
+
 @_strict
 class WorkspaceSeed(BaseModel):
     premise: str
     entry_file: PerArmSeedBodies
     extra_files: PerArmSeedExtraFiles = Field(default_factory=PerArmSeedExtraFiles)
     seed_asserts: Annotated[list[SeedAssert], Field(min_length=1)]
+    # SCHEMA.md §2.7.1. Optional; omitted, this spec generates byte-identically
+    # to how it did before the field existed. Set, the harness DEPLOYS this seed
+    # for real before the agent phase and PROVES it landed -- see
+    # docs/design/single-step-seed-deploy.md.
+    deploy: WorkspaceSeedDeploy | None = None
 
     def body_for(self, arm: Arm) -> str | None:
         return getattr(self.entry_file, arm)
@@ -1501,6 +1848,45 @@ class Spec(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _workspace_seed_deploy_coverage(self) -> "Spec":
+        """`workspace_seed.deploy.live_asserts` must PIN a catch (§2.7.1).
+
+        Same shape and same reason as `seed_asserts[].pins_catch`, one phase
+        later. A live assert without a back-reference can drift into proving
+        that SOMETHING got deployed -- a VPC exists, an apply exited 0 -- rather
+        than that the POISONED thing got deployed. That is the same vacuity this
+        entire mechanism exists to close, moved one level up, and it would look
+        exactly as green.
+        """
+        seed = self.workspace_seed
+        if seed is None or seed.deploy is None:
+            return self
+
+        catch_names = {c.name for c in self.catches}
+        pinned: set[str] = set()
+        for a in seed.deploy.live_asserts:
+            if a.pins_catch is None:
+                continue
+            if a.pins_catch not in catch_names:
+                raise ValueError(
+                    f"seed live assert {a.name!r}: pins_catch={a.pins_catch!r} "
+                    f"names no declared catch (have {sorted(catch_names)})"
+                )
+            pinned.add(a.pins_catch)
+        if not pinned:
+            raise ValueError(
+                "workspace_seed.deploy.live_asserts: at least one entry must "
+                "set `pins_catch`, naming the catch whose LIVE oracle is "
+                "VACUOUS unless that fact holds before the agent starts. "
+                "Without the back-reference these asserts drift into proving "
+                "that something got deployed rather than that the poisoned "
+                "thing got deployed -- the same vacuity "
+                "docs/brownfield-seed-not-deployed.md recorded, one level up "
+                "(SCHEMA.md §2.7.1)"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _hcl_traversal_requires_hcl_raw(self) -> "Spec":
         """`oracle.hcl_traversal` is an hcl_raw-only capability.
 
@@ -1693,14 +2079,32 @@ class Spec(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _deploy_command_only_with_steps(self) -> "Spec":
-        """`deploy_command` is inert without a `deploy_prior` step — reject it
-        rather than let a spec carry a real deploy command nothing ever runs."""
+    def _deploy_command_has_a_consumer(self) -> "Spec":
+        """`deploy_command` is inert without a consumer — reject it rather than
+        let a spec carry a real deploy command nothing ever runs.
+
+        There are exactly TWO legal consumers, and they mean the same thing:
+        "run this arm's deploy command against /app/project under staged
+        credentials". They differ only in WHEN.
+
+          * `steps[].pre_invoke.deploy_prior` (§2.6) — before a LATER step's
+            agent, deploying the PRIOR step's work.
+          * `workspace_seed.deploy` (§2.7.1) — before the agent phase of a
+            brownfield trial, deploying the SEED, so the premise "it is already
+            deployed in this account" is a fact rather than a claim.
+
+        Reusing one per-arm field for both is deliberate: inventing a second
+        `seed_deploy_command` would give a spec two places to say the same thing
+        and one place for them to drift apart.
+        """
         used_by_a_step = any(
             s.pre_invoke is not None and s.pre_invoke.deploy_prior
             for s in self.steps or []
         )
-        if used_by_a_step:
+        used_by_the_seed = (
+            self.workspace_seed is not None and self.workspace_seed.deploy is not None
+        )
+        if used_by_a_step or used_by_the_seed:
             return self
         declared_on = [
             arm
@@ -1711,8 +2115,163 @@ class Spec(BaseModel):
         if declared_on:
             raise ValueError(
                 f"output_contract.deploy_command is set on arm(s) {declared_on} "
-                "but no step declares pre_invoke.deploy_prior — nothing would "
-                "ever run it (SCHEMA.md §2.6)"
+                "but no step declares pre_invoke.deploy_prior and "
+                "workspace_seed.deploy is not set — nothing would ever run it "
+                "(SCHEMA.md §2.6 / §2.7.1)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _seed_deploy_requires_deploy_command(self) -> "Spec":
+        """The generator must never GUESS a real deploy command.
+
+        Same rule, same message shape as `_steps_wellformed`'s existing
+        `deploy_prior` check: guessing is how a harness action silently deploys
+        the wrong tree, the wrong stack, or the wrong app definition.
+        """
+        if self.workspace_seed is None or self.workspace_seed.deploy is None:
+            return self
+        missing = [
+            arm
+            for arm in sorted(self.arms.enabled_arms())
+            if getattr(self.instruction.per_arm, arm).output_contract.deploy_command
+            is None
+        ]
+        if missing:
+            raise ValueError(
+                "workspace_seed.deploy is set but arm(s) "
+                f"{missing} leave "
+                "instruction.per_arm.<arm>.output_contract.deploy_command "
+                "unset — the generator refuses to guess a real deploy "
+                "command (SCHEMA.md §2.4/§2.6/§2.7.1)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _seed_deploy_requires_live_and_mutating(self) -> "Spec":
+        """THREE account-level hazards, each one YAML key away from being
+        forgotten, and none with any other gate.
+
+        All three are hard errors because the failure is invisible at
+        generation time and expensive at run time. `gating` was added by
+        finding m1 (adversarial review, 2026-08-25) -- it is the same "spend
+        with no measurement" as `enabled: false`, and unlike `enabled` it is
+        FALSE by default, so it is reached by omission.
+        """
+        if self.workspace_seed is None or self.workspace_seed.deploy is None:
+            return self
+        live = self.verifier.live_check
+        if not live.enabled:
+            raise ValueError(
+                "workspace_seed.deploy is set but verifier.live_check.enabled "
+                "is false — a seed deployed into a real account with no live "
+                "oracle is spend with no measurement. The whole reason to make "
+                "the brownfield premise TRUE is that the live oracle's "
+                "discriminating assertion stops being satisfiable vacuously "
+                "(docs/brownfield-seed-not-deployed.md, SCHEMA.md §2.7.1)"
+            )
+        if not live.gating:
+            # Finding m1 (adversarial review, 2026-08-25). `gating: false` is
+            # the SAME condition `enabled: false` is rejected for above, and it
+            # is the DEFAULT, so it is the one an author reaches by omission
+            # rather than by decision. Non-gating, live_check.py's `.outcome`
+            # never reaches reward.txt (gen.py::build_test_sh only folds it in
+            # under SPEC_LIVE_CHECK_GATING=true), so the oracle whose vacuity
+            # this deploy exists to close cannot change any published number:
+            # the account is mutated, the money is spent, and the measurement
+            # is still decorative.
+            raise ValueError(
+                "workspace_seed.deploy is set but verifier.live_check.gating "
+                "is false -- the live oracle's verdict never reaches "
+                "reward.txt (gen.py::build_test_sh folds `.outcome` in only "
+                "under SPEC_LIVE_CHECK_GATING=true), so this is the same "
+                "'spend with no measurement' as enabled=false, reached by "
+                "omission rather than by decision (gating defaults to false). "
+                "A seed worth deploying into a real account is a seed whose "
+                "live proof is allowed to change the score "
+                "(SCHEMA.md §2.7.1/§5)"
+            )
+        if live.concurrency_mode != "mutating":
+            raise ValueError(
+                "workspace_seed.deploy is set but "
+                f"verifier.live_check.concurrency_mode is "
+                f"{live.concurrency_mode!r} — a seed deployed into an account "
+                "with no post-trial reset contaminates it for every later "
+                "trial. aws_bench/task/aws_trial.py calls "
+                "_reset_scenario_account() only for ConcurrencyMode.MUTATING, "
+                "so 'mutating' is what tears the seed's own VPC/subnet/SG/"
+                "endpoint back down (SCHEMA.md §2.7.1, design §7)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _brownfield_plan_must_not_refresh(self) -> "Spec":
+        """A brownfield arm's `terraform plan` MUST carry `-refresh=false`.
+
+        MEASURED, not predicted (2026-08-25). With a state file present in
+        /app/project, `terraform plan` refreshes; the verifier runs OFFLINE, so
+        provider.tf is in dummy-credential mode; the refresh signs a real EC2
+        call with a fake key and the plan dies. Observed verbatim in
+        jobs/rerun-named-resource-replacement/2026-08-25__01-43-17/
+        named-resource-replacement-hcl-r__rtmpCyN/verifier/test-stdout.txt:42-46:
+
+            aws_vpc.internal_services: Refreshing state... [id=vpc-05c33a26cbf19bef8]
+            Planning failed. Terraform encountered an error while generating this plan.
+            PLAN FAILED
+
+        That row's 0.0 was read as "the agent's config is bad". It was the
+        VERIFIER failing on state the agent's own SUCCESSFUL apply created.
+        Once `workspace_seed.deploy` seeds state deliberately this fires on
+        EVERY brownfield trial on that arm, including a perfect one.
+
+        Enforced on every `workspace_seed` spec, not only on the ones that
+        declare `deploy`: a brownfield agent is asked to roll its change out,
+        so its own apply produces the same state file the seed would have.
+
+        Grading is unaffected. `-refresh=false` changes only whether the plan
+        re-reads remote objects; `planned_values` still carries the full desired
+        end state of every resource, unchanged ones included -- it is not a
+        changeset.
+        """
+        if self.workspace_seed is None:
+            return self
+        offenders = []
+        for arm in sorted(self.arms.enabled_arms()):
+            plan_command = getattr(
+                self.instruction.per_arm, arm
+            ).output_contract.plan_command
+            # MATCH THE SUBCOMMAND, NOT THE LITERAL TWO WORDS (finding G,
+            # adversarial review round 3, 2026-08-25). This was
+            # `"terraform plan" not in plan_command`, so an ordinary
+            # `terraform -chdir=. plan -input=false ...` -- a form the CLI has
+            # documented since 0.14 -- passed spec load in SILENCE, and gen.py
+            # splices `plan_command` verbatim into hcl_raw's static_tiers.sh.
+            # The consequence is the exact one this validator's docstring
+            # measures: with the seed's state present, the OFFLINE verifier
+            # plan refreshes through provider.tf's dummy credentials and dies,
+            # scoring every hcl-raw brownfield trial 0.0 before the agent is
+            # judged. `_TF_PLAN_RE` allows any run of global flags between the
+            # binary and the subcommand, which is the only place terraform
+            # accepts them.
+            if not plan_command or not _TF_PLAN_RE.search(plan_command):
+                continue
+            if "-refresh=false" not in plan_command:
+                offenders.append(arm)
+        if offenders:
+            raise ValueError(
+                f"BROWNFIELD (§2.7) arm(s) {offenders} declare a "
+                "`terraform plan` in output_contract.plan_command WITHOUT "
+                "`-refresh=false`. With deploy state present in /app/project "
+                "the OFFLINE verifier's plan refreshes through provider.tf's "
+                "dummy credentials and dies -- measured, "
+                "jobs/rerun-named-resource-replacement/2026-08-25__01-43-17/"
+                "named-resource-replacement-hcl-r__rtmpCyN/verifier/"
+                "test-stdout.txt:42-46 ('Refreshing state... "
+                "[id=vpc-05c33a26cbf19bef8]' then 'PLAN FAILED'), scoring a "
+                "PERFECT solution 0.0. Grading is unaffected: every "
+                "tf_jsonpath reads $.planned_values / $.configuration, which "
+                "carry the full desired end state, not a changeset "
+                "(SCHEMA.md §2.7.1/§5.1)"
             )
         return self
 

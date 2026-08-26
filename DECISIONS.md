@@ -5705,6 +5705,35 @@ converged/pending halves. The first live brownfield run is what promotes them �
 specifically, it is the first thing that can show a real `cdk diff` exit `1`
 *with* the marker.
 
+**CORRECTION (2026-08-25) — the terraconstructs state path published here was
+wrong.** This section stated the `terraconstructs` pre-flight probe watches
+`cdktf.out/stacks/<id>/terraform.tfstate`. No terraconstructs run has ever
+produced that file. `cdktn`'s `TerraformStack` installs a `LocalBackend` for any
+stack declaring no backend of its own
+(`packages/cdktn/src/terraform-stack.ts:340-341`) whose default path is
+``path.join(process.cwd(), `terraform.${stackId}.tfstate`)``
+(`packages/cdktn/src/backends/local-backend.ts:23`) — an **absolute** path baked
+into `cdk.tf.json` at synth time. Corroborated by a real synthesized
+`cdk.tf.json` from this repo's own jobs directory
+(`jobs/claude-sonnet-5/2026-08-20__17-16-22/apigw-redeploy-terraconstructs__W2J5uiF`):
+`{"backend": {"local": {"path": "/app/project/terraform.hello-version-api.tfstate"}}}`,
+and by the agent in that same trial reading a version-4 state document back from
+exactly that path.
+
+**Consequence, recorded because it changes what a published number meant.** Both
+live `named-resource-replacement` runs reported `not_verifiable` on this arm
+*despite* an apply AWS itself confirmed ("Apply complete! Resources: 6 added",
+security group and endpoint present in the account). That was **the probe
+failing, not the deploy** — an infrastructure defect wearing the costume of an
+unverifiable agent result, the same class of failure as the missing
+`AWS_DEFAULT_REGION`. `gen.py::IDEMPOTENCE_STATE_PROBE["terraconstructs"]` is
+corrected to `terraform.__WORKSPACE_ID__.tfstate`, and the post-synth re-probe
+is repointed at the absolute path. Because the state file is **not** inside the
+directory `cdktn synth` rewrites, that re-probe is now expected never to fire;
+it is retained anyway, because the guarantee is the contract and the mechanism
+is cheap. The correction is load-bearing for Amendment 31, which depends on that
+path to hand the seed's converged state to the agent. This section stays DRAFT.
+
 ### 5. The MANDATORY do-nothing catch — answering design-memo Q6: yes
 
 Brownfield creates exactly one failure mode greenfield cannot have: **a change
@@ -6292,3 +6321,619 @@ M2, still unbuilt), so there is nothing that could have been tainted.
 **Freeze note.** Per `generator/split.py`'s own procedure, `--write` should stop
 being run once real equipping-tuning work begins for a phase. That point is
 ROADMAP M2; until then, re-splitting as scenarios land is expected and cheap.
+
+---
+
+## Amendment 31 (2026-08-25) — single-step seed deploy: the brownfield premise
+## is made true by the harness — **DRAFT, pre-registered, not yet exercised live**
+
+**Status: DRAFT.** Registered *before* any brownfield result produced under this
+mechanism exists. It does not promote Amendment 28; it makes that amendment's
+promotion criterion — a live `named-resource-replacement` run worth believing —
+**reachable for the first time**, and the same run promotes both.
+
+**Numbering note.** `docs/design/single-step-seed-deploy.md` calls this
+"Amendment 29". Amendments 29 and 30 had already landed by the time it was
+implemented, so it is registered here as **31**. The design doc's own section
+numbering is otherwise unchanged and remains the contract.
+
+### 0. The defect
+
+`workspace_seed.premise` told the agent its workspace "is already deployed in
+this account". **Nothing deployed it** (`docs/brownfield-seed-not-deployed.md`).
+
+On `named-resource-replacement` that is not a cosmetic gap. The trap is a
+*replacement* trap — renaming a literally-named security group forces
+destroy-then-create, and the interface VPC endpoint holding that group turns the
+destroy into a `DependencyViolation` — so every step of it needs the group to
+exist **in AWS and in state**. With nothing deployed the trap could not fire on
+any arm, and `tests/live_check.py`'s discriminating assertion ("fail if the OLD
+group survives") was satisfied **vacuously**: the oracle reported `pass` while
+proving nothing. Three published rows were voided.
+
+### 1. The mechanism, and where it runs
+
+A brownfield spec declaring `workspace_seed.deploy` (`specs/SCHEMA.md` §2.7.1)
+makes the generator emit, per arm,
+`tasks/anchor/<id>-<arm>/pre_invoke/{pre_invoke.sh,_assert_lib.sh}` plus
+`task.toml`'s `[scenario] pre_invoke_role_name` and a task-level
+`[pre_invoke] timeout_sec`.
+
+`aws_bench/task/aws_trial.py::AwsBenchSingleStepTrial._prepare` runs that script
+**inside the agent container**, after the container is up (so `/app/project`
+already holds the seed, COPYed in at image build) and **before the agent's first
+token**. **No runner change was required**: that hook already runs
+unconditionally for any task carrying the file, and a multi-step brownfield spec
+reaches the same `_prepare` through its MRO (`harbor/trial/multi_step.py`
+overrides `_run`/`_prepare_step`, never `_prepare`). The whole change is
+generator + spec + docs — nothing in `cdktn_bench/` or any vendored library.
+
+Anything the script writes under `/app/project` is there when the agent arrives.
+That is the entire mechanism by which cross-arm deploy state gets *placed*.
+
+`output_contract.deploy_command` is **reused verbatim** and gains a second legal
+consumer (the first being `steps[].pre_invoke.deploy_prior`). A second per-arm
+deploy field would give a spec two places to say the same thing and one place
+for them to drift apart.
+
+### 2. The anti-vacuity contract — and why a missing seed ABORTS rather than scoring 0.0
+
+Four fail-closed layers, in order (the fourth added by §10's review):
+
+1. **The deploy must exit 0.** A non-zero exit raises `ScriptExecutionError` out
+   of `_prepare`; `Trial.run`'s handler then never calls `_run()`. No agent
+   phase, no verifier, no reward key at all.
+2. **The state artifact must exist** — the per-arm probe of §3. This catches a
+   toolchain that reports success while leaving nothing the next phase can use.
+3. **`workspace_seed.deploy.live_asserts` must hold**, resolved against real AWS
+   CLI responses through the same `generator/jsonpath_jq.py` compiler and the
+   same `_assert_lib.sh::assert_check` tier-0 uses. At least one entry must set
+   `pins_catch`, mirroring `seed_asserts[].pins_catch`: without the
+   back-reference the asserts drift into proving that *something* got deployed
+   rather than that the *poisoned* thing did — the same vacuity, one level up.
+   Two load-time rules narrow the ways a live assert can pass on an **empty
+   account** — the ops that pass on zero resolved nodes (§10, finding M1) and
+   the `jsonpath` shapes that resolve to a container rather than iterating it
+   (§11, finding A). Neither is a proof of falsifiability, and §2.7.1 says so.
+4. **The verifier refuses to grade a trial whose seed never ran.** Layers 1–3
+   all live inside `pre_invoke.sh`, which `_prepare` executes **iff the file is
+   on disk** — `if self.task.has_phase_script(ScriptType.PRE_INVOKE):`, no
+   `else`, no log line. So the script writes a receipt at
+   `/logs/seed-deploy-receipt.json` (not under `/logs/pre_invoke/`, which
+   `ScriptRunner` deletes), `task.toml` sets
+   `[verifier].env.SPEC_SEED_DEPLOY_REQUIRED = "true"`, and the generated
+   `tests/test.sh` writes **no reward file at all** when the key is set and the
+   receipt is missing — so Harbor's own `RewardFileNotFoundError` aborts the
+   trial instead of a 0.0 being recorded (§10, finding M3).
+
+The verdict is written to `/logs/pre_invoke/seed-proof.json` as
+`seed_deployed` (0), `seed_absent` (2) or `seed_unverifiable` (3), shaped like
+`live_check`'s and `idempotence`'s own three-valued contracts. Both
+non-`seed_deployed` verdicts **abort the trial**, and the strengthening is the
+point:
+
+> A reward of 0.0 is a **measurement**. It says the agent failed. A seed that was
+> never deployed did not produce an agent failure; it produced **no measurement
+> at all**. Recording it as 0.0 would repeat the original defect with the sign
+> flipped — a number that looks like evidence and is not.
+
+The abort lands as `result.json` with `exception_info` set and no
+`verifier_result`, which `metrics/extract_signals.py` already renders as
+`INFRA-FAIL:` and drops from every rollup. The honest outcome falls out of
+existing code. `_finalize()` and — because `super().run()` returns normally after
+recording the exception — `_reset_scenario_account()` both still run, so a
+half-deployed seed is still torn down.
+
+`seed_asserts` are **not** this instrument and are not replaced by it. They run
+at generation time, offline, un-overlaid, never in a container
+(`make seed-parity`), and answer *"do the three seeds declare the same
+system?"*. A green `make seed-parity` is evidence about three YAML bodies; it
+never was evidence about an account.
+
+### 3. Cross-arm state — the hard half
+
+| arm | where converged state lives | how the agent's later run binds to it | proof |
+|---|---|---|---|
+| `awscdk` | **In AWS.** CFN stack `ScenarioStack`. No local state. | `bin/app.ts` is generator-owned and non-agent-editable and fixes the physical stack name, so a later `cdk deploy` issues an **UpdateStack**. | `describe-stacks` ⇒ `CREATE_COMPLETE`/`UPDATE_COMPLETE` |
+| `hcl_raw` | `/app/project/terraform.tfstate` (implicit local backend) | same container, same cwd, same file | `[ -s … ]` |
+| `terraconstructs` | `/app/project/terraform.<workspace_id>.tfstate` — **not** under `cdktf.out/` (Amendment 28 §4 correction) | the absolute path is baked into `cdk.tf.json` at synth time and is identical in offline and live mode, so every later synth from `/app/project` resolves the same file | `[ -s … ]` |
+
+**A deployed seed broke `hcl-raw`'s tier-0 outright, and that is measured, not
+predicted.** That arm's `plan_command` carried no `-refresh=false`, so the moment
+a `terraform.tfstate` exists the *offline* verifier plan refreshes through
+`provider.tf`'s dummy credentials and dies —
+`aws_vpc.internal_services: Refreshing state... [id=vpc-05c33a26cbf19bef8]`,
+then `PLAN FAILED`
+(`jobs/rerun-named-resource-replacement/2026-08-25__01-43-17/named-resource-replacement-hcl-r__rtmpCyN/verifier/test-stdout.txt:42-46`).
+That row's 0.0 was read as "the agent's config is bad"; it was the **verifier**
+failing on state the agent's own **successful** apply created. Once the harness
+seeds state deliberately it would fire on **every** hcl-raw brownfield trial,
+including a perfect one. `Spec._brownfield_plan_must_not_refresh` now hard-errors
+at spec load for any `workspace_seed` spec whose enabled arm plans without the
+flag. Grading is unaffected: every `tf_jsonpath` reads `$.planned_values` /
+`$.configuration`, which carry the full desired end state, not a changeset.
+
+### 4. Role parity — the seed deploys under the AGENT's own role
+
+`[scenario] pre_invoke_role_name` is set to `agent_role_name`, and that is a
+**rule, not a default**. `aws_creds.py` falls back to
+`OrganizationAccountAccessRole` when the key is unset, and deploying the seed
+with a broader role than the agent gets can create resources the agent cannot
+subsequently modify or delete — a harness privilege asymmetry wearing the costume
+of an agent failure, which is precisely the failure mode Amendment 24 retired
+`QADeployApplicationRole` to avoid. *A seed the harness can deploy must be a seed
+the agent can change.*
+
+The container user is guarded too, on **both** knobs — and the reason first
+published here was wrong, corrected by §10 (finding m3). A Dockerfile `USER`
+moves the seed deploy and the agent **together** (both take the image default;
+`ScriptRunner.run` passes no `user=`), so it cannot cause the EACCES asymmetry
+this once claimed. What it *does* cause is that `ScriptRunner` creates
+`/logs/pre_invoke` as **root** (step 2) and then runs the script as the image
+default, so a non-root user cannot write `seed-proof.json`, the receipt or
+`placeholder.json` there and the trial dies with no verdict anywhere. The
+generator still hard-errors on a `USER` directive, now for that reason. The knob
+that genuinely diverges the two users is `task.toml`'s `[agent] user` —
+`_staged_credentials` writes `~/.aws/credentials` as that user while the phase
+script runs as the image default — so a seed-deploying spec is refused if its
+`task.toml` would carry one.
+
+### 5. Measurement integrity
+
+Seed-deploy time and tokens are never attributed to the agent, structurally
+rather than by discipline: `pre_invoke.sh` is a shell script so no LLM runs and
+`extract_signals`' session glob matches nothing it writes; cost is read from
+`agent_result.cost_usd`, which Harbor populates from the agent run only; and
+`ScriptRunner` `rm -rf`s `/pre_invoke` and `/logs/pre_invoke` for `PRE_INVOKE`
+specifically, before the agent phase begins — so the agent cannot read the
+script, the deploy log, or the proof. What it *does* see is a state-bearing
+workspace, which is the brownfield premise being true.
+
+**One standing obligation.** `_prepare` sits inside the trial's
+`started_at`→`finished_at` window, so any *trial-duration* metric would include
+the seed deploy. No metric reads a duration today. If one is ever added it must
+read the **agent phase's** own window, never the trial's. Recorded here so it is
+a decision rather than an oversight.
+
+The existing metric rule is unchanged and still manual: brownfield
+tokens-to-green is a separate stratum (Amendment 28 §6), and
+`metrics/tokens_to_green.py::cell_key` is still `(arm, model, harness)` with no
+scenario-form dimension. Deploying the seed does not change that; it makes the
+brownfield rows worth stratifying for the first time.
+
+**Equipping.** Regenerating this scenario moves its task bytes, so its
+`equipping_hash` moves. That is correct — its three published rows are already
+void — but **no pre-fix row may ever be pooled with a post-fix one**, and
+nothing enforces that automatically.
+
+### 6. Cost — per trial, and not reusable
+
+The seed cannot be deployed once and reused, for three independent reasons, any
+one of which is sufficient:
+
+1. The post-trial reset is unconditional for a mutating task and has no
+   keep-this carve-out. It destroys exactly what the seed created.
+2. Both TF arms need the state **file** inside the agent's container filesystem,
+   and containers are per-trial. Even a surviving account-side deployment would
+   have to be re-materialized locally.
+3. A persistent seed would put the account permanently out of baseline — the
+   condition `_raise_if_contaminated` refuses to start a trial on.
+
+**Wall clock: roughly +3–6 minutes per trial**, dominated by the interface VPC
+endpoint reaching `available`, on top of the mandatory ~8.5–9 minute post-trial
+reset. `concurrency_mode: mutating` holds the scenario's exclusive writer gate
+across both, so a six-trial brownfield battery is strictly serial and runs near
+an hour longer than the greenfield equivalent. **Dollars are negligible** — one
+interface endpoint at roughly $0.01/AZ/hour, under a cent over a trial's life.
+
+### 7. Promotion criterion, and what the first live run must capture
+
+Promoted to ACCEPTED by the first live `named-resource-replacement` run under
+this mechanism — the same run that promotes Amendment 28. Until then no
+brownfield row may be published.
+
+That run must capture three things this design could not settle offline:
+
+1. `find /app/project -iname '*.tfstate*'` immediately after the terraconstructs
+   seed deploy. The state-path resolution rests on `cdktn`'s own source plus a
+   live `cdk.tf.json` from a *different* scenario; neither is a post-deploy
+   directory listing for this one. Layer 2 fails closed if it is wrong — that is
+   the design working, not failing, but it aborts rather than degrades.
+2. `cdktn deploy`'s exit code on a **partial** apply. If it can exit 0 having
+   applied only some resources, Layer 1 misses it — which is why Layers 2 and 3
+   exist. Watch `seed-proof.json`.
+3. Whether the interface VPC endpoint is far enough along when `apply` returns.
+   The live asserts deliberately read `SecurityGroupIds` and not `State` for that
+   reason; if an endpoint-state assert is ever wanted it needs the poll-with-
+   timeout shape `live_check.py` already uses, and the generator has no poll
+   primitive today.
+
+### 8. Offline proof
+
+`make gen-all` moves the three `named-resource-replacement-*` trees (new
+`pre_invoke/`, changed `task.toml`, the `-refresh=false` plan on hcl-raw, and
+the corrected terraconstructs state path in `tests/test.sh`) **and, after §10,
+two files in every task tree**: `tests/_assert_lib.sh` (three-valued
+`assert_check` return codes) and `tests/test.sh` (the layer-4 seed gate). Both
+are single static templates, runtime-gated on env vars `task.toml` sets per
+spec — the same discipline the live-check and idempotence blocks already use —
+so every non-brownfield scenario's behaviour is unchanged and no other file
+moves. `make check` green (**1072 passed, 5 skipped**, up from 1033).
+`make falsifiability SPEC=specs/named-resource-replacement.yaml` and
+`make seed-parity SPEC=specs/named-resource-replacement.yaml` both green.
+`generator/tests/test_seed_deploy.py` proves the vacuity case **mechanically**
+for **both** live asserts, compiled and executed exactly as a trial executes
+them: `old-group-is-live` passes against a real `describe-security-groups`
+response and fails against `{"SecurityGroups": []}`, and
+`endpoint-holds-the-old-group` passes against an armed
+`describe-vpc-endpoints` response and fails against the renamed-only, the
+empty, and the stray-extra-group ones.
+
+### 9. Batch B inherits every rule here
+
+Four more brownfield scenarios assume a deployed seed. Each needs its own
+`deploy` block, its own `live_asserts` with a `pins_catch`, and its own
+`-refresh=false`. The generator enforces all three; none of them is a
+review-time convention.
+
+### 10. Adversarial review (2026-08-25, same day) — what it found and what changed
+
+Two adversarial verifiers attacked the implementation above before it ever ran
+live. Correctness came back *sound with caveats*; **vacuity came back
+DEFECTIVE**. Zero blockers, five major, five minor — recorded here rather than
+folded silently into §§1–9, because the shape of what they found is the point:
+**every one of them was a case that produced the right-looking output and no
+error.** That is this repo's signature failure mode, and it is the reason this
+mechanism exists at all.
+
+**M1 — the anti-vacuity coupling was a convention, not a structure.** §2's
+layer 3 was declared "structural, not a review-time convention" on the strength
+of `live_asserts`' `min_length: 1`. But three of §4.2's nine ops pass on **zero
+resolved nodes** (`not_exists`, `absent_or_eq`, `not_regex`), as does `set_eq`
+with an empty `expected`, so a spec could declare a deploy whose *entire* live
+proof was satisfied by a completely empty account — the exact inert
+configuration this whole mechanism exists to make unexpressible. Counting
+asserts is not the same as making them capable of failing. All four are now
+hard errors at spec load, on **every** live assert rather than only the
+`pins_catch`-bearing one (a non-pinning tautology dilutes the verdict: "three
+live asserts held" must mean three facts, not two facts and a tautology). The
+*premise* — that those ops really do pass on `[]` — is pinned by an executed
+test, so the rule cannot outlive its own justification.
+
+**M2 — `contains` is a substring test, and the new name is a superstring of the
+old one.** REPRODUCED. The assert whose entire job was to prove the trap is
+**armed** — `endpoint-holds-the-old-group` — read
+`op: contains, expected: internal-services-ssm-endpoint`, and on a string node
+`assert_check`'s `contains` is jq's literal substring test. The solution's new
+group name is `platform-internal-services-ssm-endpoint`: a strict superstring.
+So that assert **passed against the exact post-solution account in which the
+trap is disarmed**, and it had *zero* execution coverage — there was no
+`describe-vpc-endpoints` fixture in the repo at all. It moved to `set_eq` over
+`$.VpcEndpoints[*].Groups[*].GroupName` (**and to `eq` in round 3 — §11
+finding B; `set_eq` runs `unique` and could not see a duplicate**), with
+checked-in fixtures (armed, renamed-only, empty, stray-extra-group,
+duplicate-vpcs) and a test that keeps the old substring behaviour itself
+executable, so a future "simplification" back to `contains` fails with the trap
+spelled out rather than rediscovering it in a live run.
+`contains` is **unchanged** in `_assert_lib.sh` — it is shared with tier-0 and
+its substring semantics are deliberate there.
+
+**M3 — the whole mechanism failed OPEN if `pre_invoke.sh` was absent.** All
+three layers lived inside a file `_prepare` runs *iff it is on disk*
+(`if self.task.has_phase_script(ScriptType.PRE_INVOKE):` — no `else`, no log
+line, pure file existence). A stale generator, a bad image layer or a truncated
+upload therefore skipped every layer in silence and graded an empty account, on
+which the live oracle passes for free: the original defect, restored by a
+missing file. Fixed on both halves. **(a)** A test asserts the biconditional —
+`task.toml` declares `[scenario].pre_invoke_role_name` **iff** the task ships a
+generated `pre_invoke/pre_invoke.sh` — across every task dir in the repo, and it
+runs under `make check`. **(b)** Layer 4 (§2): the script writes a receipt at
+`/logs/seed-deploy-receipt.json` and `tests/test.sh` refuses to grade without
+it. The path was chosen by reading `aws_bench/task/script_runner.py`, not
+invented: step 7 removes `/pre_invoke` and `/logs/pre_invoke` and nothing else,
+so `/logs/pre_invoke/seed-proof.json` — the operator-facing copy — is gone by
+verification time, while `/logs` itself survives and the verifier runs in the
+same container (a shared verifier environment is the only kind aws-bench
+supports for a phase-script task). The refusal writes **no reward file at all**,
+so Harbor's `RewardFileNotFoundError` aborts the trial — never a 0.0, for §2's
+reason.
+
+**M4 — `_brownfield_plan_must_not_refresh` could not fire for two of three
+arms.** MEASURED. The validator reads `output_contract.plan_command` and
+`continue`s when it is empty — and it is `None` on `awscdk` and on
+`terraconstructs`. That arm's `terraform plan` comes from a hardcoded generator
+template, where the flag was keyed off `verifier.live_check.enabled`: an
+unrelated coupling the validator does not check, which a brownfield spec with
+the live check off would have silently lost. The template now emits the flag for
+any `workspace_seed` spec, and an arm-parametrised test asserts `-refresh=false`
+on the **emitted bytes** of every enabled arm's `tests/static_tiers.sh` and
+`tests/test.sh` — a validator that reads a spec field cannot see what a template
+emits.
+
+**M5 — the negative fixture swallowed its own deploy's exit code.** Both
+`solution/broken/rename-replaces-an-in-use-security-group/solve.sh` files ran
+`<deploy> || true` and then `live_check.py --expect stale`, which requires only
+`outcome == "fail_stale"` — and `observe()` reports `fail_stale` for *any*
+unsatisfied assertion, including "the deploy never ran". Not hypothetical: that
+exact line named a **nonexistent stack** for its entire life and nothing
+anywhere went red, and it is now strictly worse, because a harness-deployed seed
+makes `fail_stale` true *by construction* before the fixture does anything. Both
+files now capture the exit code and require the specific failure — non-zero
+**and** `DependencyViolation` in the deploy log — before `--expect stale` is
+allowed to run at all.
+
+**m1 — `gating: false` is the same "spend with no measurement" as
+`enabled: false`**, and unlike `enabled` it is the *default*, so it is reached
+by omission. Non-gating, the live oracle's verdict never reaches `reward.txt`.
+Now a hard error (§2.7.1 rule 3).
+
+**m2 — the proof left AWS-response artifacts in the `/tmp` the agent then
+uses.** The header claimed the agent "never sees this file, its output, or the
+fact that a harness deployed anything" while `/tmp/seed-*.json`, `/tmp/seed-*.err`
+and `/tmp/assert-jq-err.txt` survived step 7's cleanup, which removes
+`/pre_invoke` and `/logs/pre_invoke` and nothing else. The probes moved under
+`/logs/pre_invoke/` (deleted before the agent, *and* downloaded to the trial dir
+first, so a failed seed now hands the operator the exact bytes that contradicted
+it); the shared library's own `/tmp/assert-jq-err.txt` is removed explicitly
+rather than by changing a path tier-0 depends on. The header no longer claims
+more than the code enforces — it says what is guaranteed gone and names the one
+artifact deliberately left behind.
+
+**m3 — the non-root `USER` guard guarded the wrong knob.** See §4, corrected.
+
+**m4 — `assert_check` collapsed "could not run" into "was contradicted".** A
+jq query error returned 1, the same code as a genuine contradiction, so a
+malformed AWS response produced `seed_absent` — *"the account does not hold the
+seed this workspace describes"* — when the truthful verdict was
+`seed_unverifiable`. No false pass (both abort), but a false **claim about a
+real account**, in the one file whose whole job is to be believed, and a
+violation of the three-valued verdict contract the rest of the harness honours.
+`assert_check` now returns **2** for unresolvable and 1 for contradicted; the
+seed proof counts them separately and checks unresolvable **first**. Both
+existing callers test `!= 0`, so tier-0 is unchanged — pinned by a test that
+runs the tier-0 call shape verbatim.
+
+**m5 — neither live assert is scoped to this trial's VPC**, so the conjunction
+they mean to prove ("*the* endpoint holds *the* group") is not asserted and a
+leftover object from an incompletely-reset earlier trial satisfies either alone
+(`_reset_scenario_account` logs a reset failure and never raises). **Concluded:
+not fully fixable at this layer, and mitigated rather than closed.** The `aws`
+argv is static spec text with no placeholder substitution, and the seed's VPC id
+does not exist until the deploy runs, so there is nothing to scope *to* at spec
+load. What the M2 fix buys is the part that matters: a *differently*-named
+stray group is a loud, aborting **FAIL** instead of a silent pass — pinned by
+the `stray-extra-group` fixture. A **same-named** leftover was still
+indistinguishable from the seed at the time this was written; §11 finding B
+narrows that too (`eq` bounds the resolved COUNT, so a duplicate now aborts),
+and what remains unscoped is only "a same-named group in a *foreign VPC* versus
+this trial's own". Adding a VPC-scoped placeholder to `live_asserts` is
+deferred, not forgotten — see §11's re-assessment.
+
+
+### 11. Adversarial review, round 3 (2026-08-25) — eight findings, and one **grading-signal change**
+
+Round 2 closed nine of round 1's ten findings; round 3 re-verified the result
+and returned narrower defects of the **same family**, which is the expected
+convergence shape. Two were reproduced by the reviewer before being filed (A, B)
+and the rest verified here. All eight are closed below. **Finding H changes what
+the idempotence tier reports**, so it is recorded in full rather than in a
+sentence — a weakened grading signal that nobody wrote down is how a weakened
+signal becomes an invisible one, and round 2 changed this guard's behaviour
+without recording it.
+
+**A (major) — vacuity was reachable through the PATH, not only through the op.**
+REPRODUCED. §10's finding M1 rejected the ops that pass on zero resolved nodes,
+and then the code comment and `specs/SCHEMA.md` §2.7.1 both asserted the
+stronger property — "a live assert cannot be satisfied by an empty account" — as
+fact. It was not: `SeedLiveAssert` imposed **no shape rule on `jsonpath`** (the
+only check was "non-empty and starts with `$`"), and a path that resolves to the
+**container** rather than descending **into** it hands even `exists` one node on
+an empty account — `[ .SecurityGroups ]` over `{"SecurityGroups": []}` is
+`[[]]`, length 1, and `assert_check`'s `map(select(. != null))` drops nulls, not
+empty arrays. So a `workspace_seed.deploy` whose *entire* live proof passed on a
+completely empty account was still expressible, accepted at load, emitted, and
+reported `seed_deployed`. **That is finding M1's own shape, reintroduced by
+M1's fix** — a comment claiming a property the code did not enforce.
+
+Now enforced: `SeedLiveAssert._wellformed` compiles the `jsonpath` at **spec
+load** and requires the compiled jq filter to contain a `.[]` stage, i.e. the
+path must carry a `[*]` or `[?(...)]` segment and **iterate** a collection.
+`$.SecurityGroups[*].GroupName` is legal, `$.SecurityGroups` is not, and an
+untranslatable path (`$.Stacks[0].StackStatus` — there is no index segment in
+`generator/jsonpath_jq.py`'s grammar) is a spec error rather than a generator
+traceback three commands later. Pinned both ways: a test that executes the
+rejected shape against the empty-account fixture and shows it really does pass,
+and tests that show the load raises.
+
+**This is a narrowing, not a decision procedure, and every place that says so
+now says only that.** The rule rejects some genuinely falsifiable paths as
+collateral — recursive descent (`$..GroupName`) iterates nothing and is refused,
+which a test pins deliberately. `spec_model.py`'s comments, the
+`live_asserts` field comment and §2.7.1 were all rewritten to state exactly what
+is enforced: two rules, each removing one *known* vacuous shape, neither proving
+that an accepted assert can fail.
+
+**B (major) — `set_eq` runs `unique`, so a same-named leftover was invisible.**
+REPRODUCED. Both `live_asserts` used `set_eq`, whose compiled filter is
+`... | unique | sort` on both sides, so *n* objects carrying the **same** value
+collapse to one element and compare equal to a one-element `expected`. That is
+reachable on this scenario: EC2 security-group names are unique **per-VPC**, not
+per-account, and `--filters Name=group-name` is account-wide. Meanwhile the
+emitted failure text and the spec comment both claimed `set_eq` caught exactly
+this case.
+
+The concrete chain, and it is the **inverse of the vacuity bug**: a reset whose
+fastscan leaves the previous trial's group behind but reports success
+(`_reset_scenario_account` only flags contamination when `reset_result.success`
+is false) → this trial's seed deploys a second, fresh, identically-named group →
+`unique` collapses them → the proof passes → the agent renames **its** group
+correctly → the leftover still carries the old name → `live_check.py`'s
+discriminating assertion sees the old name survive → `fail_stale` → **a perfect
+agent scored 0.0 and published as an agent failure**. Just as corrupting to the
+measurement as a free pass, with the sign flipped.
+
+Both asserts are now `op: eq` (`($v | length) == 1 and ($v[0] == $e)`), which
+requires **exactly one** resolved node, so multiplicity cannot be collapsed. Two
+duplicate-name fixtures were added and the rule is executed both ways — `set_eq`
+passing on them (the justification, kept alive beside the rule) and `eq`
+returning **1**, a resolved contradiction rather than an unresolvable query. The
+emitted `seed_absent` text and the spec comments now describe what `eq` proves:
+*this account holds exactly one of these, and it is the right one.* `set_eq`
+itself is unchanged in `_assert_lib.sh` — it is shared with tier-0 — and §2.7.1
+gained a "watch `set_eq` on a region-wide query" note beside its existing "watch
+`contains` on a string" one.
+
+**m5's deferral is re-assessed and stands, narrowed.** `eq` bounds the resolved
+**count**, so a contaminated account is now loud instead of silent for every
+multiplicity case — which was most of m5's practical risk. What remains is
+strictly "a same-named group in a **foreign VPC** versus this trial's own", and
+that is still not expressible: `SeedLiveAssert.aws` is static spec text with no
+placeholder-substitution surface and the seed's VPC id does not exist until the
+deploy runs. Scoping still needs a new spec surface — a design change, not a
+fix — so it stays deferred, on a materially smaller residue.
+
+**C (minor) — the two authoritative documents disagreed about how many layers
+there are.** `specs/SCHEMA.md` said "**Anti-vacuity: three fail-closed layers**"
+and then enumerated four, while §2 above already said four. §2.7.1 is the
+document the design names as authoritative, so it was the wrong one to be
+wrong. Corrected to four. The generated `pre_invoke.sh` header's "prove it,
+three ways" is **right** — layers 1–3 are the only ones in that file — and is
+left alone.
+
+**D (minor) — the awscdk state proof called a DEFINITIVE absence
+"unverifiable".** `describe-stacks` on a nonexistent stack exits non-zero with
+`ValidationError ... does not exist`. That is a **resolved fact** about the
+account whose truthful verdict is `seed_absent` (2); it was reported
+`seed_unverifiable` (3) — finding m4's three-valued mislabelling in the opposite
+direction, in the very file m4's fix rewrote. The proof now fetches the response
+once as JSON, branches on the stderr body (`does not exist` / `ValidationError`
+→ 2; everything else — credentials, network, throttling, IAM → 3), and treats a
+zero-exit response carrying no `StackStatus` as 3 as well: the question was
+asked and *not* answered. Pinned by an executed fixture set that runs the
+shipped bytes against a stubbed `aws`, the way `_assert_lib.sh`'s rc 1 vs rc 2
+now is.
+
+**E (minor) — the emitted-bytes `-refresh=false` test spoke for one spec.**
+§10's M4 fix parametrised over arms but took the module's `spec` fixture, i.e.
+`named-resource-replacement` only, so a second brownfield spec — and this
+mechanism explicitly unblocks four Batch B ones — would have shipped with no
+emitted-bytes assertion. The generator half is unconditional, so this was
+coverage narrowness rather than a live hole. Now parametrised over **every**
+`specs/*.yaml` whose loaded model carries a `workspace_seed`, keeping the
+non-empty-plan-lines assertion per TF arm so it cannot pass vacuously, plus a
+test that the spec list itself is non-empty.
+
+**F (minor) — a missing `_assert_lib.sh` was reported as "the account is
+wrong".** `. /pre_invoke/_assert_lib.sh` was sourced with no `set -e` and its
+result was never checked. With the library absent — `ScriptRunner` uploads
+`pre_invoke/` at **run** time, so a partial upload or a future rename reaches
+this — the source failed silently, every `assert_check` became
+`command not found` (rc 127), and the dispatch's `elif rc -ne 0` bucketed 127 as
+CONTRADICTED. The run exited 2 saying *"the account does not hold EXACTLY the
+seed this workspace describes"*: **a false statement about a real AWS account,
+in the one file whose job is to be believed** — m4's contract violation through
+a different door. Three changes: a `command -v jq` guard and a checked source
+(plus a `command -v assert_check` check for the truncated-upload case), both
+placed **before the deploy** so a broken proof harness never spends against the
+account; and the per-assert dispatch now treats **any** rc outside
+`_assert_lib.sh`'s documented `{0,1,2}` as unresolvable, naming the rc on
+stderr. Pinned by tests that run the shipped script and assert both the verdict
+and that the deploy log was never written.
+
+**H (minor by count, largest by consequence) — THE IDEMPOTENCE TIER'S
+"NOTHING WAS APPLIED" GUARD HAD BECOME A TAUTOLOGY. This is a grading-signal
+change.**
+
+`build_idempotence_block` emits, per TF arm,
+`if [ ! -s "/app/project/terraform[.<workspace_id>].tfstate" ]; then
+idem_outcome="not_verifiable"; idem_reason="nothing was applied ..."`. Before
+`workspace_seed.deploy`, an agent that applied nothing left no state, the probe
+fired, and the tier reported `not_verifiable`. **This mechanism writes that
+exact file before the agent's first token**, so on a brownfield spec the probe
+can never fire again: a `converged` verdict stopped distinguishing "the agent
+deployed and converged" from "the agent did nothing and the SEED is still
+converged". A live guard silently became a free pass — wrong output, no error,
+indistinguishable from a legitimate result — produced by a fix, and nothing
+recorded that it had happened. **awscdk has the same hole by a different
+route**: it never had a file probe (CloudFormation *is* its state), and
+pre-seed a do-nothing agent was caught anyway because `cdk diff` against a
+nonexistent stack reports the whole stack as new; post-seed, the unmodified
+workspace matches the deployed stack exactly and `cdk diff` exits 0.
+
+**What changed.** `pre_invoke.sh` now stamps the identity of the state it
+deployed into the receipt at `/logs/seed-deploy-receipt.json` as
+`state_identity`, and the idempotence tier requires that identity to have
+**MOVED** before it will believe a `converged`. Unchanged identity ⇒
+`not_verifiable`, with a reason naming the seed.
+
+**Why `lineage` + `serial`, not `serial` alone** (which is what the review
+suggested): `serial` is a counter that **restarts** when the state is recreated
+from scratch (`rm terraform.tfstate && terraform apply`, or an init against a
+fresh backend), so an agent that destroyed and rebuilt could land back on the
+seed's own serial and read as "nothing moved" — a false `not_verifiable` on a
+real deployment. `lineage` is the UUID Terraform stamps in at creation and never
+changes, so the **pair** moves under both "advanced" and "replaced". A test pins
+exactly that case. On awscdk the same roles are played by `StackId` (a
+delete-and-recreate under the same *name* yields a different id) and
+`LastUpdatedTime`, with `CreationTime` as the fallback CloudFormation forces for
+a stack that has only ever been created; a `cdk deploy` CFN answers "No updates
+are to be performed" leaves both untouched, which is precisely the do-nothing
+agent this catches.
+
+**Three deliberate choices, each of which could have been made the other way.**
+
+1. **`not_verifiable`, not `pending_changes`.** The tier's three values are
+   "converged / still differs / could not be established" (§5.1). "The agent
+   applied nothing" establishes nothing about idempotence — there is no
+   agent-produced deployment to be idempotent *about* — and calling it
+   `pending_changes` would assert a fact about a configuration the agent never
+   rolled out. Under `verifier.idempotence.gating` both downgrade identically,
+   so the honest label costs nothing.
+2. **The old file probe is KEPT, not deleted.** It is a tautology on a seeded
+   spec and it still speaks for a seed that vanished mid-trial. The movement
+   guard sits in its `else`.
+3. **Fail-closed on the TF arms, fail-QUIET on awscdk.** The TF arms read a
+   local file, so an unreadable identity is a broken artifact this verifier is
+   holding in its hand → `not_verifiable`. awscdk must ask CloudFormation, and
+   offline — where `cdk diff` cannot resolve an AWS environment either — an
+   unanswered question is **not evidence about the account**, so that guard
+   narrows its claim to "the answer arrived and matched" and leaves the rest to
+   the completion-marker guard below it. Making a claim there would repeat m4.
+
+**What this changes about published numbers, stated plainly.**
+`named-resource-replacement` sets `verifier.idempotence.gating: true`, so a
+`not_verifiable` there downgrades the trial's reward to 0.0. A do-nothing agent
+on *this* scenario was already going to score 0.0 — its unmodified workspace
+fails the static tiers, which run first — so the guard is not expected to move
+this scenario's numbers. What it moves is the **reason**, and the reachability
+of the failure mode it closes: on any future brownfield spec whose static tiers
+a seed alone could satisfy, the tier would otherwise have reported `converged`
+for an agent that did nothing at all. The guard is registered here because a
+grading signal changed, not because a number is predicted to.
+
+**Blast radius.** The guard is emitted by the same `workspace_seed.deploy`
+branch that emits `pre_invoke.sh`, never by `verifier.idempotence` alone, so
+every non-brownfield task's `tests/test.sh` is byte-identical — asserted across
+every task dir in the repo. The identity jq program has **one owner**
+(`gen.py::SEED_STATE_IDENTITY_JQ`) and two emitters (the receipt writer and the
+tier's reader), and a test asserts both carry it, because a drift between them
+would make every brownfield trial `not_verifiable` — or, worse, every one
+`converged` — with nothing recording why.
+
+**G (minor) — the refresh validator was bypassed by `terraform -chdir=... plan`.**
+`Spec._brownfield_plan_must_not_refresh` gated on the literal substring
+`"terraform plan"`, so an ordinary `terraform -chdir=. plan -input=false ...`
+passed spec load in silence and `gen.py` spliced it verbatim into `hcl_raw`'s
+`static_tiers.sh` — producing the exact outcome the validator's own docstring
+measures: with the seed's state present the offline verifier plan refreshes
+through dummy credentials and dies, scoring **every hcl-raw brownfield trial
+0.0 before the agent is judged**. The backstop that would have caught it was
+finding E's narrow one. Both matchers now match the **plan subcommand**
+(`\bterraform\b(?:\s+-\S+)*\s+plan\b`), terraform's global flags being
+legal only between the binary and the subcommand, and a test asserts the
+validator's pattern and the emitted-bytes test's pattern are byte-identical.
+
+**Offline proof for all eight.** Full suite green, `make check`,
+`make falsifiability` and `make seed-parity` green, and `make gen-all` moves
+only the `named-resource-replacement-*` task trees. Nothing here has been
+exercised live; §7's promotion criterion is unchanged and still unmet.

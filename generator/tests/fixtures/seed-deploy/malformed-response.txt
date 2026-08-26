@@ -1,0 +1,2 @@
+An error occurred (UnauthorizedOperation) when calling the DescribeVpcEndpoints
+operation: You are not authorized to perform this operation.
