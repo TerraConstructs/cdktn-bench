@@ -163,6 +163,34 @@ COPY workspace/tsconfig.json workspace/cdk.json ./
 COPY workspace/bin ./bin
 COPY workspace/lib ./lib
 
+# --- bake the TypeScript compile once, at image-build time ---
+# PARITY with arms/terraconstructs (added 2026-08-26). Both TS arms run
+# `npx tsc -p tsconfig.json && node ...` as their app command (cdk.json here,
+# cdktf.json there) -- neither uses ts-node any more. terraconstructs has baked
+# this compile since the memory finding (../README.md "Memory finding",
+# ../../DECISIONS.md "Memory floor for tsc-heavy arms"); awscdk never had it
+# backported, so this arm paid a COLD full type-check on EVERY `cdk synth` /
+# `cdk deploy`, however many a given task performs.
+#
+# NOTE FOR EDITORS: this file is AGENT-READABLE (the whole environment/ tree is
+# COPYed into the image and the agent can read it on turn one), so it must not
+# name any scenario mechanism -- see generator/tests/test_workspace_seed.py's
+# MECHANISM_PATTERNS and Amendment 28 sec 3 rule 7. The first draft of this
+# very comment tripped that gate on ONE arm, which is worse than tripping it on
+# three: an arm-asymmetric hint biases the cross-arm comparison directly.
+#
+# tsconfig.json now sets `"incremental": true` and has no `outDir`, so this RUN
+# emits bin/*.js / lib/*.js next to their sources AND a tsconfig.tsbuildinfo --
+# the agent's FIRST in-trial compile is the warm incremental one instead of the
+# cold one. Emitted JS is never out of date at grading time because every synth
+# recompiles by construction (the chained app string in cdk.json).
+#
+# Deliberately fatal (no `|| true`): in a generated task the COPY above brings
+# that task's own skeleton lib/scenario-stack.ts, so a skeleton that does not
+# type-check breaks the image build loudly here rather than surfacing as a
+# reward-0.0 "agent failure" in every trial of that scenario.
+RUN npx --no-install tsc -p tsconfig.json
+
 # --- Preflight -------------------------------------------------------
 COPY preflight.sh /usr/local/bin/preflight.sh
 RUN chmod +x /usr/local/bin/preflight.sh

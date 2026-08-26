@@ -21,7 +21,8 @@
     "resolveJsonModule": true,
     "moduleResolution": "bundler",
     "esModuleInterop": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    "incremental": true
   },
   "exclude": ["node_modules", "cdk.out"]
 }
