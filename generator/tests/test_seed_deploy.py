@@ -71,6 +71,27 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures" / "seed-deploy"
 ARMS = ("awscdk", "hcl_raw", "terraconstructs")
 
 
+def _seed_deploying_specs() -> list:
+    """Every spec in the corpus that declares `workspace_seed.deploy`.
+
+    DISCOVERED, never listed. Both repo-level biconditionals below used to
+    hard-code "exactly `named-resource-replacement`'s three arms", which was
+    true on the day the mechanism landed and became a false failure the moment
+    a SECOND brownfield spec was authored -- reporting a correct new scenario
+    as a regression in the old one. Deriving the expected set from specs/ keeps
+    the biconditional exactly as strict (a task that ships one half without the
+    other still fails) while letting the corpus grow.
+    """
+    specs = []
+    for path in sorted((REPO_ROOT / "specs").glob("*.yaml")):
+        if path.name == "split.yaml":
+            continue
+        spec = load_spec(path)
+        if spec.workspace_seed is not None and spec.workspace_seed.deploy is not None:
+            specs.append(spec)
+    return specs
+
+
 @pytest.fixture(scope="module")
 def spec() -> Spec:
     return load_spec(SPEC_PATH)
@@ -959,9 +980,12 @@ def test_declaring_a_seed_deploy_and_shipping_one_are_the_same_thing() -> None:
                 "verifier's fail-closed check"
             )
             seen += 1
-    assert seen == len(ARMS), (
-        f"expected exactly {len(ARMS)} seed-deploying task dirs "
-        f"(named-resource-replacement's arms), found {seen}"
+    expected = sum(len(s.arms.enabled_arms()) for s in _seed_deploying_specs())
+    assert expected > 0, "no spec declares workspace_seed.deploy -- this test would be vacuous"
+    assert seen == expected, (
+        f"expected exactly {expected} seed-deploying task dirs (one per enabled "
+        f"arm of every spec declaring workspace_seed.deploy: "
+        f"{[s.id for s in _seed_deploying_specs()]}), found {seen}"
     )
 
 
@@ -2009,15 +2033,37 @@ def test_awscdk_makes_no_claim_when_cloudformation_cannot_be_reached(
 def test_only_a_seeded_spec_grows_the_movement_guard(tmp_path: Path) -> None:
     """The regression guarantee. Every other task's tests/test.sh must not move
     a byte, so the guard is emitted by the same `workspace_seed.deploy` branch
-    that emits pre_invoke.sh -- and never by `verifier.idempotence` alone."""
+    that emits pre_invoke.sh -- and never by `verifier.idempotence` alone.
+
+    THE CONDITION IS THE CONJUNCTION, not `seeded` alone. The guard lives
+    INSIDE the idempotence block (gen.py::build_idempotence_block returns ""
+    when `verifier.idempotence.enabled` is false, before it ever reaches
+    build_idempotence_seed_movement_guard), so a brownfield spec that deploys
+    its seed and deliberately leaves idempotence OFF correctly ships no guard.
+    Written as `seeded` alone this test read the first such spec as a
+    generation bug -- the docstring's own "never by verifier.idempotence alone"
+    is a statement about the guard's SUFFICIENT condition, and this is its
+    NECESSARY one.
+    """
     guard = "SEED MOVEMENT GUARD"
+    expected_dirs = {
+        task_dir(spec, arm).resolve()
+        for spec in _seed_deploying_specs()
+        if spec.verifier.idempotence.enabled
+        for arm in spec.arms.enabled_arms()
+    }
     for path in sorted(TASKS_DIR.rglob("tests/test.sh")):
         has_guard = guard in path.read_text()
-        seeded = (path.parent.parent / "pre_invoke" / "pre_invoke.sh").is_file()
-        assert has_guard == seeded, (
-            f"{path}: movement guard present={has_guard} but a generated seed "
-            f"pre_invoke.sh present={seeded} -- these are one branch"
+        wants_guard = path.parent.parent.resolve() in expected_dirs
+        assert has_guard == wants_guard, (
+            f"{path}: movement guard present={has_guard} but this task's spec "
+            f"declares workspace_seed.deploy AND verifier.idempotence.enabled="
+            f"{wants_guard} -- these are one branch"
         )
+    assert expected_dirs, (
+        "no spec both deploys a seed and enables idempotence -- this test would "
+        "be vacuous"
+    )
 
 
 def test_the_receipt_writer_and_the_idempotence_reader_share_one_jq_program(

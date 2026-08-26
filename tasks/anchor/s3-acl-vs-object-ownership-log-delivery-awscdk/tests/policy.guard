@@ -1,0 +1,63 @@
+#
+# oracles/cfn-guard/s3-acl-vs-object-ownership-log-delivery/policy.guard --
+# HAND-AUTHORED (SCHEMA.md §8.2 rule 7). Encodes
+# specs/s3-acl-vs-object-ownership-log-delivery.yaml's one tier-"1"
+# structural_assert (no-ownership-control-leaves-acls-enabled) +
+# oracle.cfn_guard_hints. Graded against the awscdk arm's synthesized
+# CloudFormation template (cdk.out/ScenarioStack.template.json).
+#
+# Intent doc: oracles/s3-acl-vs-object-ownership-log-delivery/intent.md
+#
+# THE CLAIM, identical in strictness to the Rego twin: no
+# `OwnershipControls.Rules` entry on any `AWS::S3::Bucket` may carry an
+# `ObjectOwnership` that leaves S3 access control lists ENABLED --
+# `ObjectWriter` (the seed's own value, and what aws-cdk-lib substitutes
+# whenever `accessControl` is set to anything but PRIVATE /
+# BUCKET_OWNER_READ / BUCKET_OWNER_FULL_CONTROL) or `BucketOwnerPreferred`
+# (the half-measure). `BucketOwnerEnforced` is the only compliant value.
+#
+# ARM-SHAPE NOTE (not an asymmetry in strictness -- read before "fixing" it).
+# CloudFormation has exactly ONE place to express this: the `OwnershipControls`
+# property of `AWS::S3::Bucket`. There is no standalone ownership-controls
+# resource type the way Terraform has `aws_s3_bucket_ownership_controls`, so
+# unlike the ingress case on the sibling brownfield scenario there is no second
+# shape to cover here. The Rego twin's extra rules (a resource with no `rule`
+# list, a rule with no readable `object_ownership`) have no CFN counterpart for
+# the same reason: a bucket with no `OwnershipControls` property emits no rule
+# collection at all, and "the property is missing entirely" is graded at tier 0
+# by `destination-bucket-ownership-is-bucket-owner-enforced` (`set_eq` against
+# a non-empty expected fails on zero resolved nodes) rather than here.
+#
+# The `when ... !empty` guard is on the RESOURCE COLLECTION, never on the
+# property being tested: a bucket whose `OwnershipControls.Rules` list exists
+# cannot vacuously pass by having no `ObjectOwnership` key, because the check
+# below tests the value directly and cfn-guard fails an access to a missing
+# key inside an iterated block.
+#
+# WHAT IS DELIBERATELY NOT CHECKED HERE: the destination bucket's policy grant.
+# On this arm that fact IS statically visible, and it is graded at TIER 0
+# (`destination-bucket-policy-grants-the-logging-service-principal` and
+# `destination-bucket-policy-allows-putobject`) precisely because it is; on
+# both Terraform arms the same document is plan-time-unknown and is graded live
+# instead. Restating it here would give this arm two bites at a fact the Rego
+# twin cannot express at all, which is the asymmetry `make tier1-coverage` and
+# the equal-strictness rule exist to prevent.
+#
+
+let s3_buckets = Resources.*[ Type == "AWS::S3::Bucket" ]
+
+# no-ownership-control-leaves-acls-enabled
+rule object_ownership_disables_acls when %s3_buckets !empty {
+	%s3_buckets [ Properties.OwnershipControls exists ] {
+		Properties.OwnershipControls.Rules[*] {
+			ObjectOwnership != "ObjectWriter"
+			<<
+				Violation: an AWS::S3::Bucket OwnershipControls rule sets ObjectOwnership to ObjectWriter, which leaves S3 access control lists ENABLED on that bucket; the only setting that disables them is BucketOwnerEnforced
+			>>
+			ObjectOwnership != "BucketOwnerPreferred"
+			<<
+				Violation: an AWS::S3::Bucket OwnershipControls rule sets ObjectOwnership to BucketOwnerPreferred, which leaves S3 access control lists ENABLED on that bucket; the only setting that disables them is BucketOwnerEnforced
+			>>
+		}
+	}
+}

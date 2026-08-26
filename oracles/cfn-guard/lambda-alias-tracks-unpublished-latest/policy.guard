@@ -1,0 +1,33 @@
+#
+# GENERATOR-STUB — auto-scaffolded by oracles/emit.py, hand-author the
+# real rules below and then DELETE this GENERATOR-STUB line. The generated
+# tests/_assert_lib.sh::is_stub_policy() greps this exact file for the
+# literal string "GENERATOR-STUB" to decide whether tier-1 should run for
+# real or report SKIPPED_STUB — leaving this marker in place after you've
+# added real rules would silently disable grading, and removing it from a
+# still-unauthored file would make an empty policy start gating trials.
+# emit_oracles() never overwrites this file once it exists (specs/SCHEMA.md
+# §8.2 rule 7), so edits here are safe across regeneration.
+#
+# Scenario:   lambda-alias-tracks-unpublished-latest (specs/lambda-alias-tracks-unpublished-latest.yaml)
+# Intent doc: oracles/lambda-alias-tracks-unpublished-latest/intent.md
+# Graded against the awscdk arm's synthesized CloudFormation template
+# (cdk.out/ScenarioStack.template.json) — specs/SCHEMA.md §4.2/§8.
+#
+# Tier-"1" structural_asserts this policy must encode (from the spec):
+#   (none declared in this spec — this scenario has no tier-"1" asserts)
+#
+# cfn_guard_hints (free-form prose from the spec, not executable — guidance only):
+#   (none declared)
+#
+# TODO(Slice D): replace this placeholder with real cfn-guard 3 rules that
+# encode every tier-"1" assert and hint above (cfn-guard 3 DSL —
+# `rule <name> [when <condition>] { <checks> }`; see oracles/cfn-guard/README.md
+# and `cfn-guard validate --rules policy.guard --data <template.json>`).
+#
+# Placeholder: requires Resources to be a non-empty map, which is true of any
+# real synthesized template — i.e. this rule alone certifies nothing about
+# the scenario's actual intent and must not be mistaken for a real policy.
+rule placeholder_pending_hand_authoring {
+	Resources.* EXISTS
+}

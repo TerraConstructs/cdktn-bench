@@ -99,6 +99,18 @@
         "path": "tasks/anchor/iam-managed-policy-exclusive-vs-attachment-terraconstructs"
       },
       {
+        "name": "lambda-alias-tracks-unpublished-latest-awscdk",
+        "path": "tasks/anchor/lambda-alias-tracks-unpublished-latest-awscdk"
+      },
+      {
+        "name": "lambda-alias-tracks-unpublished-latest-hcl-raw",
+        "path": "tasks/anchor/lambda-alias-tracks-unpublished-latest-hcl-raw"
+      },
+      {
+        "name": "lambda-alias-tracks-unpublished-latest-terraconstructs",
+        "path": "tasks/anchor/lambda-alias-tracks-unpublished-latest-terraconstructs"
+      },
+      {
         "name": "lambda-log-group-ownership-and-retention-awscdk",
         "path": "tasks/anchor/lambda-log-group-ownership-and-retention-awscdk"
       },
@@ -121,6 +133,18 @@
       {
         "name": "named-resource-replacement-terraconstructs",
         "path": "tasks/anchor/named-resource-replacement-terraconstructs"
+      },
+      {
+        "name": "s3-acl-vs-object-ownership-log-delivery-awscdk",
+        "path": "tasks/anchor/s3-acl-vs-object-ownership-log-delivery-awscdk"
+      },
+      {
+        "name": "s3-acl-vs-object-ownership-log-delivery-hcl-raw",
+        "path": "tasks/anchor/s3-acl-vs-object-ownership-log-delivery-hcl-raw"
+      },
+      {
+        "name": "s3-acl-vs-object-ownership-log-delivery-terraconstructs",
+        "path": "tasks/anchor/s3-acl-vs-object-ownership-log-delivery-terraconstructs"
       },
       {
         "name": "s3-bucket-hardening-decomposition-awscdk",
@@ -177,6 +201,18 @@
       {
         "name": "sfn-jsonata-hcl-raw",
         "path": "tasks/anchor/sfn-jsonata-hcl-raw"
+      },
+      {
+        "name": "singleton-child-resource-clobber-awscdk",
+        "path": "tasks/anchor/singleton-child-resource-clobber-awscdk"
+      },
+      {
+        "name": "singleton-child-resource-clobber-hcl-raw",
+        "path": "tasks/anchor/singleton-child-resource-clobber-hcl-raw"
+      },
+      {
+        "name": "singleton-child-resource-clobber-terraconstructs",
+        "path": "tasks/anchor/singleton-child-resource-clobber-terraconstructs"
       }
     ]
   }

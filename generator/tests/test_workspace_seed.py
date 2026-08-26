@@ -874,6 +874,23 @@ class TestBrownfieldPromptSurface:
             "for — it has been weakened"
         )
 
+    @staticmethod
+    def _brownfield_spec_whose_id_names_a_mechanism() -> Spec:
+        """A brownfield spec whose own `id` carries deny-listed vocabulary.
+
+        Prefers a real corpus spec (today: `named-resource-replacement`). Falls
+        back to overriding the pilot's id onto whatever brownfield spec is
+        available, so the scrub is always exercised with an id that HAS
+        something to leak — never skipped, never index-dependent.
+        """
+        for path in BROWNFIELD_SPECS:
+            candidate = load_spec(path)
+            if _mechanism_leaks(candidate.id, candidate):
+                return candidate
+        return load_spec(BROWNFIELD_SPECS[0]).model_copy(
+            update={"id": "named-resource-replacement"}
+        )
+
     def test_the_scan_would_have_caught_the_spec_id_stamping(self) -> None:
         """The SECOND leak of the same shape, and the reason `_brownfield_scrub`
         no longer exempts the scenario id.
@@ -888,8 +905,22 @@ class TestBrownfieldPromptSurface:
         This is the regression test the verifier asked for: it fails against
         the old scrub and passes against the new one, so the fix cannot be
         undone silently.
+
+        THE SPEC IS CHOSEN, NOT INDEXED (fixed 2026-08-26, when the second
+        brownfield spec `lambda-alias-tracks-unpublished-latest` landed). This
+        used to read `load_spec(BROWNFIELD_SPECS[0])` on the unstated assumption
+        that entry 0 is the pilot, whose id `named-resource-replacement`
+        contains the banned `replacement` outright. `BROWNFIELD_SPECS` is
+        sorted, so a later spec with a DENY-CLEAN id took position 0 and this
+        test began failing for a reason that had nothing to do with the scrub:
+        an id with nothing to leak cannot demonstrate that the scrub stopped
+        hiding leaks. The observable being pinned needs a spec whose `.id`
+        would leak, so one is selected by that property — and synthesised from
+        the pilot's id if the corpus ever stops containing one, because a
+        regression test that quietly becomes unrunnable is the same defect this
+        module exists to catch.
         """
-        spec = load_spec(BROWNFIELD_SPECS[0])
+        spec = self._brownfield_spec_whose_id_names_a_mechanism()
         pre_fix_stamping = (
             f'new ScenarioStack(app, "{spec.id}", {{\n'
             f'  environmentName: "cdktn-bench",\n'

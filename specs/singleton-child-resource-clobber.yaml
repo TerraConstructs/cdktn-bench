@@ -1,0 +1,923 @@
+# specs/singleton-child-resource-clobber.yaml
+#
+# THE SECOND BROWNFIELD (poisoned-workspace) SCENARIO — specs/SCHEMA.md §2.7 /
+# §2.7.1, docs/design/poisoned-workspace-design.md (§1's target table lists this
+# id as "seed + live", single-step), DECISIONS.md Amendment 28 (brownfield) and
+# Amendment 31 (workspace_seed.deploy). specs/named-resource-replacement.yaml is
+# the template this file follows.
+#
+# ---------------------------------------------------------------------------
+# HOW THIS DIFFERS FROM specs/s3-notification-authoritative-singleton.yaml
+# (Batch A) — asked for explicitly at authoring time, because the two share a
+# mechanism FAMILY and would otherwise be near-duplicates
+# ---------------------------------------------------------------------------
+# The Batch A blueprint (docs/design/batch-a-greenfield-blueprints.md §9) made
+# this split itself and states the reasons; they are reproduced here because a
+# reader of THIS file cannot be assumed to have read that one:
+#
+#   * "`s3-notification-clobber` MERGES here. ... `singleton-child-resource-
+#      clobber` STAYS SEPARATE, in the brownfield (poisoned-workspace) queue."
+#   * "the two measure different things and their rows may not be pooled anyway
+#      (Amendment 28 §6): this one measures *authoring* ('can the agent express
+#      two requirements against one authoritative resource?'), the clobber
+#      sibling measures *changing code the agent did not write* ('does the agent
+#      notice the existing authoritative resource already owns a sibling team's
+#      config?')."
+#
+# Concretely, four differences, each of which changes what is measured:
+#
+# 1. METRIC STRATUM. Batch A is greenfield: an empty entry_file, two tickets,
+#    author both. This is brownfield: a working, ALREADY-DEPLOYED workspace and
+#    one change to it. Amendment 28 §6 forbids pooling brownfield rows with
+#    greenfield rows, so these two scenarios can never contribute to the same
+#    number — merging them would delete a stratum, not deduplicate one.
+#
+# 2. WHOSE CODE IS AT RISK. In Batch A both requirements are the agent's own; a
+#    clobber costs the agent half of its OWN work. Here the rule that gets
+#    clobbered belongs to someone else, was deployed before the agent arrived,
+#    and is not mentioned in the change request as something to build — only as
+#    something that must keep working. That is the brownfield question in its
+#    purest form and Batch A structurally cannot ask it.
+#
+# 3. WHAT THE ORACLE CAN SEE. Batch A grades cardinality on a greenfield plan
+#    and stops: nothing is deployed, so there is no account to read. Here the
+#    seed is really deployed pre-agent (§2.7.1), so the graded evidence includes
+#    the REAL, canonical document the S3 API returns after the agent's own
+#    apply, plus idempotence. That is a strictly larger instrument set, and the
+#    live half exists only because of the brownfield deploy.
+#
+# 4. DIFFERENT SERVICE SURFACE, ON PURPOSE. Batch A is
+#    PutBucketNotificationConfiguration. This is PutBucketLifecycleConfiguration.
+#    The graded record for this row (docs/scenario-grades/2026-08-20-graded.json,
+#    "singleton-child-resource-clobber") kept it as a separate row precisely
+#    because its evidence set is CROSS-SERVICE — tfp-aws#6334 (S3 bucket
+#    policy), #16791 (MSK SCRAM secret associations), #39376 (HashiCorp's
+#    provider-wide exclusive-relationship meta-issue), #501 (S3 notifications) —
+#    i.e. it is a PATTERN candidate, and re-using Batch A's exact resource would
+#    narrow it back into the one service the blueprint refused to narrow it to.
+#
+# ---------------------------------------------------------------------------
+# THE MECHANISM (operator-facing; no agent-visible surface names any of this)
+# ---------------------------------------------------------------------------
+# An S3 bucket has exactly ONE lifecycle configuration document. The API is
+# PutBucketLifecycleConfiguration and it has no create/update distinction and no
+# per-rule write: every call REPLACES the entire document. `aws_s3_bucket_
+# lifecycle_configuration` is therefore authoritative per bucket by necessity,
+# not by design — the same shape, from the same cause, as Batch A's
+# `aws_s3_bucket_notification`. The hashicorp/aws docs carry the standing NOTE
+# on this family of refactored S3 sub-resources: an S3 bucket supports a single
+# such configuration, and declaring more than one resource against the same
+# bucket produces a difference that never settles. Terraform itself says nothing
+# at plan or validate time: there is no cross-resource uniqueness constraint on
+# `bucket` in the provider schema, so two resources plan green, apply green, and
+# then take turns overwriting each other's half of the one document. Whichever
+# applied last is what the bucket actually has; the other requirement is simply
+# not in effect, with no diagnostic anywhere.
+#
+# BOTH TYPED ARMS OWN THE CHILD RESOURCE AND THEREFORE CANNOT PRODUCE TWO
+# (source-verified at authoring time, not assumed):
+#   * aws-cdk-lib: `s3.Bucket`'s rules are the `LifecycleConfiguration` PROPERTY
+#     of the single `AWS::S3::Bucket` resource — on CloudFormation there is no
+#     child resource to duplicate at all. `lifecycleRules` / `addLifecycleRule`
+#     both append to one array on one construct.
+#   * terraconstructs 0.2.13: `storage.Bucket`'s constructor creates ONE
+#     `S3BucketLifecycleConfiguration` child, `new ... (this, "LifeCycleConfig",
+#     { bucket: this.resource.bucket, rule: props.lifecycleRules.map(...) })`,
+#     inside a single `if (props.lifecycleRules)` guard — verified by direct
+#     read of `lib/aws/storage/bucket.js` in the pinned package tree, together
+#     with `lib/aws/storage/lifecycle-config.generated.d.ts`'s
+#     `LifecycleConfigurationRule` (`id` REQUIRED, `enabled` mapped to the L1's
+#     `status`, `filter`/`expiration`/`transition` each an ARRAY of L1 structs).
+#     There is no `addLifecycleRule()` on this arm: the rules are a constructor
+#     prop, so the ONLY idiomatic edit is to extend the existing array.
+# So "add the new requirement as a second resource" is reachable through
+# ordinary use on `hcl_raw` alone. That asymmetry IS the measurement.
+#
+# WHY THE SEED MUST REALLY BE DEPLOYED (§2.7.1, and the whole reason this
+# scenario was blocked until 2026-08-25). The clobber's damage is to the
+# ACCOUNT, not to the file: on the two-resource shape BOTH rules are present in
+# the graded artifact — one in each resource — so every rule-level assert in
+# this oracle passes, the plan is green, and the apply exits 0. Only the
+# cardinality assert (tier 0) and the live document (live tier) can tell that
+# shape from a correct one. With nothing deployed, `tests/live_check.py`'s
+# discriminating claim ("the account's one document holds BOTH rules") would be
+# unanswerable-or-vacuous exactly as `named-resource-replacement`'s was before
+# the deploy block existed (docs/brownfield-seed-not-deployed.md; three
+# published rows voided). `workspace_seed.deploy` below makes the premise a
+# fact and then proves it four fail-closed ways.
+#
+# EVERY GRADED VALUE IN THIS SCENARIO IS A PLAN-TIME-KNOWN LITERAL, on purpose
+# (SCHEMA.md §4.2.1). Rule ids, prefixes, `status`, day counts and storage
+# classes are all static echoes of agent-supplied config on all three arms.
+# Nothing here is a provider-computed ARN or id, nothing is laundered through
+# `jsonencode(...)`, so no tier-0 path can go silently unknown-and-vacuous the
+# way §4.2.1's worked example did. This was the deciding factor in choosing
+# lifecycle rules over the bucket-POLICY spelling of the same authoritative-
+# singleton mechanism: a policy document's `Resource` is built from the
+# bucket's ARN, which is plan-time-unknown, which is contagious through the
+# whole encoded string — and the fixtures `make falsifiability` runs have no
+# state file at all, so the unknown would be REAL there, not hypothetical.
+
+id: singleton-child-resource-clobber
+# HOST-SIDE ONLY (SCHEMA.md §0.1). Never stamped into `environment/` — the
+# agent-visible header is `workspace_title` below. This title names the
+# mechanism on purpose, which is exactly why it must not reach the agent;
+# `generator/tests/test_workspace_seed.py::TestBrownfieldPromptSurface::
+# test_title_never_reaches_the_agent` checks the emitted bytes of every arm for
+# it verbatim.
+title: "Add a rule to a bucket whose storage-rule document is an authoritative singleton child resource"
+# AGENT-VISIBLE. Says only what the workspace already IS — the words an ops
+# team would put at the top of this directory's README. It must not say what is
+# about to change, nor why the change is interesting.
+workspace_title: "Reports archive bucket"
+# AGENT-VISIBLE (SCHEMA.md §0.1). Stamped as the terraconstructs ScenarioStack
+# construct id and gridUUID, hence as `cdktf.out/stacks/reports-archive/` in the
+# agent's own synth output, and used in this spec's own
+# `terraconstructs.output_contract.artifact_path` / `deploy_command`. `id` above
+# is the DIAGNOSIS the agent is meant to reach; this names only the subject.
+# Validated against the deny-list by
+# spec_model.Spec._agent_visible_identity_is_deny_list_clean.
+workspace_id: reports-archive
+# This scenario's OWN trap vocabulary, on top of the global deny-list
+# (spec_model.AGENT_IDENTITY_DENY_PATTERNS, which already covers
+# lifecycle/replacement/perpetual/drift/...). These are the words that would
+# hand over the mechanism the agent is supposed to discover from the
+# configuration and its own toolchain.
+#
+# NOTE for a future editor: the global pattern is `\blifecycle\b`, with word
+# boundaries, and `aws_s3_bucket_lifecycle_configuration` / `lifecycleRules` /
+# `LifecycleConfiguration` do not match it (`_l`, `eR`, `eC` are all word-char
+# boundaries, and the scan is case-SENSITIVE). That is not a loophole being
+# exploited: those are RESOURCE AND PROPERTY NAMES that any real config for this
+# bucket would carry, on every arm, symmetrically. What is banned below is the
+# language that would explain the mechanism rather than name the API.
+agent_deny_vocab:
+  - authoritative
+  - singleton
+  - clobber
+  # NOT `overwrite` (tried, and REJECTED by
+  # generator/tests/test_scenario_identity.py at authoring time, 2026-08-26).
+  # The word appears in arm/generator BOILERPLATE that has nothing to do with
+  # this scenario — `environment/Dockerfile`'s note that the generator
+  # overwrites workspace/main.tf, and `provider.tf`'s own header — on the two
+  # arms whose entry_file the generator stamps and NOT on terraconstructs.
+  # Declaring it here would not have hidden anything about the mechanism; it
+  # would have turned pre-existing, mechanism-free text into an ARM-ASYMMETRIC
+  # deny-list hit, which is the failure mode Amendment 28 §3 rule 7 calls the
+  # worst kind. The mechanism words are the three above; "overwrite" is an
+  # ordinary English verb this scenario has no monopoly on.
+  - PutBucketLifecycleConfiguration
+  - one per bucket
+  - single configuration
+difficulty: 2
+services: [s3]
+
+arms:
+  awscdk: true
+  hcl_raw: true
+  terraconstructs:
+    enabled: true
+    reason: >
+      SUPPORTED, and source-verified rather than assumed, because this arm's
+      answer to the scenario's central question is what the scenario measures.
+      `storage.Bucket` (terraconstructs/lib/aws/storage/bucket.js, exported via
+      that directory's index) accepts `lifecycleRules?: LifecycleConfigurationRule[]`
+      and, inside one `if (props.lifecycleRules)` guard, creates exactly one
+      `S3BucketLifecycleConfiguration` child construct with id "LifeCycleConfig",
+      mapping each rule's `enabled` boolean to the L1's `status` string. Three
+      arm-specific facts were established by direct read of the pinned package
+      tree and are load-bearing here: (1) `LifecycleConfigurationRule.id` is
+      REQUIRED on this arm (unlike aws-cdk-lib, where it is optional), so the
+      seed and every solution carry explicit rule ids on all three arms —
+      which is what lets the seed_asserts and live asserts address rules by id
+      symmetrically; (2) `filter`, `expiration` and `transition` are ARRAYS of
+      the generated L1 structs, not the scalar/duration-shaped props
+      aws-cdk-lib uses, so the two TypeScript arms are genuinely different code
+      and not a copy; (3) there is NO `addLifecycleRule()` method — the rules
+      are a constructor prop only — so the sole idiomatic way to add a rule on
+      this arm is to extend the existing array, i.e. the arm cannot reach the
+      headline mistake without abandoning its own L2 for a hand-rolled L1.
+      `bucketName` and `forceDestroy` are both real props on the same
+      interface (bucket.d.ts).
+
+# ---------------------------------------------------------------------------
+# §2.7 workspace_seed — THE BROWNFIELD STARTING STATE
+# ---------------------------------------------------------------------------
+#
+# Each body below is written VERBATIM as that arm's `output_contract.entry_file`,
+# writable (0o644), with NO generator header. Read each as a hostile reader:
+# nothing here signposts the mechanism. There is one bucket and one storage-rule
+# document holding one rule that some other team put there; that is all an
+# ordinary production file would say, and it is all these say.
+workspace_seed:
+  premise: |
+    This workspace holds the storage configuration for one archive bucket: a
+    single S3 bucket, and one retention rule on it that deletes objects under
+    the `logs/` prefix 30 days after they are written. It is already deployed
+    in this account.
+
+  entry_file:
+    hcl_raw: |
+      resource "aws_s3_bucket" "reports" {
+        bucket        = "cdktn-bench-reports-archive"
+        force_destroy = true
+
+        tags = {
+          Name = "reports-archive"
+        }
+      }
+
+      resource "aws_s3_bucket_lifecycle_configuration" "reports" {
+        bucket = aws_s3_bucket.reports.id
+
+        rule {
+          id     = "expire-raw-logs"
+          status = "Enabled"
+
+          filter {
+            prefix = "logs/"
+          }
+
+          expiration {
+            days = 30
+          }
+        }
+      }
+
+    awscdk: |
+      import * as cdk from "aws-cdk-lib";
+      import * as s3 from "aws-cdk-lib/aws-s3";
+      import { Construct } from "constructs";
+
+      export class ScenarioStack extends cdk.Stack {
+        constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+          super(scope, id, props);
+
+          new s3.Bucket(this, "Reports", {
+            bucketName: "cdktn-bench-reports-archive",
+            removalPolicy: cdk.RemovalPolicy.DESTROY,
+            lifecycleRules: [
+              {
+                id: "expire-raw-logs",
+                enabled: true,
+                prefix: "logs/",
+                expiration: cdk.Duration.days(30),
+              },
+            ],
+          });
+        }
+      }
+
+    terraconstructs: |
+      import { Construct } from "constructs";
+      import { AwsStack, AwsStackProps } from "terraconstructs/lib/aws";
+      import { Bucket } from "terraconstructs/lib/aws/storage";
+
+      export class ScenarioStack extends AwsStack {
+        constructor(scope: Construct, id: string, props: AwsStackProps) {
+          super(scope, id, props);
+
+          new Bucket(this, "Reports", {
+            bucketName: "cdktn-bench-reports-archive",
+            forceDestroy: true,
+            lifecycleRules: [
+              {
+                id: "expire-raw-logs",
+                enabled: true,
+                filter: [{ prefix: "logs/" }],
+                expiration: [{ days: 30 }],
+              },
+            ],
+          });
+        }
+      }
+
+  # Behavioural facts every arm's seed must satisfy (SCHEMA.md §2.7's three
+  # equivalence rules). NOT a resource census: the two typed arms expand
+  # differently from the HCL and from each other, which is the thesis, not a
+  # parity failure.
+  seed_asserts:
+    - name: bucket-carries-the-literal-name-the-live-proof-queries
+      description: >
+        The bucket's physical name is the exact literal that
+        `deploy.live_asserts` and `tests/live_check.py` pass to the S3 API.
+        This is not decoration: the `aws` argv of a live assert is STATIC spec
+        text with no placeholder-substitution surface (§2.7.1), so if a future
+        edit to any one arm's seed changed this name, that arm's pre-agent
+        proof would query a bucket that does not exist, resolve to zero nodes,
+        and report `seed_absent` — a whole-trial abort whose cause would be two
+        files away. Pinned here so `make seed-parity` fails at generation time
+        instead.
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.BucketName"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket')].values.bucket"
+      op: eq
+      expected: "cdktn-bench-reports-archive"
+
+    - name: there-is-exactly-one-bucket-in-this-workspace-tf
+      description: >
+        Exactly one bucket. Load-bearing for
+        `exactly-one-storage-rule-document-for-the-bucket` below and for its
+        tier-0 twin: those count `aws_s3_bucket_lifecycle_configuration`
+        resources WITHOUT joining each one to its parent bucket, which is only
+        a sound statement of "one document for this bucket" while there is
+        exactly one bucket to own them. Joining a child resource to its parent
+        through plan JSON is genuinely hard and genuinely fragile — Batch A
+        spent rounds 13 and 14 on it (see that spec's own catches[] header) —
+        so this scenario removes the need for the join instead of rebuilding
+        it, and pins the precondition that makes the removal legitimate.
+        Split from its CFN twin below only because `eq` needs a literal
+        `expected` and the two artifact families spell the resource type
+        differently; the claim is identical.
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket')].type"
+      op: eq
+      expected: "aws_s3_bucket"
+
+    - name: there-is-exactly-one-bucket-in-this-workspace-cfn
+      description: >
+        The awscdk twin of the assert above, identical in claim and split only
+        by the type spelling. It matters on this arm too even though there is
+        no child resource to count here: a second bucket would give this
+        scenario a second storage-rule document by the back door, on the one
+        arm whose L2 makes the front door impossible.
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Type"
+      op: eq
+      expected: "AWS::S3::Bucket"
+
+    - name: storage-rule-document-holds-exactly-the-other-teams-rule
+      description: >
+        THE POISON. The one storage-rule document this bucket has already
+        carries exactly ONE rule, and it is not the agent's. `eq` pins the
+        resolved-node COUNT to 1 as well as the value (SCHEMA.md §4.2), so this
+        is "exactly this rule and no other", not "this rule is somewhere among
+        them" — which is what makes the post-change claim ("the document holds
+        BOTH rules") a real claim rather than a superset restatement.
+      pins_catch: existing-log-expiry-rule-dropped
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.LifecycleConfiguration.Rules[*].Id"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_lifecycle_configuration')].values.rule[*].id"
+      op: eq
+      expected: "expire-raw-logs"
+
+    - name: the-other-teams-rule-deletes-logs-after-thirty-days
+      description: >
+        The behaviour the change must leave intact, stated as a value rather
+        than as a name: raw logs are deleted 30 days after they are written.
+        A solution that keeps a rule called `expire-raw-logs` but empties it
+        satisfies the assert above and fails this one.
+      pins_catch: existing-log-expiry-rule-dropped
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.LifecycleConfiguration.Rules[*].ExpirationInDays"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_lifecycle_configuration')].values.rule[*].expiration[*].days"
+      op: eq
+      expected: 30
+
+    - name: exactly-one-storage-rule-document-for-the-bucket
+      description: >
+        THE OTHER HALF OF THE POISON, and the fact the headline catch inverts:
+        the deployed workspace expresses its rules through ONE child resource.
+        `eq` on the resource `type` resolves to one node per matching resource,
+        so this reads as a cardinality claim: one document today, and the
+        negative fixture's two documents resolve to two nodes and fail.
+        TF-shaped arms only — on CloudFormation the rules are a PROPERTY of the
+        single `AWS::S3::Bucket` (`LifecycleConfiguration`), so there is no
+        child resource to count and no way to declare two. That is not an
+        asymmetry to paper over with a contrived awscdk twin: it is precisely
+        why `exports-rule-added-as-a-second-child-resource` is `applies_to:
+        [hcl_raw]`, and the awscdk-side statement of "there is one document" is
+        already made by `there-is-exactly-one-bucket-in-this-workspace` above.
+      pins_catch: exports-rule-added-as-a-second-child-resource
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_lifecycle_configuration')].type"
+      op: eq
+      expected: "aws_s3_bucket_lifecycle_configuration"
+
+    - name: seed-rule-is-enabled
+      description: >
+        The starting configuration already satisfies this scenario's tier-1
+        policy family (no rule may be left un-enabled). Pinned so a future edit
+        to the seed cannot quietly hand the `exports-rule-added-but-not-enabled`
+        catch a starting state that already violates it, which would make that
+        catch unfalsifiable — its negative fixture and its own seed would be
+        indistinguishable. Same guard, same reason, as
+        `seed-ingress-is-already-scoped-to-the-vpc` in
+        specs/named-resource-replacement.yaml.
+      pins_catch: exports-rule-added-but-not-enabled
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.LifecycleConfiguration.Rules[*].Status"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_lifecycle_configuration')].values.rule[*].status"
+      op: eq
+      expected: "Enabled"
+
+  # -------------------------------------------------------------------------
+  # §2.7.1 deploy — THE PREMISE IS MADE TRUE BY THE HARNESS
+  # -------------------------------------------------------------------------
+  #
+  # Deployed by `aws_bench/task/aws_trial.py::AwsBenchSingleStepTrial._prepare`
+  # inside the agent container, before the agent's first token, under the
+  # AGENT'S OWN role. Four fail-closed layers (deploy exit 0; per-arm state
+  # artifact; these live_asserts; the /logs/seed-deploy-receipt.json the
+  # verifier refuses to grade without) — every one of which ABORTS the trial
+  # rather than scoring it 0.0.
+  deploy:
+    # An S3 bucket plus one PutBucketLifecycleConfiguration call is the
+    # cheapest, fastest live seed in this repo — no ENI, no endpoint reaching
+    # `available`, no IAM propagation wait. The dominant cost on `awscdk` is
+    # `cdk deploy`'s own CloudFormation round trip, and on the TS arms an
+    # `npm ci`-warmed image's synth. 1800.0 s (the schema default, stated
+    # explicitly rather than inherited so a future default change cannot move
+    # this scenario silently) is generous headroom, not an estimate: a seed
+    # timeout aborts the trial, and `timeout_sec` is NOT scaled by
+    # `--timeout-multiplier`.
+    timeout_sec: 1800.0
+    live_asserts:
+      - name: the-bucket-is-live
+        description: >
+          The bucket the change request is about exists in the account RIGHT
+          NOW. Without this, every claim `tests/live_check.py` makes after the
+          agent runs is a claim about a bucket that may never have existed, and
+          `get-bucket-lifecycle-configuration` would fail with `NoSuchBucket`
+          for a reason having nothing to do with the agent.
+        aws:
+          - s3api
+          - list-buckets
+        jsonpath: "$.Buckets[?(@.Name=='cdktn-bench-reports-archive')].Name"
+        # `eq`, not `exists`: `eq` additionally pins the resolved-node count to
+        # exactly 1. S3 bucket names are GLOBALLY unique, so >1 is impossible
+        # here and this costs nothing — but 0 is very possible (a failed
+        # deploy, a name taken in another account, a reset that removed it),
+        # and `eq` fails on 0 nodes where a truncated path plus `exists` would
+        # not. The path descends INTO `Buckets` with a filter, satisfying
+        # §2.7.1's shape rule: on an account with no buckets `$.Buckets` alone
+        # would resolve to ONE node (the empty array) and pass vacuously.
+        op: eq
+        expected: "cdktn-bench-reports-archive"
+        pins_catch: existing-log-expiry-rule-dropped
+
+      - name: the-live-document-holds-exactly-the-other-teams-rule
+        description: >
+          THE ANTI-VACUITY KEYSTONE. The account's storage-rule document for
+          this bucket exists and holds EXACTLY ONE rule, and it is the other
+          team's. This is the precise pre-condition that makes
+          `tests/live_check.py`'s discriminating claim — "after your change the
+          account's ONE document holds BOTH rules" — a real claim:
+            * if the document did not exist pre-agent, "both rules are in it"
+              could only be reached by the agent authoring both, and the
+              scenario would silently degrade into a greenfield authoring task
+              (i.e. into Batch A);
+            * if it already held two rules pre-agent, live_check would pass for
+              an agent that changed nothing, and the seed-unchanged negative
+              would be indistinguishable from a correct solution in the account.
+          `eq` (NOT `set_eq`, NOT `contains`) on purpose, following
+          specs/named-resource-replacement.yaml's own findings B and M2:
+          `set_eq`'s compiled filter runs `unique` before comparing, so two
+          identically-named rules collapse to one element and pass; `contains`
+          on a string node is jq's literal SUBSTRING test, so a rule id like
+          `expire-raw-logs-v2` left behind by an incomplete reset would satisfy
+          a proof written to exclude it. `eq` is
+          `($v|length) == 1 and ($v[0] == $e)` — exactly one rule, and it is
+          this one.
+        aws:
+          - s3api
+          - get-bucket-lifecycle-configuration
+          - --bucket
+          - cdktn-bench-reports-archive
+        jsonpath: "$.Rules[*].ID"
+        op: eq
+        expected: "expire-raw-logs"
+        pins_catch: exports-rule-added-as-a-second-child-resource
+
+      - name: the-live-rule-really-expires-logs-after-thirty-days
+        description: >
+          The deployed rule is the seed's rule, not an empty shell wearing its
+          id. Distinct from the assert above rather than folded into it: a rule
+          object whose `Expiration` was dropped by a partially-applied seed
+          would still answer `expire-raw-logs` to the id query, and the whole
+          point of layer 3 is that "the deploy exited 0" is not accepted as
+          evidence about the account. `Rules[*]` supplies the required
+          iterating stage; `.Expiration.Days` then reads one field of each
+          iterated rule, so the path resolves to zero nodes — not one null —
+          when no rule carries an expiration.
+        aws:
+          - s3api
+          - get-bucket-lifecycle-configuration
+          - --bucket
+          - cdktn-bench-reports-archive
+        jsonpath: "$.Rules[*].Expiration.Days"
+        op: eq
+        expected: 30
+        pins_catch: existing-log-expiry-rule-dropped
+
+instruction:
+  # LEAN (docs/adding-scenarios.md — an over-specified prompt measures
+  # nothing). It states TWO end states and no mechanism:
+  #   * the new requirement, in ordinary retention/cost language;
+  #   * that the behaviour already deployed must still hold afterwards.
+  # The second sentence is what makes `existing-log-expiry-rule-dropped` a fair
+  # catch rather than a trick — and it deliberately does NOT make the headline
+  # catch easier, because the two-resource shape SATISFIES BOTH SENTENCES IN
+  # CONFIGURATION and still leaves the account holding only one of them. That
+  # gap between "the file says both" and "the account has both" is the entire
+  # scenario, and no sentence here can close it without naming the mechanism.
+  #
+  # Precedent for stating a preserved end state: named-resource-replacement's
+  # own shared_body ("The interface VPC endpoint must still be reachable on
+  # port 443 ... and must not become reachable from anywhere else").
+  shared_body: |
+    Storage spend on this archive bucket is growing. Objects written under the
+    `exports/` prefix are read constantly for their first quarter and almost
+    never afterwards.
+
+    Move objects under the `exports/` prefix into the Glacier Instant Retrieval
+    storage class 90 days after they are created, then roll the change out to
+    this account with your toolchain's real deploy command.
+
+    Objects under the `logs/` prefix must still be deleted 30 days after they
+    are written when you are done.
+  placeholders: []
+
+  per_arm:
+    awscdk:
+      language_line: "This workspace is an AWS CDK (TypeScript) app using aws-cdk-lib L2 constructs."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdk.out/ScenarioStack.template.json
+        build_command: npm run build
+        synth_command: npx cdk synth --no-lookups --quiet -o cdk.out
+        # §2.7.1: the seed deploy runs this VERBATIM with cwd=/app/project. No
+        # `-o` and no `--app`, so it uses the workspace's own cdk.json and the
+        # seed and the agent deploy the same app definition. bin/app.ts is
+        # generator-owned and fixes the physical stack name to `ScenarioStack`,
+        # which is what makes the agent's own later `cdk deploy` an UpdateStack
+        # against THIS stack rather than a fresh create. This arm keeps no
+        # local state.
+        deploy_command: npx cdk deploy --require-approval never ScenarioStack
+        json_fields: []
+    hcl_raw:
+      language_line: "This workspace is hand-written Terraform HCL (no modules)."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        # `-refresh=false` is MANDATORY on a workspace_seed spec and the
+        # generator hard-errors without it (§2.7.1 hard error 7,
+        # Spec._brownfield_plan_must_not_refresh). With state present in
+        # /app/project — which the seed deploy puts there by design — an
+        # offline verifier plan would REFRESH through provider.tf's dummy
+        # credentials and die with PLAN FAILED, scoring a perfect solution 0.0.
+        # Grading is unaffected: every tf_jsonpath here reads
+        # $.planned_values, which carries the full desired end state of every
+        # resource rather than a changeset.
+        plan_command: >-
+          terraform init && terraform validate &&
+          terraform plan -input=false -refresh=false -out=plan.tfplan &&
+          terraform show -json plan.tfplan > plan.json
+        # §2.7.1. TF_VAR_cdktn_bench_live=1 is MANDATORY: provider.tf hardcodes
+        # dummy access_key/secret_key otherwise, and the AWS provider ranks an
+        # explicit access_key above every ambient credential source, so the
+        # seed apply would fail InvalidClientTokenId. State lands at
+        # /app/project/terraform.tfstate (the implicit local backend), i.e. the
+        # agent's own cwd, which is the whole handoff.
+        deploy_command: >-
+          TF_VAR_cdktn_bench_live=1 terraform init -input=false &&
+          TF_VAR_cdktn_bench_live=1 terraform apply -input=false -auto-approve
+        json_fields: []
+    terraconstructs:
+      language_line: "This workspace is a terraconstructs (TypeScript) app using its AWS L2 constructs."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdktf.out/stacks/reports-archive/plan.json
+        synth_command: npx cdktn synth
+        # §2.7.1. The positional argument is the STACK id — `workspace_id`, the
+        # construct id environment/app/main.ts passes to ScenarioStack — NOT
+        # this spec's `id`. The two differ here BY DESIGN (§0.1), and confusing
+        # them is a real shipped bug on the template scenario (its solve.sh
+        # named a stack that does not exist, so its LIVE=1 path could never
+        # have worked). State lands at
+        # /app/project/terraform.reports-archive.tfstate — an ABSOLUTE path
+        # baked into cdk.tf.json at synth time by cdktn's default LocalBackend,
+        # NOT under cdktf.out/.
+        deploy_command: >-
+          CDKTN_BENCH_LIVE=1 npx cdktn deploy --auto-approve reports-archive
+        json_fields: []
+
+catches:
+  - name: exports-rule-added-as-a-second-child-resource
+    taxonomy: graph-dependency
+    description: >
+      THE HEADLINE CATCH, and the brownfield one. The existing rule already
+      lives in `aws_s3_bucket_lifecycle_configuration.reports`; the new
+      requirement arrives as its own ticket, so it is authored as its own
+      resource — a second `aws_s3_bucket_lifecycle_configuration` with
+      `bucket = aws_s3_bucket.reports.id` and the `exports/` transition rule.
+      `terraform validate` and `terraform plan` say nothing: the provider
+      schema carries no cross-resource uniqueness constraint on `bucket`. The
+      apply exits 0. But an S3 bucket has ONE lifecycle configuration document
+      and PutBucketLifecycleConfiguration replaces it whole, so the two
+      resources take turns overwriting each other: the account ends up holding
+      whichever applied last, the other requirement is silently not in effect,
+      and the next plan is never empty. Both rules are nevertheless PRESENT in
+      the graded artifact — one in each resource — so every rule-level assert
+      in this oracle passes on this shape. It is caught by the cardinality
+      assert (`exactly-one-storage-rule-document-for-the-bucket`), by the live
+      document, and by idempotence; nothing else in the tier stack sees it.
+      STRUCTURALLY UNREACHABLE ON BOTH TYPED ARMS through ordinary use: on
+      awscdk the rules are a PROPERTY of the one `AWS::S3::Bucket` (there is no
+      child resource to duplicate), and terraconstructs' `storage.Bucket`
+      creates its single `S3BucketLifecycleConfiguration` from a constructor
+      prop with no `addLifecycleRule()` escape route — so `applies_to` names
+      only `hcl_raw`, and gates/oracle_falsifiability.py reports the other two
+      N/A rather than MISSING. That asymmetry is the measurement, not a gap to
+      engineer away.
+    applies_to: [hcl_raw]
+    predicted_tier_caught:
+      # Honest tier, and deliberately NOT downgraded to "live" to manufacture
+      # live-tier drama: the shape IS visible in the graded artifact, as a
+      # cardinality fact, and this repo's rule is to catch a catch at the tier
+      # where it is genuinely visible. `.awscdk` is required by the schema and
+      # never read for this catch — `applies_to` excludes that arm.
+      awscdk: "0"
+      hcl: "0"
+      terraconstructs_override: null
+
+  - name: existing-log-expiry-rule-dropped
+    taxonomy: graph-dependency
+    description: >
+      The brownfield rewrite. Asked for one rule, the agent re-authors the
+      whole rule set as the one rule it was asked for, and the other team's
+      30-day log expiry — deployed, in effect, and not the agent's own work —
+      leaves the document. Nothing errors: the document is legal with one rule,
+      the plan is green, the apply is green, and the objects under `logs/`
+      simply stop being deleted, which no one notices until a storage bill or a
+      retention audit does. Reachable on ALL THREE arms and by exactly the same
+      motion on each (a TypeScript array literal is as easy to overwrite as an
+      HCL block), which is why this catch, unlike the headline one, is where
+      the typed arms have no structural advantage at all. Caught at tier 0 by
+      `the-other-teams-rule-still-deletes-logs-after-thirty-days` and by the
+      prefix-coverage assert, and independently by the live document.
+    applies_to: [awscdk, hcl_raw, terraconstructs]
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "0"
+      terraconstructs_override: null
+
+  - name: exports-rule-added-but-not-enabled
+    taxonomy: nested-attribute
+    description: >
+      The new rule is authored correctly — right prefix, right storage class,
+      right day count — and left un-enabled (`status = "Disabled"` on the TF
+      arms, `enabled: false` on both TypeScript arms, which terraconstructs
+      maps to the same `status` string). It is a real habit: rules get staged
+      switched off and someone means to turn them on later. The document is
+      valid, the plan and apply are green, every value-level assert about the
+      new rule passes because the values are all correct, and nothing ever
+      moves to Glacier. The claim that catches it — "NO rule in this document
+      may be left un-enabled" — is universally quantified over a collection,
+      which is what the policy engines are for and what a jq path pinning one
+      value cannot soundly express; hence tier 1 on every arm, graded by
+      oracles/rego/singleton-child-resource-clobber/policy.rego (TF arms) and
+      oracles/cfn-guard/singleton-child-resource-clobber/policy.guard (awscdk).
+    applies_to: [awscdk, hcl_raw, terraconstructs]
+    predicted_tier_caught:
+      awscdk: "1"
+      hcl: "1"
+      terraconstructs_override: null
+
+oracle:
+  intent: |
+    A correct solution leaves this workspace deploying the same bucket it
+    described before, with exactly one thing added: objects under `exports/`
+    move to Glacier Instant Retrieval 90 days after they are created, and the
+    other team's 30-day expiry of `logs/` is untouched and still in effect.
+
+    Four things are graded, in four places, and the split is deliberate:
+
+    1. TIER 0 (static, every arm). The new rule is there, with the requested
+       prefix, storage class and day count; the existing rule is still there,
+       still deleting `logs/` after 30 days; the workspace still has exactly
+       one bucket; and — on the Terraform-shaped arms — exactly one
+       `aws_s3_bucket_lifecycle_configuration` resource. The last of those is
+       the ONLY static check that distinguishes the headline mistake from a
+       correct answer, because both rules are present in the artifact either
+       way. The first of them is what makes the DO-NOTHING answer fail: the
+       seed already deploys green, so without an assert about the new rule an
+       agent that changed nothing would score 1.0. See
+       `solution/broken/seed-unchanged/`, which exists to keep proving that.
+
+    2. TIER 1 (Rego / cfn-guard, every arm). No rule in the document may be
+       left un-enabled. A quantified statement over a collection, not a pinned
+       value.
+
+    3. LIVE (`tests/live_check.py`, gating). Whether the change ACTUALLY
+       LANDED, read from the one document the S3 API really returns for this
+       bucket. This is the only instrument in the stack that can tell "the file
+       says both rules" from "the account has both rules", and the difference
+       between those two sentences is what the headline catch produces. It is
+       also the only one that can see a change that was authored and never
+       rolled out, which the prompt asks for in as many words.
+
+    4. IDEMPOTENCE (gating). Two documents fighting over one API never settle:
+       the next plan is not empty. A change that has to be re-applied to stay
+       applied is not a change that landed.
+
+    What is deliberately NOT graded: how many resources each arm's expansion
+    produced; whether the rules are expressed as an L2 prop, an L2 child
+    construct or raw HCL; the id the agent gives its NEW rule (only the
+    existing rule's id is pinned, because that one is not the agent's to
+    rename); and anything about the bucket beyond its identity.
+
+  structural_asserts:
+    - name: exports-objects-transition-to-glacier-instant-retrieval
+      description: >
+        The requested change actually happened, read as the storage class of
+        the one transition in the document. This is one of the two asserts the
+        do-nothing answer fails. `eq` pins the count as well as the value: the
+        seed has no transition at all, so a do-nothing answer resolves to ZERO
+        nodes and fails, and a solution that scatters several transitions
+        across rules is ambiguous about which one implements the request and
+        fails too.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      # RECURSIVE DESCENT ON THE CFN SIDE, and it is not stylistic (MEASURED,
+      # 2026-08-26). CloudFormation OMITS the `Transitions` key entirely from a
+      # rule that has none, where the Terraform provider emits an empty list —
+      # so the natural twin path `Rules[*].Transitions[*].StorageClass`
+      # compiles to `... | .Transitions | .[]`, which jq refuses on `null`
+      # ("Cannot iterate over null"). `assert_check` correctly reports that as
+      # UNRESOLVABLE (rc 2), so this arm's own CORRECT reference solution
+      # scored 0.0 with a diagnostic pointing at the toolchain rather than at
+      # the artifact. `..StorageClass` compiles to `.. | objects |
+      # .StorageClass?`, which is null-safe and yields a node only where the
+      # key really exists. Scoped to `LifecycleConfiguration`, the only other
+      # place this key can appear is `NoncurrentVersionTransitions` — and `eq`
+      # pins the count to 1, so a solution that adds one would be reported
+      # ambiguous rather than silently accepted.
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.LifecycleConfiguration..StorageClass"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_lifecycle_configuration')].values.rule[*].transition[*].storage_class"
+      op: eq
+      expected: "GLACIER_IR"
+
+    - name: the-transition-happens-after-ninety-days
+      description: >
+        The other half of the requested change: 90 days, not 30 and not 900.
+        Split from the assert above rather than folded into it because they
+        fail for different reasons and an operator reading a 0.0 should be able
+        to tell "wrong storage class" from "wrong day count" without opening
+        the artifact.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      # Recursive descent for the same measured reason as the assert above —
+      # see its comment; `Transitions` is absent, not empty, on a rule that has
+      # none, and `[*]` over an absent key is an UNRESOLVABLE jq error, not a
+      # contradiction.
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.LifecycleConfiguration..TransitionInDays"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_lifecycle_configuration')].values.rule[*].transition[*].days"
+      op: eq
+      expected: 90
+
+    - name: the-other-teams-rule-still-deletes-logs-after-thirty-days
+      description: >
+        The behaviour that was already deployed is still declared, as a value
+        rather than as a name. `eq` again pins the count: exactly one
+        expiration in the whole document, and it is 30 days. Dropping the rule
+        resolves to zero nodes and fails; adding an unrequested second
+        expiration resolves to two and fails, which is intended — the change
+        request asks for a transition, and an extra deletion rule the ticket
+        never asked for is a change to another team's retention policy.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.LifecycleConfiguration.Rules[*].ExpirationInDays"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_lifecycle_configuration')].values.rule[*].expiration[*].days"
+      op: eq
+      expected: 30
+
+    - name: the-two-rules-cover-exactly-the-two-prefixes
+      description: >
+        Both rules are scoped, and scoped to the two prefixes this bucket's two
+        requirements name — `logs/` and `exports/`, in either order and with
+        nothing else. `set_eq` is the "and nothing else" op (SCHEMA.md §4.2):
+        `in`/`contains` would accept a third, unrequested prefix, and — more
+        importantly here — a rule left UNSCOPED contributes no prefix node at
+        all, so an agent who adds the transition with no filter (and thereby
+        sends the raw logs to Glacier too, silently and expensively) resolves
+        to `{"logs/"}` and fails. `set_eq` is safe from its own `unique`
+        collapse here in a way it is not on a region-wide live query: the two
+        expected values are DIFFERENT, so no duplicate can masquerade as the
+        pair.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.LifecycleConfiguration.Rules[*].Prefix"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_lifecycle_configuration')].values.rule[*].filter[*].prefix"
+      op: set_eq
+      expected: ["logs/", "exports/"]
+
+    - name: there-is-still-exactly-one-bucket-tf
+      description: >
+        The workspace still describes one bucket. Load-bearing rather than
+        hygienic: the cardinality assert below counts child resources without
+        joining them to a parent, and that is only a statement about THIS
+        bucket while there is exactly one bucket. It also fails a "solution"
+        that satisfies the new requirement by putting `exports/` in a second,
+        new bucket. Split from its CFN twin only because `eq` needs a literal
+        `expected` and the two artifact families spell the type differently.
+      tier: "0"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket')].type"
+      op: eq
+      expected: "aws_s3_bucket"
+
+    - name: there-is-still-exactly-one-bucket-cfn
+      description: >
+        The awscdk twin of the assert above, identical in claim, split only by
+        the type spelling.
+      tier: "0"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Type"
+      op: eq
+      expected: "AWS::S3::Bucket"
+
+    - name: exactly-one-storage-rule-document-for-the-bucket
+      description: >
+        THE ASSERT THAT CARRIES THE HEADLINE CATCH, and the only static one
+        that does. Exactly one `aws_s3_bucket_lifecycle_configuration` resource
+        exists (0 = the document was deleted outright, also a failure; 2+ = the
+        headline mistake, two resources silently fighting over the one document
+        S3 keeps for this bucket). Every OTHER assert in this tier passes on
+        the two-resource shape, because both rules really are in the artifact —
+        one per resource — which is exactly why this one is not redundant with
+        them. TF-shaped arms only: CloudFormation has no such child resource,
+        the rules being a property of the bucket itself. This is the same
+        `.type`-with-`eq` cardinality idiom Batch A's own
+        `exactly-one-notification-resource-per-bucket-tf` uses, reused
+        deliberately (the blueprint says the two scenarios share this pattern)
+        rather than reinvented — and reused WITHOUT its parent-join, which
+        `there-is-still-exactly-one-bucket` above makes unnecessary here.
+      tier: "0"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_lifecycle_configuration')].type"
+      op: eq
+      expected: "aws_s3_bucket_lifecycle_configuration"
+
+    - name: no-storage-rule-is-left-un-enabled
+      description: >
+        TIER 1. Every rule in the document must be enabled — `Status:
+        "Enabled"` in CloudFormation, `status = "Enabled"` in the Terraform
+        plan (which is what terraconstructs' `enabled: true` maps to). Graded
+        by oracles/rego/singleton-child-resource-clobber/policy.rego on the TF
+        arms and oracles/cfn-guard/singleton-child-resource-clobber/policy.guard
+        on awscdk. Tier 1 rather than tier 0 because the claim is universally
+        quantified over a collection whose length the agent chooses: `eq` would
+        fail on any document with more than one rule regardless of value, and
+        `set_eq: ["Enabled"]` runs `unique` first, so it says nothing about
+        which rule carried which status. A `tf_jsonpath` is declared anyway, as
+        §4.2 requires, and `make check-paths` resolves it — it documents the
+        node set the policy quantifies over; the policy is the thing that runs.
+      tier: "1"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.LifecycleConfiguration.Rules[*].Status"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_lifecycle_configuration')].values.rule[*].status"
+      op: set_eq
+      expected: ["Enabled"]
+
+  rego_hints:
+    - "deny when any aws_s3_bucket_lifecycle_configuration rule has a status other than \"Enabled\" -- quantify over every rule of every such resource in planned_values, so a document with two rules where only one is enabled is denied"
+    - "the rule's status is a plan-time-known literal on both TF arms (terraconstructs maps its own `enabled: boolean` to this string), so read .planned_values...values.rule[].status directly -- there is no jsonencode indirection and no data.aws_iam_policy_document hop in this scenario"
+  cfn_guard_hints:
+    - "deny when any AWS::S3::Bucket LifecycleConfiguration.Rules entry has Status != \"Enabled\""
+
+verifier:
+  budget:
+    max_iters: 8
+  live_check:
+    enabled: true
+    hand_authored: true
+    gating: true
+    # AdministratorAccess, per DECISIONS.md Amendment 24's arm-parity rule, and
+    # §2.7.1's stricter rule that the SEED must be deployed under the AGENT'S
+    # OWN role: a seed the harness can deploy must be a seed the agent can
+    # change. `deploy.role_name` is left null so it inherits exactly this.
+    agent_role_name: "QALocalInvocationApplicationAdmin"
+    concurrency_mode: "mutating"
+  idempotence:
+    # SCHEMA.md §5.1. The headline catch produces a state that is PRECISELY
+    # non-converged: two resources each wanting to rewrite the one document, so
+    # the next plan is never empty however many times it is applied. Gating,
+    # because a change that has to be re-applied to stay applied is not a change
+    # that landed — and because leaving it non-gating would mean the catch this
+    # scenario exists to motivate cannot cost a trial any reward.
+    enabled: true
+    gating: true
+
+provenance:
+  author: "cdktn-bench Batch B brownfield authoring pass"
+  date: "2026-08-26"
+  evidence:
+    - "https://github.com/hashicorp/terraform-provider-aws/issues/6334"
+    - "https://github.com/hashicorp/terraform-provider-aws/issues/16791"
+    - "https://github.com/hashicorp/terraform-provider-aws/issues/39376"
+    - "https://github.com/hashicorp/terraform-provider-aws/issues/501"
+  prereg_section_refs:
+    - "§2.2 empty-vs-tuned harness axis (brownfield changes what 'empty' MEANS, DECISIONS.md Amendment 28 §1)"
+    - "§5 difficulty gradient + falsifiability instruments"
+    - "§6 prompt parity across arms"

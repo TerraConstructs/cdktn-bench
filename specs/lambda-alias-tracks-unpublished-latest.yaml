@@ -1,0 +1,862 @@
+# specs/lambda-alias-tracks-unpublished-latest.yaml
+#
+# THE SECOND BROWNFIELD (poisoned-workspace) SCENARIO — specs/SCHEMA.md §2.7 /
+# §2.7.1, docs/design/poisoned-workspace-design.md §6, DECISIONS.md Amendments
+# 28 and 31.
+#
+# ---------------------------------------------------------------------------
+# WHY THIS IS SINGLE-STEP, AGAINST THE DESIGN MEMO'S OWN RECOMMENDATION
+# ---------------------------------------------------------------------------
+# docs/design/poisoned-workspace-design.md §6 examined this exact scenario and
+# recommended option (c), "defer to multi-step `pre_invoke`", with the flag
+# "this makes `lambda-alias-tracks-unpublished-latest` depend on multi-step
+# landing". That recommendation is SATISFIED, not overruled, by the single-step
+# seed deploy (§2.7.1, landed 2026-08-25) — and the memo says so itself. Its own
+# three reasons for (c) were:
+#
+#   1. "the pre-deployed state is PER-TRIAL, so a mutating scenario cannot
+#      poison a shared fixture" — true here: `workspace_seed.deploy` runs inside
+#      THIS trial's agent container, and `concurrency_mode: mutating` resets the
+#      account afterwards. Nothing is shared with another task.
+#   2. "per-arm-correct by construction: the pre_invoke deploys THAT ARM's own
+#      seed" — true here, verbatim: the script runs the arm's own
+#      `output_contract.deploy_command` against the arm's own `entry_file`.
+#   3. "a one-step task with a `pre_invoke` — i.e. `[[steps]]` of length 1 — is
+#      the minimal shape and avoids the `min_reward`/`mean` hazards entirely."
+#      A `workspace_seed.deploy` spec IS that shape, with the `[[steps]]`
+#      wrapper removed: `AwsBenchSingleStepTrial._prepare` runs the same
+#      credentialed pre-agent hook, in the same container, before the same
+#      first token. The memo asked for a capability; §2.7.1 is that capability
+#      with less machinery.
+#
+# What the memo could NOT have known, and what actually decides it: the
+# single-step route brings four fail-closed anti-vacuity layers a hand-rolled
+# multi-step `pre_invoke` would each have had to re-earn (deploy exit code,
+# per-arm state artifact, live asserts resolved against real AWS pre-agent, and
+# a verifier that refuses to grade without the receipt). Reaching for `steps`
+# here would buy a second agent turn nobody needs and lose all four.
+#
+# ---------------------------------------------------------------------------
+# THE PITFALL
+# ---------------------------------------------------------------------------
+# A Lambda VERSION is an immutable snapshot of the function's code AND
+# configuration — environment variables included. An ALIAS names one version.
+# Change the function and re-deploy, and the function's own configuration
+# changes immediately; the alias keeps naming whatever version it named before.
+# Callers that address the function through the alias therefore keep getting the
+# OLD configuration, while every static artifact — plan, template, diff — shows
+# the change applied. The deploy succeeds. Nothing errors. The service is wrong.
+#
+# The seed carries the ordinary, real-world shape of that mistake, once per arm,
+# in each arm's own idiom:
+#
+#   hcl_raw          `aws_lambda_alias.function_version = "1"` — an operator
+#                    wrote down the version that was current the day the alias
+#                    was created. `publish = true` is already on the function,
+#                    so a new numbered version IS cut on every change; the alias
+#                    simply never moves to it.
+#   terraconstructs  the same fact through the L2: `compute.Alias`'s `version`
+#                    prop is a plain `string` (verified directly against the
+#                    arm's pinned terraconstructs — lib/aws/compute/
+#                    function-alias.d.ts, `readonly version: string`), and the
+#                    seed passes the literal `"1"`.
+#   awscdk           `new lambda.Version(this, "ReleasedVersion", { lambda: fn })`.
+#                    An `AWS::Lambda::Version` resource publishes a version when
+#                    CloudFormation CREATES it, and its only property is
+#                    `FunctionName`. Change the function's environment and the
+#                    Version resource's properties are UNCHANGED, so CFN issues
+#                    no update for it, no new version is published, and the
+#                    alias still names version 1. This is the pitfall
+#                    `Function.currentVersion` exists to remove: it stamps a
+#                    hash of the function's own configuration into the Version
+#                    resource's LOGICAL ID, so a changed function produces a
+#                    different logical id, a new `AWS::Lambda::Version`, and an
+#                    alias update.
+#
+# ---------------------------------------------------------------------------
+# WHY THE CATCH IS TIER-0 ON THE TERRAFORM ARMS AND live-ONLY ON awscdk
+# (measured against the real toolchains, 2026-08-26 — not predicted)
+# ---------------------------------------------------------------------------
+# TF arms: `terraform show -json` puts the alias's target straight into the
+# graded artifact. Measured on terraform 1.15.8 + hashicorp/aws 6.58.0:
+#   poison  -> .planned_values...aws_lambda_alias.values.function_version == "1"
+#   fixed   -> that key is ABSENT (the value is known-after-apply, because it
+#              now references `aws_lambda_function.quote_service.version`)
+# so a tier-0 assert can see the difference, and this spec grades it there.
+#
+# awscdk: measured by synthesizing BOTH shapes against the arm's own pinned
+# aws-cdk-lib 2.263.0. The two CloudFormation templates differ in EXACTLY one
+# way — the logical id of the single `AWS::Lambda::Version` resource
+# (`ReleasedVersion42BF4C9A` vs
+# `QuoteServiceCurrentVersion<40-hex-config-hash>`) and the `Fn::GetAtt` in the
+# alias that names it. Every Type, every Properties block and every other byte
+# is identical. Canonicalise that one CDK-generated identifier and the templates
+# are byte-equal; `solution/broken/alias-still-serves-the-previous-version/
+# solve.sh` on that arm re-proves exactly this, mechanically, offline, before it
+# is allowed to claim the tier.
+#
+# An oracle COULD in principle key on the string `CurrentVersion` appearing
+# inside a CDK-generated logical id. This spec deliberately does not, for the
+# same reason specs/named-resource-replacement.yaml refuses to pin a referenced
+# CDK logical id: it would couple the oracle to aws-cdk-lib's private naming and
+# hashing, and it would score 0.0 a correct solution that publishes versions any
+# other way. `generator/jsonpath_jq.py` cannot address a mapping KEY at all, so
+# no `structural_assert` can express it even by accident.
+#
+# ---------------------------------------------------------------------------
+# WHY THE hcl_raw SEED SHIPS ITS LAMBDA PACKAGE AS BASE64 IN S3
+# ---------------------------------------------------------------------------
+# This is the one place the three seeds visibly diverge, and it is an ARM fact,
+# not an authoring choice:
+#   * awscdk         `lambda.Code.fromInline` puts the source in the template's
+#                    `Code.ZipFile`. No archive, no file.
+#   * terraconstructs `compute.Code.fromInline` builds a real zip through
+#                    `@cdktn/provider-archive` — `hashicorp/archive` 2.8.0 IS in
+#                    that arm's offline mirror (arms/terraconstructs/environment/
+#                    mirror-src/main.tf).
+#   * hcl_raw        has NEITHER. Its mirror carries only `hashicorp/aws`
+#                    (arms/hcl-raw/environment/mirror-src/main.tf) and its
+#                    terraformrc has no `direct {}` fallback, so `archive_file`
+#                    cannot resolve even with network; and the image installs
+#                    `unzip` but no `zip` (arms/hcl-raw/environment/Dockerfile),
+#                    so nothing in the container can build one either.
+# The seed therefore does what a real Terraform-only team does when it cannot
+# build in-band: it stores the package in S3 and points the function at it. The
+# bytes are a deterministic 234-byte deflate zip containing one `index.js`,
+# embedded via `aws_s3_object.content_base64` so the seed needs no local file
+# and plans green offline with no state (proved by `make seed-parity`).
+#
+# This is NOT the trap and is not part of it. The change request never touches
+# the package: it changes an ENVIRONMENT VARIABLE, which every arm expresses the
+# same way, so no arm pays a packaging tax the others do not. That choice is
+# deliberate — docs/adding-scenarios.md §3a ("never coach around toolchain
+# differences") forbids coaching the difference away in the PROMPT, and the
+# honest alternative is to keep the measured change off the axis where the arms
+# are unequal for reasons this scenario is not about.
+#
+# A cheaper future option, deliberately NOT taken here: add `hashicorp/archive`
+# to arms/hcl-raw's mirror the way it was added to terraconstructs'. That is an
+# ARM IMAGE change — new image digest, new equipping hash for every hcl_raw task
+# in the repo — and it does not belong inside a scenario-authoring change.
+
+id: lambda-alias-tracks-unpublished-latest
+# HOST-SIDE ONLY (SCHEMA.md §0.1). This names the pitfall in both halves
+# ("alias", "unpublished") and must never reach `environment/` or the prompt;
+# generator/tests/test_workspace_seed.py::TestBrownfieldPromptSurface::
+# test_title_never_reaches_the_agent scans the real emitted bytes for it
+# verbatim on every arm.
+title: "Change a Lambda function's configuration behind an alias that names a version nothing republishes"
+# AGENT-VISIBLE. Says only what the workspace already IS — the words an ops team
+# would put at the top of this directory's README. No mention of versions,
+# aliases, publishing, or of anything about to change.
+workspace_title: "Quote service"
+# AGENT-VISIBLE (SCHEMA.md §0.1). Stamped as the terraconstructs ScenarioStack
+# construct id / gridUUID, and therefore as `cdktf.out/stacks/<id>/` in that
+# arm's own synth output. `id` above is the DIAGNOSIS the agent is meant to
+# reach; this is just the name of the thing.
+workspace_id: quote-service
+# This scenario's OWN reserved vocabulary, layered on the global deny-list
+# (spec_model.AGENT_IDENTITY_DENY_PATTERNS, which already covers
+# stale/latent/drift/idempotence/...). Every entry is a word the agent must
+# arrive at by reading the configuration and running its own toolchain, not by
+# reading a generated header.
+#
+# Chosen so that NONE of them can appear in a legitimate seed: the seeds say
+# `publish`, `function_version` and `version`, all of which stay legal, but none
+# of them says `$LATEST`, `currentVersion`, `unpublished` or `PublishVersion`.
+# A deny entry that a correct seed must contain is a deny entry that gets
+# deleted the first time it fires.
+agent_deny_vocab:
+  - "$LATEST"
+  - currentVersion
+  - current version
+  - unpublished
+  - PublishVersion
+  - immutable snapshot
+difficulty: 3
+services: [lambda, iam, s3]
+
+arms:
+  awscdk: true
+  hcl_raw: true
+  terraconstructs:
+    enabled: true
+    reason: >
+      SUPPORTED. arms/terraconstructs/README.md §3 lists "compute: Lambda
+      (function, alias, event sources, URLs, VPC config)", and the two
+      constructs this scenario needs were source-verified directly against the
+      pinned terraconstructs package rather than assumed:
+      `compute.LambdaFunction` (lib/aws/compute/function.d.ts — `functionName`,
+      `environment`, `runtime`, `handler`, `code`, and `publish?: boolean`
+      defaulting to FALSE) and `compute.Alias` (lib/aws/compute/
+      function-alias.d.ts). Two arm-specific facts are load-bearing here and
+      were established by reading that source, not by analogy with aws-cdk-lib:
+      (1) this library has NO `Version` construct and NO `currentVersion`
+      accessor at all — `AliasProps.version` is a plain `readonly version:
+      string`, so the alias's target is always a STRING, either a literal or the
+      `LambdaFunction.version` attribute token ("Latest published version of
+      your Lambda Function"); (2) `LambdaFunction.publish` defaults to false, in
+      which case that same `version` attribute is not a number. The seed
+      therefore sets `publish: true` and pins the alias to the literal `"1"`,
+      which is the same fact the hcl_raw seed states in HCL and produces the
+      same graded artifact shape (a constant `function_version` in
+      `.planned_values`), which is why this arm shares hcl_raw's tier-0 grading
+      rather than awscdk's live-only grading. `compute.Code.fromInline` resolves
+      offline on this arm because `hashicorp/archive` 2.8.0 is mirrored
+      (arms/terraconstructs/environment/mirror-src/main.tf).
+
+# ---------------------------------------------------------------------------
+# §2.7 workspace_seed — THE BROWNFIELD STARTING STATE
+# ---------------------------------------------------------------------------
+#
+# Each body below is written VERBATIM as that arm's `output_contract.entry_file`,
+# writable (0o644), with NO generator header. Read each as a hostile reader:
+# nothing below names a version-publishing mechanism, warns about anything, or
+# reads as other than a small service someone shipped. The alias's `"1"` is not
+# a comment or a marker — it is the value a real operator types once and never
+# revisits, which is the entire pitfall.
+workspace_seed:
+  premise: |
+    This workspace holds a small internal quote service: one AWS Lambda
+    function, the IAM role it runs as, and the alias that callers use to reach
+    it. It is already deployed in this account.
+
+  entry_file:
+    hcl_raw: |
+      resource "aws_iam_role" "quote_service" {
+        name = "cdktn-bench-quote-service-role"
+
+        assume_role_policy = jsonencode({
+          Version = "2012-10-17"
+          Statement = [{
+            Effect    = "Allow"
+            Principal = { Service = "lambda.amazonaws.com" }
+            Action    = "sts:AssumeRole"
+          }]
+        })
+      }
+
+      resource "aws_iam_role_policy_attachment" "quote_service_logs" {
+        role       = aws_iam_role.quote_service.name
+        policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+      }
+
+      resource "aws_s3_bucket" "quote_service_packages" {
+        bucket_prefix = "cdktn-bench-quote-service-"
+        force_destroy = true
+      }
+
+      resource "aws_s3_object" "quote_service" {
+        bucket = aws_s3_bucket.quote_service_packages.id
+        key    = "quote-service.zip"
+
+        content_base64 = "UEsDBBQAAAAIAAAAIVwSlli1eAAAAHoAAAAIAAAAaW5kZXguanMNybEKgzAQANA9X3FjAhKko8UuwaWDUluHTiVNrlUoidzF0iD+e13fw98cKbEebfAfJKjBcg4OpIL6BHIVAJxsWthEjxUcyrLY6Rl9ruB87VrNiabwnl5ZruAWIgxur5miQ2aN4asvQ3drHmbo+6Y1d9hUITZ1FH9QSwECFAMUAAAACAAAACFcEpZYtXgAAAB6AAAACAAAAAAAAAAAAAAApAEAAAAAaW5kZXguanNQSwUGAAAAAAEAAQA2AAAAngAAAAAA"
+      }
+
+      resource "aws_lambda_function" "quote_service" {
+        function_name = "cdktn-bench-quote-service"
+        role          = aws_iam_role.quote_service.arn
+        handler       = "index.handler"
+        runtime       = "nodejs22.x"
+
+        s3_bucket = aws_s3_bucket.quote_service_packages.id
+        s3_key    = aws_s3_object.quote_service.key
+
+        publish = true
+
+        environment {
+          variables = {
+            QUOTE_CURRENCY = "EUR"
+          }
+        }
+      }
+
+      resource "aws_lambda_alias" "live" {
+        name             = "quote-service-live"
+        function_name    = aws_lambda_function.quote_service.function_name
+        function_version = "1"
+      }
+
+    awscdk: |
+      import * as cdk from "aws-cdk-lib";
+      import * as lambda from "aws-cdk-lib/aws-lambda";
+      import { Construct } from "constructs";
+
+      export class ScenarioStack extends cdk.Stack {
+        constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+          super(scope, id, props);
+
+          const quoteService = new lambda.Function(this, "QuoteService", {
+            functionName: "cdktn-bench-quote-service",
+            runtime: lambda.Runtime.NODEJS_22_X,
+            handler: "index.handler",
+            code: lambda.Code.fromInline(
+              [
+                "exports.handler = async () => ({",
+                "  statusCode: 200,",
+                "  body: JSON.stringify({ currency: process.env.QUOTE_CURRENCY }),",
+                "});",
+              ].join("\n"),
+            ),
+            environment: {
+              QUOTE_CURRENCY: "EUR",
+            },
+          });
+
+          const releasedVersion = new lambda.Version(this, "ReleasedVersion", {
+            lambda: quoteService,
+          });
+
+          new lambda.Alias(this, "LiveAlias", {
+            aliasName: "quote-service-live",
+            version: releasedVersion,
+          });
+        }
+      }
+
+    terraconstructs: |
+      import { Construct } from "constructs";
+      import { AwsStack, AwsStackProps, compute } from "terraconstructs/lib/aws";
+
+      export class ScenarioStack extends AwsStack {
+        constructor(scope: Construct, id: string, props: AwsStackProps) {
+          super(scope, id, props);
+
+          const quoteService = new compute.LambdaFunction(this, "QuoteService", {
+            functionName: "cdktn-bench-quote-service",
+            runtime: compute.Runtime.NODEJS_22_X,
+            handler: "index.handler",
+            code: compute.Code.fromInline(
+              [
+                "exports.handler = async () => ({",
+                "  statusCode: 200,",
+                "  body: JSON.stringify({ currency: process.env.QUOTE_CURRENCY }),",
+                "});",
+              ].join("\n"),
+            ),
+            environment: {
+              QUOTE_CURRENCY: "EUR",
+            },
+            publish: true,
+          });
+
+          new compute.Alias(this, "LiveAlias", {
+            aliasName: "live",
+            function: quoteService,
+            version: "1",
+          });
+        }
+      }
+
+  # GENERATION-time parity, resolved offline by `make seed-parity` against each
+  # arm's own real synth/plan artifact. Behavioural facts only — never a
+  # resource census (the hcl_raw seed carries an S3 bucket and object the two
+  # cdk-shaped seeds do not, for the reason recorded in this file's header, and
+  # that difference is legal by construction).
+  seed_asserts:
+    - name: alias-names-one-fixed-published-version
+      description: >
+        THE POISON, on the two arms whose artifact family can express it. The
+        alias's target is a CONSTANT in the graded artifact — it is not
+        derived from the function, so nothing moves it when the function
+        changes. Measured shape: `terraform show -json` emits
+        `.planned_values...aws_lambda_alias.values.function_version` as the
+        literal only while it IS a literal; wired to
+        `aws_lambda_function.quote_service.version` the key disappears from
+        `planned_values` entirely (known-after-apply). See the awscdk twin below
+        for why that arm gets a separate, deliberately weaker assert instead of
+        an `applies_to: [all]` entry.
+      pins_catch: alias-still-serves-the-previous-version
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_alias')].values.function_version"
+      op: eq
+      expected: "1"
+
+    - name: seed-declares-an-explicit-version-resource
+      description: >
+        The awscdk twin of `alias-names-one-fixed-published-version`, and
+        DELIBERATELY WEAKER — recorded rather than papered over. A CFN template
+        expresses the alias's target as
+        `FunctionVersion: {"Fn::GetAtt": ["ReleasedVersion...", "Version"]}` — a
+        MAP, which no `eq`/`regex` can compare and whose key
+        generator/jsonpath_jq.py cannot address (it has no bracket-quoted-key
+        segment). What separates the poisoned shape from the fixed one on this
+        arm is the LOGICAL ID of that version resource, and pinning a CDK
+        logical id would couple this spec to aws-cdk-lib's own hashing. So this
+        arm pins the honest, weaker fact: the seed declares an explicit
+        `AWS::Lambda::Version` resource, i.e. version publishing is a resource
+        in this stack rather than something the function does on its own. The
+        asymmetry is the artifact families', not the seeds'.
+      pins_catch: alias-still-serves-the-previous-version
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Lambda::Version')]"
+      op: exists
+
+    - name: function-already-publishes-a-numbered-version-on-change
+      description: >
+        On the Terraform arms the function ITSELF is already set up to cut a new
+        numbered version on every change (`publish = true`). Pinned because it
+        localises the defect: a reader (and a future editor of this seed) must
+        not be able to conclude that the scenario is "they forgot to publish".
+        They did not — a version 2 IS published the moment the agent's change
+        lands. The alias simply never names it. Without this pin a well-meaning
+        seed edit could flip `publish` off and turn this into a different, much
+        easier scenario while every other gate stayed green.
+      pins_catch: alias-still-serves-the-previous-version
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_function')].values.publish"
+      op: eq
+      expected: true
+
+    - name: seed-configuration-is-the-one-the-change-request-supersedes
+      description: >
+        The starting configuration does NOT already satisfy the change request.
+        Pinned so a future edit to the seed cannot quietly hand the do-nothing
+        answer a starting state that already scores 1.0 — which would make the
+        mandatory `solution/broken/seed-unchanged/` fixture unfalsifiable and
+        silently delete the only gate that proves a brownfield oracle rejects
+        the absence of a change (SCHEMA.md §2.7, "the mandatory do-nothing
+        negative").
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Lambda::Function')].Properties.Environment.Variables.QUOTE_CURRENCY"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_function')].values.environment[*].variables.QUOTE_CURRENCY"
+      op: eq
+      expected: "EUR"
+
+    - name: the-alias-the-prompt-names-really-exists
+      description: >
+        Every arm's seed really declares the alias the change request talks
+        about, and all three arms give it the SAME PHYSICAL NAME. That last
+        clause is the reason this assert exists at all, and it is an arm fact
+        discovered by running the gate rather than by reading a doc:
+        terraconstructs' `compute.Alias` composes the deployed name itself --
+        `this.aliasName = `${this.gridUUID}-${props.aliasName}`` (lib/aws/
+        compute/function-alias.js, no prop overrides it) -- so a seed passing
+        `aliasName: "live"` there deploys `quote-service-live`, while hcl_raw
+        and awscdk deploy exactly what they were given. The seeds therefore
+        pass DIFFERENT literals on purpose so the ACCOUNT ends up holding one
+        name: the arm-agnostic live oracle would otherwise have to know which
+        arm produced the account, which is precisely what it must never do.
+        `eq` rather than `exists` so the COUNT is pinned too: exactly one
+        alias, named exactly that.
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Lambda::Alias')].Properties.Name"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_alias')].values.name"
+      op: eq
+      expected: "quote-service-live"
+
+  # -------------------------------------------------------------------------
+  # §2.7.1 deploy — THE PREMISE IS MADE TRUE BY THE HARNESS
+  # -------------------------------------------------------------------------
+  #
+  # Everything this scenario measures needs a REAL deployed function with a REAL
+  # published version 1 and a REAL alias pointing at it, in the account, before
+  # the agent's first token. Without it there is nothing for the alias to be
+  # behind: `tests/live_check.py`'s discriminating assertion ("the alias
+  # resolves to a configuration whose QUOTE_CURRENCY is USD") would be evaluated
+  # against a function that does not exist, and the whole scenario would report
+  # the vacuous verdict docs/brownfield-seed-not-deployed.md was filed for.
+  #
+  # This block makes `AwsBenchSingleStepTrial._prepare` deploy the arm's own
+  # seed inside the agent container and then prove it landed — fail-closed, four
+  # ways (SCHEMA.md §2.7.1).
+  deploy:
+    # A Lambda + S3 + IAM apply is quick; `cdk deploy`'s bootstrap check and
+    # stack create dominate. 1800.0 is the schema default, stated explicitly
+    # because it is a DECISION here rather than an omission: it is not scaled by
+    # --timeout-multiplier and a seed timeout ABORTS the trial, so it is sized
+    # as headroom, not as an estimate.
+    timeout_sec: 1800.0
+    live_asserts:
+      - name: the-live-alias-resolves-to-version-one
+        description: >
+          The function this workspace describes has EXACTLY ONE alias in the
+          account, and it names version `1`. Deliberately name-INDEPENDENT --
+          `$.Aliases[*]`, not a `[?(@.Name==...)]` filter -- because the alias's
+          physical name is composed by the L2 on terraconstructs and typed
+          literally on the other two arms, and a live assert that had to know
+          which arm produced the account would be the one thing §2.7.1 says a
+          live assert must never be. Reading every alias and requiring exactly
+          one is also strictly STRONGER than filtering by name: a stray second
+          alias left behind by an incomplete reset fails here instead of being
+          filtered out of view. This is the exact
+          precondition that makes the trap ARMED: version 1 is the snapshot the
+          seed published, and the alias will keep naming it unless the agent
+          changes what the alias is wired to. If this is false pre-agent there
+          is nothing to be behind, and `tests/live_check.py`'s verdict means
+          nothing whichever way it comes out.
+        aws:
+          - lambda
+          - list-aliases
+          - --function-name
+          - cdktn-bench-quote-service
+        jsonpath: "$.Aliases[*].FunctionVersion"
+        # `eq`, NOT `contains` and NOT `set_eq` (SCHEMA.md §2.7.1's two named
+        # traps, both applicable here):
+        #   * `contains` on a string is jq's SUBSTRING test, so expected "1"
+        #     would also be satisfied by "12" or "21" — every version number
+        #     this account will ever hold past the ninth.
+        #   * `set_eq` runs `unique` before comparing, so it cannot pin the
+        #     COUNT. `eq` is `($v|length) == 1 and ($v[0] == $e)`: exactly one
+        #     resolved node. Alias NAMES are unique per function, but a
+        #     function can carry many aliases, so pinning the count is a real
+        #     claim and not a formality: it is what makes "the seed put exactly
+        #     one of these here" part of the proof rather than an assumption.
+        # Executed against hand-built AWS responses at authoring time
+        # (2026-08-26) through the real `_assert_lib.sh::assert_check` and the
+        # real compiled jq filter: armed account (alias -> "1") rc=0,
+        # post-solution account (alias -> "2") rc=1, EMPTY account
+        # (`{"Aliases": []}`) rc=1. This is the live assert that separates an
+        # ARMED account from a DISARMED one, and the one whose contradiction
+        # aborts the trial rather than scoring it.
+        op: eq
+        expected: "1"
+        pins_catch: alias-still-serves-the-previous-version
+
+      - name: version-one-still-carries-the-configuration-being-changed
+        description: >
+          Version 1 -- the version the assert above proves the alias names --
+          carries the configuration the change request supersedes. It also
+          proves the snapshot semantics this whole scenario depends on are real
+          in this account: version 1 froze the environment the seed deployed
+          with, and reading it back returns that frozen value rather than the
+          function's current one.
+          WHAT THIS ASSERT DOES AND DOES NOT DO, stated precisely because the
+          honest version is weaker than the tempting one. `tests/live_check.py`
+          passes a trial iff the alias resolves to `QUOTE_CURRENCY=USD`. The
+          exact negation of that clause -- "pre-agent the alias resolves to
+          EUR" -- is the CONJUNCTION of this assert and
+          `the-live-alias-resolves-to-version-one`, not this assert alone.
+          On its own this one does NOT flip after a correct solution, and that
+          is not a defect but arithmetic: a published version is immutable, so
+          version 1 still says EUR in the post-solution account too. Executed
+          against hand-built AWS responses at authoring time (2026-08-26)
+          through the real `_assert_lib.sh::assert_check` and the real compiled
+          jq filter: armed account rc=0, post-solution account rc=0, EMPTY
+          account rc=1. It is therefore genuinely falsifiable -- an account
+          without the seed contradicts it -- while the assert above is the one
+          that separates armed from disarmed.
+        aws:
+          - lambda
+          - list-versions-by-function
+          - --function-name
+          - cdktn-bench-quote-service
+        jsonpath: "$.Versions[?(@.Version=='1')].Environment.Variables.QUOTE_CURRENCY"
+        op: eq
+        expected: "EUR"
+        pins_catch: alias-still-serves-the-previous-version
+
+      - name: exactly-one-numbered-version-has-been-published
+        description: >
+          The function holds `$LATEST` and version `1` and NOTHING ELSE. Two
+          different contaminations are refused by this one claim, and both are
+          the kind that corrupt a measurement silently rather than loudly:
+          (a) a leftover function from an incompletely-reset earlier trial
+          (aws_trial.py::_reset_scenario_account only flags contamination when
+          the reset itself reports failure) would carry versions 2, 3, ... and
+          the agent's change would land on top of somebody else's history;
+          (b) a seed deploy that somehow ran twice would publish a version 2
+          that the alias does not name, making the post-agent account
+          indistinguishable from a half-solved one.
+          `set_eq` rather than `eq` because this IS a genuinely multi-valued
+          claim, and its documented `unique` hazard cannot bite here: version
+          identifiers are unique per function by construction, and this query is
+          scoped to one function name, so no two resolved nodes can carry the
+          same value.
+          Executed against hand-built AWS responses at authoring time
+          (2026-08-26) through the real `_assert_lib.sh::assert_check` and the
+          real compiled jq filter: armed account rc=0, post-solution account
+          (a version 2 exists) rc=1, contaminated account (versions 1 and 2,
+          both still EUR) rc=1, EMPTY account rc=1.
+        aws:
+          - lambda
+          - list-versions-by-function
+          - --function-name
+          - cdktn-bench-quote-service
+        jsonpath: "$.Versions[*].Version"
+        op: set_eq
+        expected: ["$LATEST", "1"]
+        pins_catch: alias-still-serves-the-previous-version
+
+instruction:
+  # THE TICKET (docs/adding-scenarios.md §3a). It states the business need, the
+  # concrete change, and what "done" looks like. It names no mechanism: not
+  # versions, not publishing, not snapshots, not `$LATEST`. The second paragraph
+  # is the end-state sentence the live oracle grades — without it the oracle
+  # would be grading something the ticket never asked for, which is the opposite
+  # failure to over-specifying. It says WHERE the result has to be true, never
+  # HOW to get it there.
+  shared_body: |
+    Our quote service must report prices in US dollars from now on. Its
+    `QUOTE_CURRENCY` environment variable is still set to `EUR` — set it to
+    `USD` and roll the change out to this account with your toolchain's real
+    deploy command.
+
+    Every caller reaches this function through its alias, so that alias must be
+    serving `QUOTE_CURRENCY=USD` when you are done.
+
+  per_arm:
+    awscdk:
+      language_line: "This workspace is an AWS CDK (TypeScript) app using aws-cdk-lib L2 constructs."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdk.out/ScenarioStack.template.json
+        build_command: npm run build
+        synth_command: npx cdk synth --no-lookups --quiet -o cdk.out
+        # §2.7.1: the seed deploy runs this VERBATIM with cwd=/app/project. No
+        # `-o` and no `--app`, so it uses the workspace's own cdk.json (which
+        # self-builds) and the seed and the agent deploy the same app
+        # definition. bin/app.ts is generator-owned and fixes the physical stack
+        # name to `ScenarioStack`, which is what makes the agent's own later
+        # `cdk deploy` an UpdateStack against the stack the seed created rather
+        # than a fresh create. This arm keeps no local state.
+        deploy_command: npx cdk deploy --require-approval never ScenarioStack
+    hcl_raw:
+      language_line: "This workspace is hand-written Terraform HCL (no modules)."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        # `-refresh=false` is MANDATORY on any workspace_seed spec and the
+        # generator hard-errors without it (SCHEMA.md §2.7.1 hard error 7).
+        # Reason, measured on the sibling brownfield spec: with state present
+        # the OFFLINE verifier's plan refreshes through provider.tf's dummy
+        # credentials and dies, scoring a PERFECT solution 0.0. Grading is
+        # unaffected — every tf_jsonpath below reads $.planned_values, which
+        # carries the full desired end state rather than a changeset.
+        plan_command: >-
+          terraform init && terraform validate &&
+          terraform plan -input=false -refresh=false -out=plan.tfplan &&
+          terraform show -json plan.tfplan > plan.json
+        # §2.7.1. TF_VAR_cdktn_bench_live=1 is MANDATORY: provider.tf hardcodes
+        # dummy access_key/secret_key otherwise, and an explicit access_key
+        # outranks every ambient credential source, so the seed apply would fail
+        # InvalidClientTokenId. State lands at /app/project/terraform.tfstate
+        # (the implicit local backend), i.e. the agent's own cwd.
+        deploy_command: >-
+          TF_VAR_cdktn_bench_live=1 terraform init -input=false &&
+          TF_VAR_cdktn_bench_live=1 terraform apply -input=false -auto-approve
+    terraconstructs:
+      language_line: "This workspace is a terraconstructs (TypeScript) app using its AWS L2 constructs."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdktf.out/stacks/quote-service/plan.json
+        synth_command: npx cdktn synth
+        # §2.7.1. The positional argument is the STACK id -- `workspace_id`
+        # above, the construct id environment/app/main.ts passes to
+        # ScenarioStack -- NOT this spec's `id`. State does NOT land under
+        # cdktf.out/: cdktn installs a LocalBackend whose path is
+        # path.join(process.cwd(), `terraform.${stackId}.tfstate`), an ABSOLUTE
+        # path baked into cdk.tf.json at synth time, so the seed's state lands
+        # at /app/project/terraform.quote-service.tfstate and every later synth
+        # from /app/project resolves the identical file.
+        deploy_command: >-
+          CDKTN_BENCH_LIVE=1 npx cdktn deploy --auto-approve quote-service
+
+catches:
+  - name: alias-still-serves-the-previous-version
+    taxonomy: graph-dependency
+    description: >
+      The plausible, competent answer: change `QUOTE_CURRENCY` to `USD`, deploy,
+      and stop. The deploy SUCCEEDS on every arm. The function's own
+      configuration is `USD`. And the alias still names version 1, whose
+      immutable snapshot still says `EUR`, so every caller that goes through the
+      alias — which the ticket says is all of them — keeps getting euros.
+      The fix is to make the alias's target derive from the function instead of
+      being written down: `function_version = aws_lambda_function.quote_service.version`
+      on hcl_raw, `version: quoteService.version` on terraconstructs (both with
+      the `publish` the seed already carries), and `version:
+      quoteService.currentVersion` on awscdk, whose logical id carries a hash of
+      the function's configuration and therefore produces a NEW
+      `AWS::Lambda::Version` — and an alias update — whenever the function
+      changes.
+      Any target that actually moves is accepted: an agent that reads the
+      account and writes the new number down explicitly, or points the alias at
+      the unqualified function, has satisfied the ticket, and the oracle is
+      written so that it scores 1.0 (see `oracle.intent`).
+    applies_to: [awscdk, hcl_raw, terraconstructs]
+    predicted_tier_caught:
+      # ASYMMETRIC BY MEASUREMENT, not by choice — see this file's header for
+      # the two toolchain probes. On the TF arms the alias's target is a plain
+      # value in the graded artifact, so tier 0 sees it. On awscdk the two
+      # shapes' CloudFormation templates are byte-identical once the single
+      # CDK-generated `AWS::Lambda::Version` logical id is canonicalised, so no
+      # static tier that grades infrastructure (rather than CDK's private
+      # naming) can tell them apart, and only the live oracle can.
+      awscdk: "live"
+      hcl: "0"
+
+  - name: alias-removed-instead-of-repointed
+    taxonomy: graph-dependency
+    description: >
+      The other way to make the symptom go away: delete the alias altogether
+      (or rename it) and let callers address the function directly, which does
+      make the new configuration reachable. It is not the ticket — the ticket
+      says every caller reaches this function through its alias — and it
+      silently breaks every one of them. Caught at tier 0 on every arm by
+      `the-alias-still-exists`, which pins both the name and the count.
+    applies_to: [awscdk, hcl_raw, terraconstructs]
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "0"
+
+oracle:
+  intent: |
+    A correct solution leaves this workspace deploying the same system it
+    described before, with two things true that were not true before: the
+    function's `QUOTE_CURRENCY` is `USD`, and its alias actually resolves
+    to a configuration carrying that value.
+
+    Two things are graded, in two different places, and the split is the whole
+    point of the scenario:
+
+    1. TIER 0 (static, every arm). The function's environment carries
+       `QUOTE_CURRENCY = USD`, and the alias still exists under the name the
+       seed gave it. This is
+       what makes the DO-NOTHING answer fail — the seed already deploys green,
+       so without the environment assert an agent that changed nothing would
+       score 1.0 (see `solution/broken/seed-unchanged/`, which exists to keep
+       proving exactly that). On the two Terraform arms tier 0 additionally sees
+       that the alias is no longer wired to the one version the seed named,
+       because `terraform show -json` puts that value in the graded artifact.
+
+    2. LIVE (`tests/live_check.py`, gating). Whether the change ACTUALLY REACHED
+       the callers. This is the only instrument that can speak for the awscdk
+       arm at all: there, the poisoned and the corrected stack synthesize
+       CloudFormation templates that are identical apart from one CDK-generated
+       logical id, so the account is the only place the difference exists. The
+       live check reads the alias's own resolved configuration out of
+       Lambda and requires `QUOTE_CURRENCY=USD`.
+
+    WHAT IS DELIBERATELY NOT GRADED, and why each is a decision rather than an
+    oversight:
+
+    * HOW the alias comes to point somewhere useful. Deriving the target from
+      the function is the maintainable answer and is what a reviewer would ask
+      for, but an agent that inspects the account and writes the new version
+      number down, or that points the alias at the function's unqualified
+      `$`-latest target, has done what the ticket asked. Both are accepted:
+      tier 0 only refuses the value the SEED had, and the live check only asks
+      what the alias serves. Forcing the derived shape would be
+      `apigw-openapi`'s "alternative shape scored wrong" failure repeated
+      (docs/adding-scenarios.md §3a).
+    * How many resources each arm's expansion produced, and whether the Lambda
+      package is inline, archived or in S3. The arms are compared on the
+      declared behavioural facts only.
+
+    NO TIER-1 POLICY FAMILY, deliberately. Tier 1 is for a quantified statement
+    over a collection that a jq path cannot express ("no rule anywhere in this
+    group may be open to the world"). This scenario has no such fact: everything
+    it grades is a single value on a single resource, or a property of the
+    account. The one candidate considered and rejected was "every alias's
+    FunctionVersion must be an intrinsic rather than a literal", which cfn-guard
+    can express — but it does not separate this scenario's catch (BOTH awscdk
+    shapes emit an `Fn::GetAtt`), it would need a catch and three negative
+    fixtures invented to justify it, and it would score 0.0 the
+    account-inspecting answer `oracle.intent` above explicitly accepts. A tier
+    that cannot fail for a reason this scenario is about is decoration, and the
+    generated `tests/static_tiers.sh` says `SKIPPED_NO_ASSERTS` rather than
+    pretending otherwise.
+
+  structural_asserts:
+    - name: function-configuration-carries-the-new-currency
+      description: >
+        The requested change actually happened in the configuration. This is the
+        assert the do-nothing answer fails, on every arm.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Lambda::Function')].Properties.Environment.Variables.QUOTE_CURRENCY"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_function')].values.environment[*].variables.QUOTE_CURRENCY"
+      op: eq
+      expected: "USD"
+
+    - name: the-alias-still-exists
+      description: >
+        The alias the ticket talks about is still there, still called what the
+        seed called it, and there is still exactly one of it. `eq` pins the COUNT as well as the
+        value, so "solve it by deleting the alias" and "solve it by adding a
+        second alias next to the old one" both fail here rather than only one of
+        them. This is also what keeps `alias-is-no-longer-pinned-to-the-seeds-version`
+        below from passing vacuously. The expected value is `quote-service-live`
+        on all three arms: hcl_raw and awscdk write it literally, terraconstructs
+        composes it from its gridUUID (see the seed assert
+        `the-alias-the-prompt-names-really-exists` for the mechanism).
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Lambda::Alias')].Properties.Name"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_alias')].values.name"
+      op: eq
+      expected: "quote-service-live"
+
+    - name: alias-is-no-longer-pinned-to-the-seeds-version
+      description: >
+        TERRAFORM ARMS ONLY. The alias no longer names the one version the seed
+        named. Deliberately phrased as a REFUSAL of a single value rather than a
+        demand for a shape, because more than one honest answer exists (see
+        `oracle.intent`): a solution that wires the target to
+        `aws_lambda_function.<name>.version` makes this key vanish from
+        `.planned_values` entirely (known-after-apply, verified directly against
+        terraform 1.15.8 + hashicorp/aws 6.58.0), and a solution that writes the
+        new number down leaves a different literal. Both pass; only "unchanged"
+        fails.
+        NON-VACUITY: `not_regex` passes on zero resolved nodes, and this path
+        resolves to zero nodes for the derived-target answer — which is exactly
+        why it is paired with `the-alias-still-exists` above. That assert pins
+        exactly one alias, by name, in the same artifact, so "zero nodes here"
+        can only mean "the alias exists and its target is computed", never "there
+        is no alias".
+        MEASURED, not argued (2026-08-26, real `terraform show -json` output run
+        through the real `_assert_lib.sh::assert_check` and the real compiled jq
+        filter, three plans):
+          poisoned  (function_version = "1")        -> this rc=1, paired rc=0
+          corrected (derived from the function)     -> this rc=0, paired rc=0
+          alias deleted from the configuration      -> this rc=0, paired rc=1
+        The third row is the vacuous pass this assert genuinely has, and the
+        third column is what closes it. `solution/broken/alias-removed-instead-
+        of-repointed/` is the standing fixture that keeps that pairing honest on
+        every `make falsifiability` run.
+        NOT applicable to awscdk: a CFN alias's `FunctionVersion` is an
+        `Fn::GetAtt` map in BOTH the poisoned and the corrected template, so
+        there is nothing here for a static path to compare. That arm is graded
+        live.
+      tier: "0"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_alias')].values.function_version"
+      op: not_regex
+      expected: "^1$"
+
+verifier:
+  budget:
+    max_iters: 8
+  live_check:
+    enabled: true
+    hand_authored: true
+    gating: true
+    # AdministratorAccess, per DECISIONS.md Amendment 24's arm-parity rule and
+    # §2.7.1's own rule that the seed must be deployed by the AGENT's role: a
+    # seed the harness can deploy must be a seed the agent can change.
+    agent_role_name: "QALocalInvocationApplicationAdmin"
+    concurrency_mode: "mutating"
+  idempotence:
+    # ENABLED but NOT gating, and the asymmetry with
+    # specs/named-resource-replacement.yaml is deliberate and load-bearing.
+    # There, the catch LEAVES a non-converged state (the half-applied
+    # replacement re-plans dirty forever), so idempotence is a real second
+    # instrument and gating it costs the catch nothing. HERE the catch leaves a
+    # perfectly CONVERGED state: the naive change applies cleanly, re-plans
+    # clean, and re-deploys clean on all three arms. That is precisely what
+    # makes it dangerous, and it means idempotence has ZERO discriminating power
+    # on this scenario. Gating an oracle that cannot see this scenario's catch
+    # would add a way for a correct trial to fail without adding any way for an
+    # incorrect one to be caught. It stays ON as a regression signal — a
+    # solution that leaves the workspace re-planning dirty is still worth
+    # recording — and OFF as a gate.
+    enabled: true
+    gating: false
+
+provenance:
+  author: "cdktn-bench brownfield batch (task #15 follow-on, poisoned-workspace design memo §6)"
+  date: "2026-08-26"
+  prereg_section_refs:
+    - "§2.2 empty-vs-tuned harness axis (brownfield changes what 'empty' MEANS — DECISIONS.md Amendment 28 §1)"
+    - "§5 difficulty gradient + falsifiability instruments"
+    - "§6 prompt parity across arms"

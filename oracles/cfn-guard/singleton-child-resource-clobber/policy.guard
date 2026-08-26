@@ -1,0 +1,52 @@
+#
+# oracles/cfn-guard/singleton-child-resource-clobber/policy.guard --
+# HAND-AUTHORED (SCHEMA.md §8.2 rule 7). Encodes
+# specs/singleton-child-resource-clobber.yaml's one tier-"1" structural_assert
+# (no-storage-rule-is-left-un-enabled) + oracle.cfn_guard_hints. Graded against
+# the awscdk arm's synthesized CloudFormation template
+# (cdk.out/ScenarioStack.template.json) -- specs/SCHEMA.md §4.2/§8.
+#
+# Intent doc: oracles/singleton-child-resource-clobber/intent.md
+#
+# ARM-SHAPE NOTE (not an asymmetry in strictness). On CloudFormation the
+# storage rules are a PROPERTY of the single AWS::S3::Bucket
+# (`LifecycleConfiguration.Rules`), not a child resource -- there is exactly
+# one place a rule can be spelled, so unlike named-resource-replacement's
+# two-shape ingress problem there is no second emission site for this rule to
+# miss. That single-site-ness is also the scenario's headline arm asymmetry:
+# this arm physically cannot declare two storage-rule documents, which is why
+# `exports-rule-added-as-a-second-child-resource` is `applies_to: [hcl_raw]`.
+#
+# CDK ALWAYS EMITS `Status` for a rule (`LifecycleRule.enabled` defaults to
+# true and is rendered as "Enabled"/"Disabled"), so `Status exists` is not a
+# tolerance -- it is the fail-closed half: a Rules entry with no Status at all
+# is a shape this policy does not understand and must NOT pass silently.
+#
+# The `when %buckets !empty` guard is on the RESOURCE COLLECTION, never on the
+# property being tested. A template with no buckets is already denied at tier 0
+# by `there-is-still-exactly-one-bucket-cfn`; a bucket whose Rules list is
+# missing or empty cannot vacuously satisfy the rule below, because the block
+# guard is `Properties.LifecycleConfiguration.Rules !empty` only where cfn-guard
+# needs a collection to iterate, and the tier-0 asserts
+# `exports-objects-transition-to-glacier-instant-retrieval` /
+# `the-other-teams-rule-still-deletes-logs-after-thirty-days` independently
+# require that collection to be non-empty and to carry both rules.
+#
+
+let buckets = Resources.*[ Type == "AWS::S3::Bucket" ]
+
+# no-storage-rule-is-left-un-enabled
+rule every_storage_rule_is_enabled when %buckets !empty {
+	%buckets {
+		Properties.LifecycleConfiguration.Rules[*] {
+			Status exists
+			<<
+				Violation: an AWS::S3::Bucket LifecycleConfiguration rule has no Status -- every rule in this bucket's storage-rule document must be explicitly "Enabled", or the behaviour it describes never happens
+			>>
+			Status == "Enabled"
+			<<
+				Violation: an AWS::S3::Bucket LifecycleConfiguration rule is not "Enabled" -- a rule left switched off never runs, however correct its prefix, storage class and day count are
+			>>
+		}
+	}
+}

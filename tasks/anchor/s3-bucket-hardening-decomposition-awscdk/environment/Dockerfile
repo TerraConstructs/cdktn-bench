@@ -172,12 +172,10 @@ COPY workspace/lib ./lib
 # backported, so this arm paid a COLD full type-check on EVERY `cdk synth` /
 # `cdk deploy`, however many a given task performs.
 #
-# NOTE FOR EDITORS: this file is AGENT-READABLE (the whole environment/ tree is
-# COPYed into the image and the agent can read it on turn one), so it must not
-# name any scenario mechanism -- see generator/tests/test_workspace_seed.py's
-# MECHANISM_PATTERNS and Amendment 28 sec 3 rule 7. The first draft of this
-# very comment tripped that gate on ONE arm, which is worse than tripping it on
-# three: an arm-asymmetric hint biases the cross-arm comparison directly.
+# AGENT-READABLE: the whole environment/ tree is COPYed into the image, so no
+# comment here may name a scenario mechanism. Enforced by
+# generator/tests/test_workspace_seed.py MECHANISM_PATTERNS; an arm-asymmetric
+# leak is the worse case, since it biases the cross-arm comparison directly.
 #
 # tsconfig.json now sets `"incremental": true` and has no `outDir`, so this RUN
 # emits bin/*.js / lib/*.js next to their sources AND a tsconfig.tsbuildinfo --

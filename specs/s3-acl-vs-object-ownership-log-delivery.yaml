@@ -1,0 +1,1058 @@
+# specs/s3-acl-vs-object-ownership-log-delivery.yaml
+#
+# THE SECOND BROWNFIELD (poisoned-workspace) SCENARIO -- specs/SCHEMA.md §2.7 /
+# §2.7.1, docs/design/poisoned-workspace-design.md §1 (this scenario is named in
+# that memo's own Batch-B table), DECISIONS.md Amendment 28 + Amendment 31.
+# `specs/named-resource-replacement.yaml` is the template and every structural
+# choice below that is not explained here was copied from it deliberately.
+#
+# THE MECHANISM (operator-facing -- `id` names it, no agent-visible string
+# does, per SCHEMA.md §0.1). The workspace ships a working, deployed
+# server-access-logging setup wired the ORIGINAL way: the destination bucket
+# grants `WRITE` + `READ_ACP` to the S3 log delivery GROUP through a bucket
+# ACL (`acl = "log-delivery-write"` / CFN's `AccessControl: LogDeliveryWrite`),
+# with Object Ownership left at `ObjectWriter` so ACLs are enabled at all. The
+# change request is the ordinary account-hardening ticket every AWS estate has
+# had open since April 2023: stop depending on ACLs. Its mechanism is Object
+# Ownership's `BucketOwnerEnforced` setting -- and AWS's own words for what
+# that does are:
+#
+#   "If the destination bucket uses the Bucket owner enforced setting for
+#    Object Ownership, ACLs are disabled and no longer affect permissions. In
+#    this case, you must update the bucket policy for the destination bucket
+#    to grant access to the logging service principal."
+#   -- docs.aws.amazon.com/AmazonS3/latest/userguide/enable-server-access-logging.html,
+#      "Permissions for log delivery" (read 2026-08-26)
+#
+# So the grant that has been carrying log delivery since the workspace was
+# built stops carrying it, and NOTHING SAYS SO. `PutBucketLogging` is not
+# re-issued (the logging configuration did not change), the plan is green, the
+# apply is green, `GetBucketLogging` still returns the same configuration, and
+# the log objects simply stop arriving -- best-effort delivery, hours of
+# latency, no error surface anywhere. The replacement grant is a bucket policy
+# allowing `s3:PutObject` to the `logging.s3.amazonaws.com` service principal
+# on the log key prefix; writing it is the whole job, and nothing in the
+# workspace mentions it.
+#
+# WHY IT DISCRIMINATES ACROSS THE THREE ARMS -- established by reading each
+# arm's OWN pinned library source at authoring time, never assumed:
+#
+#   * awscdk (aws-cdk-lib 2.263.0, local clone /Users/vincentsmet/cdk/aws-cdk):
+#     `Bucket.allowLogDelivery()` (aws-s3/lib/bucket.ts:3277-3307) branches on
+#     the `@aws-cdk/aws-s3:serverAccessLogsUseBucketPolicy` feature flag, which
+#     THIS ARM'S OWN cdk.json sets to `true`
+#     (arms/awscdk/environment/workspace/cdk.json). With the flag on, wiring
+#     logging through the L2 prop `serverAccessLogsBucket` emits exactly the
+#     bucket-policy statement above -- principal, action, `arnForObjects(prefix
+#     + "*")` resource and both `aws:SourceArn`/`aws:SourceAccount` conditions
+#     -- WITHOUT the agent knowing the rule exists. The same file also refuses
+#     the half-migration outright: `parseOwnershipControls()`
+#     (bucket.ts:3039-3061) THROWS `objectOwnership must be set to
+#     "ObjectWriter" when accessControl is "LogDeliveryWrite"` at synth time if
+#     the agent sets `BUCKET_OWNER_ENFORCED` while leaving the ACL prop in
+#     place. That is the L2 modelling the interaction between the two
+#     properties, which is precisely the thesis under test.
+#   * terraconstructs (0.2.13, the exact version pinned in
+#     arms/terraconstructs/environment/app/package.json): its `storage.Bucket`
+#     models NEITHER side. `BucketProps` (lib/aws/storage/bucket.d.ts) is
+#     `encryption / encryptionKey / bucketKeyEnabled / sources / public /
+#     bucketName / namePrefix / forceDestroy / websiteConfig / corsConfig /
+#     lifecycleRules / versioned / eventBridgeEnabled / enforceSSL /
+#     minimumTLSVersion / cloudfrontAccess` -- enumerated directly from the
+#     pinned `.d.ts`, and it carries no ownership-controls prop, no ACL prop
+#     and no server-access-logs prop at all. So this arm expresses the whole
+#     subject at L1 (`@cdktn/provider-aws`'s
+#     `s3BucketOwnershipControls`/`s3BucketAcl`/`s3BucketLogging`), which is
+#     the "two properties, modelled as separate and non-interacting" case the
+#     scenario exists to measure -- with a real L2 (`addToResourcePolicy` /
+#     `BucketPolicy`) available for the FIX but nothing linking the two.
+#   * hcl_raw: four independent resources, no interaction modelled anywhere.
+#
+# THE MAIN CATCH LANDS AT A DIFFERENT TIER ON EVERY ARM, and all three were
+# MEASURED (2026-08-26) by planning a correct and an incorrect grant on each arm
+# and diffing the graded artifact -- never predicted. Each arm's own broken/
+# fixture re-runs its half of that measurement on every `make falsifiability`,
+# so a toolchain release that changes the answer turns the gate red instead of
+# letting the claim rot.
+#
+#   awscdk           tier "0"   -- a CloudFormation bucket policy is literal
+#                                 JSON in the template; the principal and the
+#                                 action are readable by a jq path.
+#   hcl_raw          tier "live" -- `policy = jsonencode({...})` interpolating
+#                                 the bucket's provider-computed ARN is an HCL
+#                                 EXPRESSION: plan-time-unknown, so no `policy`
+#                                 key reaches `.planned_values`, and
+#                                 `.configuration` keeps only
+#                                 `{"references": [...]}`. The document is GONE
+#                                 from the graded artifact. Only the account can
+#                                 answer -- `verifier.live_check` (gating).
+#   terraconstructs  tier "1"   -- and this one is the surprise. cdktn emits
+#                                 `cdk.tf.json`, i.e. Terraform's JSON syntax,
+#                                 where the same document is a STRING; terraform
+#                                 records it as
+#                                 `expressions.policy.constant_value` VERBATIM,
+#                                 `${...}` markers included. The identical
+#                                 logical configuration therefore KEEPS its
+#                                 literals on this arm and LOSES them on
+#                                 hcl_raw. Still not tier 0, because the L2
+#                                 spelling (`addToResourcePolicy`) routes the
+#                                 document through a
+#                                 `data "aws_iam_policy_document"` instead and a
+#                                 path pinned to either shape would score the
+#                                 other shape's correct solution 0.0 -- so the
+#                                 rule is conditional on readability, which is a
+#                                 policy engine's job.
+#
+# The first draft of this spec predicted "live" on both Terraform arms by
+# analogy. The terraconstructs fixture's own mechanical proof refused it, which
+# is exactly what that proof exists for.
+#
+# THE SEED IS DEPLOYED BY THE HARNESS (`workspace_seed.deploy` below;
+# SCHEMA.md §2.7.1, docs/design/single-step-seed-deploy.md,
+# docs/brownfield-seed-not-deployed.md). Everything above needs the ACL grant
+# to exist IN AWS before the agent starts: `tests/live_check.py`'s
+# discriminating clause is "the deployed bucket policy must authorize the
+# logging service principal", and on an account where the buckets were never
+# created that clause is not merely false, it is unanswerable. The four
+# fail-closed layers (deploy exit 0, per-arm state artifact, `live_asserts`
+# against real AWS, and the verifier's receipt check) are what stop this
+# scenario repeating the vacuous-live-oracle defect that voided three
+# published rows.
+
+id: s3-acl-vs-object-ownership-log-delivery
+# HOST-SIDE ONLY (SCHEMA.md §0.1). This title names both halves of the poison
+# -- the ACL grant and the ownership setting that disables it -- which is
+# exactly what makes it useful in `specs/`, in `make falsifiability` output and
+# in a results table, and exactly why it must never be stamped into
+# `environment/`. `generator/tests/test_workspace_seed.py::TestBrownfieldPrompt
+# Surface::test_title_never_reaches_the_agent` pins the literal string as
+# unreachable from every agent-readable byte on every arm.
+title: "Disable bucket ACLs on a log-delivery destination bucket without losing log delivery"
+# AGENT-VISIBLE. Says only what the workspace already IS -- the header an ops
+# team would put on this directory. No mention of ACLs, ownership, the
+# migration, or the fact that anything about it is interesting.
+workspace_title: "Application storage"
+# AGENT-VISIBLE (SCHEMA.md §0.1): the terraconstructs stack id / gridUUID, the
+# `cdktf.out/stacks/<id>/` directory the agent sees in its own `npx cdktn synth`
+# output, and the terraconstructs state file name. `id` above is
+# operator-facing and names the diagnosis; this names only the workspace.
+workspace_id: application-storage
+# This scenario's OWN reserved vocabulary, layered on the global deny-list
+# (spec_model.AGENT_IDENTITY_DENY_PATTERNS).
+#
+# READ THE OMISSIONS AS CAREFULLY AS THE ENTRIES. `log-delivery-write`,
+# `ObjectWriter`, `LogDeliveryWrite` and `AccessControl` are deliberately NOT
+# here: they are the CONFIGURATION THE AGENT IS BEING ASKED TO CHANGE, they
+# live in the seed by necessity, and banning them would ban the scenario (the
+# same reasoning test_workspace_seed.py's own MECHANISM_PATTERNS comment gives
+# for not banning "rename"). What IS banned is the FIX and the ERROR CODES --
+# the words the agent must arrive at from the configuration and from its own
+# toolchain's output, never from the prompt or from a stray comment.
+agent_deny_vocab:
+  - BucketOwnerEnforced
+  - bucket owner enforced
+  - logging.s3.amazonaws.com
+  - InvalidBucketAclWithObjectOwnership
+  - AccessControlListNotSupported
+  - InvalidTargetBucketForLogging
+difficulty: 3
+services: [s3]
+
+arms:
+  awscdk: true
+  hcl_raw: true
+  terraconstructs:
+    enabled: true
+    reason: >
+      SUPPORTED, and supported ASYMMETRICALLY in a way that is this scenario's
+      whole measurement rather than a coverage gap. `storage.Bucket` and
+      `storage.BucketPolicy`/`IBucket.addToResourcePolicy` are present
+      (lib/aws/storage/bucket.d.ts, bucket-policy.js), source-verified at spec
+      time against the exact terraconstructs 0.2.13 package this arm pins in
+      arms/terraconstructs/environment/app/package.json. What is NOT present,
+      enumerated directly from `BucketProps` in that same `.d.ts` rather than
+      inferred from the README: no object-ownership prop, no ACL prop and no
+      server-access-logging prop -- the full prop list is `encryption`,
+      `encryptionKey`, `bucketKeyEnabled`, `sources`, `public`, `bucketName`,
+      `namePrefix`, `forceDestroy`, `websiteConfig`, `corsConfig`,
+      `lifecycleRules`, `versioned`, `eventBridgeEnabled`, `enforceSSL`,
+      `minimumTLSVersion`, `cloudfrontAccess`. So this arm expresses ownership
+      controls, the ACL and the logging configuration through
+      `@cdktn/provider-aws` 24.8.0's L1 resources
+      (`s3BucketOwnershipControls.S3BucketOwnershipControls`,
+      `s3BucketAcl.S3BucketAcl`, `s3BucketLoggingA` -- class names read
+      directly from that package's own `index.d.ts` files, including the `A`
+      suffix CDKTF adds to `S3BucketLogging` to avoid a name clash), while
+      awscdk expresses the same system through one L2 prop that also writes the
+      replacement grant for you. That is a genuine, measurable difference in
+      what a typed construct library buys on this ticket, which is what the
+      benchmark is for.
+
+# ---------------------------------------------------------------------------
+# §2.7 workspace_seed -- THE BROWNFIELD STARTING STATE
+# ---------------------------------------------------------------------------
+#
+# Each body below is written VERBATIM as that arm's
+# `output_contract.entry_file`, writable, with NO generator header of any kind
+# (SCHEMA.md §2.7). There are no comments anywhere in any of the three: a
+# comment near the poisoned property is the single most common way a seed
+# leaks its own answer, and `spec_model._seed_comment_violations` only catches
+# the editorial markers someone already thought of.
+#
+# Hostile read, per arm, of the three bodies below: they declare two buckets,
+# an ownership control, an ACL and a logging configuration. Nothing names a
+# bucket policy, a service principal, `BucketOwnerEnforced`, or any ordering
+# consequence. The ACL grant is visible because it MUST be -- the whole task is
+# to migrate it, and SCHEMA.md §2.7 rule 3 requires the trapped fact to be
+# discoverable from the configuration rather than announced in the premise.
+workspace_seed:
+  premise: |
+    This workspace holds the storage for one internal application: a bucket
+    that holds the application's own data, and a second bucket that receives
+    that bucket's S3 server access logs under the `app-data/` prefix. It is
+    already deployed in this account.
+
+  entry_file:
+    hcl_raw: |
+      resource "aws_s3_bucket" "app_data" {
+        bucket        = "cdktn-bench-application-storage-app-data"
+        force_destroy = true
+
+        tags = {
+          Name = "application-storage-app-data"
+        }
+      }
+
+      resource "aws_s3_bucket" "access_logs" {
+        bucket        = "cdktn-bench-application-storage-access-logs"
+        force_destroy = true
+
+        tags = {
+          Name = "application-storage-access-logs"
+        }
+      }
+
+      resource "aws_s3_bucket_ownership_controls" "access_logs" {
+        bucket = aws_s3_bucket.access_logs.id
+
+        rule {
+          object_ownership = "ObjectWriter"
+        }
+      }
+
+      resource "aws_s3_bucket_acl" "access_logs" {
+        depends_on = [aws_s3_bucket_ownership_controls.access_logs]
+
+        bucket = aws_s3_bucket.access_logs.id
+        acl    = "log-delivery-write"
+      }
+
+      resource "aws_s3_bucket_logging" "app_data" {
+        depends_on = [aws_s3_bucket_acl.access_logs]
+
+        bucket = aws_s3_bucket.app_data.id
+
+        target_bucket = aws_s3_bucket.access_logs.id
+        target_prefix = "app-data/"
+      }
+
+    awscdk: |
+      import * as cdk from "aws-cdk-lib";
+      import * as s3 from "aws-cdk-lib/aws-s3";
+      import { Construct } from "constructs";
+
+      export class ScenarioStack extends cdk.Stack {
+        constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+          super(scope, id, props);
+
+          const accessLogs = new s3.Bucket(this, "AccessLogs", {
+            bucketName: "cdktn-bench-application-storage-access-logs",
+            accessControl: s3.BucketAccessControl.LOG_DELIVERY_WRITE,
+            removalPolicy: cdk.RemovalPolicy.DESTROY,
+          });
+
+          const appData = new s3.Bucket(this, "AppData", {
+            bucketName: "cdktn-bench-application-storage-app-data",
+            removalPolicy: cdk.RemovalPolicy.DESTROY,
+          });
+
+          const accessLogsBucket = accessLogs.node.defaultChild as s3.CfnBucket;
+          const appDataBucket = appData.node.defaultChild as s3.CfnBucket;
+
+          appDataBucket.loggingConfiguration = {
+            destinationBucketName: accessLogsBucket.ref,
+            logFilePrefix: "app-data/",
+          };
+        }
+      }
+
+    terraconstructs: |
+      import {
+        s3BucketAcl,
+        s3BucketLogging,
+        s3BucketOwnershipControls,
+      } from "@cdktn/provider-aws";
+      import { Construct } from "constructs";
+      import { AwsStack, AwsStackProps } from "terraconstructs/lib/aws";
+      import { Bucket } from "terraconstructs/lib/aws/storage";
+
+      export class ScenarioStack extends AwsStack {
+        constructor(scope: Construct, id: string, props: AwsStackProps) {
+          super(scope, id, props);
+
+          const accessLogs = new Bucket(this, "AccessLogs", {
+            bucketName: "cdktn-bench-application-storage-access-logs",
+            forceDestroy: true,
+          });
+
+          const accessLogsOwnership =
+            new s3BucketOwnershipControls.S3BucketOwnershipControls(
+              this,
+              "AccessLogsOwnership",
+              {
+                bucket: accessLogs.bucketName,
+                rule: { objectOwnership: "ObjectWriter" },
+              },
+            );
+
+          const accessLogsAcl = new s3BucketAcl.S3BucketAcl(
+            this,
+            "AccessLogsAcl",
+            {
+              bucket: accessLogs.bucketName,
+              acl: "log-delivery-write",
+              dependsOn: [accessLogsOwnership],
+            },
+          );
+
+          const appData = new Bucket(this, "AppData", {
+            bucketName: "cdktn-bench-application-storage-app-data",
+            forceDestroy: true,
+          });
+
+          new s3BucketLogging.S3BucketLoggingA(this, "AppDataLogging", {
+            bucket: appData.bucketName,
+            targetBucket: accessLogs.bucketName,
+            targetPrefix: "app-data/",
+            dependsOn: [accessLogsAcl],
+          });
+        }
+      }
+
+  # The behavioural facts every arm's seed must satisfy (design memo §4.1).
+  # NOT a resource census -- terraconstructs' `storage.Bucket` expands into
+  # more resources than the hand-written HCL, which is the benchmark's thesis,
+  # not a parity failure.
+  seed_asserts:
+    - name: destination-bucket-grants-log-delivery-through-an-acl-tf
+      description: >
+        THE POISON, half one, in its Terraform spelling. Log delivery to the
+        destination bucket is authorized by a bucket ACL granting the S3 log
+        delivery group -- the canned `log-delivery-write` ACL. This is the
+        grant that Object Ownership's enforced setting silently stops
+        honouring. Split from its awscdk twin below because the two artifact
+        families spell the SAME canned ACL differently (`log-delivery-write`
+        vs CloudFormation's `LogDeliveryWrite`) and a SeedAssert carries one
+        `expected` for both paths.
+      pins_catch: log-delivery-grant-not-migrated
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_acl')].values.acl"
+      op: eq
+      expected: "log-delivery-write"
+
+    - name: destination-bucket-grants-log-delivery-through-an-acl-cfn
+      description: >
+        THE POISON, half one, in its CloudFormation spelling: `AccessControl:
+        LogDeliveryWrite`, which AWS's own server-access-logging page names as
+        the CloudFormation way to express exactly this grant ("you must also
+        add `AccessControl: LogDeliveryWrite` to your CloudFormation template
+        ... you can use only canned ACLs with CloudFormation"). Same fact as
+        the Terraform twin above, same catch pinned; only the literal differs.
+      pins_catch: log-delivery-grant-not-migrated
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.AccessControl"
+      op: eq
+      expected: "LogDeliveryWrite"
+
+    - name: destination-bucket-still-has-acls-enabled
+      description: >
+        THE POISON, half two, and the half that makes half one MEAN anything:
+        Object Ownership is `ObjectWriter`, so ACLs are enabled and the grant
+        above is live. `eq` rather than `set_eq` on purpose -- exactly one
+        ownership control exists in the seed, and pinning the node COUNT is
+        what stops a future edit adding a second one somewhere else and
+        satisfying this by accident.
+      pins_catch: acls-left-enabled-on-the-destination-bucket
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      # RECURSIVE DESCENT, and not the obvious
+      # `$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.OwnershipControls.Rules[*].ObjectOwnership`
+      # -- MEASURED, 2026-08-26, by running `make seed-parity` against the real
+      # synthesized template. That path compiles to a jq filter ending
+      # `.OwnershipControls | .Rules | .[] | .ObjectOwnership`, and the
+      # APPLICATION bucket has no `OwnershipControls` at all, so `.Rules` is
+      # `null` and `.[]` raises `Cannot iterate over null` -- which
+      # `_assert_lib.sh` reports as UNRESOLVABLE (rc 2), not as a contradiction.
+      # `$..ObjectOwnership` compiles to `.. | objects | .ObjectOwnership?`,
+      # which yields `null` for every object that lacks the key and lets
+      # `assert_check`'s own `map(select(. != null))` drop them. Nothing else in
+      # a CloudFormation template carries an `ObjectOwnership` key, so the
+      # broader path resolves to exactly the ownership-control rules.
+      cfn_jsonpath: "$..ObjectOwnership"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_ownership_controls')].values.rule[*].object_ownership"
+      op: eq
+      expected: "ObjectWriter"
+
+    - name: application-bucket-ships-access-logs-under-the-app-data-prefix
+      description: >
+        The system the premise describes really is wired: the application
+        bucket's server access logs go to the destination bucket under
+        `app-data/`. Pinned on the PREFIX because that is the one literal the
+        artifact carries on all three arms -- the destination bucket is a
+        reference (`aws_s3_bucket.access_logs.id` / a CFN `Ref`), so its value
+        is plan-time-unknown and unreadable from `.planned_values` (SCHEMA.md
+        §4.2.1); the graph-edge form of the same fact is graded at tier 0 in
+        `oracle.structural_asserts` below.
+      pins_catch: access-logging-turned-off-instead-of-migrated
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.LoggingConfiguration.LogFilePrefix"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_logging')].values.target_prefix"
+      op: eq
+      expected: "app-data/"
+
+    - name: seed-carries-no-bucket-policy-of-its-own
+      description: >
+        The starting state does NOT already contain the answer. Without this
+        pin a future edit to the seed could add a bucket policy for an
+        unrelated reason (a TLS-only deny, say, composed with the log-delivery
+        grant) and quietly make `log-delivery-grant-not-migrated`
+        unfalsifiable -- its negative fixture and its own starting state would
+        be indistinguishable. This is the same guard
+        `named-resource-replacement`'s `seed-ingress-is-already-scoped-to-the-vpc`
+        provides for its tier-1 catch, from the other side.
+      pins_catch: log-delivery-grant-not-migrated
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::BucketPolicy')]"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_policy')]"
+      op: not_exists
+
+  # -------------------------------------------------------------------------
+  # §2.7.1 deploy -- THE PREMISE IS MADE TRUE BY THE HARNESS
+  # -------------------------------------------------------------------------
+  #
+  # What each assert below exists to stop, stated as the vacuity it closes:
+  # `tests/live_check.py` fails a solution whose destination bucket does not
+  # authorize the logging service principal. On an account where the buckets
+  # were never created, `get-bucket-policy` errors, `get-bucket-ownership-
+  # controls` errors, and the oracle has nothing to read -- it cannot report
+  # `pass`, but neither can it report a MEASUREMENT. These asserts turn "the
+  # account holds the ACL-granted, ACLs-enabled, logging-wired system" from a
+  # sentence in `premise` into a fail-closed precondition of the trial running
+  # at all.
+  deploy:
+    # Five S3 API objects and no eventual-consistency wait; far cheaper than
+    # the template's interface endpoint. Still sized well above aws-bench's own
+    # 600.0 s default, because a seed timeout ABORTS the trial and the awscdk
+    # arm's deploy includes a CloudFormation create-stack round trip plus a
+    # `npx tsc` build. Not scaled by --timeout-multiplier (SCHEMA.md §2.7.1).
+    timeout_sec: 1800.0
+    live_asserts:
+      - name: destination-bucket-acl-grants-the-log-delivery-group
+        description: >
+          THE POISON IS LIVE. The destination bucket's real, deployed ACL
+          grants the S3 log delivery group. This is the exact negation of what
+          `tests/live_check.py` requires after the agent is done (ACLs disabled
+          and the grant carried by a bucket policy instead), so if THIS is
+          false pre-agent the live oracle is reporting on a system that was
+          never in the state the scenario is about.
+
+          `set_eq` and not `eq` here, deliberately and against the general
+          preference SCHEMA.md §2.7.1 states: the canned `log-delivery-write`
+          ACL is TWO grants (WRITE and READ_ACP) to the SAME grantee URI, so
+          the path resolves to two identical nodes and `eq`'s "exactly one
+          node" rule would fail against a correct seed. The duplicate-collapse
+          hazard `eq` exists to prevent does not apply, because this query
+          names ONE bucket by its globally unique name rather than scanning an
+          account -- there is no second object for `unique` to swallow. The
+          owner's own FULL_CONTROL grant has no `Grantee.URI` at all, so it
+          resolves to `null` and is dropped by `assert_check`'s
+          `map(select(. != null))`; on a bucket with ACLs already disabled the
+          ONLY grant is that owner grant, so the path resolves to zero nodes
+          and `set_eq` against a non-empty expected fails -- which is the
+          discrimination this assert is for.
+        aws:
+          - s3api
+          - get-bucket-acl
+          - --bucket
+          - cdktn-bench-application-storage-access-logs
+        jsonpath: "$.Grants[*].Grantee.URI"
+        op: set_eq
+        expected: ["http://acs.amazonaws.com/groups/s3/LogDelivery"]
+        pins_catch: log-delivery-grant-not-migrated
+
+      - name: destination-bucket-object-ownership-still-allows-acls
+        description: >
+          The deployed Object Ownership setting is `ObjectWriter`, i.e. ACLs
+          are enabled and the grant above is actually in force rather than
+          being an inert leftover. Without this, an account whose bucket had
+          ACLs disabled by some earlier process would satisfy the assert above
+          only if the grant somehow survived -- and would make the agent's
+          entire job already done. `eq` pins the node COUNT to exactly one, so
+          a response carrying two ownership rules is a failure rather than a
+          coin toss.
+        aws:
+          - s3api
+          - get-bucket-ownership-controls
+          - --bucket
+          - cdktn-bench-application-storage-access-logs
+        jsonpath: "$.OwnershipControls.Rules[*].ObjectOwnership"
+        op: eq
+        expected: "ObjectWriter"
+        pins_catch: acls-left-enabled-on-the-destination-bucket
+
+      - name: application-bucket-really-ships-its-access-logs-here
+        description: >
+          The source half of the system exists in the account: the application
+          bucket's deployed logging configuration names THIS destination
+          bucket. Without it, `live_check.py`'s "logging still targets the
+          destination bucket" clause could be satisfied vacuously by an account
+          where logging was never configured and the agent never touched it.
+
+          `--query` is used because `GetBucketLogging`'s response is a bare
+          OBJECT (`{"LoggingEnabled": {"TargetBucket": ..., "TargetPrefix":
+          ...}}`) with no array anywhere in it, and §2.7.1's anti-vacuity PATH
+          rule requires the jsonpath to ITERATE a collection -- `$.LoggingEnabled
+          .TargetBucket` compiles to a filter with no `.[]` stage and is a hard
+          error at spec load. Wrapping the projection in a one-element JMESPath
+          list produces `["<bucket>"]`, which `$[*]` iterates, and which
+          resolves to `[null]` -> zero nodes (dropped by `map(select(. !=
+          null))`) when logging is NOT configured. `--query` is not on §2.7.1's
+          harness-owned reject list (`--profile`, `--region`, `--endpoint-url`,
+          `--output`) and does not change the output FORMAT, which the compiled
+          jq filter depends on.
+        aws:
+          - s3api
+          - get-bucket-logging
+          - --bucket
+          - cdktn-bench-application-storage-app-data
+          - --query
+          - "[LoggingEnabled.TargetBucket]"
+        jsonpath: "$[*]"
+        op: eq
+        expected: "cdktn-bench-application-storage-access-logs"
+        pins_catch: access-logging-turned-off-instead-of-migrated
+
+      - name: access-logs-land-under-the-app-data-prefix
+        description: >
+          The prefix half of the same deployed fact, split into its own assert
+          rather than folded into a `set_eq` with the bucket name: `eq` pins
+          exactly one node per fact, and a `set_eq` over two projected values
+          would pass if the two were swapped. The bucket-policy grant a correct
+          solution writes must cover exactly this prefix, so a seed whose
+          deployed prefix is not `app-data/` would make the live oracle grade
+          against the wrong key space.
+        aws:
+          - s3api
+          - get-bucket-logging
+          - --bucket
+          - cdktn-bench-application-storage-app-data
+          - --query
+          - "[LoggingEnabled.TargetPrefix]"
+        jsonpath: "$[*]"
+        op: eq
+        expected: "app-data/"
+        pins_catch: access-logging-turned-off-instead-of-migrated
+
+instruction:
+  # THE TICKET TEST (docs/adding-scenarios.md §1 item 3a). What this says: the
+  # business requirement (stop relying on ACLs), which bucket, and what must
+  # still be true when it is done. What it deliberately does NOT say: Object
+  # Ownership, `BucketOwnerEnforced`, bucket policies, service principals, or
+  # that anything about the two is connected.
+  #
+  # ONE CLAUSE WAS CUT during authoring and the cut is worth recording, because
+  # it is exactly the failure docs/adding-scenarios.md §1 item 3a warns about.
+  # The first draft read "so that ACLs are off AND THE BUCKET OWNER OWNS
+  # EVERYTHING WRITTEN TO IT" -- which is AWS's own description of what the
+  # bucket-owner-enforced setting DOES, i.e. a paraphrase of the answer wearing
+  # the costume of a requirement. It also added nothing: that setting is the
+  # only way S3 lets you turn ACLs off, so "turn access control lists off"
+  # already names one implementation and no other. The second paragraph is the
+  # direct analogue of the template's "The interface VPC endpoint must still be
+  # reachable on port 443 ... and must not become reachable from anywhere
+  # else": an end-state requirement a real ticket would carry, and the thing
+  # that stops "delete the logging configuration" being a legal answer. It
+  # names no mechanism -- an agent who has not worked out that the ACL grant
+  # was load-bearing reads it as a restatement of the status quo.
+  shared_body: |
+    Our security baseline no longer permits this account to rely on S3 access
+    control lists, and the access-logs bucket in this workspace is one of the
+    last buckets still using them. Turn access control lists off on that
+    bucket, then roll the change out to this account with your toolchain's
+    real deploy command.
+
+    The application bucket's server access logs must still be delivered to the
+    access-logs bucket, under the same `app-data/` prefix, when you are done.
+
+  per_arm:
+    awscdk:
+      language_line: "This workspace is an AWS CDK (TypeScript) app using aws-cdk-lib L2 constructs."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdk.out/ScenarioStack.template.json
+        build_command: npm run build
+        synth_command: npx cdk synth --no-lookups --quiet -o cdk.out
+        # §2.7.1: the seed deploy runs this VERBATIM with cwd=/app/project. No
+        # `-o` and no `--app`, so it uses the workspace's own cdk.json (which
+        # self-builds); `bin/app.ts` is generator-owned and fixes the physical
+        # stack name to `ScenarioStack`, which is what makes the agent's own
+        # later `cdk deploy` an UpdateStack against the seed's stack rather
+        # than a fresh create. This arm keeps no local state at all.
+        deploy_command: npx cdk deploy --require-approval never ScenarioStack
+    hcl_raw:
+      language_line: "This workspace is hand-written Terraform HCL (no modules)."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        # `-refresh=false` is MANDATORY on a brownfield spec and the generator
+        # hard-errors without it (SCHEMA.md §2.7.1 hard error 7): with the
+        # seed's state file present in /app/project, the OFFLINE verifier's
+        # plan would otherwise refresh through provider.tf's dummy credentials
+        # and die, scoring a perfect solution 0.0. Grading is unaffected --
+        # every tf_jsonpath below reads $.planned_values / $.configuration,
+        # which carry the full desired end state, not a changeset.
+        plan_command: >-
+          terraform init && terraform validate &&
+          terraform plan -input=false -refresh=false -out=plan.tfplan &&
+          terraform show -json plan.tfplan > plan.json
+        # §2.7.1. TF_VAR_cdktn_bench_live=1 is MANDATORY: provider.tf hardcodes
+        # dummy access_key/secret_key otherwise and the AWS provider ranks an
+        # explicit access_key above every ambient credential source, so the
+        # seed apply would fail InvalidClientTokenId. State lands at
+        # /app/project/terraform.tfstate (implicit local backend), i.e. the
+        # agent's own cwd -- which is the whole handoff.
+        deploy_command: >-
+          TF_VAR_cdktn_bench_live=1 terraform init -input=false &&
+          TF_VAR_cdktn_bench_live=1 terraform apply -input=false -auto-approve
+    terraconstructs:
+      language_line: "This workspace is a terraconstructs (TypeScript) app using its AWS L2 constructs."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdktf.out/stacks/application-storage/plan.json
+        synth_command: npx cdktn synth
+        # §2.7.1. The positional argument is the STACK id -- i.e. `workspace_id`
+        # above, the construct id environment/app/main.ts passes to
+        # ScenarioStack -- NOT this spec's `id`. Confusing the two is a real
+        # shipped bug on the template scenario, whose solve.sh named a stack
+        # that did not exist. State lands at
+        # /app/project/terraform.application-storage.tfstate: cdktn's
+        # LocalBackend default path is
+        # path.join(process.cwd(), `terraform.${stackId}.tfstate`), an ABSOLUTE
+        # path baked into cdk.tf.json at synth time, so every later synth from
+        # /app/project resolves the identical file.
+        deploy_command: >-
+          CDKTN_BENCH_LIVE=1 npx cdktn deploy --auto-approve application-storage
+
+catches:
+  - name: log-delivery-grant-not-migrated
+    taxonomy: graph-dependency
+    description: >
+      THE SCENARIO. The agent switches Object Ownership on the destination
+      bucket to the bucket-owner-enforced setting -- which is exactly what the
+      ticket asks for -- and stops there. ACLs are now disabled, so the
+      `log-delivery-write` grant that has been carrying delivery no longer
+      affects permissions at all, and nothing replaces it: no bucket policy
+      allows `s3:PutObject` to `logging.s3.amazonaws.com` on the `app-data/`
+      prefix. Every static signal stays green. The logging configuration is
+      untouched, so `PutBucketLogging` is never re-issued and never gets the
+      chance to complain; `GetBucketLogging` keeps returning the same answer it
+      always did; the plan and the apply both succeed. The log objects simply
+      stop arriving, hours later, into a bucket nobody is watching.
+
+      THE TIER IS DIFFERENT ON ALL THREE ARMS, and every one of the three was
+      MEASURED rather than predicted (2026-08-26, by planning a correct and an
+      incorrect grant on each arm and diffing the graded artifact):
+
+        * awscdk -- tier "0". A CloudFormation bucket policy is a literal JSON
+          object in the synthesized template, so `logging.s3.amazonaws.com` and
+          `s3:PutObject` are readable by a jq path.
+        * hcl_raw -- tier "live". `aws_s3_bucket_policy.policy` is a
+          `jsonencode(...)` HCL expression interpolating the bucket's
+          provider-computed ARN: plan-time-UNKNOWN, so no `policy` key reaches
+          `.planned_values`, and `.configuration` keeps only
+          `{"references": [...]}` -- the literals inside the expression are
+          gone. This arm's own broken fixture re-proves that on every
+          `make falsifiability` before it is allowed to print the live-only
+          marker.
+        * terraconstructs -- tier "1", via `terraconstructs_override`, and this
+          is a genuine and slightly surprising arm difference rather than an
+          oracle-strictness choice. cdktn emits `cdk.tf.json`, i.e. Terraform's
+          JSON syntax, where the policy is a STRING; terraform's configuration
+          representation records that string as
+          `expressions.policy.constant_value` VERBATIM, `${...}` markers and
+          all. So the whole document -- principal included -- survives into the
+          graded artifact on this arm even though the identical logical
+          configuration written as HCL loses it. The first version of this spec
+          predicted "live" here by analogy with hcl_raw; the fixture's own
+          mechanical proof refused it, which is exactly what that proof exists
+          for.
+
+      It is still not a TIER-0 fact on this arm, because the L2 spelling
+      (`IBucket.addToResourcePolicy`) routes the document through a
+      `data "aws_iam_policy_document"` instead, and a jq path pinned to either
+      shape would score the other shape's CORRECT solution 0.0. The rule is
+      therefore conditional -- "if the document is readable at all, it must
+      name the logging service principal" -- and a conditional is a policy
+      engine's job, not a jq path's.
+    applies_to: [awscdk, hcl_raw, terraconstructs]
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "live"
+      terraconstructs_override: "1"
+
+  - name: access-logging-turned-off-instead-of-migrated
+    taxonomy: graph-dependency
+    description: >
+      The other way to make the ACL dependency go away: remove it. A solution
+      that disables ACLs on the destination bucket and drops (or repoints, or
+      re-prefixes) the application bucket's logging configuration satisfies the
+      first sentence of the ticket and destroys the thing the second sentence
+      protects. Caught at tier 0 on every arm: the graded artifact must still
+      declare a logging configuration, targeting a bucket this configuration
+      creates, under the `app-data/` prefix.
+    applies_to: [awscdk, hcl_raw, terraconstructs]
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "0"
+
+  - name: acls-left-enabled-on-the-destination-bucket
+    taxonomy: typed-value-trap
+    description: >
+      The half-measure. The agent writes the replacement bucket policy -- the
+      hard part -- but leaves Object Ownership somewhere that still ENABLES
+      ACLs: at the seed's `ObjectWriter`, or moved to `BucketOwnerPreferred`,
+      which sounds like it satisfies "the bucket owner owns everything written
+      to it" and does not (it only changes ownership of objects uploaded with
+      the bucket-owner-full-control canned ACL, and leaves ACLs on). The ticket
+      is not done and the baseline is still violated. Caught at tier 0 (the
+      value assert) and again at tier 1 (the same claim quantified over EVERY
+      ownership control in the workspace, which is what a policy engine is
+      for).
+    applies_to: [awscdk, hcl_raw, terraconstructs]
+    predicted_tier_caught:
+      # TIER 1 ON EVERY ARM, and the tier-0 twin this scenario's first draft
+      # also declared for the same property was REMOVED to make that honest.
+      # `make tier1-coverage` refused the pair: a tier-1 assert whose only
+      # negative fixture trips a tier-0 assert FIRST is a tier-1 assert with no
+      # covering fixture, and can be gutted without any gate noticing
+      # (generator/check_tier1_coverage.py's pigeonhole). Declaring the same
+      # claim at both tiers looked like belt and braces and was really a hole:
+      # `observed_tier` reports "0" for this fixture whenever the tier-0 twin
+      # exists, so the Rego and cfn-guard rules were never the thing being
+      # falsified. The claim is quantified over a collection ("no ownership
+      # control ANYWHERE may leave ACLs enabled"), which is a policy engine's
+      # job, so tier 1 is where it belongs and tier 1 is where it now lives
+      # alone.
+      awscdk: "1"
+      hcl: "1"
+
+  - name: log-delivery-grant-missing-entirely
+    taxonomy: graph-dependency
+    description: >
+      THE CRUDEST FORM of this scenario's mistake, and the likeliest: the agent
+      makes exactly the change the ticket names -- ACLs off on the access-logs
+      bucket -- and adds nothing. No bucket policy at all. With ACLs disabled,
+      the log-delivery group grant it just neutralised was the ONLY thing
+      authorizing delivery, so the logs stop; and because the logging
+      configuration itself is untouched, `PutBucketLogging` is never re-issued
+      and no API call anywhere complains.
+
+      Distinct from `log-delivery-grant-not-migrated`, which is the same
+      mistake made by someone who DID know a policy was needed and wrote the
+      wrong grant. Tiered differently too, and again per arm rather than by
+      analogy: awscdk is tier "0" because the absence of any
+      `AWS::S3::BucketPolicy` makes the two tier-0 policy asserts resolve to
+      ZERO nodes, and `contains` requires at least one. Both Terraform arms are
+      tier "1", because "no aws_s3_bucket_policy is declared at all" is a
+      statement about the whole resource collection rather than a value at a
+      path -- and unlike the CONTENT of that policy (see the other catch), the
+      DECLARATION survives into `.configuration` on every arm and every shape,
+      so this half needs no live tier.
+    applies_to: [awscdk, hcl_raw, terraconstructs]
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "1"
+
+oracle:
+  intent: |
+    A correct solution leaves this workspace deploying the same system it
+    described before -- an application bucket whose S3 server access logs are
+    delivered to a second bucket under the `app-data/` prefix -- with one thing
+    changed: the destination bucket no longer uses access control lists, and
+    the authorization that log delivery depends on has moved from a bucket ACL
+    to a bucket policy.
+
+    Four things are graded, in four places, and the split is deliberate.
+
+    1. TIER 0 (static, every arm). The application bucket still declares a
+       logging configuration pointing at a bucket this configuration creates,
+       under the `app-data/` prefix -- i.e. the requirement the ticket's second
+       sentence protects was not deleted on the way past.
+
+    2. TIER 0 (static, awscdk only). The destination bucket's policy grants
+       `s3:PutObject` to the `logging.s3.amazonaws.com` service principal.
+       Declared for one arm only, and that asymmetry is an artifact-shape fact
+       rather than a choice: on CloudFormation the policy document is literal
+       JSON in the template; on both Terraform arms the same document is either
+       gone from the artifact entirely (hcl_raw) or readable only conditionally
+       (terraconstructs) -- see 3 and 4.
+
+    3. TIER 1 (Rego / cfn-guard). Two quantified claims, which is exactly what
+       separates this tier from tier 0 -- a jq path pins one value at one path;
+       neither of these is that shape:
+         * (every arm) NO ownership control anywhere in this workspace may
+           leave ACLs enabled -- not `ObjectWriter`, not
+           `BucketOwnerPreferred`, on any bucket. THIS IS WHAT MAKES THE
+           DO-NOTHING ANSWER FAIL on the Terraform arms: the seed already
+           deploys green, so without it an agent that changed nothing would
+           score 1.0. See `solution/broken/seed-unchanged/`, which exists
+           precisely to keep proving that.
+         * (Terraform arms) the destination bucket must declare a bucket policy
+           at all, and IF that document is readable from the artifact it must
+           name the logging service principal. The conditional half is why this
+           cannot be a jq path: readability differs by arm and by the shape the
+           agent chose, and an unconditional path would score a correct
+           solution 0.0 on whichever shape it failed to anticipate.
+
+       This scenario deliberately does NOT also declare a tier-0 twin of the
+       ownership claim, and the reason is recorded rather than assumed: it did,
+       until `make tier1-coverage` pointed out that a tier-1 assert whose only
+       negative fixture trips a tier-0 assert first is a tier-1 assert nothing
+       falsifies. One claim, one tier, one fixture that really exercises it.
+
+    4. LIVE (`tests/live_check.py`, gating). Whether log delivery ACTUALLY
+       STILL WORKS. This tier does not ask whether a property is set. It reads
+       the deployed state of both buckets and answers the authorization
+       question AWS itself answers: with ACLs disabled, is
+       `logging.s3.amazonaws.com` permitted to `s3:PutObject` into
+       `s3://<destination>/app-data/...`? It evaluates the real bucket policy
+       (principals, actions, resource ARN patterns, and Deny statements) rather
+       than pattern-matching it, checks that the deployed logging configuration
+       still names this bucket and prefix, checks that the ACL grant is really
+       gone, and finally re-drives S3's own `PutBucketLogging` validator
+       against the configuration it just read. On hcl_raw it is the ONLY tier
+       that can see a wrong grant at all. On every arm it is the only tier that
+       can see whether the change LANDED -- a plan that was never applied, or
+       an apply that failed part-way, is indistinguishable from a successful
+       one in the graded artifact -- and the only tier that would notice an
+       ownership control deleted outright rather than corrected, which no
+       remaining static assert covers.
+
+    What is deliberately NOT graded: how many resources each arm's expansion
+    produced; whether the bucket policy is written as `jsonencode`, a
+    `data "aws_iam_policy_document"`, an L2 `addToResourcePolicy` call or a
+    literal document; whether the `aws_s3_bucket_acl` resource is deleted from
+    the configuration or retained with a non-granting value; and how many
+    applies it took to get there. The arms are compared on the declared
+    behavioural facts only.
+
+  structural_asserts:
+    - name: application-bucket-still-ships-access-logs-under-the-same-prefix
+      description: >
+        The logging configuration the second sentence of the ticket protects
+        was not dropped or re-prefixed on the way past. A migration that
+        "works" by deleting the thing being migrated is not a migration. Pinned
+        on the prefix literal, which every arm's artifact carries; the
+        destination-bucket half is the graph-edge assert below.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.LoggingConfiguration.LogFilePrefix"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_logging')].values.target_prefix"
+      op: eq
+      expected: "app-data/"
+
+    - name: access-logs-still-target-a-bucket-this-workspace-creates
+      description: >
+        The destination half of the same fact. Graph-edge shaped
+        (`.configuration ... references`), because the destination bucket's
+        name/id is a computed attribute and therefore plan-time-unknown
+        (SCHEMA.md §4.2.1) -- reading `.planned_values ... values.target_bucket`
+        would resolve to nothing against a correct solution. TF-shaped arms
+        only; the awscdk twin below is a separate, deliberately weaker assert
+        for the same artifact-shape reason its seed twin is.
+      tier: "0"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_s3_bucket_logging')].expressions.target_bucket.references[*]"
+      op: regex
+      expected: "^aws_s3_bucket\\."
+
+    - name: access-logs-still-declare-a-destination-bucket
+      description: >
+        The awscdk form of the same fact, weaker by artifact shape rather than
+        by choice: in a CFN template the edge is an intrinsic
+        (`{"Ref": "AccessLogs..."}`), a MAP, which no regex can match and which
+        generator/jsonpath_jq.py cannot address by key (it has no
+        bracket-quoted-key segment). Pinning the referenced CDK logical id
+        instead would couple this spec to CDK's own id hashing. So this arm
+        pins the honest weaker fact: the logging configuration still declares a
+        destination. Enough to fail a solution that deletes it, not enough to
+        prove WHICH bucket -- and the live tier proves that part for real.
+      tier: "0"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.LoggingConfiguration.DestinationBucketName"
+      op: exists
+
+    - name: destination-bucket-policy-grants-the-logging-service-principal
+      description: >
+        awscdk ONLY, and the asymmetry is the measurement rather than a gap.
+        A CloudFormation bucket policy carries its statements as literal JSON,
+        so the service principal is readable from the graded artifact; on both
+        Terraform arms the same fact is a computed string (see this spec's
+        header and `catches[0]`). `contains` because CDK renders
+        `Principal: {"Service": "logging.s3.amazonaws.com"}` as a bare STRING
+        and jq's `contains/1` on a string is a substring test -- there is no
+        superstring hazard here (unlike the template's finding M2), because no
+        other AWS service principal has this one as a proper substring.
+        Statements whose Principal has no `Service` key resolve to `null` and
+        are dropped, so a policy carrying only an unrelated `AWS` principal
+        fails this rather than passing it.
+      tier: "0"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::BucketPolicy')].Properties.PolicyDocument.Statement[*].Principal.Service"
+      op: contains
+      expected: "logging.s3.amazonaws.com"
+
+    - name: destination-bucket-policy-allows-putobject
+      description: >
+        awscdk ONLY, for the same reason, and declared as its own assert rather
+        than folded into the one above because a jq path cannot correlate two
+        fields of the SAME statement -- that correlation is what tier 1 and the
+        live tier are for. What this adds on its own: a policy that names the
+        logging service principal but grants it something useless (a read
+        action, say) fails here.
+      tier: "0"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::BucketPolicy')].Properties.PolicyDocument.Statement[*].Action"
+      op: contains
+      expected: "s3:PutObject"
+
+    - name: destination-bucket-policy-carries-the-log-delivery-grant
+      description: >
+        TIER 1, TF-shaped arms only. Two claims, and only the first is
+        expressible as a path:
+
+        (a) the destination bucket declares a bucket policy at all. With ACLs
+        disabled that policy is the ONLY thing that can authorize log delivery,
+        so a solution with none has silently switched delivery off. `exists` on
+        `.configuration ... expressions.policy` rather than on
+        `.planned_values ... values.policy`, because the rendered document is
+        plan-time-unknown for any policy that references the bucket's own ARN
+        (SCHEMA.md §4.2.1) -- the declaration survives, the value does not.
+
+        (b) IF that document is readable from the graded artifact, it must name
+        `logging.s3.amazonaws.com`. That half is conditional on readability,
+        which no jsonpath can express and which differs by ARM and by the
+        agent's chosen SHAPE: a `jsonencode(...)` HCL expression keeps nothing,
+        cdktn's JSON-syntax `constant_value` keeps everything, and a
+        `data "aws_iam_policy_document"` keeps it one hop away. An
+        unconditional path would score a correct solution 0.0 on whichever
+        shape it did not anticipate. It lives in
+        oracles/rego/s3-acl-vs-object-ownership-log-delivery/policy.rego, which
+        reads both readable shapes and stays silent on the unreadable one --
+        where `tests/live_check.py`, which reads the ACCOUNT rather than the
+        artifact, is the tier that answers.
+
+        awscdk is excluded because it is not conditional there: the CFN
+        template always carries the literal, and the two tier-0 asserts above
+        check it directly.
+      tier: "1"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_s3_bucket_policy')].expressions.policy"
+      op: exists
+
+    - name: no-ownership-control-leaves-acls-enabled
+      description: >
+        TIER 1. NO ownership control declared anywhere in this workspace may
+        leave ACLs enabled -- neither `ObjectWriter` nor `BucketOwnerPreferred`,
+        on any bucket. Graded by
+        oracles/rego/s3-acl-vs-object-ownership-log-delivery/policy.rego (TF
+        arms) and
+        oracles/cfn-guard/s3-acl-vs-object-ownership-log-delivery/policy.guard
+        (awscdk). Universally quantified over a collection, which is the line
+        between tier 0 and tier 1 in this repo; the tier-0 `set_eq` twin checks
+        the same claim through a different evaluator, on purpose.
+      tier: "1"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      # RECURSIVE DESCENT, and not the obvious
+      # `$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.OwnershipControls.Rules[*].ObjectOwnership`
+      # -- MEASURED, 2026-08-26, by running `make seed-parity` against the real
+      # synthesized template. That path compiles to a jq filter ending
+      # `.OwnershipControls | .Rules | .[] | .ObjectOwnership`, and the
+      # APPLICATION bucket has no `OwnershipControls` at all, so `.Rules` is
+      # `null` and `.[]` raises `Cannot iterate over null` -- which
+      # `_assert_lib.sh` reports as UNRESOLVABLE (rc 2), not as a contradiction.
+      # `$..ObjectOwnership` compiles to `.. | objects | .ObjectOwnership?`,
+      # which yields `null` for every object that lacks the key and lets
+      # `assert_check`'s own `map(select(. != null))` drop them. Nothing else in
+      # a CloudFormation template carries an `ObjectOwnership` key, so the
+      # broader path resolves to exactly the ownership-control rules.
+      cfn_jsonpath: "$..ObjectOwnership"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_ownership_controls')].values.rule[*].object_ownership"
+      op: not_regex
+      expected: "^(ObjectWriter|BucketOwnerPreferred)$"
+
+  rego_hints:
+    - "deny when any aws_s3_bucket_ownership_controls rule sets object_ownership to ObjectWriter or BucketOwnerPreferred"
+    - "fail closed on shape drift: a resource with no rule/object_ownership at all is a deny, not a silent pass"
+    - "deny when no aws_s3_bucket_policy is declared at all -- with ACLs disabled that is the only possible log-delivery grant"
+    - >-
+      deny when a bucket policy document IS readable from the artifact (a
+      constant_value string, or a one-hop data.aws_iam_policy_document) and does
+      not name logging.s3.amazonaws.com anywhere; stay SILENT when it is not
+      readable (a jsonencode() HCL expression), because denying there would
+      score a correct hcl_raw solution 0.0 and the live tier already covers it
+  cfn_guard_hints:
+    - "deny when any AWS::S3::Bucket OwnershipControls.Rules entry has ObjectOwnership == ObjectWriter or BucketOwnerPreferred"
+
+verifier:
+  budget:
+    max_iters: 8
+  live_check:
+    enabled: true
+    hand_authored: true
+    gating: true
+    # AdministratorAccess, per DECISIONS.md Amendment 24's arm-parity rule, and
+    # per §2.7.1's "a seed the harness can deploy must be a seed the agent can
+    # change": the seed deploy runs under this same role.
+    agent_role_name: "QALocalInvocationApplicationAdmin"
+    concurrency_mode: "mutating"
+  idempotence:
+    # DELIBERATELY OFF, and the reason is a false-negative risk this spec is not
+    # able to retire offline. `verifier.idempotence` is gating and FAIL-CLOSED
+    # (SCHEMA.md §5.1): both `pending_changes` and `not_verifiable` drive the
+    # reward to 0.0. One legitimate, correct shape of this solution on the
+    # Terraform arms keeps an `aws_s3_bucket_acl` resource in the configuration
+    # with a non-granting value (that is how the bucket's live ACL gets reset
+    # in a single apply, since removing the resource is a state-only delete in
+    # hashicorp/aws), and whether the provider's own refresh of that resource
+    # against a bucket that now has ACLs disabled reports a converged state is
+    # NOT established here -- it could not be established without a live run,
+    # which this authoring pass deliberately did not do. Turning a gating,
+    # fail-closed tier on against an unestablished convergence property would
+    # risk scoring a correct agent 0.0 for a reason that says nothing about the
+    # agent, which is the same class of defect
+    # docs/brownfield-seed-not-deployed.md was filed for with the sign flipped.
+    # The failure mode idempotence would have covered here -- "the change
+    # appears to deploy but did not land" -- is already covered, and covered
+    # against the ACCOUNT rather than against a second plan, by
+    # `tests/live_check.py`, which reads the deployed ownership setting
+    # directly. Revisit with a live run.
+    enabled: false
+    gating: false
+
+provenance:
+  author: "cdktn-bench brownfield batch B (s3-acl-vs-object-ownership-log-delivery)"
+  date: "2026-08-26"
+  prereg_section_refs:
+    - "§2.2 empty-vs-tuned harness axis (brownfield changes what 'empty' MEANS -- DECISIONS.md Amendment 28 §1)"
+    - "§5 difficulty gradient + falsifiability instruments"
+    - "§6 prompt parity across arms"

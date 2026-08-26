@@ -6369,12 +6369,64 @@ ROADMAP M2; until then, re-splitting as scenarios land is expected and cheap.
 ---
 
 ## Amendment 31 (2026-08-25) — single-step seed deploy: the brownfield premise
-## is made true by the harness — **DRAFT, pre-registered, not yet exercised live**
+## is made true by the harness — **ACCEPTED 2026-08-26**
 
-**Status: DRAFT.** Registered *before* any brownfield result produced under this
-mechanism exists. It does not promote Amendment 28; it makes that amendment's
-promotion criterion — a live `named-resource-replacement` run worth believing —
-**reachable for the first time**, and the same run promotes both.
+**Status: ACCEPTED (promoted 2026-08-26).** Registered as DRAFT before any
+brownfield result produced under this mechanism existed, on the criterion in §7:
+the first live `named-resource-replacement` run under the mechanism, the same
+run that promotes Amendment 28.
+
+**That run happened.** Three arms, zero exceptions, every arm `seed_deployed` /
+live_check `pass` / idempotence `converged`
+(`jobs/live-brownfield-seed/2026-08-25__22-21-37` and
+`…/2026-08-26__08-54-19`). The per-arm table is in Amendment 28's header.
+
+### §7's capture list — what the run actually settled
+
+**1. terraconstructs state path — ANSWERED, indirectly.** §7 asked for
+`find /app/project -iname '*.tfstate*'` after the seed deploy. That listing was
+not taken; the evidence is the seed movement guard's own behaviour, which is
+conclusive for the question asked. The guard writes `not_verifiable` whenever
+the receipt's `state_identity` is empty or the on-disk identity is unreadable.
+terraconstructs returned `converged` with `seed-identity.err` empty, so the
+receipt carried an identity, the state file WAS found at
+`/app/project/terraform.<workspace_id>.tfstate`, and the identity had MOVED from
+the seed's. The absolute path published in Amendment 28 §4's correction is
+confirmed.
+
+**2. `cdktn deploy` exit code on a PARTIAL apply — STILL UNOBSERVED.** No
+partial apply occurred on any arm; all three deploys were clean. This cannot be
+settled by waiting for it to happen by chance, and Layers 2 and 3 exist
+precisely because Layer 1 might miss it. The claim stands as designed-for, not
+as demonstrated. Anyone forcing this case (an induced mid-apply failure) should
+record the result here.
+
+**3. Interface VPC endpoint readiness at `apply` return — ANSWERED for the
+shape used.** The live asserts read `SecurityGroupIds`, not `State`, and passed
+on all three arms, so the attachment is true the instant the endpoint object
+exists. An endpoint-`State` assert remains unavailable: it needs a
+poll-with-timeout primitive the generator still does not have.
+
+### Observability gap found by this promotion
+
+`/logs/seed-deploy-receipt.json` is written by `pre_invoke.sh` and read by
+`tests/test.sh`, but is **not** downloaded into the job artifacts — only
+`/logs/pre_invoke/*` and `/logs/verifier/*` are. The receipt is the anti-vacuity
+channel and the movement guard's only input, so no post-hoc audit of it is
+possible from a finished job dir; item 1 above had to be inferred rather than
+read. Worth adding to the downloaded set.
+
+### Relationship to multi-step
+
+This amendment is the SINGLE-STEP mechanism and is complete on its own terms.
+Upstream aws-bench still refuses multi-step outright
+(`aws_bench/task/aws_trial.py`: *"multi-step AWS tasks are not yet supported
+(per-step pre/post-invoke credentialing is undefined)"*); multi-step runs only
+through this repo's `CdktnMultiStepTrial` (Amendments 26/27), and
+`specs/apigw-redeploy.yaml` remains the only spec declaring `steps:`. The
+multi-step `pre_invoke.deploy_prior` facility is still exercised by no real
+spec. Nothing here changes that; a brownfield scenario needing pre-deployed
+STATE rather than pre-deployed RESOURCES is the case that would.
 
 **Numbering note.** `docs/design/single-step-seed-deploy.md` calls this
 "Amendment 29". Amendments 29 and 30 had already landed by the time it was

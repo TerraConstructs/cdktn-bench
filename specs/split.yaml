@@ -24,48 +24,56 @@
 algorithm_version: 1
 seed: 'cdktn-bench-split-v1'
 train_fraction: 0.6
-generated_at: '2026-08-23'
+generated_at: '2026-08-26'
 counts:
-  total: 14
-  train: 8
-  holdout: 6
+  total: 17
+  train: 10
+  holdout: 7
 assignments:
   acm-dns-validation-record-wiring:
     group: train
     score: '10c21300c461c8b3'
-    rank: 2
+    rank: 3
   apigw-openapi:
     group: train
     score: '3377d78a52b0edd8'
-    rank: 4
+    rank: 5
   apigw-redeploy:
     group: holdout
     score: 'e1c40a27324d48a8'
-    rank: 12
+    rank: 14
   asg-launch-template-tag-propagation:
     group: holdout
     score: 'ff3d9ab763f6438b'
-    rank: 13
+    rank: 16
   ddb-gsi-attribute-definitions:
     group: train
     score: '5ad4d2b56e44a07e'
-    rank: 5
+    rank: 7
   ecs-swappiness:
     group: train
     score: '1afb4343b90f4a49'
-    rank: 3
+    rank: 4
   iam-managed-policy-exclusive-vs-attachment:
     group: holdout
     score: 'a0201dbb718f2e79'
-    rank: 8
+    rank: 10
+  lambda-alias-tracks-unpublished-latest:
+    group: train
+    score: '5a02f6ef380e5f40'
+    rank: 6
   lambda-log-group-ownership-and-retention:
     group: holdout
     score: 'c203ffbb9c4d2168'
-    rank: 11
+    rank: 13
   named-resource-replacement:
     group: train
     score: '05ab499efa4bcfcc'
     rank: 1
+  s3-acl-vs-object-ownership-log-delivery:
+    group: holdout
+    score: 'fbd578b7e3875fb9'
+    rank: 15
   s3-bucket-hardening-decomposition:
     group: train
     score: '0553983a5f8f7fc7'
@@ -73,16 +81,20 @@ assignments:
   s3-lambda-log-retention:
     group: train
     score: '667898ba190928a0'
-    rank: 6
+    rank: 8
   s3-notification-authoritative-singleton:
     group: holdout
     score: 'a27cf854dd4368f6'
-    rank: 9
+    rank: 11
   s3-notification-custom-resource-tax:
     group: train
     score: '97676d193aad422a'
-    rank: 7
+    rank: 9
   sfn-jsonata:
     group: holdout
     score: 'b5c518e8a2acdfdc'
-    rank: 10
+    rank: 12
+  singleton-child-resource-clobber:
+    group: train
+    score: '0cc669b51d16df5c'
+    rank: 2
