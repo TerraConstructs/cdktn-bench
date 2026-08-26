@@ -5510,15 +5510,54 @@ multi-step result may be published while it is.
 ---
 
 ## Amendment 28 (2026-08-20) — BROWNFIELD scenario form: poisoned workspaces,
-## the mandatory do-nothing catch, and a live idempotence tier — **DRAFT,
-## pre-registered, not yet exercised live**
+## the mandatory do-nothing catch, and a live idempotence tier — **ACCEPTED
+## 2026-08-26 on the first complete live brownfield row**
 
-**Status: DRAFT.** Everything below is registered *before* any brownfield result
-exists. No brownfield row may be published while this amendment is DRAFT. It is
-promoted to ACCEPTED by the first live `named-resource-replacement` run, which
-is the first thing that can falsify §4's and §5's claims about behaviour on a
-real account. Sections marked *(draft)* are the ones that run has authority to
-correct; the rest are already mechanically proven offline and are cited as such.
+**Status: ACCEPTED (promoted 2026-08-26).** Registered as DRAFT before any
+brownfield result existed, on the criterion that the first live
+`named-resource-replacement` run promotes it — that run being the first thing
+able to falsify §4's and §5's claims about behaviour on a real account.
+
+**That run happened, and the criterion is met.** Three arms, zero exceptions,
+every arm green:
+
+| arm | reward | out tok | turns | seed | live_check | idempotence |
+|---|---|---|---|---|---|---|
+| `awscdk` | 1.0 | 2,727 | 9 | `seed_deployed` | `pass` | `converged` |
+| `hcl_raw` | 1.0 | 5,382 | 14 | `seed_deployed` | `pass` | `converged` |
+| `terraconstructs` | 1.0 | 11,558 | 28 | `seed_deployed` | `pass` | `converged` |
+
+`jobs/live-brownfield-seed/2026-08-25__22-21-37` (awscdk, hcl_raw) and
+`…/2026-08-26__08-54-19` (terraconstructs, re-run after the idempotence fix
+below). Every arm's live check returned `old_group_ids: []` against a real
+security group and a real SSM interface endpoint — the discriminating assertion
+resolved against infrastructure that genuinely existed, which is exactly what
+`docs/brownfield-seed-not-deployed.md` established the earlier battery could not
+claim.
+
+**What the run CORRECTED rather than confirmed**, recorded because a promotion
+that only confirms is not evidence of anything:
+
+* §4's `terraconstructs` state path was WRONG (`cdktf.out/…` instead of the
+  absolute `/app/project/terraform.<workspace_id>.tfstate`). That single error
+  was the entire `not_verifiable` verdict that cost the arm its reward on both
+  prior runs — an infrastructure defect wearing the costume of an agent result.
+* §4's idempotence command on that arm re-synthesized WITHOUT
+  `CDKTN_BENCH_LIVE=1`, regenerating `cdk.tf.json` against the offline mock-STS
+  fixture, so the live plan died dialing 127.0.0.1:17771. Fixed in `gen.py`;
+  the re-run then returned `converged`.
+
+Both were found only because the run was real. §4 and §5's claims are now
+exercised live and this amendment carries no DRAFT sections.
+
+**A brownfield row may now be published** — subject to §6, which is unchanged
+and binding: brownfield is a SEPARATE STRATUM and is never pooled with
+greenfield. The three rows above are n=1 per arm; the reward column is solid,
+the token column is directional (two hcl_raw failures earlier in this project
+differed 54% in tokens on the same scenario).
+
+The MECHANISM that makes the premise true — the single-step seed deploy — is
+Amendment 31, which has its own promotion criterion and is assessed separately.
 
 Supersedes nothing. Extends Amendments 23 (tokens-to-green denominator), 26
 (multi-step semantics) and 27 (scenario-form changes are not poolable).
@@ -5732,7 +5771,12 @@ is repointed at the absolute path. Because the state file is **not** inside the
 directory `cdktn synth` rewrites, that re-probe is now expected never to fire;
 it is retained anyway, because the guarantee is the contract and the mechanism
 is cheap. The correction is load-bearing for Amendment 31, which depends on that
-path to hand the seed's converged state to the agent. This section stays DRAFT.
+path to hand the seed's converged state to the agent.
+
+**Exercised live 2026-08-26 (this section is no longer DRAFT).** With the path
+corrected AND the `CDKTN_BENCH_LIVE=1` fix on the re-synth, all three arms
+returned `converged` on a real account. The correction above is what made that
+possible; the header table records the rows.
 
 ### 5. The MANDATORY do-nothing catch — answering design-memo Q6: yes
 

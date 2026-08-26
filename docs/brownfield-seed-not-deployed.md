@@ -1,9 +1,14 @@
 # The brownfield seed is never deployed — `named-resource-replacement` does not measure its own trap
 
-**Status: RESOLVED BY DESIGN — see `docs/design/single-step-seed-deploy.md`
-(implemented 2026-08-25; `specs/SCHEMA.md` §2.7.1, `DECISIONS.md` Amendment 31).
-Still blocks promoting Amendment 28 until the first live run under that
-mechanism.** Found 2026-08-25, on the first live brownfield battery
+**Status: CLOSED 2026-08-26 — resolved by `docs/design/single-step-seed-deploy.md`
+(implemented 2026-08-25; `specs/SCHEMA.md` §2.7.1, `DECISIONS.md` Amendment 31)
+and DISCHARGED by the first complete live brownfield row: three arms, zero
+exceptions, every arm `seed_deployed` / live `pass` / idempotence `converged`,
+every live check resolving `old_group_ids: []` against a security group and an
+interface VPC endpoint that genuinely existed
+(`jobs/live-brownfield-seed/2026-08-25__22-21-37` and `…/2026-08-26__08-54-19`).
+Amendment 28 is ACCEPTED as of that row; this document no longer blocks
+anything.** Found 2026-08-25, on the first live brownfield battery
 (`jobs/rerun-named-resource-replacement/2026-08-25__01-43-17`, and the voided
 `…__00-42-05` before it). Everything below is left as it was written — it is the
 record of the defect, and the three rows it voided stay voided.

@@ -393,17 +393,19 @@ Harness deltas this batch needs: offline STS for hcl-raw (§4), a literal AMI id
 `hashicorp/archive` — which lets every Lambda-bearing scenario seed **nothing**,
 keeping the packaging differential measurable.
 
-### Batch B — brownfield (4 remaining) — **BLOCKED**
+### Batch B — brownfield (4 remaining) — **UNBLOCKED 2026-08-26**
 
-**Blocked 2026-08-25 on `docs/brownfield-seed-not-deployed.md`.** The template
-scenario's seed is never actually deployed — no `pre_invoke`, no
-`deploy_prior`, nothing under `scenarios/` — so the agent gets config
-describing infrastructure that does not exist, and a replacement trap with
-nothing to replace cannot fire. Every Batch B scenario assumes a deployed seed
-and would inherit the defect. Amendment 28 stays DRAFT; the three
-`named-resource-replacement` rows from the first live battery are not valid
-brownfield measurements. Unblocking needs a single-step seed-deploy mechanism
-(and a decision about where each arm's state is seeded).
+**Was blocked 2026-08-25 on `docs/brownfield-seed-not-deployed.md`** — the
+template scenario's seed was never actually deployed, so the agent got config
+describing infrastructure that did not exist and a replacement trap with
+nothing to replace could not fire.
+
+**Unblocked** by the single-step seed-deploy mechanism (`specs/SCHEMA.md`
+§2.7.1, `DECISIONS.md` Amendment 31) and confirmed by the first complete live
+brownfield row — three arms, zero exceptions, every arm `seed_deployed` / live
+`pass` / idempotence `converged`. Amendment 28 is now **ACCEPTED**, so a
+brownfield row may be published, subject to §6 (separate stratum, never pooled
+with greenfield).
 
 `named-resource-replacement` is the template:
 `s3-acl-vs-object-ownership-log-delivery`, `singleton-child-resource-clobber`,

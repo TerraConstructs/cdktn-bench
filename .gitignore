@@ -58,3 +58,6 @@ cdk.out.rev*/
 # 2026-08-20 remain in git as amendment evidence (Amdts 17/18/21/22 cite
 # their deploy/reset logs); everything newer is local-only noise.
 scenario-jobs/
+
+# Agent worktrees and session scratch (never committed)
+.claude/
