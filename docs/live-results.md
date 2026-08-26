@@ -95,11 +95,39 @@ metrics` must not be run over a results directory holding more than one form.
 Aggregate each stratum separately until that changes (Amendment 28 §6).
 
 This scenario also carries the gating, fail-closed **idempotence** tier
-(Amendment 28 §4), whose `converged`/`pending_changes` halves no live run has
-yet exercised — the first row below is what promotes Amendment 28 out of DRAFT.
-Until then: record rows here, publish nothing from them.
+(Amendment 28 §4). It was first exercised live on 2026-08-26 and returned
+`converged` on all three arms; that row promoted **Amendments 28 and 31 to
+ACCEPTED**.
 
-*(No trials yet.)*
+**The rows below are publishable, subject to Amendment 28 §6: brownfield is a
+SEPARATE STRATUM and is never pooled with greenfield.** n=1 per arm — the
+reward column is solid, the token column is directional (two hcl_raw failures
+earlier in this project differed 54% in tokens on the same scenario).
 
 | date | arm | reward | output tok | num_turns | cost $ | live_check | idempotence | job |
 |------|-----|-------:|-----------:|----------:|-------:|:----------:|:-----------:|-----|
+| 2026-08-25 | awscdk | 1.0 | 2,727 | 9 | 0.16 | pass | converged | `live-brownfield-seed/2026-08-25__22-21-37` |
+| 2026-08-25 | hcl_raw | 1.0 | 5,382 | 14 | 0.23 | pass | converged | `live-brownfield-seed/2026-08-25__22-21-37` |
+| 2026-08-26 | terraconstructs | 1.0 | 11,558 | 28 | 0.64 | pass | converged | `live-brownfield-seed/2026-08-26__08-54-19` |
+
+**Read alongside the rows, or they will be misread:**
+
+* **All three arms are GREEN.** This scenario does not discriminate on reward;
+  it discriminates on cost. terraconstructs spent **4.2×** awscdk's tokens and
+  3× its turns, with read-before-write at 4% vs awscdk's 22%.
+* The terraconstructs row is a RE-RUN. Its first attempt scored 0.0 on an
+  idempotence tier that re-synthesized without `CDKTN_BENCH_LIVE=1` and died
+  against the offline mock-STS fixture — a harness defect, not an agent result.
+  That run also used 13,072 tokens over 36 turns AND hit the escape hatch; with
+  the tier fixed, the escape hatch disappeared and tokens fell to 11,558. So a
+  broken tier was feeding thrash back into the agent's loop, but most of the
+  gap is a real arm characteristic, not contamination.
+* **VOID, never to be pooled:** the 2026-08-25 `rerun-named-resource-replacement`
+  rows (awscdk 1.0/2,696 · hcl_raw 0.0/4,678 · terraconstructs 0.0/5,404). The
+  seed was never deployed, so the live check passed vacuously and the trap could
+  not fire — `docs/brownfield-seed-not-deployed.md`.
+* **NOT a valid row:** 2026-08-26 `live-brownfield-seed/2026-08-26__14-19-22`
+  (awscdk, new equipping hash after the baked-`tsc` image change). Seed
+  deployed, idempotence converged, rename correctly applied — scored 0.0 because
+  one `describe-security-groups` call timed out. A direct account scan
+  afterwards found the group present and correctly renamed. See ROADMAP §5b.1.

@@ -15,21 +15,32 @@ forward-looking view and is expected to change.
 | 3 arms (awscdk / hcl-raw / terraconstructs) | shipped | live green on all three |
 | uniform toolchain (`tsc` emit → `node`, gate chained into synth) | shipped | Amdt 25 |
 | **multi-step trials** (`cdktn_bench` extends Harbor `MultiStepTrial`) | shipped, **live-proven** | Amdts 26/27; first live run 2026-08-20, 1.0/1.0 |
-| **brownfield / poisoned workspace** (`workspace_seed`) | shipped, **not yet live-proven** | Amdt 28 (DRAFT) |
+| **brownfield / poisoned workspace** (`workspace_seed`) | shipped, **live-proven** | Amdt 28 (ACCEPTED 2026-08-26); 3 arms green |
 | identity separation (`workspace_id`, deny-listed agent-visible names) | shipped | Amdt 28 §10 |
-| idempotence tier (2nd plan / `cdk diff --fail`) | shipped, **not yet live-exercised** | Amdt 28 |
+| idempotence tier (2nd plan / `cdk diff --fail`) | shipped, **live-exercised** | Amdt 28 §4; `converged` on all 3 arms 2026-08-26 |
 | teardown-grading oracle | **not built** | blocks one Batch-A scenario |
 
-**Immediate operational debt:** the 2026-08-20 battery was stopped mid-flight
-for an OS restart. The AWS account may hold orphaned resources; 4 trials died
-with `AgentSetupTimeoutError` (infra, not agent — invalid rows, not zeros) and
-must be re-run, and `named-resource-replacement` (the first live brownfield run,
-which takes Amdt 28 out of draft) never started.
+**Operational debt (updated 2026-08-26).** The 2026-08-20 battery's backlog is
+mostly cleared:
 
-Re-run priority: **`ecs-swappiness-awscdk`** first — it is the missing third arm
-of §3 finding 3, the session's strongest thesis evidence; then `apigw-openapi`
-×3 (whose prompt also carries the §1-item-3a quality caveat), then
-`named-resource-replacement` ×3.
+* `ecs-swappiness` ×3 — **DONE** 2026-08-25. awscdk 1.0/3,332 · terraconstructs
+  1.0/5,090 · hcl-raw 0.0/1,780. The missing third arm of §3 finding 3.
+* `named-resource-replacement` ×3 — **DONE** 2026-08-26, and it is the first
+  valid brownfield row (Amdts 28 and 31 both ACCEPTED on it). The 2026-08-25
+  attempt was VOID: the seed was never deployed
+  (`docs/brownfield-seed-not-deployed.md`, now closed).
+* `apigw-openapi` ×3 — **still outstanding, deliberately.** Its prompt is
+  known-bad (over-specified; the cautionary example in
+  `docs/adding-scenarios.md`). Needs a lean prompt + shape-tolerant oracle
+  before it is worth spending a battery on.
+* Account hygiene — clean. `env verify` matches baseline; the account was reset
+  to baseline 2026-08-26 after the last trial.
+
+**Still open:** `make parity` (cross-arm prompt parity) is never invoked by CI —
+neither `ci/run-ci.sh`'s per-scenario loop nor `make check` calls it — so the
+property that keeps tokens-to-green comparable across arms has zero CI
+coverage. `full-ci` has also grown from ~45 min (Aug 13–19) to ~3 h (Aug 26)
+with no `timeout-minutes` on either job and no npm/Terraform provider caching.
 
 ---
 
@@ -407,11 +418,26 @@ brownfield row — three arms, zero exceptions, every arm `seed_deployed` / live
 brownfield row may be published, subject to §6 (separate stratum, never pooled
 with greenfield).
 
-`named-resource-replacement` is the template:
-`s3-acl-vs-object-ownership-log-delivery`, `singleton-child-resource-clobber`,
-`policy-json-string-normalization-diff` (idempotence oracle, no re-prompt
-needed), `lambda-alias-tracks-unpublished-latest` (hardest — needs pre-deployed
-*state* via multi-step `pre_invoke`).
+**Status 2026-08-26: 3 of 4 authored and committed** (`ea2c38b`), each
+passing `make falsifiability` and `make seed-parity`, all three carrying a
+`workspace_seed.deploy` block:
+
+| scenario | split | note |
+|---|---|---|
+| `s3-acl-vs-object-ownership-log-delivery` | holdout | authored |
+| `singleton-child-resource-clobber` | train | authored |
+| `lambda-alias-tracks-unpublished-latest` | train | authored **single-step** — see below |
+| `policy-json-string-normalization-diff` | — | **NOT authored**, marked BLOCKED by its author; the blocking evidence is itself unsound (§5b.2) |
+
+`lambda-alias-tracks-unpublished-latest` was designed
+(`docs/design/poisoned-workspace-design.md` §6) to need pre-deployed *state* via
+multi-step `pre_invoke`. It is expressed **single-step**, because the seed
+deploy now performs a real apply before the agent's first token. So multi-step
+remains a one-scenario capability (`apigw-redeploy`) and
+`pre_invoke.deploy_prior` is still exercised by no real spec.
+
+**These three carry oracle debt — see §5b.2.** No brownfield row from them may
+be published until the two metric-biasing findings are resolved.
 
 ### Batch C — multi-step (5; `apigw-redeploy` is the template)
 `drift-blindness`, `sg-inline-vs-standalone-rules`,
@@ -562,6 +588,70 @@ fires, never that no undeclared hole remains. That is the strongest evidence
 yet for the oracle-authority inversion (M5): where a property is behavioural,
 re-deriving it structurally approaches the "slowly reimplementing the evaluator"
 boundary, and a live check would be both cheaper and more authoritative.
+
+### 5b.1 Live oracles have no retry — a transient AWS error becomes a verdict
+
+**Open, well-evidenced, not yet fixed.** A single failed AWS call is currently
+treated as an answer. `tests/live_check.py` classifies any non-zero `aws` exit
+it does not recognise as `not_verifiable`, and fail-closed gating turns that
+into reward 0.0 — so an infrastructure hiccup is recorded as an agent result.
+
+Measured 2026-08-26, `jobs/live-brownfield-seed/2026-08-26__14-19-22` (awscdk):
+seed `seed_deployed`, idempotence `converged`, the requested rename correctly
+applied — scored **0.0** because one `aws ec2 describe-security-groups` call
+timed out. A direct account scan afterwards found the security group present
+and correctly renamed. Ground truth contradicted the verdict and nothing in the
+harness could notice.
+
+The same class hit cleanup four times the same day: `Read timeout on endpoint
+URL: "None"` failed two post-trial resets and one `env reset`; the reset that
+succeeded was the third attempt of an unchanged command against an unchanged
+account.
+
+**Fix.** Classify AWS failures into TRANSIENT (timeout, throttling, 5xx) versus
+RESOLVED, retry the transient class with bounded backoff, and only then fall to
+`not_verifiable`. The three-valued contract already distinguishes "I could not
+tell" from "it is wrong"; what is missing is that one timed-out call jumps
+straight to a verdict. Fail-closed is preserved — after exhausting retries the
+oracle still refuses to award reward. This makes the oracle stricter about its
+own uncertainty, not looser about correctness.
+
+Related: `/logs/seed-deploy-receipt.json` is not downloaded into job artifacts
+(Amendment 31), so the anti-vacuity channel cannot be audited post-hoc.
+
+### 5b.2 Batch B oracle debt — 8 major findings, two of which bias the metric
+
+**Open. No brownfield row from these three scenarios may be published until the
+two metric-biasing findings are resolved.** Raised by adversarial verification
+of the scenarios landed in `ea2c38b`; all three verdicts were
+`sound_with_caveats`, zero blockers.
+
+The two that matter most are not oracle bugs but **measurement confounds**:
+
+* **`s3-acl` cross-arm seed asymmetry.** Both Terraform seeds contain the
+  literal `object_ownership = "ObjectWriter"` — the exact knob the change
+  request targets — while the awscdk seed synthesizes that fact invisibly from
+  `accessControl`. Two of three arms are handed the answer to step 1. That is a
+  discovery-cost difference injected by the SEED, not by the abstraction, and
+  tokens-to-green is the measurement it corrupts.
+* **`lambda-alias` arm-asymmetric definition of green.** awscdk's tier-0 carries
+  two asserts; both TF arms carry three. An agent that edits the env var,
+  deploys, then repoints the alias with the AWS CLI — never touching IaC —
+  scores 1.0 on awscdk and 0.0 on the TF arms. Not an L2 affordance; a hole in
+  one arm's oracle, biasing toward the arm the thesis is about.
+
+The remaining six: deleting the ownership control scores 1.0 on every offline
+tier on every arm (and is the most natural awscdk edit); `live_check` step E
+converts a transient AWS error into 0.0 for an already-correct solution (see
+5b.1); `singleton`'s idempotence tier is claimed as one of four grading
+instruments but cannot observe the headline catch, reporting `converged` on the
+poisoned shape; no tier-0 or tier-1 assert joins a prefix to the action
+performed on it, so a swapped solution scores green on all three arms;
+`policy-json-string-normalization-diff`'s BLOCKED verdict rests on an offline
+probe with only identical-value controls and no negative control, inside a
+window containing 50 provider crashes; and `lambda-alias`'s awscdk seed poison
+is pinned by nothing — its one `seed_assert` is satisfied by both the poisoned
+and the disarmed shape.
 
 ## 6. Backlog
 

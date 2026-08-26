@@ -11,7 +11,7 @@
 >
 > | For | Read |
 > |---|---|
-> | the brownfield form, seed equivalence, prompt rules, the mandatory do-nothing catch, the idempotence tier, the metric stratum | `DECISIONS.md` **Amendment 28** *(DRAFT until the first live brownfield run)* |
+> | the brownfield form, seed equivalence, prompt rules, the mandatory do-nothing catch, the idempotence tier, the metric stratum | `DECISIONS.md` **Amendment 28** *(ACCEPTED 2026-08-26 on the first live brownfield row)* |
 > | the spec surface (`workspace_seed`, `seed_asserts`, `premise`, `workspace_title`) and the idempotence contract | `specs/SCHEMA.md` **§2.7, §5.1, §0.1** |
 > | the contributor procedure | `docs/adding-scenarios.md` **§6.5** |
 > | the composing capability (multi-step, §8 below) | `DECISIONS.md` Amendments 26/27, `docs/design/multistep-trial-investigation.md` |

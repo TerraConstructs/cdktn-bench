@@ -809,6 +809,10 @@ Ordered; each step is independently checkable offline.
    mechanism. This design does not promote it; it makes the promotion criterion
    reachable for the first time. Amendment 29 (this mechanism) enters DRAFT
    alongside it and is promoted by the same run.
+   *(Discharged 2026-08-26: that run happened — three arms, all green, all
+   `seed_deployed` / live `pass` / idempotence `converged`. Both amendments are
+   ACCEPTED. This mechanism registered as Amendment **31**, not 29; see the
+   numbering note in DECISIONS.md.)*
 8. **Batch B unblocks, and inherits every rule here.** Four more brownfield
    scenarios assume a deployed seed. Each needs its own `deploy` block, its own
    `live_asserts` with a `pins_catch`, and its own `-refresh=false`. The
