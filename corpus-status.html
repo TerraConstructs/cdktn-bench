@@ -173,10 +173,10 @@
   <p class="lede">Seventeen specs, fifty-one tasks, three arms, one AWS account. The hypothesis is
   <strong>day-2 operations and brownfield</strong>, not greenfield generation — and 71% of the
   corpus is greenfield, statically graded. Six specs have ever touched a real account — and on
-  2026-08-27 the first battery under Amendment 32 (live AWS as the only trial mode) produced
-  valid rows on the first attempt, on every arm, for every scenario it touched.</p>
+  2026-08-27/28 the first battery under Amendment 32 (live AWS as the only trial mode) produced
+  18/18 valid rows on the first attempt, on every arm, for every scenario it touched.</p>
   <div class="stamp">
-    <span>2026-08-27</span><span>main @ 6f1fed5 + Amendment 32 (uncommitted)</span><span>17 specs + 1 toy</span><span>train 10 / holdout 7</span>
+    <span>2026-08-28</span><span>main @ fe01d59 (Amendment 32 ACCEPTED)</span><span>17 specs + 1 toy</span><span>train 10 / holdout 7</span>
   </div>
 </header>
 
@@ -246,14 +246,14 @@
     </tr></thead>
     <tbody>
       <tr class="measured">
-        <td class="id">named-resource-replacement</td><td class="num">16+</td><td>all 3</td><td>2026-08-27</td>
-        <td><span class="chip ok">6 × 1.0</span> <span class="chip void">7 × 0.0</span> <span class="chip">3 exc</span></td>
-        <td>The brownfield stratum. 7 zeros and 3 exceptions (pre-Amendment-32) were harness defects, not agent failures. Amendment 32 battery (k=2, in progress): awscdk 1.0, hcl-raw 1.0 so far, both first attempt.</td>
+        <td class="id">named-resource-replacement</td><td class="num">20</td><td>all 3</td><td>2026-08-28</td>
+        <td><span class="chip ok">10 × 1.0</span> <span class="chip void">7 × 0.0</span> <span class="chip">3 exc</span></td>
+        <td>The brownfield stratum. 7 zeros and 3 exceptions (pre-Amendment-32) were harness defects, not agent failures. Amendment 32 battery, k=2: 6/6 valid, all 1.0, all first attempt.</td>
       </tr>
       <tr class="measured">
-        <td class="id">apigw-redeploy</td><td class="num">10+</td><td>all 3</td><td>2026-08-27</td>
-        <td><span class="chip ok">9 × 1.0</span> <span class="chip">1 exc</span></td>
-        <td>The only multi-step evidence. Promoted Amendments 26/27. Amendment 32 battery: all three arms 1.0 on the first attempt, both steps, no harness archaeology in any trajectory.</td>
+        <td class="id">apigw-redeploy</td><td class="num">13</td><td>all 3</td><td>2026-08-28</td>
+        <td><span class="chip ok">12 × 1.0</span> <span class="chip">1 exc</span></td>
+        <td>The only multi-step evidence. Promoted Amendments 26/27. Amendment 32 battery, k=2: 6/6 valid, all 1.0, both steps, no harness archaeology in any trajectory.</td>
       </tr>
       <tr class="measured">
         <td class="id">ecs-swappiness</td><td class="num">12</td><td>all 3</td><td>2026-08-27</td>
@@ -311,14 +311,16 @@
     <p>The scenario does not discriminate on reward. It discriminates on cost: 4.2× spread, and
     read-before-write of 22% / 19% / 4%. Brownfield is a separate stratum and is never pooled
     with greenfield.</p>
-    <p><strong>2026-08-27 (Amendment 32 harness):</strong> awscdk 1.0 / 3,103 tok / 18 turns ·
-    hcl-raw 1.0 / 4,502 / 17 · terraconstructs pending. Both first-attempt, no rerun needed.</p>
+    <p><strong>2026-08-27 (Amendment 32 harness, k=2, output tokens / turns):</strong> awscdk 1.0 / 3,103 / 18 and
+    1.0 / 2,514 / 16 · hcl-raw 1.0 / 4,502 / 17 and 1.0 / 10,487 / 56 · terraconstructs 1.0 / 11,024 / 75 and
+    1.0 / 10,937 / 59. All first-attempt, no rerun needed. The hcl-raw pair (4,502 vs 10,487) is the largest
+    within-arm variance in the battery.</p>
   </div>
 
   <div class="note good">
     <h3><code>apigw-redeploy</code> — the multi-step form, first clean battery</h3>
-    <p><strong>2026-08-27:</strong> all three arms 1.0 on both steps, first attempt — awscdk 8,447 tok /
-    56 turns · hcl-raw 13,480 / 49 · terraconstructs 16,040 / 116. Earlier multi-step rows only
+    <p><strong>2026-08-27 (k=2):</strong> all three arms 1.0 on both steps, both attempts — awscdk 8,447 / 10,314 tok,
+    56 / 65 turns · hcl-raw 13,480 / 13,781, 49 / 64 · terraconstructs 16,040 / 18,846, 116 / 130. Earlier multi-step rows only
     passed because the agent found and exported the workspace's hidden live switch
     (<code>TF_VAR_cdktn_bench_live=1</code> / <code>CDKTN_BENCH_LIVE=1</code>); under Amendment 32
     that switch no longer exists and no trajectory in the battery contains
@@ -446,7 +448,7 @@
   Terraform arms paid tokens rediscovering the harness (18 trajectories) — and removed under
   Amendment 32: live AWS is the only trial mode, the mock servers and <code>skip_*</code>/dummy
   credentials are gone from every workspace, and a credential failure voids the row instead of
-  scoring 0.0. The promotion battery produced 11/11 valid rows so far on the first attempt.
+  scoring 0.0. The promotion battery produced 18/18 valid rows on the first attempt (12 mutating in 3h55m, 6 read-only in 7 min).
   The eleven never-run scenarios remain never-run.</p>
 </section>
 

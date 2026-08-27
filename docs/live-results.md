@@ -155,21 +155,27 @@ hcl_raw's `terraform plan` was green against the real account on the agent's
 first command; tier-1 caught the swappiness-without-maxSwap trap.
 
 **Multi-step, mutating** — `apigw-redeploy`, `2026-08-27__21-50-09`
-(second attempts appended as they land):
+(12 mutating trials, 3h54m wall-clock, strictly serial behind the scenario gate
+with a reset after each):
 
 | arm | reward | output tok | num_turns | cost $ | live_check |
 |-----|-------:|-----------:|----------:|-------:|:----------:|
 | awscdk | 1.0 / 1.0 | 8,447 / 10,314 | 56 / 65 | 0.47 / 0.55 | pass |
 | hcl_raw | 1.0 / 1.0 | 13,480 / 13,781 | 49 / 64 | 0.48 / 0.56 | pass |
-| terraconstructs | 1.0 | 16,040 | 116 | 1.09 | pass |
+| terraconstructs | 1.0 / 1.0 | 16,040 / 18,846 | 116 / 130 | 1.09 / 1.41 | pass |
 
 **Brownfield, mutating** — `named-resource-replacement`, same job dir:
 
 | arm | reward | output tok | num_turns | cost $ | live_check | idempotence |
 |-----|-------:|-----------:|----------:|-------:|:----------:|:-----------:|
-| awscdk | 1.0 | 3,103 | 18 | 0.14 | pass | converged |
-| hcl_raw | 1.0 | 4,502 | 17 | 0.16 | pass | converged |
-| terraconstructs | 1.0 | 11,024 † | 75 | 0.66 | pass | converged |
+| awscdk | 1.0 / 1.0 | 3,103 / 2,514 | 18 / 16 | 0.14 / 0.14 | pass | converged |
+| hcl_raw | 1.0 / 1.0 | 4,502 / 10,487 | 17 / 56 | 0.16 / 0.49 | pass | converged |
+| terraconstructs | 1.0 / 1.0 | 11,024 † / 10,937 | 75 / 59 | 0.66 / 0.63 | pass | converged |
+
+All 18 mutating + read-only rows valid on the first attempt; the only harness
+event of note is the † token gap. Within-arm attempt variance on
+`named-resource-replacement-hcl_raw` (4,502 vs 10,487) is the largest in the
+battery — n=2 per arm is still directional for tokens, solid for reward.
 
 † `result.json` carried `None` for every token field on this row (harbor
 trajectory-conversion failure, see Amendment 32 "What the run CORRECTED");
