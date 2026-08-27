@@ -158,7 +158,6 @@ write_common "$WITHOUT_CBD"
 
 if [ "${LIVE:-0}" = "1" ]; then
   echo "== LIVE: this apply is EXPECTED to fail with DependencyViolation =="
-  export TF_VAR_cdktn_bench_live=1
   terraform init -input=false
   # FIXTURE SELF-PROOF (finding M5, adversarial review 2026-08-25). This pair
   # of lines used to be

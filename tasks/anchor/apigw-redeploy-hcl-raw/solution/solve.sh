@@ -35,12 +35,10 @@
 #
 # --- OFFLINE vs. LIVE switch -- see the awscdk reference solution's own
 # header for the full rationale; identical here (`terraform plan`/`apply`
-# in place of `cdk synth`/`cdk deploy`). LIVE=1 exports
-# TF_VAR_cdktn_bench_live=1 (finding G2 fix, 2026-08-07) so the SEEDED,
-# non-agent-owned ./provider.tf switches itself from its offline dummy-
-# credential fixture to real ambient AWS credentials -- this script never
-# writes or edits provider.tf, exactly what a real agent solving this
-# scenario is bound to as well (see this scenario's instruction.md).
+# in place of `cdk synth`/`cdk deploy`). LIVE=1 runs a real `terraform
+# apply` against ambient AWS credentials -- this script never writes or
+# edits provider.tf, exactly what a real agent solving this scenario is
+# bound to as well (see this scenario's instruction.md).
 #
 # Regenerating this scenario will NOT overwrite this file (destructive-safe
 # rule, SCHEMA.md §8.2 point 8).
@@ -79,18 +77,11 @@ JS
   ( cd lambda-src && cp version.js index.js && zip -q -X ../lambda/version.zip index.js && rm index.js )
 }
 
-# Finding G2 fix (benchmark-integrity review, 2026-08-07): this used to
-# hand-roll its OWN provider.tf (write_provider_offline() for the OFFLINE
-# path, write_provider_live() for LIVE -- the latter unconditionally
-# overwriting the non-agent-owned provider.tf, exactly the thing an agent
-# is told not to do). Neither is needed anymore: the SEEDED
-# ./provider.tf (arms/hcl-raw/environment/workspace/provider.tf, already
-# present in this workspace) is now live-aware on its own via
-# `var.cdktn_bench_live` -- see that file's own header comment. The
-# OFFLINE path below needs no setup (its default IS the dummy-credential
-# fixture); the LIVE path just exports TF_VAR_cdktn_bench_live=1 before
-# calling terraform, exactly what a real agent is told to do in this
-# scenario's instruction.md, and never touches provider.tf.
+# This script writes no provider.tf of its own. The SEEDED ./provider.tf
+# (arms/hcl-raw/environment/workspace/provider.tf, already present in this
+# workspace) carries a bare `provider "aws"` block that resolves ambient
+# AWS credentials, and it is not agent-owned -- leaving it untouched is
+# exactly what this scenario's instruction.md tells a real agent to do.
 
 write_rev1() {
   cat > main.tf <<'TF'
@@ -520,10 +511,6 @@ cleanup() {
   aws logs delete-log-group --log-group-name /aws/apigateway/welcome >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
-
-# Finding G2 fix: real credentials, no provider.tf edit -- see this
-# script's write_rev1() docstring-comment above for the full rationale.
-export TF_VAR_cdktn_bench_live=1
 
 write_lambda_zips
 

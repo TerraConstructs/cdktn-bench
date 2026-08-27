@@ -128,10 +128,11 @@ Full rules: `docs/adding-scenarios.md` §1 item 3a. The short form:
   Amendment 25 changed that tree, so `env setup` MUST be re-run before the next
   live run. Arm images also need `make build-arms`, which moves the equipping
   hash — expected, and what that hash exists to record.
-- **Amendments 26/27 (multi-step) and 28 (brownfield) are DRAFT** until their
-  first live runs. Record rows in `docs/live-results.md`; publish nothing from
-  them. The first live multi-step run and the first live brownfield run are
-  what promote them.
+- **Amendments 26/27 (multi-step), 28 (brownfield), and 32 (live-only AWS
+  access) are ACCEPTED** (32 promoted 2026-08-28 by
+  `jobs/amend32-promotion`). Rows produced under them are publishable within
+  their own stratum. Any new amendment that changes the harness re-enters
+  DRAFT until its own first live run.
 - Mutating scenarios run the agent as **`QALocalInvocationApplicationAdmin`**
   (`AdministratorAccess`) — aws-bench's own mutation-task model (Amendment 24).
   Both arms deploy with equal (admin) authority: hcl-raw via terraform, awscdk
@@ -140,6 +141,47 @@ Full rules: `docs/adding-scenarios.md` §1 item 3a. The short form:
   narrow IAM. The old bespoke `QADeployApplicationRole` is retired; do **not**
   reintroduce a per-scenario scoped deploy role (it causes fake agent failures
   and breaks arm parity — see Amendment 24).
+
+## AWS access (quick reference)
+
+Full design: `aws-access.html`. Decision record: `DECISIONS.md` Amendment 32
+(ACCEPTED 2026-08-28).
+
+- **Live AWS is the only trial mode.** aws-bench already stages real
+  credentials for every phase (agent, pre_invoke, verifier) on every task,
+  read-only or mutating — `AWS_PROFILE` + a per-tag `~/.aws/credentials`. The
+  workspace never re-encodes that: no `cdktn_bench_live` variable, no dummy
+  `access_key`/`secret_key`, no `skip_*` flags, no loopback `endpoints`, no
+  mock server, on any arm. `provider.tf`/`main.ts` are the same bytes in
+  every mode because there is only one mode.
+- **The stub lives only host-side.** Its consumers are exactly the checks
+  that run `terraform plan`/`cdktn synth` off a real account:
+  `gates/oracle_falsifiability.py`, `gates/grading_proof.py`, and
+  `generator/check_reference_paths.py` — the last one being what `make
+  seed-parity SPEC=…` (and `make ci`, per spec) drives, and the only host
+  check that executes the **generated** `tests/static_tiers.sh`, whose `aws
+  sts get-caller-identity` preflight it must satisfy through the stub rather
+  than through an operator's ambient credentials.
+  (`generator/check_parity.py` is a pure `instruction.md` prefix differ — it
+  spawns no subprocess and needs no credentials at all.) They start
+  `gates/aws_stub.py` once per gate process (prints `PORT=<n>` on stdout
+  after binding `127.0.0.1:0`) and export `AWS_ENDPOINT_URL`,
+  `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` for every
+  toolchain subprocess. It answers exactly two operations
+  (`sts:GetCallerIdentity`, `states:ValidateStateMachineDefinition`) — the
+  only two the gates ever need — and logs anything else as `400
+  UnsupportedOperation` rather than silently accepting it.
+- **A credentials/network failure at trial time VOIDS the row.** The
+  generated `static_tiers.sh` preflights `aws sts get-caller-identity` on
+  both Terraform-shaped arms; on failure it writes
+  `/logs/verifier/aws-unavailable` and exits via the `run_invalid` contract
+  — never a `0.0`, which used to be indistinguishable from a wrong solution.
+- Do **not** reintroduce a mode switch, an offline/dummy-credential branch,
+  or a per-arm live env var anywhere in the generator or the toolchain — that
+  is the exact defect Amendment 32 removes. If a host gate genuinely needs a
+  third AWS operation, extend `gates/aws_stub.py`; do not reach for `floci`
+  (evaluated and rejected for this — Amendment 32, Amendment 2) or re-add a
+  workspace-level switch.
 
 ## Never
 

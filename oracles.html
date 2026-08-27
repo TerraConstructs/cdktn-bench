@@ -1,0 +1,305 @@
+<title>What the Oracle Can See</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<style>
+  :root {
+    --ink:#14181a; --ink-2:#3f4a4d; --ink-3:#6c797c;
+    --paper:#f4f6f5; --card:#ffffff; --rule:#d9e0de;
+    --accent:#17636b; --accent-w:#e3efef;
+    --ok:#2d6a4f; --warn:#97650a; --void:#a33a30; --idle-w:#e9ecec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink:#e6eceb; --ink-2:#a8b5b6; --ink-3:#7d8a8c;
+      --paper:#0e1214; --card:#161c1e; --rule:#293335;
+      --accent:#5fb8c2; --accent-w:#16333a;
+      --ok:#6cc39a; --warn:#d6a44a; --void:#e08074; --idle-w:#202829;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink:#e6eceb; --ink-2:#a8b5b6; --ink-3:#7d8a8c;
+    --paper:#0e1214; --card:#161c1e; --rule:#293335;
+    --accent:#5fb8c2; --accent-w:#16333a;
+    --ok:#6cc39a; --warn:#d6a44a; --void:#e08074; --idle-w:#202829;
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--paper); color:var(--ink);
+    font-family:"Source Serif 4", Georgia, serif; font-size:16px; line-height:1.62;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap { max-width:920px; margin:0 auto; padding:56px 28px 96px; }
+  h1,h2,h3,.lbl,th { font-family:"Archivo","Helvetica Neue",sans-serif; }
+  h1 { font-size:clamp(30px,4.4vw,46px); line-height:1.08; font-weight:700;
+       letter-spacing:-0.02em; margin:0 0 14px; text-wrap:balance; }
+  h2 { font-size:21px; font-weight:600; letter-spacing:-0.01em; margin:0 0 4px; }
+  h3 { font-size:15px; font-weight:600; margin:0 0 8px; }
+  p { margin:0 0 14px; max-width:68ch; }
+  .lede { font-size:18px; color:var(--ink-2); max-width:68ch; }
+  .lbl { font-size:11px; font-weight:600; letter-spacing:0.09em;
+         text-transform:uppercase; color:var(--accent); }
+  code { font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:0.88em;
+         background:var(--idle-w); padding:1px 5px; border-radius:3px; }
+  pre { background:var(--idle-w); padding:13px 15px; border-radius:3px; overflow-x:auto;
+        font-family:"IBM Plex Mono",monospace; font-size:12.5px; line-height:1.5; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  header.head { border-bottom:2px solid var(--ink); padding-bottom:22px; margin-bottom:34px; }
+  section { margin-top:46px; }
+  .sechead { border-bottom:1px solid var(--rule); padding-bottom:10px; margin-bottom:20px; }
+  .sechead p { color:var(--ink-2); font-size:15px; margin:6px 0 0; }
+  .scroll { overflow-x:auto; border:1px solid var(--rule); border-radius:3px; background:var(--card); }
+  table { border-collapse:collapse; width:100%; font-size:14px; }
+  th { text-align:left; font-size:11px; font-weight:600; letter-spacing:0.07em;
+       text-transform:uppercase; color:var(--ink-3); padding:11px 12px;
+       border-bottom:1px solid var(--rule); white-space:nowrap; }
+  td { padding:10px 12px; border-bottom:1px solid var(--rule); vertical-align:top; }
+  tr:last-child td { border-bottom:0; }
+  td.id { font-family:"IBM Plex Mono",monospace; font-size:12.5px; white-space:nowrap; }
+  .note { background:var(--card); border:1px solid var(--rule);
+          border-left:3px solid var(--warn); padding:16px 18px; border-radius:3px; margin:18px 0; }
+  .note.bad { border-left-color:var(--void); }
+  .note.good { border-left-color:var(--ok); }
+  .note p:last-child { margin-bottom:0; }
+  ul { margin:0 0 14px; padding-left:20px; }
+  li { margin-bottom:7px; max-width:66ch; }
+  figure { margin:22px 0; }
+  figcaption { font-size:13px; color:var(--ink-3); margin-top:10px; max-width:64ch; }
+  .foot { margin-top:56px; padding-top:18px; border-top:1px solid var(--rule);
+          color:var(--ink-3); font-size:13px; }
+</style>
+
+<div class="wrap">
+
+<header class="head">
+  <div class="lbl">cdktn-bench · grading</div>
+  <h1>What the Oracle Can See</h1>
+  <p class="lede">Three years of tooling decisions compressed into one question: can a static
+  artifact answer whether this infrastructure is correct? Sometimes yes, cheaply. Sometimes only by
+  slowly reimplementing the evaluator.</p>
+</header>
+
+<section>
+  <div class="sechead">
+    <h2>The tiers</h2>
+    <p>Ordered by cost, and by distance from the truth they are trying to establish.</p>
+  </div>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Tier</th><th>Question</th><th>awscdk substrate</th><th>Terraform substrate</th><th>Specs</th></tr></thead>
+    <tbody>
+      <tr><td class="id">0</td><td>Is the value at the right place in the artifact?</td><td><code>cdk synth</code> → CFN JSON, queried by <code>cfn_jsonpath</code></td><td><code>plan -json</code>, queried by <code>tf_jsonpath</code></td><td>17</td></tr>
+      <tr><td class="id">0.5</td><td>Host-side JSONata evaluation of a synthesized definition.</td><td colspan="2"><code>tier05_jsonata</code></td><td>1</td></tr>
+      <tr><td class="id">1</td><td>A <em>quantified</em> claim over a collection — "no rule anywhere may be open to the world".</td><td>cfn-guard → OPA/Rego</td><td>OPA/Rego</td><td>17</td></tr>
+      <tr><td class="id">live</td><td>Does the deployed thing behave?</td><td colspan="2">Real AWS API calls — one <code>live_check.py</code>, byte-identical across arms</td><td>5</td></tr>
+      <tr><td class="id">idem</td><td>Is a second apply a no-op?</td><td><code>cdk diff --fail</code> + completion marker</td><td><code>plan -detailed-exitcode</code></td><td>2 gating</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 820 210" role="img" aria-label="Four grading tiers arranged by increasing distance from the truth: tier 0 and 1 read a static artifact, the live check reads the real account, and only the live check can observe runtime behaviour." style="width:100%;height:auto;color:var(--ink)">
+      <defs>
+        <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+      <text x="0" y="14" font-family="Archivo,sans-serif" font-size="11" font-weight="600" fill="currentColor" opacity="0.6">AUTHORED</text>
+      <text x="286" y="14" font-family="Archivo,sans-serif" font-size="11" font-weight="600" fill="currentColor" opacity="0.6">SYNTHESIZED</text>
+      <text x="576" y="14" font-family="Archivo,sans-serif" font-size="11" font-weight="600" fill="currentColor" opacity="0.6">DEPLOYED</text>
+
+      <rect x="0" y="30" width="150" height="52" rx="3" fill="none" stroke="currentColor" stroke-width="1.5"/>
+      <text x="75" y="52" text-anchor="middle" font-family="Archivo,sans-serif" font-size="13" font-weight="600" fill="currentColor">source</text>
+      <text x="75" y="69" text-anchor="middle" font-family="IBM Plex Mono,monospace" font-size="10" fill="currentColor" opacity="0.7">.ts / .tf</text>
+
+      <line x1="152" y1="56" x2="282" y2="56" stroke="currentColor" stroke-width="1.5" marker-end="url(#ar)"/>
+      <text x="217" y="49" text-anchor="middle" font-family="IBM Plex Mono,monospace" font-size="10" fill="currentColor" opacity="0.7">synth / plan</text>
+
+      <rect x="286" y="30" width="150" height="52" rx="3" fill="none" stroke="currentColor" stroke-width="1.5"/>
+      <text x="361" y="52" text-anchor="middle" font-family="Archivo,sans-serif" font-size="13" font-weight="600" fill="currentColor">artifact</text>
+      <text x="361" y="69" text-anchor="middle" font-family="IBM Plex Mono,monospace" font-size="10" fill="currentColor" opacity="0.7">JSON</text>
+
+      <line x1="438" y1="56" x2="572" y2="56" stroke="currentColor" stroke-width="1.5" marker-end="url(#ar)"/>
+      <text x="505" y="49" text-anchor="middle" font-family="IBM Plex Mono,monospace" font-size="10" fill="currentColor" opacity="0.7">apply</text>
+
+      <rect x="576" y="30" width="150" height="52" rx="3" fill="none" stroke="#17636b" stroke-width="2"/>
+      <text x="651" y="52" text-anchor="middle" font-family="Archivo,sans-serif" font-size="13" font-weight="600" fill="#17636b">account</text>
+      <text x="651" y="69" text-anchor="middle" font-family="IBM Plex Mono,monospace" font-size="10" fill="#17636b" opacity="0.85">real state</text>
+
+      <line x1="361" y1="96" x2="361" y2="126" stroke="currentColor" stroke-width="1.2"/>
+      <line x1="290" y1="126" x2="432" y2="126" stroke="currentColor" stroke-width="1.2"/>
+      <text x="361" y="146" text-anchor="middle" font-family="Archivo,sans-serif" font-size="12" font-weight="600" fill="currentColor">tier 0 · tier 1</text>
+      <text x="361" y="164" text-anchor="middle" font-family="Source Serif 4,serif" font-size="11.5" fill="currentColor" opacity="0.72">free, instant, 17 specs</text>
+      <text x="361" y="182" text-anchor="middle" font-family="Source Serif 4,serif" font-size="11.5" fill="currentColor" opacity="0.72">sees shape, never behaviour</text>
+
+      <line x1="651" y1="96" x2="651" y2="126" stroke="#17636b" stroke-width="1.6"/>
+      <text x="651" y="146" text-anchor="middle" font-family="Archivo,sans-serif" font-size="12" font-weight="600" fill="#17636b">live check</text>
+      <text x="651" y="164" text-anchor="middle" font-family="Source Serif 4,serif" font-size="11.5" fill="#17636b" opacity="0.85">minutes + $, 5 specs</text>
+      <text x="651" y="182" text-anchor="middle" font-family="Source Serif 4,serif" font-size="11.5" fill="#17636b" opacity="0.85">the only arm-agnostic one</text>
+    </svg>
+    <figcaption>The static tiers read an artifact the toolchain produced; the live check reads the
+    account itself. A property that is only true at runtime is invisible to everything left of the
+    account box — no amount of policy sophistication moves it.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>Same intent, different substrate</h2>
+    <p>One spec assertion compiles into per-arm forms. The intent is shared; the expression is not.</p>
+  </div>
+  <pre><code>structural_asserts:
+  - name: swappiness-is-set-with-maxswap
+    tier: "0"
+    cfn_jsonpath: $.Resources[?(@.Type=='AWS::ECS::TaskDefinition')]..LinuxParameters
+    tf_jsonpath:  $.planned_values..linux_parameters[*]
+    op: exists</code></pre>
+  <p>That gap is where arm-asymmetric grading bugs live: a tier-0 that carries three asserts on the
+  Terraform arms and two on awscdk makes "correct" mean different things per arm, and biases
+  tokens-to-green in a way that has nothing to do with the abstraction under test. The live check is
+  the one instrument immune to this — <strong>the account does not know which toolchain produced a
+  resource</strong>, which is why <code>live_check.py</code> is byte-identical across all three arms
+  by construction.</p>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>When static grading is exactly right</h2>
+  </div>
+  <div class="note good">
+    <h3><code>ecs-swappiness</code> — a closed, structural property</h3>
+    <p><code>swappiness</code> is either nested inside <code>linuxParameters</code> with
+    <code>maxSwap</code> set, or it is not. The correct shape is known in advance and there is
+    exactly one of it. No live observation adds information — a single jq path decides it, free and
+    instantly.</p>
+    <p>And the strongest result in the corpus came from this cheap check: hcl-raw scored
+    <strong>0.0 in 1,780 tokens</strong> — fewest of any arm — because both typed arms compile to
+    <code>swappiness = props.maxSwap ? props.swappiness : undefined</code> and cannot express the
+    error. The trap is real, the grading is trivial, and the abstraction difference is stark.</p>
+  </div>
+  <p>The pattern: static grading is sound when the property is <em>closed</em> (a finite known-good
+  shape), <em>local</em> (one resource, one attribute) and <em>decided at synth time</em>. Most
+  greenfield value-correctness traps qualify.</p>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>When it is not — and what each failure cost</h2>
+    <p>Three mechanisms were adopted because the previous one was provably unsound. None was
+    speculative; each replaced something measured to be wrong.</p>
+  </div>
+
+  <div class="note bad">
+    <h3>cfn-guard cannot join two resources — so it graded by counting</h3>
+    <p>The question was whether two IAM roles share the same managed policies. cfn-guard 3.2.0 has
+    <strong>no logical-id join</strong> between a role and the policy naming it, so the awscdk tier-1
+    degraded into a count-equality proxy — and that proxy was unsound <em>in both directions</em>:</p>
+    <ul>
+      <li>a policy reaching only <strong>one</strong> role scored <strong>1.0</strong> — a false pass
+      that defeated the scenario's own catch;</li>
+      <li>a policy attached to <strong>both</strong> roles from both sides scored <strong>0.0</strong>
+      — a false fail, contradicted by the template itself.</li>
+    </ul>
+    <p>The byte-equivalent terraconstructs solutions scored the opposite way in each case, so the
+    arm comparison was measuring the policy language rather than the abstraction. Three fix rounds
+    could not close it: a <strong>tooling ceiling</strong>, not an authoring error. The remedy is
+    <strong>M8 — OPA/Rego as the grading engine on every arm</strong>, awscdk included, so there is
+    one policy language and one identity domain. Backported to 3 of 17 specs so far.</p>
+  </div>
+
+  <div class="note bad">
+    <h3>A Terraform plan hides its own symbols — so the policy guessed by proximity</h3>
+    <p><code>terraform show -json</code> does not carry the <code>locals</code> map, and an attribute
+    of a resource being <em>created</em> is unknown at plan time. The plan therefore shows
+    <code>local.arns.media_bucket</code> — the symbol — and never its referent.</p>
+    <p>Lacking a way to resolve it, the Rego grew a family of proximity heuristics
+    (<code>config_reaches_arn_of</code> and dependents) that effectively asked <em>"does the plan
+    depend on some bucket ARN anywhere?"</em>. That attaches no symbol to the attribute, so:</p>
+    <ul>
+      <li>a <strong>wrong-type ARN</strong> behind a local scored <strong>1.0</strong> as soon as any
+      unrelated correct resource touched the real bucket ARN;</li>
+      <li>a <strong>fully correct</strong> solution scored <strong>0.0</strong> for spelling one slot
+      hoisted and another direct.</li>
+    </ul>
+    <p>Both directions proven by execution, not argued. Replaced by <code>tmccombs/hcl2json</code>
+    static traversal — parsing the HCL source rather than the plan, so a symbol resolves to its
+    actual referent. Opt-in per spec (<code>oracle.hcl_traversal</code>), hcl-raw only, used by
+    exactly one scenario today.</p>
+  </div>
+
+  <div class="note bad">
+    <h3>Assertions that pass while proving nothing</h3>
+    <p>The recurring defect is not a wrong assertion but a <em>vacuous</em> one — a discriminating
+    clause trivially true because the thing it discriminates on is absent. Instances found in this
+    project: a live check asserting "fail if the OLD group survives" against an account where the
+    group had never been created; IAM condition operators (<code>…IfExists</code>,
+    <code>ForAllValues:</code>) that pass on an empty key set; <code>contains</code> on a string
+    doing <em>substring</em>, where the solution's new name was a superstring of the old one;
+    <code>set_eq</code> collapsing multiplicity through <code>unique</code>, so a same-named leftover
+    was invisible.</p>
+    <p>Each was closed at the gate rather than in a comment — negative-op rejection and a jsonpath
+    shape rule at spec load, exact-membership operators, a three-valued
+    <em>contradicted vs unresolvable</em> return code. The list is still growing.</p>
+  </div>
+
+  <div class="note">
+    <h3>The cost is a signal, not just a bill</h3>
+    <p>One scenario's tier-1 is <strong>2,677 lines of Rego plus a 952-line shared library</strong>,
+    after four review rounds, with no proof a fifth would find nothing.
+    <code>make falsifiability</code> proves every <em>declared</em> catch fires against a
+    hand-written fixture; it never proves no undeclared hole remains.</p>
+    <p>That is the strongest argument for the oracle-authority inversion: where a property is
+    behavioural, re-deriving it structurally approaches the <em>slowly reimplementing the
+    evaluator</em> boundary — and a live check is both cheaper and more authoritative.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>The ladder of trustworthiness</h2>
+    <p>Not "near beats far". Proximity and fidelity are orthogonal, and the worst rung is not the
+    bottom one.</p>
+  </div>
+  <ol style="font-size:16px">
+    <li><strong>Unwritable</strong> — the type system rejects the error. Zero verification cost;
+    paid once by library authors. <code>ecs-swappiness</code> on both typed arms.</li>
+    <li><strong>Honestly verified</strong> — a check that can fail, and has been shown to fail on a
+    real negative fixture.</li>
+    <li><strong>Unverified</strong> — no check. Visibly nothing, which is at least legible.</li>
+    <li><strong style="color:var(--void)">Vacuously verified</strong> — a check that passes while
+    proving nothing. <em>Worse than unverified</em>, because it is indistinguishable from rung 2.</li>
+  </ol>
+  <p>Every near-loop mechanism in this project has failed at rung 4 at least once. That is why a
+  new oracle earns its place by demonstrating a <em>failure</em>, never by demonstrating a pass.</p>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>Emulators — the excluded option, and what would change it</h2>
+  </div>
+  <p>LocalStack, moto and <code>floci</code> are excluded by locked decision on one ground:
+  <em>they return false greens on exactly the value-rejection class the study targets</em> — moto
+  accepts invalid enums and attributes, so an emulator would grade a wrong value correct.</p>
+  <p>That holds for value-acceptance traps. Day-2 traps are a different class: whether a rename
+  forces destroy-then-create, whether an in-use endpoint raises <code>DependencyViolation</code>,
+  whether a second apply converges. Those are <strong>sequencing and dependency</strong> properties
+  an emulator might model faithfully while still mis-modelling value validation.</p>
+  <p>What would justify revisiting, in order: a <strong>measured</strong> false-green rate against
+  scenarios whose live verdict is already known — until that number exists the exclusion rests on
+  an argument, which is the criticism this project applies to everything else; live throughput
+  becoming the binding constraint on day-2 coverage; and a <strong>per-spec opt-in</strong> shaped
+  like <code>hcl_traversal</code>, declaring "this trap's truth is sequencing and the emulator
+  models it", proven by agreement with a live run first. A blanket emulator tier reintroduces
+  precisely the false-green class the exclusion was written against.</p>
+</section>
+
+<div class="foot">
+  Sources: <code>specs/SCHEMA.md</code> §4–5, <code>ROADMAP.md</code> §5b and M8,
+  <code>docs/prereg-iac-abstraction-benchmark.md</code> §3,
+  <code>docs/design/conftest-hcl-traversal-spike.md</code>, and the executed evidence in
+  <code>gates/oracle_falsifiability.py</code>. Every failure described here was proven by running
+  it, not by reading it.
+</div>
+
+</div>

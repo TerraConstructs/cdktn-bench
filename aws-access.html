@@ -1,0 +1,231 @@
+<title>AWS Access as an Environment Property</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --bg:#f5f7f9;--surface:#ffffff;--ink:#1a222c;--ink-2:#4a5561;--ink-3:#7a8591;
+  --rule:#d9dee4;--accent:#0e6f6a;--accent-soft:#dcefed;
+  --warn:#9a5b0b;--warn-soft:#f7ebd6;--bad:#a3282c;--bad-soft:#f6dedf;--good:#2f6b3a;--good-soft:#ddeede;
+  --code-bg:#eef1f4;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#12171c;--surface:#1a2129;--ink:#e6eaee;--ink-2:#aab4be;--ink-3:#7d8893;
+  --rule:#2c353f;--accent:#5cc3ba;--accent-soft:#173a38;
+  --warn:#e2a54a;--warn-soft:#3a2a10;--bad:#ee8a8d;--bad-soft:#3d1c1e;--good:#8fcf9a;--good-soft:#1c3320;
+  --code-bg:#0e1319;}}
+:root[data-theme="dark"]{
+  --bg:#12171c;--surface:#1a2129;--ink:#e6eaee;--ink-2:#aab4be;--ink-3:#7d8893;
+  --rule:#2c353f;--accent:#5cc3ba;--accent-soft:#173a38;
+  --warn:#e2a54a;--warn-soft:#3a2a10;--bad:#ee8a8d;--bad-soft:#3d1c1e;--good:#8fcf9a;--good-soft:#1c3320;
+  --code-bg:#0e1319;}
+body{background:var(--bg);color:var(--ink);font-family:"IBM Plex Sans",system-ui,sans-serif;font-size:16px;line-height:1.55;margin:0}
+main{max-width:76ch;margin:0 auto;padding:3rem 1.25rem 5rem}
+.eyebrow{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.75rem;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3)}
+h1{font-family:"Source Serif 4",Georgia,serif;font-weight:600;font-size:2.25rem;line-height:1.15;margin:.4rem 0 1rem;text-wrap:balance}
+h2{font-family:"Source Serif 4",Georgia,serif;font-weight:600;font-size:1.5rem;margin:3rem 0 .75rem;text-wrap:balance}
+h3{font-size:1rem;font-weight:600;margin:1.75rem 0 .5rem}
+p{margin:0 0 1rem}
+.lede{font-size:1.15rem;color:var(--ink-2);font-family:"Source Serif 4",Georgia,serif}
+code{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.86em;background:var(--code-bg);padding:.05em .3em;border-radius:3px}
+pre{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.82rem;line-height:1.5;background:var(--code-bg);border:1px solid var(--rule);padding:.9rem 1rem;overflow-x:auto;margin:0 0 1rem}
+pre code{background:none;padding:0;font-size:inherit}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:.75rem;margin:1.5rem 0 0}
+.stat{background:var(--surface);border:1px solid var(--rule);padding:.75rem .9rem}
+.stat b{display:block;font-family:"Source Serif 4",Georgia,serif;font-size:1.7rem;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.1}
+.stat span{font-size:.8rem;color:var(--ink-2)}
+.tbl{overflow-x:auto;margin:0 0 1rem}
+table{border-collapse:collapse;width:100%;font-size:.9rem}
+th{text-align:left;font-weight:600;font-size:.78rem;letter-spacing:.04em;text-transform:uppercase;color:var(--ink-3);border-bottom:1px solid var(--ink-3);padding:.4rem .6rem .4rem 0;vertical-align:bottom}
+td{border-bottom:1px solid var(--rule);padding:.5rem .6rem .5rem 0;vertical-align:top}
+td code,th code{white-space:nowrap}
+.tag{display:inline-block;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.72rem;padding:.1em .45em;border-radius:3px;white-space:nowrap}
+.bad{background:var(--bad-soft);color:var(--bad)}.warn{background:var(--warn-soft);color:var(--warn)}.good{background:var(--good-soft);color:var(--good)}.acc{background:var(--accent-soft);color:var(--accent)}
+.callout{border-left:3px solid var(--accent);background:var(--surface);padding:.8rem 1rem;margin:1.25rem 0}
+.callout.warn{border-color:var(--warn);background:var(--surface);color:var(--ink)}
+ul,ol{padding-left:1.3rem;margin:0 0 1rem}li{margin-bottom:.35rem}
+.diagram{background:var(--surface);border:1px solid var(--rule);padding:1rem;margin:1rem 0 1.5rem;overflow-x:auto}
+.diagram svg{display:block;min-width:600px;width:100%;height:auto;font-family:"IBM Plex Mono",ui-monospace,monospace}
+.diagram .box{fill:var(--bg);stroke:var(--ink-3);stroke-width:1}
+.diagram .hi{fill:var(--accent-soft);stroke:var(--accent);stroke-width:1.2}
+.diagram text{fill:var(--ink);font-size:11px}
+.diagram .muted{fill:var(--ink-3);font-size:10px}
+.diagram .line{stroke:var(--ink-3);stroke-width:1;fill:none}
+.diagram .flow{stroke:var(--accent);stroke-width:1.4;fill:none}
+.sources{font-size:.82rem;color:var(--ink-3);border-top:1px solid var(--rule);padding-top:1rem;margin-top:3rem}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
+@media(max-width:640px){.two{grid-template-columns:1fr}}
+.two pre{margin:0}
+.two .cap{font-size:.78rem;color:var(--ink-3);margin:0 0 .3rem}
+</style>
+<main>
+<div class="eyebrow">cdktn-bench · design proposal · 2026-08-27 · rev 2</div>
+<h1>AWS Access as an Environment Property</h1>
+<p class="lede">Every trial already runs with a real AWS account in the agent's container — aws-bench stages credentials for the agent, pre-invoke and verifier phases alike. What defeats that is the workspace: the generated <code>provider.tf</code> / <code>main.ts</code> wire the toolchain to dummy keys and a loopback stub unless a variable only the verifier sets is exported. Agents rediscover the harness mid-trial and pay for it in tokens, asymmetrically per arm. The fix is to make live AWS the <em>only</em> trial mode and confine any stub to the credential-free host gates.</p>
+
+<div class="stats">
+  <div class="stat"><b>18</b><span>agent trajectories that hit <code>InvalidClientTokenId</code>, <code>UnrecognizedClientException</code> or <code>:17771 connection refused</code> in the <em>agent</em> phase</span></div>
+  <div class="stat"><b>13</b><span>agent commands that re-create the harness: <code>node mock-sts.js &amp;</code>, <code>python3 mock-sfn.py &amp;</code>, <code>export CDKTN_BENCH_LIVE=1</code></span></div>
+  <div class="stat"><b>100%</b><span>of trials stage real credentials in the agent phase (<code>AWS_PROFILE</code> + <code>~/.aws/credentials</code>); <code>aws sts get-caller-identity</code> returns the bench role</span></div>
+  <div class="stat"><b>2 of 3</b><span>arms whose workspace ships a mock server (<code>mock-sfn.py</code>, <code>mock-sts.js</code>) — awscdk ships none</span></div>
+</div>
+
+<h2>What is actually broken</h2>
+<p>Four defects share one root cause: the answer to "what AWS does this toolchain talk to?" is encoded in files the agent can read and edit, and it is answered differently in the agent phase and the verifier phase.</p>
+
+<h3>1. The account is there; the toolchain is wired off it</h3>
+<p>The harness does what the design says: <code>aws_trial.py::_staged_credentials</code> writes a per-tag <code>~/.aws/credentials</code> and sets <code>AWS_PROFILE</code> for the agent phase on every task, read-only or mutating. The trajectories confirm it — <code>env | grep -i aws</code> shows the full credential set and <code>aws sts get-caller-identity</code> returns <code>aws-bench-agent-iac-abstraction-…</code> in the bench account. But the generated <code>provider.tf</code> / <code>main.ts</code> default to dummy keys plus <code>endpoints.sts = http://127.0.0.1:17771</code> (or <code>sfn = :17772</code>), and nothing listens there while the agent works; only the verifier's <code>static_tiers.sh</code> starts the stub, and only the verifier and <code>solve.sh</code> ever set <code>TF_VAR_cdktn_bench_live=1</code> / <code>CDKTN_BENCH_LIVE=1</code>. So the agent's first <code>terraform plan</code> or <code>apply</code> fails, and the agent has to find the switch in a 9 KB comment. The multi-step and brownfield trials that scored 1.0 did so because the agent found it.</p>
+<pre><code># jobs/g-live-hcl-2/…/apigw-redeploy-hcl-raw  (agent phase)
+terraform version | head -5; env | grep -i aws | sed 's/=.*/=&lt;redacted&gt;/'; cat mock-sfn.py | head -20
+python3 mock-sfn.py &gt; /tmp/mock-sfn.log 2&gt;&amp;1 &amp;
+sleep 1; terraform init -input=false -no-color 2&gt;&amp;1 | tail -30
+export TF_VAR_cdktn_bench_live=1
+terraform plan -no-color 2&gt;&amp;1 | tail -100
+
+# jobs/…/ecs-swappiness-terraconstructs  (agent phase, an offline task)
+node mock-sts.js &amp; sleep 1; cd cdktf.out/stacks/ecs-swappiness &amp;&amp; terraform init …; terraform plan …
+pkill -f mock-sts.js 2&gt;/dev/null; cat lib/scenario-stack.ts
+
+# jobs/…/apigw-redeploy-terraconstructs  (live)
+cd /app/project &amp;&amp; export CDKTN_BENCH_LIVE=1 &amp;&amp; npx cdktn synth 2&gt;&amp;1 | tail -5
+export CDKTN_BENCH_LIVE=1 &amp;&amp; npx cdktn deploy --auto-approve 2&gt;&amp;1 | tail -150</code></pre>
+<p>Every one of those turns is tokens-to-green spend that the awscdk arm never incurs — <code>bin/app.ts</code> carries no credentials, so <code>cdk deploy</code> uses the staged profile from the first command. The headline metric is being charged for harness archaeology, and the charge lands on the two Terraform arms only.</p>
+
+<h3>2. The stub is a file in <code>/app/project</code></h3>
+<p>Confirmed: both arm Dockerfiles <code>COPY</code> the mock into the workdir (<code>COPY workspace/mock-sfn.py ./mock-sfn.py</code>, <code>COPY app/mock-sts.js ./mock-sts.js</code>), and <code>gen.py::write_environment</code> copytrees the same file into every task. Agents <code>ls</code> it, <code>cat</code> it (its docstring explains a provider-internals problem the scenario is not about), and run it. <code>static_tiers.sh</code> itself is <em>not</em> in the workspace — Harbor uploads <code>tests/</code> to <code>/tests</code> at verification — so the pollution is exactly: the two mock scripts, and the offline/live branching plus its explanatory comments inside <code>provider.tf</code> and <code>main.ts</code>.</p>
+
+<h3>3. The gates run the trial's script on the host, on a fixed port</h3>
+<p><code>gates/oracle_falsifiability.py::_run_solve</code> rewrites <code>/app/project</code> and <code>/logs/verifier</code> in <code>static_tiers.sh</code> and executes it on the host. Two concurrent gate processes race for <code>127.0.0.1:17771</code>; the loser's <code>mock-sts-unavailable</code> guard did not fire and the run scored <code>0.0</code> indistinguishably from a wrong solution. Trials never collide — each container has its own <code>lo</code>.</p>
+
+<h3>4. "Offline" is a fixture, not an isolation</h3>
+<p>No task sets <code>allow_internet = false</code>; Harbor's default is <code>true</code>, and it must be — Claude Code inside the container needs the API. So the compose <code>network_mode: none</code> conflict the earlier write-up worried about does not exist. Offline-ness today is purely: provider mirror with no <code>direct {}</code> block, dummy keys, and loopback endpoints. That is good news for the design below: a sidecar on the compose network costs nothing in isolation that we currently have.</p>
+
+<h2>The principle</h2>
+<div class="callout"><strong>Live AWS is the only trial mode. The workspace never encodes where AWS is; the harness already answers that with staged credentials, and the toolchain must simply use them.</strong></div>
+<p>This is what the harness was designed to do and what aws-bench already does for the awscdk arm. The offline fixture exists for one reason — the host-side gates run <code>static_tiers.sh</code> without credentials — and that reason should be served on the host, not by shipping the fixture to every agent.</p>
+<div class="tbl"><table>
+<tr><th>Context</th><th>AWS behind the toolchain</th><th>Who provides it</th><th>Change from today</th></tr>
+<tr><td>Trial — agent phase</td><td><span class="tag good">real account</span>, shard-mapped, agent role</td><td>aws-bench <code>_staged_credentials(AGENT)</code> — already true</td><td>Workspace stops overriding it</td></tr>
+<tr><td>Trial — pre_invoke (seed deploy)</td><td><span class="tag good">real account</span></td><td><code>_staged_credentials(PRE_INVOKE)</code> — already true</td><td>Drop <code>LIVE=1</code> exports from <code>solve.sh</code></td></tr>
+<tr><td>Trial — verifier (<code>static_tiers.sh</code>, live check, idempotence)</td><td><span class="tag good">real account</span>, read-only calls only for static tiers (STS, SFN validate)</td><td><code>_verifier_creds()</code> — already true</td><td>Drop mock start/poll/kill and the <code>LIVE_CREDENTIALS_ENV_VAR</code> prefixes</td></tr>
+<tr><td>Host gates — falsifiability, grading-proof, seed-parity, CI</td><td><span class="tag acc">emulator or stub</span>, bound per gate process, account id set to match the shard</td><td>gate runner via <code>AWS_ENDPOINT_URL</code> (+ <code>AWS_ACCESS_KEY_ID=&lt;12-digit account&gt;</code>)</td><td>New; replaces path-patching a fixed loopback port</td></tr>
+</table></div>
+<p>Read-only tasks make two plan-time calls against the real account (<code>sts:GetCallerIdentity</code>, <code>states:ValidateStateMachineDefinition</code>): free, idempotent, and within the read-only role. They run in parallel as they do today; mutating tasks keep the queue and the reset. Sharding across accounts (M7) is orthogonal — aws-bench's <code>account_mapping</code> is already per-tag — and becomes simpler with one mode, because there is no stub to configure per shard.</p>
+<h2>Architecture</h2>
+<div class="diagram"><svg viewBox="0 0 760 300" role="img" aria-label="Trials use the staged real-account credentials in every phase; host gates use an emulator on an ephemeral port via AWS_ENDPOINT_URL">
+<rect x="10" y="10" width="440" height="280" rx="3" class="box"/>
+<text x="22" y="30" class="muted">trial container (arm image) — one network namespace per trial</text>
+<rect x="24" y="44" width="412" height="56" rx="3" class="hi"/>
+<text x="36" y="64">aws-bench credential staging (unchanged)</text>
+<text x="36" y="82" class="muted">~/.aws/credentials per account tag · AWS_PROFILE · agent / pre_invoke / verifier</text>
+<rect x="24" y="116" width="196" height="160" rx="3" class="box"/>
+<text x="36" y="136">/app/project</text>
+<text x="36" y="156" class="muted">entry file · bootstrap · lockfile</text>
+<text x="36" y="172" class="muted">provider.tf: region + default_tags</text>
+<text x="36" y="188" class="muted">no skip_*, no endpoints, no switch</text>
+<text x="36" y="204" class="muted">no mock-*.{js,py}</text>
+<text x="36" y="228" class="muted">identical shape on all three arms</text>
+<rect x="240" y="116" width="196" height="160" rx="3" class="box"/>
+<text x="252" y="136">/tests  (verifier upload)</text>
+<text x="252" y="156" class="muted">static_tiers.sh: init/validate/plan</text>
+<text x="252" y="172" class="muted">→ tier-0 jq → tier-1 OPA</text>
+<text x="252" y="188" class="muted">no mock wrappers, no guards</text>
+<text x="252" y="204" class="muted">live_check.py · idempotence</text>
+<text x="252" y="228" class="muted">preflight: sts get-caller-identity</text>
+<text x="252" y="244" class="muted">fails → run_invalid, not 0.0</text>
+<path d="M122 100 L122 116" class="flow"/><path d="M338 100 L338 116" class="flow"/>
+
+<rect x="474" y="10" width="276" height="280" rx="3" class="box"/>
+<text x="486" y="30" class="muted">host gates — credential-free</text>
+<rect x="488" y="44" width="248" height="72" rx="3" class="hi"/>
+<text x="500" y="64">emulator, bound :0 per gate process</text>
+<text x="500" y="82" class="muted">candidate: floci (port 4566, ~80 services)</text>
+<text x="500" y="98" class="muted">fallback: 2-route stub (sts, sfn)</text>
+<rect x="488" y="132" width="248" height="144" rx="3" class="box"/>
+<text x="500" y="152">same static_tiers.sh, no patching</text>
+<text x="500" y="172" class="muted">AWS_ENDPOINT_URL=http://127.0.0.1:$PORT</text>
+<text x="500" y="188" class="muted">AWS_ACCESS_KEY_ID=&lt;shard account id&gt;</text>
+<text x="500" y="204" class="muted">→ ARNs match live plans</text>
+<text x="500" y="228" class="muted">parity gate: reward(emulator) ==</text>
+<text x="500" y="244" class="muted">reward(real read-only account) ∀ specs</text>
+<path d="M612 116 L612 132" class="flow"/>
+</svg></div>
+
+<h3>Trials — remove, don't add</h3>
+<ul>
+<li>Nothing is injected that aws-bench does not already inject. The agent, pre-invoke and verifier phases keep their staged profile; the toolchain's provider block stops overriding it.</li>
+<li><code>static_tiers.sh</code> loses the start/poll/kill wrappers, both <code>-unavailable</code> guards and the <code>TF_VAR_cdktn_bench_live=1</code> / <code>CDKTN_BENCH_LIVE=1</code> prefixes. It gains one preflight — <code>aws sts get-caller-identity</code> — whose failure writes <code>/logs/verifier/aws-unavailable</code> and exits with the <code>run_invalid</code> code, so a credential or network failure voids the row instead of scoring <code>0.0</code>.</li>
+<li>The read-only agent role must allow <code>states:ValidateStateMachineDefinition</code> (verify in <code>scenarios/anchor</code> IAM; it is a non-mutating action).</li>
+</ul>
+
+<h3>Gates — where an emulator earns its place</h3>
+<p>The gates are the only credential-free consumer of <code>terraform plan</code>, and the only place a port is shared. Because the provider honors <code>AWS_ENDPOINT_URL</code> and the SDK credential env, the gate runner needs no AWS-specific path patching: start the backend once per process on <code>:0</code>, export <code>AWS_ENDPOINT_URL</code> and a 12-digit <code>AWS_ACCESS_KEY_ID</code> equal to the shard account so plan-time ARNs are byte-identical to a trial's, and run the same <code>static_tiers.sh</code>.</p>
+<p><strong>floci</strong> (<code>floci/floci</code>, port 4566) is the candidate backend: it emulates ~80 services including Step Functions, IAM and STS, takes its account id from a 12-digit access key, and is permissive on auth by default. That permissiveness is exactly why it is excluded as a <em>validity oracle</em> — and this design does not make it one. Here it only answers plan-time calls; the verdict still comes from tier-0/1 over the plan and from the live check. Two proofs before adoption, in order:</p>
+<ol>
+<li>It answers <code>sts:GetCallerIdentity</code> and <code>states:ValidateStateMachineDefinition</code> for hashicorp/aws 6.58.0 and 6.52.0 through the provider's <code>AWS_ENDPOINT_URL</code> path.</li>
+<li><code>make falsifiability</code> and <code>make grading-proof</code> produce identical rewards for every spec and every broken fixture with floci as backend vs. a real read-only account as backend. Any divergence is a false green or a false red and blocks adoption for that spec.</li>
+</ol>
+<p>If either fails, the fallback is a two-route stub (STS, SFN validate; everything else <code>400 UnsupportedOperation</code> logged to the gate output), gates-only, never in an image. Either way the stub log becomes evidence: a plan that needs an unstubbed operation fails at the gate rather than at trial time.</p>
+
+<h3>Generator — what leaves the workspace</h3>
+<div class="two">
+<div><p class="cap">provider.tf today (hcl-raw, 9,387 bytes)</p><pre><code>variable "cdktn_bench_live" { … }
+provider "aws" {
+  region = "us-east-1"
+  access_key = var.cdktn_bench_live ? null : "AKIA…"
+  secret_key = var.cdktn_bench_live ? null : "dummy…"
+  skip_credentials_validation = true
+  skip_requesting_account_id  = var.cdktn_bench_live ? false : true
+  skip_region_validation      = true
+  skip_metadata_api_check     = true
+  dynamic "endpoints" {
+    for_each = var.cdktn_bench_live ? [] : [1]
+    content { sfn = "http://127.0.0.1:17772" }
+  }
+  default_tags { … }
+}</code></pre></div>
+<div><p class="cap">provider.tf after — identical in both modes</p><pre><code>terraform {
+  required_providers {
+    aws = { source = "hashicorp/aws"
+            version = "6.58.0" }
+  }
+}
+provider "aws" {
+  region = "us-east-1"
+  default_tags {
+    tags = { project = "cdktn-bench"
+             arm     = "hcl-raw" }
+  }
+}</code></pre></div>
+</div>
+<p>Same for <code>terraconstructs_main_ts()</code>: <code>providerConfig: { region: "us-east-1" }</code>, no <code>CDKTN_BENCH_LIVE</code> branch. Deleted outright: <code>arms/*/environment/**/mock-*.{js,py}</code>, the two Dockerfile <code>COPY</code> lines, <code>_JS_ALLOWLIST</code>, <code>TERRACONSTRUCTS_MOCK_STS_PORT</code>, <code>HCL_RAW_MOCK_SFN_PORT</code>, <code>LIVE_CREDENTIALS_ENV_VAR</code>, and the <code>LIVE=1</code> export block in every <code>solve.sh</code> — the staged profile already says live. The <code>skip_*</code> flags go too: <code>skip_credentials_validation</code> / <code>skip_requesting_account_id</code> existed only because nothing answered STS; <code>skip_metadata_api_check</code> is moot with profile credentials; <code>skip_region_validation</code> was never needed for <code>us-east-1</code>.</p>
+<p>The prompt line "Do not create, modify, or delete <code>provider.tf</code>: it is a pre-wired bootstrap file (app entrypoint / offline provider config)…" shrinks to a sentence with nothing to explain, and the three arms' starting workspaces become the same shape: an entry file, a bootstrap file, and a lockfile.</p>
+
+<h2>Failure semantics</h2>
+<div class="tbl"><table>
+<tr><th>Situation</th><th>Today</th><th>After</th></tr>
+<tr><td>Credentials/network fail in verifier</td><td><span class="tag bad">0.0</span> "TF-PLAN FAILED", indistinguishable from a wrong solution</td><td><span class="tag warn">run_invalid</span> row voided, <code>aws-unavailable</code> marker</td></tr>
+<tr><td>Agent runs <code>terraform plan</code>, read-only task</td><td><span class="tag bad">connection refused :1777x</span> → agent starts the mock itself</td><td><span class="tag good">plan resolves</span> against the real account, zero harness turns</td></tr>
+<tr><td>Agent runs <code>terraform apply</code> / <code>cdktn deploy</code>, mutating task</td><td><span class="tag bad">InvalidClientTokenId</span> until the agent finds <code>CDKTN_BENCH_LIVE</code></td><td><span class="tag good">real AWS</span> from the first command, all arms alike</td></tr>
+<tr><td>A new provider CustomizeDiff calls an API the read-only role lacks</td><td>dummy keys → <code>UnrecognizedClientException</code> at trial time</td><td><code>AccessDenied</code> at <code>make seed-parity</code>/<code>falsifiability</code> against the real read-only role → role fix, before any trial</td></tr>
+<tr><td>Two gate processes in parallel</td><td><span class="tag bad">EADDRINUSE</span> on :17771</td><td>independent ephemeral ports</td></tr>
+</table></div>
+
+<h2>Costs and things to verify before committing</h2>
+<ol>
+<li><strong>Plans now carry the real account id.</strong> With STS answered instead of skipped, computed ARNs that were <em>unknown</em> at plan time become concrete, and they contain the shard's account. No assert or Rego may hardcode an account id — required for multi-account sharding regardless. Expect a handful of tier-0/Rego edits; every spec must pass <code>make falsifiability</code>, <code>grading-proof</code> and <code>seed-parity</code> before regeneration merges.</li>
+<li><strong>Read-only role permissions.</strong> <code>QALocalInvocationApplicationRole</code> must allow <code>sts:GetCallerIdentity</code> (it does — the agent called it) and <code>states:ValidateStateMachineDefinition</code>. Check once in <code>scenarios/anchor</code>.</li>
+<li><strong>Gates need a backend.</strong> Today they run credential-free by shipping the stub into every image. After this they need either floci (proof items above) or the two-route stub, started by the gate runner. CI gets a container dependency it did not have; it already builds arm images.</li>
+<li><strong>Equipping hash churn — once.</strong> Removing the mock files and the provider switch changes every task's <code>environment_template_hash</code>. Land it as one amendment; pre-change rows land in a different stratum, which is what the hash exists to record.</li>
+<li><strong>Emulator boundary is unchanged.</strong> floci answers plan-time calls in the gates; it never grades. Using it in a trial, or as a substitute for a live check, needs its own DECISIONS entry and the measured false-green rate the roadmap already asks for.</li>
+</ol>
+
+<h2>Migration sequence</h2>
+<ol>
+<li>Gate backend spike: floci on <code>:0</code> + <code>AWS_ENDPOINT_URL</code> + 12-digit key, against the existing arm fixtures on all three arms; then the parity run (floci vs. real read-only account) over all 17 specs. Pick floci or the stub on that evidence.</li>
+<li><code>generator/gen.py</code>: strip the provider switch, <code>skip_*</code>, endpoints, mock wrappers, guards and <code>LIVE=1</code> blocks; delete mock files and <code>COPY</code> lines; add the <code>get-caller-identity</code> preflight with the <code>run_invalid</code> exit; regenerate. Shrink the <code>provider.tf</code> sentence in prompts.</li>
+<li>Gates: backend start + env export, drop mock-related path patching. <code>make ci</code>; fix asserts that moved.</li>
+<li>DECISIONS amendment; <code>make build-arms</code>; <code>env setup</code>.</li>
+<li>One read-only and one mutating trial per arm (<code>ecs-swappiness</code>, <code>named-resource-replacement</code>); confirm zero <code>mock-</code>/<code>cdktn_bench_live</code> strings in any agent trajectory and no <code>InvalidClientTokenId</code> in the agent phase.</li>
+</ol>
+
+<p class="sources">Sources: <code>arms/*/environment/Dockerfile</code>, <code>arms/hcl-raw/environment/workspace/{provider.tf,mock-sfn.py}</code>, <code>arms/terraconstructs/environment/app/mock-sts.js</code>, <code>generator/gen.py</code> (<code>terraconstructs_main_ts</code>, <code>build_static_tiers_sh</code>, <code>LIVE_CREDENTIALS_ENV_VAR</code>), <code>gates/oracle_falsifiability.py::_run_solve</code>, <code>cdktn_bench/trial.py</code>, <code>aws_bench/task/aws_trial.py::_staged_credentials</code>, <code>harbor/environments/docker/docker.py::_docker_compose_paths</code>, <code>harbor/models/trial/config.py</code> (<code>extra_docker_compose</code>), <code>harbor/models/task/config.py</code> (<code>allow_internet</code> default), and <code>jobs/**/agent/claude-code.txt</code> (18 trajectories, grep for <code>InvalidClientTokenId|UnrecognizedClientException|17771</code>).</p>
+</main>

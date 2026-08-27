@@ -91,7 +91,7 @@
 # matching the spec's "do not silently deny" half) that a generated
 # tests/static_tiers.sh (build_static_tiers_sh) now evaluates separately
 # and, when non-empty, tees to /logs/verifier/tier1-not-verifiable --
-# mirroring the existing tier1-unavailable/tf-plan-mock-sts-unavailable
+# mirroring the existing tier1-unavailable/aws-unavailable
 # non-silent-marker convention. `.configuration...expressions.policy` was
 # considered as a plan-time-known source for the Action list (SCHEMA.md
 # §4.2.1's "Better" alternative) but verified NOT to carry it: a

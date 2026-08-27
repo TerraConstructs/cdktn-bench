@@ -2208,21 +2208,17 @@ class Spec(BaseModel):
     def _brownfield_plan_must_not_refresh(self) -> "Spec":
         """A brownfield arm's `terraform plan` MUST carry `-refresh=false`.
 
-        MEASURED, not predicted (2026-08-25). With a state file present in
-        /app/project, `terraform plan` refreshes; the verifier runs OFFLINE, so
-        provider.tf is in dummy-credential mode; the refresh signs a real EC2
-        call with a fake key and the plan dies. Observed verbatim in
-        jobs/rerun-named-resource-replacement/2026-08-25__01-43-17/
-        named-resource-replacement-hcl-r__rtmpCyN/verifier/test-stdout.txt:42-46:
-
-            aws_vpc.internal_services: Refreshing state... [id=vpc-05c33a26cbf19bef8]
-            Planning failed. Terraform encountered an error while generating this plan.
-            PLAN FAILED
-
-        That row's 0.0 was read as "the agent's config is bad". It was the
-        VERIFIER failing on state the agent's own SUCCESSFUL apply created.
-        Once `workspace_seed.deploy` seeds state deliberately this fires on
-        EVERY brownfield trial on that arm, including a perfect one.
+        The seed is already deployed when the verifier plans, so a refreshing
+        plan re-contacts AWS to reconcile EVERY seeded resource. Two ways that
+        costs a perfect solution its 1.0: the refresh can report pending
+        changes for reasons that have nothing to do with the agent's change,
+        and it dies outright wherever an arbitrary AWS read cannot be answered
+        -- the credential-free host gates run this identical `static_tiers.sh`
+        against gates/aws_stub.py, which answers exactly two operations
+        (`sts:GetCallerIdentity`, `states:ValidateStateMachineDefinition`).
+        Either way the verifier fails on state the agent's own SUCCESSFUL apply
+        created, and `workspace_seed.deploy` puts that state there on purpose,
+        on every trial.
 
         Enforced on every `workspace_seed` spec, not only on the ones that
         declare `deploy`: a brownfield agent is asked to roll its change out,
@@ -2247,10 +2243,9 @@ class Spec(BaseModel):
             # documented since 0.14 -- passed spec load in SILENCE, and gen.py
             # splices `plan_command` verbatim into hcl_raw's static_tiers.sh.
             # The consequence is the exact one this validator's docstring
-            # measures: with the seed's state present, the OFFLINE verifier
-            # plan refreshes through provider.tf's dummy credentials and dies,
-            # scoring every hcl-raw brownfield trial 0.0 before the agent is
-            # judged. `_TF_PLAN_RE` allows any run of global flags between the
+            # states: with the seed's state present the verifier plan
+            # refreshes, scoring every hcl-raw brownfield trial 0.0 before the
+            # agent is judged. `_TF_PLAN_RE` allows any run of global flags between the
             # binary and the subcommand, which is the only place terraform
             # accepts them.
             if not plan_command or not _TF_PLAN_RE.search(plan_command):
@@ -2262,13 +2257,12 @@ class Spec(BaseModel):
                 f"BROWNFIELD (§2.7) arm(s) {offenders} declare a "
                 "`terraform plan` in output_contract.plan_command WITHOUT "
                 "`-refresh=false`. With deploy state present in /app/project "
-                "the OFFLINE verifier's plan refreshes through provider.tf's "
-                "dummy credentials and dies -- measured, "
-                "jobs/rerun-named-resource-replacement/2026-08-25__01-43-17/"
-                "named-resource-replacement-hcl-r__rtmpCyN/verifier/"
-                "test-stdout.txt:42-46 ('Refreshing state... "
-                "[id=vpc-05c33a26cbf19bef8]' then 'PLAN FAILED'), scoring a "
-                "PERFECT solution 0.0. Grading is unaffected: every "
+                "the verifier's plan re-contacts AWS to reconcile every seeded "
+                "resource: it can report pending changes for reasons unrelated "
+                "to the agent's change, and it dies outright under the "
+                "credential-free host gates, whose gates/aws_stub.py answers "
+                "two operations and no arbitrary refresh -- either way scoring "
+                "a PERFECT solution 0.0. Grading is unaffected: every "
                 "tf_jsonpath reads $.planned_values / $.configuration, which "
                 "carry the full desired end state, not a changeset "
                 "(SCHEMA.md §2.7.1/§5.1)"

@@ -47,13 +47,14 @@
 #   `registerAttribute` is the only writer of the attribute-definition set
 #   on both, and it is never called except from a key-defining path.
 #
-#   hashicorp/aws 6.58.0, LIVE-VERIFIED with a real, fully offline
-#   `terraform init` (filesystem-cached provider binary,
-#   `skip_credentials_validation`/`skip_requesting_account_id`/
-#   `skip_metadata_api_check` = true, dummy `access_key`/`secret_key` --
-#   no AWS API is ever contacted) + `terraform validate` + `terraform plan`
-#   against three minimal `aws_dynamodb_table` fixtures, run directly at
-#   authoring time (not assumed from the blueprint's own citation):
+#   hashicorp/aws 6.58.0, LIVE-VERIFIED with a real `terraform init`
+#   (filesystem-cached provider binary) + `terraform validate` +
+#   `terraform plan` against three minimal `aws_dynamodb_table` fixtures,
+#   run directly at authoring time (not assumed from the blueprint's own
+#   citation) in a throwaway host scratch directory that contacted no AWS
+#   API. That scratch directory is not this benchmark's workspace: the
+#   generated workspace has one mode, live, and carries no credential shim
+#   of any kind (DECISIONS.md Amendment 32):
 #
 #     (a) extra `attribute` blocks for shippingAddress/lineItems/
 #         paymentReference (catch 1): `terraform validate` PASSES (only a
@@ -214,10 +215,10 @@
 # 787-788`, confirmed no confound there), and CFN's `KeySchema` has no
 # analogous alternate shape at all, so awscdk was never affected either.
 #
-# REPRODUCED directly this session, fully offline (`terraform init` +
-# `validate` + `plan` against the filesystem-cached hashicorp/aws 6.58.0
-# provider, dummy credentials, the same offline mechanism this file's own
-# earlier header probes (a)-(c) already used): a `key_schema`-shaped GSI
+# REPRODUCED directly this session in the same throwaway host scratch
+# directory as this file's own earlier header probes (a)-(c) -- `terraform
+# init` + `validate` + `plan` against the filesystem-cached hashicorp/aws
+# 6.58.0 provider, contacting no AWS API: a `key_schema`-shaped GSI
 # (two `key_schema { attribute_name, key_type }` blocks,
 # HASH=customerId/RANGE=createdAt) plans CLEAN with zero warnings, and
 # `terraform show -json`'s `planned_values` for that GSI is
@@ -290,10 +291,10 @@
 # best evidence for its trap -- exactly the read-before-write behavior
 # this benchmark rewards -- is walked straight to this resource by name.
 #
-# REPRODUCED directly this session, fully offline (`terraform init` +
-# `validate` + `plan` against the filesystem-cached hashicorp/aws 6.58.0
-# provider, dummy credentials, the same offline mechanism this file's
-# earlier probes already used): `aws_dynamodb_table.orders` with
+# REPRODUCED directly this session in the same throwaway host scratch
+# directory as this file's earlier probes -- `terraform init` + `validate`
+# + `plan` against the filesystem-cached hashicorp/aws 6.58.0 provider,
+# contacting no AWS API: `aws_dynamodb_table.orders` with
 # `hash_key = "orderId"` and a SINGLE `attribute { name = "orderId" }`
 # block, plus a sibling `resource "aws_dynamodb_global_secondary_index"
 # "by_customer" { table_name = aws_dynamodb_table.orders.name, index_name

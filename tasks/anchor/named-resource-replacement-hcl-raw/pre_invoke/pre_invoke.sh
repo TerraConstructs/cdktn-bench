@@ -117,7 +117,7 @@ cd /app/project || fail seed_unverifiable "no /app/project in this container" 3
 # of _prepare, and Trial.run's handler then NEVER calls _run() -- no
 # agent phase, no verifier, no reward key at all.
 echo "== seed deploy (hcl_raw) =="
-if ! ( TF_VAR_cdktn_bench_live=1 terraform init -input=false && TF_VAR_cdktn_bench_live=1 terraform apply -input=false -auto-approve ); then
+if ! ( terraform init -input=false && terraform apply -input=false -auto-approve ); then
   fail seed_absent "seed deploy command exited non-zero -- see stdout.log" 2
 fi
 

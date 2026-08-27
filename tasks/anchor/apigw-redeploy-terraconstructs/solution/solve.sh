@@ -30,8 +30,7 @@
 # --- OFFLINE vs. LIVE switch -- see tasks/anchor/apigw-redeploy-awscdk/
 # solution/solve.sh's own header for the full rationale; identical here,
 # substituting `cdktn synth` + `terraform plan`/`apply` for `cdk synth`/
-# `cdk deploy`. LIVE=1 needs a real AWS provider (no dummy creds / mock-sts
-# endpoint override) and real credentials staged in the environment.
+# `cdk deploy`. LIVE=1 runs a real deploy against ambient AWS credentials.
 #
 # Regenerating this scenario will NOT overwrite this file (destructive-safe
 # rule, SCHEMA.md §8.2 point 8).
@@ -219,32 +218,10 @@ TS
 # hand-roll its own LIVE main.ts (write_main_ts_live(), unconditionally
 # overwriting the non-agent-owned main.ts -- exactly the thing an agent is
 # told not to do). Not needed anymore: the SEEDED ./main.ts
-# (gen.py::terraconstructs_main_ts, already present in this workspace) is
-# now live-aware on its own via the CDKTN_BENCH_LIVE env var -- see that
-# function's own docstring. The OFFLINE path below needs no setup (its
-# default IS the dummy-credential fixture); the LIVE path just exports
-# CDKTN_BENCH_LIVE=1 before calling `cdktn synth`, exactly what a real
-# agent is told to do in this scenario's instruction.md, and never
-# touches main.ts.
-
-start_mock_sts() {
-  # See arms/terraconstructs/environment/app/mock-sts.js's own header for
-  # why this is needed offline (AwsStack.account lazily creates a real
-  # `data "aws_caller_identity"` STS call regardless of skip_* flags).
-  # Port MUST match the generated (non-agent-owned) main.ts's own
-  # providerConfig.endpoints.sts port (gen.py's TERRACONSTRUCTS_MOCK_STS_PORT
-  # = 17771, see environment/app/main.ts) now that this task has a real
-  # generated environment/ (Slice G fix, 2026-08-06) -- this file used to
-  # hand-roll its own main.ts with a different port (17773) before that
-  # environment/ existed; fixed here to the generated file's own port
-  # instead of drifting further from it.
-  node mock-sts.js 17771 > mock-sts.log 2>&1 &
-  MOCK_STS_PID=$!
-  sleep 1
-}
-stop_mock_sts() {
-  kill "$MOCK_STS_PID" 2>/dev/null || true
-}
+# (gen.py::terraconstructs_main_ts, already present in this workspace)
+# carries a bare `providerConfig` that resolves ambient AWS credentials --
+# this script never touches it, exactly what a real agent is told to do in
+# this scenario's instruction.md.
 
 synth_and_plan() {
   local outdir="$1"
@@ -277,9 +254,6 @@ assert_hash_changed() {
 
 if [ "$LIVE" != "1" ]; then
   echo "== OFFLINE static-proof mode (LIVE unset/0): synth+plan twice, diff triggers.redeployment =="
-  start_mock_sts
-  trap stop_mock_sts EXIT
-
   write_rev1
   synth_and_plan plan.rev1
   assert_facts plan.rev1.json 2
@@ -314,10 +288,6 @@ fi
 
 echo "== LIVE mode: real deploy -> curl -> modify -> re-deploy -> curl =="
 echo "Account/region guardrail: this must be running with creds scoped to 886312446417 / us-east-1 only."
-
-# Finding G2 fix: real credentials, no main.ts edit -- see this script's
-# comment above write_rev1()'s start_mock_sts() sibling.
-export CDKTN_BENCH_LIVE=1
 
 # Cleanup on ANY exit path (finding 7, 2026-08-06) -- same residual-log-
 # group story as the awscdk/hcl_raw reference solutions' identical

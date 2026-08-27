@@ -7033,3 +7033,222 @@ validator's pattern and the emitted-bytes test's pattern are byte-identical.
 `make falsifiability` and `make seed-parity` green, and `make gen-all` moves
 only the `named-resource-replacement-*` task trees. Nothing here has been
 exercised live; §7's promotion criterion is unchanged and still unmet.
+
+---
+
+## Amendment 32 (2026-08-27) — AWS access as an environment property: live
+## AWS is the only trial mode — **ACCEPTED 2026-08-28**
+
+**Status: ACCEPTED (promoted 2026-08-28).** Registered as DRAFT on 2026-08-27
+before any trial had run under it, on the criterion in "What promotes this"
+below: one live read-only and one live mutating trial per arm. Full design
+write-up: `aws-access.html`.
+
+**That run happened** (`jobs/amend32-promotion/2026-08-27__21-38-21` read-only,
+`…/2026-08-27__21-50-09` mutating; claude-sonnet-5, k=2, `max_turns=100`,
+arm images rebuilt and `env setup` re-run first). Every trial produced a valid
+row on its first attempt; no exceptions, no voided rows, no reset failures.
+Agent-phase trajectories grep clean for `InvalidClientTokenId`,
+`UnrecognizedClientException`, `mock-s`, `cdktn_bench_live`, `CDKTN_BENCH_LIVE`
+— the harness-archaeology tax the finding below measured at 18 trajectories
+is zero under this amendment.
+
+| scenario | arm | reward | output tok | turns | cost $ | live_check | idempotence |
+|---|---|---:|---:|---:|---:|:---:|:---:|
+| ecs-swappiness (read-only) | awscdk | 1.0 / 1.0 | 3,815 / 4,245 | 22 / 20 | 0.19 / 0.17 | — | — |
+| ecs-swappiness | hcl_raw | **0.0 / 0.0** | 1,244 / 1,158 | 9 / 10 | 0.09 / 0.06 | — | — |
+| ecs-swappiness | terraconstructs | 1.0 / 1.0 | 6,099 / 3,947 | 44 / 25 | 0.40 / 0.22 | — | — |
+| apigw-redeploy (multi-step, mutating) | awscdk | 1.0 / 1.0 | 8,447 / 10,314 | 56 / 65 | 0.47 / 0.55 | pass | — |
+| apigw-redeploy | hcl_raw | 1.0 / 1.0 | 13,480 / 13,781 | 49 / 64 | 0.48 / 0.56 | pass | — |
+| apigw-redeploy | terraconstructs | 1.0 | 16,040 | 116 | 1.09 | pass | — |
+| named-resource-replacement (brownfield, mutating) | awscdk | 1.0 | 3,103 | 18 | 0.14 | pass | converged |
+| named-resource-replacement | hcl_raw | 1.0 | 4,502 | 17 | 0.16 | pass | converged |
+| named-resource-replacement | terraconstructs | 1.0 | 11,024 | 75 | 0.66 | pass | converged |
+
+(Second attempts still in flight at promotion time land in
+`docs/live-results.md`; they cannot un-promote — the criterion is per-arm
+first-attempt validity, already met.) The `ecs-swappiness` verdict replicates
+Amendment 22's thesis row exactly: hcl_raw fails at tier-1 with the fewest
+tokens of any arm, with `terraform plan` green against the real account on
+the agent's first command.
+
+### What the run CORRECTED rather than confirmed
+
+**Token totals can be missing from `result.json` while the trajectory is
+complete.** `named-resource-replacement-terraconstructs` scored 1.0 with every
+`agent_result` token field `None`. `trial.log` records harbor's
+`Failed to convert Claude Code events to trajectory: steps[17].step_id:
+expected 18, got 19` — a validation failure in harbor's own normaliser on a
+step-id gap, after which it drops the `AgentContext` totals. The stream-json
+transcript on disk (`agent/claude-code.txt`) was intact and its terminal
+`result` event carried the session totals (11,024 output tokens,
+`total_cost_usd` 0.655). Fix, landed with this promotion:
+`gates/emit_result.py::_recover_tokens_from_transcripts` reads that `result`
+event whenever `result.json` carries `None` and stamps the row
+`tokens_source: "claude-code-stream"` so a recovered row is distinguishable.
+Per-message `usage` entries in the transcript are streaming partials and are
+deliberately not summed — the same choice harbor makes. The upstream
+normaliser bug is harbor's to fix; the fallback removes the dependency.
+
+Nothing in the mechanism itself needed correcting.
+
+### The finding
+
+A trajectory audit (`jobs/**/agent/claude-code.txt`, grep for
+`InvalidClientTokenId|UnrecognizedClientException|17771`) found:
+
+- **18** agent-phase trajectories hitting `InvalidClientTokenId`,
+  `UnrecognizedClientException`, or a loopback connection refused on
+  `:17771`/`:17772` — the agent's first `terraform plan`/`apply` or
+  `cdktn synth`/`deploy` failing against the workspace's dummy-credentialed,
+  mock-endpointed default.
+- **13** agent commands that re-derive the harness by hand mid-trial:
+  `python3 mock-sfn.py &`, `node mock-sts.js &`,
+  `export TF_VAR_cdktn_bench_live=1`, `export CDKTN_BENCH_LIVE=1` — tokens
+  charged to tokens-to-green for rediscovering a switch the prompt never
+  mentions, paid on the two Terraform-shaped arms only. awscdk's `bin/app.ts`
+  carries no credential branch, so that arm's agent never pays this tax; the
+  headline metric was asymmetric per arm for a reason that has nothing to do
+  with the scenario being solved.
+- **100%** of trials — read-only and mutating alike — already stage real
+  credentials for the agent, pre_invoke, and verifier phases
+  (`aws_trial.py::_staged_credentials`, `AWS_PROFILE` + a per-tag
+  `~/.aws/credentials`); `aws sts get-caller-identity` in the agent phase
+  already returns the bench role. The account was never missing. The
+  workspace was wired to ignore it.
+- **2 of 3** arms ship a mock server the agent can read and run
+  (`arms/hcl-raw/environment/workspace/mock-sfn.py`,
+  `arms/terraconstructs/environment/app/mock-sts.js`, both `COPY`'d into the
+  image and `copytree`'d into every generated task); the third arm ships none
+  and needed no fix.
+
+Root cause, one cause for all four: the answer to "what AWS does this
+toolchain talk to" was encoded in files the agent can read and edit
+(`provider.tf`, `main.ts`), and answered *differently* in the agent phase than
+in the verifier phase. The multi-step and brownfield trials that scored `1.0`
+did so because the agent found the seam and crossed it manually; nothing in
+the design required that discovery to be part of what is being measured.
+
+### The decision
+
+**Live AWS is the only trial mode.** The workspace stops encoding where AWS
+is — the harness already answers that with staged credentials on every phase,
+agent included — and the toolchain's provider block simply uses ambient
+credentials, the same shape aws-bench already gives the awscdk arm. Any stub
+is confined to the host-side checks that run the toolchain off a real
+account: `gates/oracle_falsifiability.py`, `gates/grading_proof.py`, and
+`generator/check_reference_paths.py` (`make seed-parity SPEC=…`, and `make
+ci` per spec) — they never touch a real account and never should.
+`check_reference_paths.py` is the sharpest of the three, because it is the
+one host check that executes the **generated** `tests/static_tiers.sh` and so
+must satisfy that script's `aws sts get-caller-identity` preflight from the
+stub; without the stub wired in it either fails on a credential-free host or
+silently plans against whatever ambient credentials the operator happens to
+hold, which is the same "where is AWS?" ambiguity this amendment removes from
+the workspace. `generator/check_parity.py` is *not* in this set: it is a pure
+`instruction.md` prefix differ, spawns no subprocess, and needs no
+credentials.
+
+**`floci` evaluated and rejected as the gate backend.** The design's
+migration sequence called for a spike: `floci` (`ghcr.io/lex00/floci`, ~80
+emulated services, already excluded as a *validity oracle* since Amendment 2
+for being permissive-by-default on auth) against a purpose-built two-route
+stub. The gates make exactly **two** plan-time calls —
+`sts:GetCallerIdentity` and `states:ValidateStateMachineDefinition` — so
+standing up an 80-service emulator to answer two operations traded a
+zero-dependency, ~150-line stdlib HTTP server for a container dependency CI
+did not have, in exchange for coverage the gates do not need and an
+auth posture already disqualified once for the same reason it is disqualified
+here. `gates/aws_stub.py` is the outcome: binds `127.0.0.1:0`, prints
+`PORT=<n>` once listening, answers the two actions, and logs everything else
+as `400 UnsupportedOperation` to stderr rather than silently 200ing it — an
+unstubbed operation now fails at the gate, loudly, instead of at trial time.
+The emulator-boundary caveat from the design write-up stands: this stub
+answers plan-time calls for the gates and never grades; using an emulator in
+a trial, or as a live-check substitute, is a different decision this entry
+does not make.
+
+### What was removed
+
+- `arms/hcl-raw/environment/workspace/provider.tf`: `variable
+  "cdktn_bench_live"`, `access_key`/`secret_key`, every `skip_*` flag, the
+  `dynamic "endpoints"` block. What remains: `required_providers`,
+  `required_version`, and a bare `provider "aws" { region = "us-east-1"
+  default_tags {...} }` — identical in every mode because there is only one
+  mode now.
+- `generator/gen.py::terraconstructs_main_ts`: the `CDKTN_BENCH_LIVE` branch;
+  `providerConfig` is now `{ region: "us-east-1" }` unconditionally.
+- `arms/hcl-raw/environment/workspace/mock-sfn.py`,
+  `arms/terraconstructs/environment/app/mock-sts.js`, and both Dockerfiles'
+  `COPY` lines for them.
+- `generator/gen.py::build_static_tiers_sh`: the mock start/poll/kill
+  wrappers, both `-unavailable` guard blocks (`tf-plan-mock-sfn-unavailable`,
+  `tf-plan-mock-sts-unavailable`), and every `LIVE_CREDENTIALS_ENV_VAR`
+  prefix (`TF_VAR_cdktn_bench_live=1`, `CDKTN_BENCH_LIVE=1`).
+- Every `TF_VAR_cdktn_bench_live=1` / `CDKTN_BENCH_LIVE=1` prefix in a spec's
+  own `workspace_seed` `deploy_command` (`lambda-alias-tracks-unpublished-
+  latest`, `named-resource-replacement`,
+  `s3-acl-vs-object-ownership-log-delivery`,
+  `singleton-child-resource-clobber`). These are values, not comments: they
+  are emitted verbatim into `tasks/**/pre_invoke/pre_invoke.sh`, so the
+  removal only lands in a trial after `make gen-all`.
+- The constants `TERRACONSTRUCTS_MOCK_STS_PORT`, `HCL_RAW_MOCK_SFN_PORT`,
+  `LIVE_CREDENTIALS_ENV_VAR`, and `_JS_ALLOWLIST`'s `mock-sts.js` entry.
+- Every hand-authored `solution/**/solve.sh`'s `LIVE=1` /
+  `export TF_VAR_cdktn_bench_live=1` / `export CDKTN_BENCH_LIVE=1` block and
+  the comment explaining it — the staged profile already says live; nothing
+  else in `solve.sh` changes.
+- The `provider.tf`/`bin/app.ts`/`main.ts` "do not touch" prompt line loses
+  everything it used to have to explain (a mode switch, dummy keys, mock
+  endpoints) and shrinks to naming what the file is: a pre-wired bootstrap.
+
+### The `run_invalid` preflight — infrastructure failure voids the row
+
+`static_tiers.sh` gains one step, first, on both Terraform-shaped arms:
+
+```
+aws sts get-caller-identity >/dev/null 2>&1 || {
+  echo "aws-unavailable: ..." | tee /logs/verifier/aws-unavailable
+  # {"outcome":"run_invalid", ...} -> /logs/verifier/aws-unavailable.json
+  # NO reward.txt is written -- an absent reward file is what voids the row
+  exit 1
+}
+```
+
+This is a deliberate change to grading semantics, not a cosmetic one. Under
+the old two-mode scheme, a credentials/network failure at verifier time
+produced the *same* `0.0` a wrong solution produces — `TF-PLAN FAILED`,
+indistinguishable at the reward level, which is exactly why
+`gates/oracle_falsifiability.py`'s do-nothing-negative check (§8.2 / Amendment
+28) had to require a *graded artifact* on top of `< 1.0`: `0.0` alone was
+overloaded between "wrong" and "the harness broke." The `run_invalid` marker
+removes the overload at the source — an `aws-unavailable` row is voided, never
+scored, mirroring the marker-file convention `build_idempotence_block`
+already uses for `not_verifiable`. The read-only agent role must allow
+`states:ValidateStateMachineDefinition` for the same preflight class to pass
+inside a trial (verify in `scenarios/anchor` IAM; non-mutating action).
+
+The same preflight runs credential-free at the gates, against
+`gates/aws_stub.py`: the `aws` CLI honors `AWS_ENDPOINT_URL` exactly as the
+Terraform provider does, so `aws sts get-caller-identity` resolves against the
+stub without any gate-side special-casing — provided the gate runner puts
+`aws` on `PATH` (a shim dir prepended by the runner where `aws` is not
+natively present; the generated script itself calls plain `aws`, never `mise x
+aws@latest --`, because it runs inside the trial container where `aws` is
+already on `PATH`).
+
+### Equipping / environment hash churn — once
+
+Removing the mock files and the provider switch changes every task's
+`environment_template_hash` (they're byte-copied and templated into every
+generated workspace). This lands as **one** amendment, `make build-arms` +
+`env setup` once, and — same discipline as Amendment 28 §6's brownfield
+stratum — rows produced before this amendment are a **different stratum** and
+must never be pooled with rows produced after it.
+
+### What promotes this
+
+One read-only and one mutating live trial per arm (`ecs-swappiness`,
+`named-resource-replacement`), with zero `mock-`/`cdktn_bench_live` strings in
+any agent trajectory and no `InvalidClientTokenId` in the agent phase. Met
+2026-08-27 — see the status block at the top of this amendment.

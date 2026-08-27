@@ -55,10 +55,7 @@ FROM node:20.20.2-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2
 # outcome -- silently downgrading a PERFECT solution to reward 0.0 on
 # every live-checked trial on this arm. Amends DECISIONS.md
 # "Agent-container baseline contract", which previously (deliberately)
-# excluded python3 from the shared baseline -- see arms/hcl-raw's own
-# Dockerfile comment for that arm's version of this same addition
-# (installed earlier, for mock-sfn.py, for an unrelated reason) and
-# DECISIONS.md's amendment for the full rationale change.
+# excluded python3 from the shared baseline.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl unzip less groff jq zip git python3 \
     && rm -rf /var/lib/apt/lists/*

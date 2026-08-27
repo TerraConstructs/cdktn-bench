@@ -65,7 +65,7 @@ TS
 
 if [ "${LIVE:-0}" = "1" ]; then
   echo "== LIVE: real cdktn deploy against this account =="
-  CDKTN_BENCH_LIVE=1 npx cdktn deploy --auto-approve quote-service
+  npx cdktn deploy --auto-approve quote-service
   python3 tests/live_check.py --expect ok
 fi
 

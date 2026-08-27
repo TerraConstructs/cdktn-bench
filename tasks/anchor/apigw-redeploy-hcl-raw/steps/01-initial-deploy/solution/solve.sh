@@ -23,8 +23,11 @@
 # oracle, and when the root solve.sh runs under the final-step row it is the
 # full tier suite.
 #
-# OFFLINE (default): write revision 1, synth/plan it, assert its structural
-# facts, run step 01's static tiers. No AWS credentials, no network.
+# DEFAULT: write revision 1, synth/plan it, assert its structural facts, run
+# step 01's static tiers -- no deploy, but AWS is still reachable: the plan
+# and static_tiers.sh's own `aws sts get-caller-identity` preflight resolve
+# against the staged trial credentials, or against gates/aws_stub.py when a
+# host gate runs this.
 # LIVE=1: really deploy revision 1 and poll both routes via step 01's own
 # tests/live_check.py --expect ok. Manual proof shape only -- the trial has
 # the AGENT deploy (see the audit doc §3) -- and it cleans up after itself.

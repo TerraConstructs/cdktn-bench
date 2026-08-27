@@ -84,8 +84,8 @@ bash tests/static_tiers.sh 2>&1 | tee "$LOG"
 
 # --- the self-proof --------------------------------------------------------
 # Never treat a run-invalidating test-infrastructure condition as evidence
-# (SCHEMA.md §2.7's own "TF-PLAN FAILED / MISSING ARTIFACT / mock-STS bail-out"
-# rule). If terraform never planned, this fixture proved nothing at all.
+# (SCHEMA.md §2.7's own "TF-PLAN FAILED / MISSING ARTIFACT" rule). If
+# terraform never planned, this fixture proved nothing at all.
 proof_failed() {
   echo "FIXTURE SELF-PROOF FAILED: $1" >&2
   rm -f /logs/verifier/reward.txt

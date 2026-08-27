@@ -6,8 +6,7 @@
 # file wholesale per scenario — it is the ONLY file in this workspace the
 # agent is expected to (fully) rewrite.
 #
-# The provider block + skip_*/dummy-credential fixture the offline
-# `terraform plan` needs live in ./provider.tf instead, on purpose: this
+# The provider bootstrap lives in ./provider.tf instead, on purpose: this
 # file is fully rewritten by a normal agent solution (there is no reason
 # for hand-written HCL to preserve boilerplate the agent never authored and
 # the instruction never mentions), so anything an agent might legitimately

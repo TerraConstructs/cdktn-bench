@@ -33,7 +33,8 @@
 # "the classic aws_api_gateway_deployment footgun" for hand-written HCL,
 # specialized to the redeploy-on-change (not first-deploy) failure mode.
 #
-# Same OFFLINE/LIVE switch as solution/solve.sh (see that file's header).
+# Same LIVE switch as solution/solve.sh (see that file's header): the
+# default run stops at `terraform plan`, LIVE=1 really applies.
 # LIVE mode here is expected to demonstrate the FAILURE (200/200/404 on
 # hello/version/status after the second apply, not a script bug) --
 # this file still exits non-zero on that outcome (a "did the trap fire"
@@ -56,10 +57,10 @@ JS
   ( cd lambda-src && cp version.js index.js && zip -q -X ../lambda/version.zip index.js && rm index.js )
 }
 
-# Finding G2 fix (benchmark-integrity review, 2026-08-07): no longer
-# hand-rolls its own provider.tf -- see solution/solve.sh's identical
-# comment. The SEEDED ./provider.tf is live-aware via
-# `var.cdktn_bench_live` on its own now.
+# This script writes no provider.tf of its own -- same rule as
+# solution/solve.sh. The SEEDED ./provider.tf is not agent-owned and
+# carries a bare `provider "aws"` block that resolves ambient AWS
+# credentials.
 
 write_rev1() {
   cat > main.tf <<'TF'
@@ -439,9 +440,6 @@ if [ "$LIVE" != "1" ]; then
 fi
 
 echo "== LIVE mode: demonstrate the trap -- expect /status to stay non-200 across a full poll window after the second apply, despite apply exiting 0 =="
-# Finding G2 fix: real credentials, no provider.tf edit -- see
-# solution/solve.sh's identical comment.
-export TF_VAR_cdktn_bench_live=1
 write_lambda_zips
 
 # Cleanup on ANY exit path -- same finding-7 fix as solution/solve.sh.

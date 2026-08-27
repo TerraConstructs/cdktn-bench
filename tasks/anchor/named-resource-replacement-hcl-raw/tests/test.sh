@@ -73,6 +73,25 @@ fi
 "$DIR/static_tiers.sh"
 rc=$?
 
+# AWS UNAVAILABLE => THE ROW IS VOID, NOT A ZERO. static_tiers.sh
+# preflights `aws sts get-caller-identity` on the Terraform-shaped arms
+# and drops this marker when there is no working credential chain
+# (gen.py::build_static_tiers_sh). A nonzero rc from static_tiers.sh
+# does NOT stop this script, and every block below it writes
+# /logs/verifier/reward.txt on a gating failure -- so without this
+# short-circuit a broken credential chain would score 0.0, i.e. an
+# infrastructure failure wearing the costume of a wrong answer. Exit
+# here instead, before any reward file exists, so harbor's own
+# RewardFileNotFoundError aborts the trial as INVALID -- the same
+# contract as the SPEC_SEED_DEPLOY_REQUIRED guard above.
+if [ -f /logs/verifier/aws-unavailable ]; then
+  echo "AWS UNAVAILABLE: static_tiers.sh could not reach AWS -- see" >&2
+  echo "/logs/verifier/aws-unavailable. REFUSING TO GRADE: no reward file" >&2
+  echo "is written, so this trial reports as INVALID rather than as a score." >&2
+  rm -f /logs/verifier/reward.txt
+  exit 1
+fi
+
 if [ "${SPEC_LIVE_CHECK_ENABLED:-false}" = "true" ] \
    && [ -f "$DIR/live_check.py" ]; then
   # REGION (2026-08-25). The verifier container is handed

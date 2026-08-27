@@ -44,12 +44,11 @@
 #
 # --- OFFLINE vs. LIVE ------------------------------------------------------
 # Default (LIVE unset/0): write the final file, run the same
-# tests/static_tiers.sh a real trial's verifier runs. No AWS call of any kind.
-# LIVE=1: additionally export TF_VAR_cdktn_bench_live=1 so the SEEDED,
-# non-agent-owned ./provider.tf switches from its offline dummy-credential
-# fixture to real ambient credentials, run the two real applies described
-# above, and then assert the live oracle. This script never writes or edits
-# provider.tf -- exactly the constraint a real agent is under.
+# tests/static_tiers.sh a real trial's verifier runs.
+# LIVE=1: additionally run the two real applies described above against the
+# SEEDED, non-agent-owned ./provider.tf's ambient credentials, and then
+# assert the live oracle. This script never writes or edits provider.tf --
+# exactly the constraint a real agent is under.
 set -euo pipefail
 
 LIVE="${LIVE:-0}"
@@ -141,7 +140,6 @@ TF
 
 if [ "$LIVE" = "1" ]; then
   echo "== LIVE step 1/2: reset the destination bucket's ACL while ACLs are still enabled =="
-  export TF_VAR_cdktn_bench_live=1
   write_acl_reset
   terraform init -input=false
   terraform apply -input=false -auto-approve

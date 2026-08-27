@@ -184,21 +184,24 @@ instruction:
         # -refresh=false (B3 fix, DECISIONS.md Slice G amendment): this
         # scenario's own working tree, unlike every other spec's, can
         # legitimately have already been REAL-applied by the agent's own
-        # trial by the time this static tier runs offline against it
-        # (tests/test.sh runs static_tiers.sh, then live_check.py, both
-        # BEFORE the post-trial mutating reset tears anything down -- see
+        # trial by the time this static tier runs against it (tests/test.sh
+        # runs static_tiers.sh, then live_check.py, both BEFORE the
+        # post-trial mutating reset tears anything down -- see
         # verifier.live_check.concurrency_mode below and DECISIONS.md).
         # The leftover terraform.tfstate names a real REST API/Lambda/IAM
         # role; a default (refreshing) `terraform plan` re-contacts AWS to
-        # reconcile that state and 403s against this arm's own dummy
-        # provider credentials (provider.tf's default, unset
-        # cdktn_bench_live) -- a PERFECT solution would fail this offline
-        # tier for a reason that has nothing to do with its own
-        # correctness. `-refresh=false` makes the plan diff config against
-        # the LOCAL cached state only, with zero AWS calls -- exactly what
-        # an offline structural check needs, and a true no-op for every
-        # OTHER spec's tier (whose working tree never has prior state to
-        # begin with).
+        # reconcile that state -- harmless at real trial time (live AWS is
+        # the only trial mode, DECISIONS.md Amendment 32: the verifier
+        # carries real, ambient credentials, same as the agent), but this
+        # same static_tiers.sh also runs at the credential-free host gates
+        # (`gates/oracle_falsifiability.py` against `gates/aws_stub.py`,
+        # which answers only two operations) where a refresh would 403 and
+        # fail a PERFECT solution for a reason that has nothing to do with
+        # its own correctness. `-refresh=false` makes the plan diff config
+        # against the LOCAL cached state only, with zero AWS calls -- exactly
+        # what a credential-free structural check needs, and a true no-op
+        # for every OTHER spec's tier (whose working tree never has prior
+        # state to begin with).
         plan_command: >-
           terraform init && terraform validate && terraform plan -refresh=false -out=plan.tfplan
           && terraform show -json plan.tfplan > plan.json

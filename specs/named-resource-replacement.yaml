@@ -126,8 +126,9 @@ arms:
       Both were reproduced against a real `cdktn synth` + offline `terraform plan`
       before this spec was frozen. Also verified: the L2 Vpc emits a
       `data "aws_availability_zones"` lookup unless `availabilityZones` is given
-      explicitly, which cannot resolve under this arm's offline dummy credentials —
-      hence the pinned AZ in the seed.
+      explicitly, which the credential-free host gates cannot resolve —
+      `gates/aws_stub.py` answers only `sts:GetCallerIdentity` and
+      `states:ValidateStateMachineDefinition` — hence the pinned AZ in the seed.
 
 # ---------------------------------------------------------------------------
 # §2.7 workspace_seed — THE BROWNFIELD STARTING STATE
@@ -574,16 +575,16 @@ instruction:
           terraform init && terraform validate &&
           terraform plan -input=false -refresh=false -out=plan.tfplan &&
           terraform show -json plan.tfplan > plan.json
-        # §2.7.1. TF_VAR_cdktn_bench_live=1 is MANDATORY: provider.tf hardcodes
-        # dummy access_key/secret_key otherwise, and the AWS provider ranks an
-        # explicit access_key ABOVE every ambient credential source, so the seed
-        # apply would fail InvalidClientTokenId. State lands at
+        # §2.7.1. Live AWS is the only trial mode (DECISIONS.md Amendment 32):
+        # provider.tf carries no dummy access_key/secret_key to outrank the
+        # ambient credentials staged for pre_invoke, so the seed apply just
+        # uses them. State lands at
         # /app/project/terraform.tfstate — Terraform's implicit local backend
         # (provider.tf's `terraform {}` block declares no `backend` sub-block),
         # i.e. the agent's own cwd, which is the whole handoff.
         deploy_command: >-
-          TF_VAR_cdktn_bench_live=1 terraform init -input=false &&
-          TF_VAR_cdktn_bench_live=1 terraform apply -input=false -auto-approve
+          terraform init -input=false &&
+          terraform apply -input=false -auto-approve
     terraconstructs:
       language_line: "This workspace is a terraconstructs (TypeScript) app using its AWS L2 constructs."
       output_contract:
@@ -595,7 +596,7 @@ instruction:
         # ScenarioStack — NOT this spec's `id`. The two differ here BY DESIGN
         # (§0.1), and confusing them is a real shipped bug: this arm's
         # solution/solve.sh named `named-resource-replacement`, a stack that
-        # does not exist, so its LIVE=1 path cannot ever have worked.
+        # does not exist, so its deploy path cannot ever have worked.
         #
         # State does NOT land under cdktf.out/. cdktn's TerraformStack installs
         # a LocalBackend for any stack declaring no backend of its own, whose
@@ -604,12 +605,13 @@ instruction:
         #  packages/cdktn/src/terraform-stack.ts:340-341) — an ABSOLUTE path
         # baked into cdk.tf.json at synth time. So the seed's state lands at
         # /app/project/terraform.internal-services-network.tfstate, and every
-        # later synth from /app/project — live or offline, harness or agent —
-        # resolves that same file. CDKTN_BENCH_LIVE only strips the dummy
-        # credentials and the mock-STS endpoint from providerConfig; the backend
-        # is installed either way, which is what makes the handoff work.
+        # later synth from /app/project — harness or agent — resolves that
+        # same file regardless of credentials (live AWS is the only trial
+        # mode, DECISIONS.md Amendment 32; the backend is installed
+        # unconditionally by cdktn synth), which is what makes the handoff
+        # work.
         deploy_command: >-
-          CDKTN_BENCH_LIVE=1 npx cdktn deploy --auto-approve internal-services-network
+          npx cdktn deploy --auto-approve internal-services-network
 
 catches:
   - name: rename-replaces-an-in-use-security-group

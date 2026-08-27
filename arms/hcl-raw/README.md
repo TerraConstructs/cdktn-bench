@@ -114,19 +114,31 @@ falsified by the pinned provider".
 higher bar because the AWS provider has to *configure* a working SDK client, which by
 default makes a couple of real AWS API calls before it ever looks at your resources:
 
-| Call | Purpose | Suppressed by |
+| Call | Purpose | Answered by |
 | --- | --- | --- |
-| `sts:GetCallerIdentity` | validate the supplied credentials are real | `skip_credentials_validation = true` |
-| `sts:GetCallerIdentity` (again) | resolve the account id used to build ARNs | `skip_requesting_account_id = true` |
-| region-name validation against a partition list | reject typo'd regions early | `skip_region_validation = true` |
-| EC2 instance-metadata probe | opportunistic credential auto-discovery | `skip_metadata_api_check = true` |
+| `sts:GetCallerIdentity` | validate the supplied credentials are real | a real STS response |
+| `sts:GetCallerIdentity` (again) | resolve the account id used to build ARNs | a real STS response |
+| region-name validation against a partition list | reject typo'd regions early | the provider's built-in partition list |
+| EC2 instance-metadata probe | opportunistic credential auto-discovery | skipped once the chain has already resolved credentials |
 
-`environment/fixtures/main.tf` sets all four plus static dummy credentials
-(`access_key`/`secret_key`, never real). With those in place, **`terraform plan` for a
-brand-new resource with no prior state and no data sources also succeeds fully
-offline** — confirmed here the same way, `docker run --network none`. This is not a
-general guarantee, though: a config gains a real network dependency the moment it adds
-anything that has to *read* something from AWS to compute the plan —
+**`environment/workspace/provider.tf` answers all of that by having credentials, not by
+suppressing the calls.** It is a bare `provider "aws" { region default_tags }` block with
+no `access_key`/`secret_key` and no `skip_*` flag of any kind, so the AWS SDK's default
+credential chain resolves whatever the surrounding context stages: in a trial, the real
+per-task credentials aws-bench exports for the agent, `pre_invoke` and verifier phases;
+in a host gate, `gates/aws_stub.py` on loopback via `AWS_ENDPOINT_URL` (it answers
+`sts:GetCallerIdentity` and `states:ValidateStateMachineDefinition`, and 400s anything
+else). Live AWS is the only trial mode — `DECISIONS.md` Amendment 32, design in
+`aws-access.html`. Do not add a `skip_*` flag, a dummy key, or an `endpoints` block to
+this file.
+
+The `skip_*` flags and the static dummy `access_key`/`secret_key` live in exactly one
+place: `environment/fixtures/main.tf`, the **image-build-time preflight fixture**, which
+must plan with no network at all (`docker run --network none`, confirmed here) because
+image builds have no account. With all four flags set, **`terraform plan` for a
+brand-new resource with no prior state and no data sources succeeds fully offline**.
+That is not a general guarantee, though: a config gains a real network dependency the
+moment it adds anything that has to *read* something from AWS to compute the plan —
 
 - a `data "aws_*"` source (AMI lookup, existing VPC, current caller identity via the
   `aws_caller_identity` data source, etc.),
@@ -142,25 +154,27 @@ anything that has to *read* something from AWS to compute the plan —
   `terraform plan` for this resource type fails offline with
   `UnrecognizedClientException: The security token included in the request is
   invalid` against real AWS, confirmed against the pinned `hashicorp/aws 6.58.0`
-  (unresolved upstream: `hashicorp/terraform-provider-aws` issue #39472). Fixed the
-  same way `arms/terraconstructs`' `mock-sts.js` fixes its own analogous
-  `data "aws_caller_identity"` gap: `environment/workspace/provider.tf`'s
-  `endpoints { sfn = "http://127.0.0.1:17772" }` points at
-  `environment/workspace/mock-sfn.py` (Python stdlib `http.server`, since this
-  arm's image has no `node` — `python3` was added to `environment/Dockerfile`
-  specifically for this fixture), started/stopped around the whole `plan_command`
-  chain by `generator/gen.py::build_static_tiers_sh`'s hcl_raw branch. Harmless
-  no-op for every scenario that never touches `aws_sfn_state_machine`.
+  (unresolved upstream: `hashicorp/terraform-provider-aws` issue #39472) — irrelevant
+  to a generated task's own workspace, which always plans/applies with real ambient
+  credentials against real AWS (see below), so the call just succeeds.
 
-For scenario/task authoring downstream of this arm: keep `plan`-tier oracle fixtures to
-new-resource, no-data-source configs (as here) if the offline guarantee needs to hold;
-anything else needs either a reachable AWS account, a mocked endpoint (see the
-`aws_sfn_state_machine` case above for the pattern), or accepts `plan` as
-network-dependent and gates on `validate` alone.
+This offline-plan gap only bears on `environment/fixtures/main.tf`, the image-build-time
+preflight fixture — it has no `aws_sfn_state_machine`, so it never hits this call, and
+stays fully offline. It does **not** bear on a generated task's own workspace: trial-time
+`terraform plan`/`apply` there always runs against live AWS with real ambient
+credentials (see "Generated-task workspace split" below), so a real
+`states:ValidateStateMachineDefinition` call succeeds like any other AWS API call.
 
-`terraform apply` is out of scope for this arm — never invoked in `preflight.sh`, no
-credentials in the image are real, and the build plan (`docs/iac-abstraction-aws-bench-plan.md`
-§Phase 2) only requires `validate` + `plan`, no deploy.
+For scenario/task authoring downstream of this arm: keep the build-time preflight
+fixture to new-resource, no-data-source configs (as here) if its offline guarantee needs
+to hold; a generated task's own workspace has no such constraint — it plans/applies
+against a real account.
+
+`terraform apply` is out of scope for the build-time preflight fixture specifically —
+never invoked in `preflight.sh`, no credentials in the image are real. A generated
+task's own workspace is a different story: a mutating scenario's `solve.sh` and the
+live-check verifier both run `terraform apply` against a real account with real
+ambient credentials.
 
 ## Generated-task workspace split (Slice C generator, fixed 2026-08-06)
 
@@ -171,27 +185,22 @@ credentials in the image are real, and the build plan (`docs/iac-abstraction-aws
   skeleton, and a normal agent solution rewrites it wholesale too — there is no
   reason for hand-written HCL to preserve boilerplate it never authored and the
   instruction never mentions.
-- `provider.tf` — the offline provider bootstrap (`terraform {}` / `provider "aws"
-  {}` block + the four `skip_*` flags + dummy credentials from "What `terraform
-  plan` needs" above). **Not** agent-owned: byte-copied unmodified into every
-  generated task (never regenerated per scenario, never listed as `entry_file`),
-  and the generated instruction text tells the agent not to modify it — in every
-  step's `instruction.md` on a multi-step task, which has no root one.
+- `provider.tf` — the provider bootstrap: just `terraform {}` (pinned
+  `hashicorp/aws` 6.58.0) and a bare `provider "aws" { region = "us-east-1"
+  default_tags {...} }`, no explicit credentials of any kind — the AWS provider's
+  own default credential chain resolves the ambient credentials aws-bench stages
+  for the trial. **Not** agent-owned: byte-copied unmodified into every generated
+  task (never regenerated per scenario, never listed as `entry_file`), and the
+  generated instruction text tells the agent not to modify it — in every step's
+  `instruction.md` on a multi-step task, which has no root one.
 
-This split exists because the two used to be one file (the provider block at the
-top of `main.tf`). A normal agent solution that fully rewrites `main.tf` from
-scratch — completely reasonable behavior; the instruction never mentions the
-fixture and an agent has no reason to preserve boilerplate it didn't write —
-silently deleted the `skip_*`/dummy-credential lines along with it, and
-`terraform plan` then failed offline with `Error: No valid credential sources
-found` **even for an otherwise-correct solution**, scoring it 0.0. Reproduced
-before the fix: a bare, oracle-correct `main.tf` (three resources, no provider
-block) against the pre-split single-file workspace fails `terraform plan` with
-exactly that error; the same `main.tf` against the split workspace (`provider.tf`
-untouched alongside it) plans successfully. Splitting the fixture into a file the
-generator never treats as `entry_file` makes this failure mode structurally
-impossible — the file the agent both fully owns and fully rewrites is no longer
-the same file the offline-plan fixture lives in.
+The split matters for the same reason regardless of what `provider.tf` contains: a
+normal agent solution that fully rewrites `main.tf` from scratch — completely
+reasonable behavior; the instruction never mentions the bootstrap and an agent has
+no reason to preserve boilerplate it didn't write — must never be able to delete
+the provider block by rewriting its own entry file. Splitting the bootstrap into a
+file the generator never treats as `entry_file` makes that failure mode
+structurally impossible.
 
 ## Build + verify locally
 

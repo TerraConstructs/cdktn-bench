@@ -63,7 +63,7 @@ if [ "${LIVE:-0}" = "1" ]; then
   # harness-deployed seed already makes `fail_stale` true by construction.
   DEPLOY_LOG=/tmp/lambda-alias-broken-terraconstructs.log
   set +e
-  CDKTN_BENCH_LIVE=1 npx cdktn deploy --auto-approve quote-service > "$DEPLOY_LOG" 2>&1
+  npx cdktn deploy --auto-approve quote-service > "$DEPLOY_LOG" 2>&1
   deploy_rc=$?
   set -e
   cat "$DEPLOY_LOG"

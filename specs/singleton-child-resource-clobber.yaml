@@ -563,9 +563,11 @@ instruction:
         # `-refresh=false` is MANDATORY on a workspace_seed spec and the
         # generator hard-errors without it (§2.7.1 hard error 7,
         # Spec._brownfield_plan_must_not_refresh). With state present in
-        # /app/project — which the seed deploy puts there by design — an
-        # offline verifier plan would REFRESH through provider.tf's dummy
-        # credentials and die with PLAN FAILED, scoring a perfect solution 0.0.
+        # /app/project — which the seed deploy puts there by design — a plan
+        # would REFRESH every seeded resource through AWS, and this same
+        # static_tiers.sh also runs at the credential-free host gates against
+        # gates/aws_stub.py, which answers exactly two operations: there the
+        # refresh dies with PLAN FAILED, scoring a perfect solution 0.0.
         # Grading is unaffected: every tf_jsonpath here reads
         # $.planned_values, which carries the full desired end state of every
         # resource rather than a changeset.
@@ -573,15 +575,15 @@ instruction:
           terraform init && terraform validate &&
           terraform plan -input=false -refresh=false -out=plan.tfplan &&
           terraform show -json plan.tfplan > plan.json
-        # §2.7.1. TF_VAR_cdktn_bench_live=1 is MANDATORY: provider.tf hardcodes
-        # dummy access_key/secret_key otherwise, and the AWS provider ranks an
-        # explicit access_key above every ambient credential source, so the
-        # seed apply would fail InvalidClientTokenId. State lands at
+        # §2.7.1. Live AWS is the only trial mode (DECISIONS.md Amendment 32):
+        # provider.tf carries no dummy access_key/secret_key to outrank the
+        # ambient credentials staged for pre_invoke, so the seed apply just
+        # uses them. State lands at
         # /app/project/terraform.tfstate (the implicit local backend), i.e. the
         # agent's own cwd, which is the whole handoff.
         deploy_command: >-
-          TF_VAR_cdktn_bench_live=1 terraform init -input=false &&
-          TF_VAR_cdktn_bench_live=1 terraform apply -input=false -auto-approve
+          terraform init -input=false &&
+          terraform apply -input=false -auto-approve
         json_fields: []
     terraconstructs:
       language_line: "This workspace is a terraconstructs (TypeScript) app using its AWS L2 constructs."
@@ -593,13 +595,13 @@ instruction:
         # construct id environment/app/main.ts passes to ScenarioStack — NOT
         # this spec's `id`. The two differ here BY DESIGN (§0.1), and confusing
         # them is a real shipped bug on the template scenario (its solve.sh
-        # named a stack that does not exist, so its LIVE=1 path could never
+        # named a stack that does not exist, so its deploy path could never
         # have worked). State lands at
         # /app/project/terraform.reports-archive.tfstate — an ABSOLUTE path
         # baked into cdk.tf.json at synth time by cdktn's default LocalBackend,
         # NOT under cdktf.out/.
         deploy_command: >-
-          CDKTN_BENCH_LIVE=1 npx cdktn deploy --auto-approve reports-archive
+          npx cdktn deploy --auto-approve reports-archive
         json_fields: []
 
 catches:

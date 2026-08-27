@@ -36,7 +36,14 @@ be sure that is what you have.
 > the N arm tasks it generates; there are as many of these as there are
 > spec files. `anchor` deploys almost nothing (one SSM parameter + two IAM
 > roles, §2) because it exists only to satisfy aws-bench's requirement that
-> every task have a member account — cdktn-bench itself grades offline. See
+> every task have a member account — cdktn-bench's own grading deploys
+> almost nothing of its own. It is **not** credential-free, though: since
+> DECISIONS.md Amendment 32 there is one trial mode, live, and even the
+> static tiers need working AWS credentials (the generated
+> `tests/static_tiers.sh` preflights `aws sts get-caller-identity` on both
+> Terraform-shaped arms and voids the row via `run_invalid` if it fails).
+> aws-bench stages those for every phase in a trial; host-side gates and
+> `make seed-parity` get them from `gates/aws_stub.py` instead. See
 > `ROADMAP.md` M7 for when a *second* aws-bench scenario would become
 > necessary.
 
@@ -314,11 +321,15 @@ rule.
     toolchain report a converged state against what it deployed". It is
     **live-only by necessity**, not by preference: a static tier plans an
     empty directory, and `terraform plan -detailed-exitcode` is always `2`
-    against empty state, so no meaningful second-plan signal exists offline.
-    `idempotence.enabled` therefore *requires* `live_check.enabled`. It is
-    gating and fail-closed (both `pending_changes` and `not_verifiable`
-    downgrade to `0.0`), and offline it is **skipped with a recorded reason,
-    never fake-passed**. Per-arm commands are injected by the generator and
+    against empty state, so no meaningful second-plan signal exists in a
+    static tier. `idempotence.enabled` therefore *requires*
+    `live_check.enabled`. It is gating and fail-closed (both
+    `pending_changes` and `not_verifiable` downgrade to `0.0`), and where no
+    live tier runs it is **skipped with a recorded reason, never
+    fake-passed**. ("Static" vs "live" is the *tier* axis here, not a
+    credential mode: the static tiers run against real AWS too — staged
+    credentials in a trial, `gates/aws_stub.py` in the host gates —
+    Amendment 32.) Per-arm commands are injected by the generator and
     are deliberately not a spec key — see §6.5 item 7.
   - Cleanup story: **you do not need a scenario-specific `reset/reset.sh`.**
     Two independent live proofs (`DECISIONS.md` Amendments 17/18,
@@ -734,7 +745,8 @@ Everything in §§1–6 still applies. These are the **additional** obligations:
    `not_exists` assert on it would have been a dead path that passes on a
    broken solution and a fixed one alike. If it is invisible, tier the catch
    `"live"` and make its negative fixture **mechanically demonstrate** the
-   indistinguishability offline (print `CDKTN_BENCH_LIVE_ONLY_CONFIRMED` only
+   indistinguishability in the static tiers (print
+   `CDKTN_BENCH_LIVE_ONLY_CONFIRMED` only
    after proving it), so a future toolchain release that changes the answer
    turns the gate red instead of letting the claim rot.
 
@@ -746,7 +758,8 @@ Everything in §§1–6 still applies. These are the **additional** obligations:
 
    - **It is live-only by necessity.** A static tier plans an empty directory,
      and `terraform plan -detailed-exitcode` returns `2` against empty state
-     unconditionally, so no meaningful second-plan signal can exist offline.
+     unconditionally, so no meaningful second-plan signal can exist in a
+     static tier.
      `idempotence.enabled` therefore *requires* `live_check.enabled`.
    - **It is gating and fail-closed** — both `pending_changes` and
      `not_verifiable` downgrade the reward to `0.0`, on the same reasoning §3

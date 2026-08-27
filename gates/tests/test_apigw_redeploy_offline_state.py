@@ -1,18 +1,18 @@
 """gates/tests/test_apigw_redeploy_offline_state.py -- regression test for
 B3 (CONTEXT's "Slice G fix round" naming): RESIDUAL TERRAFORM STATE BREAKS
-THE OFFLINE STATIC TIER.
+THE STATIC TIER.
 
 The bug: after a real live `terraform apply` (this scenario's whole point --
 see specs/apigw-redeploy.yaml), the working tree's `terraform.tfstate` (or,
 on terraconstructs, `cdktf.out/stacks/hello-version-api/terraform.tfstate`)
 names a REAL, previously-applied REST API/Lambda/IAM role. `tests/
-static_tiers.sh` then runs `terraform init && terraform plan` OFFLINE
-(dummy provider credentials, no network) to grade the FINAL delivered file
--- by DEFAULT, `terraform plan` refreshes every resource already tracked in
-state, which means a real `GetRestApi`/`GetFunction` call against AWS,
-which fails offline (network error, or a 403 against the dummy
-credentials) -- scoring a PERFECT solution reward 0.0 for a reason that has
-nothing to do with its own correctness. The fix (DECISIONS.md Slice G
+static_tiers.sh` then runs `terraform init && terraform plan` to grade the
+FINAL delivered file -- and by DEFAULT, `terraform plan` refreshes every
+resource already tracked in state, which means a real
+`GetRestApi`/`GetFunction` call per resource. That makes the grade depend
+on whether those previously-applied resources still exist and answer, not
+on the delivered file: a PERFECT solution scores reward 0.0 for a reason
+that has nothing to do with its own correctness. The fix (DECISIONS.md Slice G
 amendment): `-refresh=false` on this scenario's `terraform plan` invocation
 (both hcl_raw's spec-level `plan_command` and terraconstructs' generator-
 hardcoded tf-plan step, gen.py's `build_static_tiers_sh`), gated on
@@ -26,10 +26,11 @@ real, deep proof: stages a sandbox with the CORRECT solution's final
 from this exact provider version's own `terraform providers schema -json`
 output, not guessed field names), and proves BOTH directions:
   (a) the CURRENT (fixed) generated tests/static_tiers.sh reaches reward
-      1.0 despite the residual state, with AWS credential env vars scrubbed
-      (so a regression that silently reintroduced a live network dependency
-      would fail loudly here, not pass by accident against a developer's
-      own ambient credentials);
+      1.0 despite the residual state, with every AWS call pointed at
+      `gates/aws_stub.py` (which answers `sts:GetCallerIdentity` and 400s
+      everything else), so a regression that reintroduced a refresh call
+      fails loudly here instead of passing by accident against a
+      developer's own ambient credentials;
   (b) reverting the fix (stripping `-refresh=false` back out, simulating
       the pre-fix generated script) makes the SAME sandbox+state FAIL --
       proving this fixture genuinely exercises the refresh code path
@@ -57,7 +58,6 @@ precedent).
 from __future__ import annotations
 
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -75,6 +75,8 @@ SPEC_PATH = REPO_ROOT / "specs" / "apigw-redeploy.yaml"
 sys.path.insert(0, str(REPO_ROOT / "generator"))
 from gen import ARM_WORKSPACE_SUBDIR, task_dir  # noqa: E402
 from spec_model import load_spec  # noqa: E402
+
+from gates.aws_stub import running_stub  # noqa: E402
 
 requires_hcl_raw_toolchain = pytest.mark.skipif(
     find_tool("terraform") is None or find_tool("jq") is None,
@@ -348,36 +350,33 @@ def _write_residual_rest_api_state(project: Path, schema_path: Path) -> None:
     (project / "terraform.tfstate").write_text(json.dumps(state, indent=2))
 
 
-def _clean_aws_env() -> dict:
-    """A subprocess env with every AWS credential/profile var scrubbed --
-    the sandbox must pass on the fix's own merits (`-refresh=false`), not
-    because it happened to inherit real credentials from the host shell."""
-    env = dict(os.environ)
-    for k in list(env):
-        if k.startswith("AWS_"):
-            del env[k]
-    return env
-
-
 @requires_hcl_raw_toolchain
 def test_hcl_raw_residual_state_does_not_break_static_tier_offline() -> None:
     spec = load_spec(SPEC_PATH)
     assert spec.verifier.live_check.enabled, "this test only makes sense for the live-check-enabled spec"
 
-    with tempfile.TemporaryDirectory(prefix="apigw-redeploy-b3-") as tmp_s:
+    with tempfile.TemporaryDirectory(prefix="apigw-redeploy-b3-") as tmp_s, running_stub() as env:
+        # Live AWS is the only trial mode (aws-access.html): the generated
+        # static_tiers.sh opens with an `aws sts get-caller-identity`
+        # preflight, and the aws provider's own STS/data-source calls are
+        # real requests. `env` (gates/aws_stub.py::running_stub()) is the
+        # credential-free stand-in: it answers GetCallerIdentity and 400s
+        # everything else, so a refresh call against a resource in state
+        # (this test's whole point, part (b) below) still fails for real,
+        # without needing an operator's own ~/.aws credentials.
         tmp = Path(tmp_s)
         project = _stage_hcl_raw_sandbox(tmp, spec)
 
         # `terraform init` first (needed either way, to fetch/mirror the
         # provider and to compute `terraform providers schema -json`).
         init = subprocess.run(
-            ["terraform", "init", "-input=false"], cwd=project, capture_output=True, text=True, env=_clean_aws_env(),
+            ["terraform", "init", "-input=false"], cwd=project, capture_output=True, text=True, env=env,
         )
         assert init.returncode == 0, f"terraform init failed:\n{init.stdout}\n{init.stderr}"
 
         schema_json = project / "_schema.json"
         schema_proc = subprocess.run(
-            ["terraform", "providers", "schema", "-json"], cwd=project, capture_output=True, text=True, env=_clean_aws_env(),
+            ["terraform", "providers", "schema", "-json"], cwd=project, capture_output=True, text=True, env=env,
         )
         assert schema_proc.returncode == 0, schema_proc.stderr
         schema_json.write_text(schema_proc.stdout)
@@ -394,10 +393,10 @@ def test_hcl_raw_residual_state_does_not_break_static_tier_offline() -> None:
         )
 
         # (a) THE FIX: current (generated) static_tiers.sh, with the residual
-        # state present and AWS credentials scrubbed, must still reach
-        # reward 1.0.
+        # state present and only the credential-free stub reachable, must
+        # still reach reward 1.0.
         proc = subprocess.run(
-            ["bash", str(static_tiers)], cwd=project, capture_output=True, text=True, env=_clean_aws_env(),
+            ["bash", str(static_tiers)], cwd=project, capture_output=True, text=True, env=env,
         )
         reward_file = tmp / "logs" / "verifier" / "reward.txt"
         assert reward_file.exists(), f"no reward.txt written; stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"
@@ -412,21 +411,25 @@ def test_hcl_raw_residual_state_does_not_break_static_tier_offline() -> None:
         # out, simulating the pre-fix generated script) against the exact
         # same sandbox+state -- this must now FAIL, proving (a) wasn't a
         # vacuous pass (e.g. terraform silently ignoring the malformed
-        # state regardless of the flag).
+        # state regardless of the flag). The stub answers only
+        # GetCallerIdentity/ValidateStateMachineDefinition, so the REST API
+        # refresh this triggers still hits a real (400) error -- the
+        # network dependency (a two-service-away call, not a credential
+        # gap) is what this negative control exercises either way.
         reverted_text = fixed_text.replace(" -refresh=false", "")
         assert reverted_text != fixed_text, "the -refresh=false string substitution did not change anything"
         static_tiers.write_text(reverted_text)
         reward_file.unlink()
 
         proc2 = subprocess.run(
-            ["bash", str(static_tiers)], cwd=project, capture_output=True, text=True, env=_clean_aws_env(),
+            ["bash", str(static_tiers)], cwd=project, capture_output=True, text=True, env=env,
         )
         assert reward_file.exists(), f"no reward.txt written on the reverted run; stdout:\n{proc2.stdout}"
         reward2 = float(reward_file.read_text().strip())
         assert reward2 == 0.0, (
             "negative control failed: reverting -refresh=false against the "
-            "SAME residual state was expected to score 0.0 (a real offline "
-            "network/credential failure during refresh) -- if this now also "
+            "SAME residual state was expected to score 0.0 (the refresh "
+            "call is rejected by the stub) -- if this now also "
             "scores 1.0, the fixture no longer exercises the refresh code "
             f"path and this test is not proving anything. stdout:\n{proc2.stdout[-4000:]}"
         )
@@ -446,7 +449,13 @@ def test_terraconstructs_static_tiers_sh_has_refresh_false() -> None:
         "build_static_tiers_sh, gated on spec.verifier.live_check.enabled"
     )
 
-    with tempfile.TemporaryDirectory(prefix="apigw-redeploy-b3-tc-") as tmp_s:
+    with tempfile.TemporaryDirectory(prefix="apigw-redeploy-b3-tc-") as tmp_s, running_stub() as env:
+        # Live AWS is the only trial mode (aws-access.html): cdktn synth
+        # emits `data.aws_caller_identity`/`data.aws_partition` unconditionally
+        # (see the large comment this test's own module docstring quotes),
+        # and the generated static_tiers.sh opens with an `aws sts
+        # get-caller-identity` preflight -- both need somewhere real (if
+        # credential-free) to resolve against, hence the stub.
         tmp = Path(tmp_s)
         project = tmp / "project"
         logs = tmp / "logs" / "verifier"
@@ -466,7 +475,7 @@ def test_terraconstructs_static_tiers_sh_has_refresh_false() -> None:
         (project / "lib" / "scenario-stack.ts").write_text(m.group(1) + "\n")
 
         subprocess.run(
-            ["npm", "ci", "--no-audit", "--no-fund"], cwd=project, check=True, capture_output=True, text=True,
+            ["npm", "ci", "--no-audit", "--no-fund"], cwd=project, env=env, check=True, capture_output=True, text=True,
         )
 
         static_tiers = project / "tests" / "static_tiers.sh"
@@ -476,7 +485,7 @@ def test_terraconstructs_static_tiers_sh_has_refresh_false() -> None:
         static_tiers.write_text(text)
 
         proc = subprocess.run(
-            ["bash", str(static_tiers)], cwd=project, capture_output=True, text=True, env=_clean_aws_env(),
+            ["bash", str(static_tiers)], cwd=project, capture_output=True, text=True, env=env,
         )
         reward_file = logs / "reward.txt"
         assert reward_file.exists(), f"no reward.txt written; stdout:\n{proc.stdout}\nstderr:\n{proc.stderr}"

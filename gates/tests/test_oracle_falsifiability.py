@@ -16,8 +16,8 @@ this test RED instead of staying silently green forever, which is exactly
 what let F1 ship unnoticed the first time.
 
 Requires the real per-arm toolchain on PATH (terraform + jq for hcl_raw --
-deliberately the arm exercised here, since it needs neither `npm ci` nor
-mock-STS/cdktn synth, keeping this test's runtime and dependency footprint
+deliberately the arm exercised here, since it needs neither `npm ci` nor a
+cdktn synth, keeping this test's runtime and dependency footprint
 the smallest of the three arms) and network the first time `terraform
 init` needs to download the `hashicorp/aws` provider (same host-toolchain
 assumption as `make falsifiability` / `make check-paths` --

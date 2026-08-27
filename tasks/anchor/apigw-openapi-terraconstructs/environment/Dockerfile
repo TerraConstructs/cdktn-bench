@@ -137,14 +137,8 @@ COPY app/main.ts ./main.ts
 # lib/scenario-stack.ts is output_contract.entry_file (specs/SCHEMA.md
 # §2.4) -- the agent-owned resource file, split out of main.ts so a normal
 # agent solution can fully rewrite it without touching the App/provider
-# bootstrap in main.ts (which carries the mock-STS endpoints config below
-# -- see ../../DECISIONS.md "terraconstructs offline `terraform plan` needs
-# a mocked STS endpoint" and ../README.md "Generated-task workspace split").
+# bootstrap in main.ts -- see ../README.md "Generated-task workspace split".
 COPY app/lib ./lib
-# Offline STS mock generator/gen.py's tf-plan step starts before `terraform
-# plan` -- see mock-sts.js's own header comment and DECISIONS.md
-# "terraconstructs offline `terraform plan` needs a mocked STS endpoint".
-COPY app/mock-sts.js ./mock-sts.js
 
 # --- bake the TypeScript compile once, at image-build time ---
 # cdktf.json's app command is now `npx tsc -p tsconfig.json && node main.js`

@@ -35,9 +35,7 @@ complete; it is not part of your task.
 
 Author this using terraconstructs (TypeScript) L2 constructs, synthesized via cdktn. Deploy for real with `terraform apply` against the synthesized stack.
 
-You own only `lib/scenario-stack.ts` in this workspace -- write your entire solution there. Do not create, modify, or delete `main.ts`: it is a pre-wired bootstrap file (app entrypoint / offline provider config) that synth/plan depends on and is not part of what you are being asked to write.
-
-Real deploy note: `main.ts` (which you must not edit, see above) defaults to an offline fixture with dummy AWS credentials -- before running your REAL deploy command, export `CDKTN_BENCH_LIVE=1` in your shell so `main.ts` uses this environment's real ambient AWS credentials instead. This is a normal environment variable, not a change to `main.ts` itself.
+You own only `lib/scenario-stack.ts` in this workspace -- write your entire solution there. Do not create, modify, or delete `main.ts`: it is a pre-wired bootstrap file (app entrypoint / provider config) that synth/plan depends on and is not part of what you are being asked to write.
 
 IMPORTANT: Write your final answer to `/logs/agent/agent-output.txt`.
 

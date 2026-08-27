@@ -33,19 +33,18 @@
 #
 # One more arm-specific fact, load-bearing and easy to lose: the L2 `Vpc` emits
 # a `data "aws_availability_zones"` lookup unless `availabilityZones` is given
-# explicitly, and that lookup cannot resolve under this arm's offline
-# dummy-credential provider config. The seed pins the AZ for that reason; this
-# solution must keep it pinned or the graded `terraform plan` step fails for a
-# reason unrelated to the change.
+# explicitly, and that lookup is a live EC2 call the host gates' AWS stub
+# (gates/aws_stub.py) does not answer. The seed pins the AZ for that reason;
+# this solution must keep it pinned or the graded `terraform plan` step fails
+# for a reason unrelated to the change.
 #
 # --- OFFLINE vs. LIVE ------------------------------------------------------
 # Default (LIVE unset/0): write the file, run the same tests/static_tiers.sh a
-# real trial's verifier runs. No AWS call of any kind.
-# LIVE=1: additionally export CDKTN_BENCH_LIVE=1 so the SEEDED, non-agent-owned
-# ./main.ts switches from its offline dummy-credential/mock-STS fixture to real
-# ambient credentials, run a real deploy, and assert the live oracle. This
-# script never writes or edits main.ts -- exactly the constraint a real agent
-# solving this scenario is under.
+# real trial's verifier runs.
+# LIVE=1: additionally run a real deploy against the SEEDED, non-agent-owned
+# ./main.ts's ambient credentials, and assert the live oracle. This script
+# never writes or edits main.ts -- exactly the constraint a real agent solving
+# this scenario is under.
 set -euo pipefail
 
 LIVE="${LIVE:-0}"
@@ -117,7 +116,6 @@ TS
 
 if [ "$LIVE" = "1" ]; then
   echo "== LIVE: real cdktn deploy against this account =="
-  export CDKTN_BENCH_LIVE=1
   npx tsc -p tsconfig.json
   # The positional argument is the STACK id -- main.ts constructs
   # `new ScenarioStack(app, "internal-services-network", ...)`, i.e. the

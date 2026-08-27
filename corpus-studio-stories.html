@@ -1,0 +1,148 @@
+<title>Corpus Studio</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{--bg:#f5f7f9;--surface:#fff;--ink:#1a222c;--ink-2:#4a5561;--ink-3:#7a8591;--rule:#d9dee4;--accent:#0e6f6a;--accent-soft:#dcefed;--warn:#9a5b0b;--warn-soft:#f7ebd6;--bad:#a3282c;--bad-soft:#f6dedf;--good:#2f6b3a;--good-soft:#ddeede;--code-bg:#eef1f4}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#12171c;--surface:#1a2129;--ink:#e6eaee;--ink-2:#aab4be;--ink-3:#7d8893;--rule:#2c353f;--accent:#5cc3ba;--accent-soft:#173a38;--warn:#e2a54a;--warn-soft:#3a2a10;--bad:#ee8a8d;--bad-soft:#3d1c1e;--good:#8fcf9a;--good-soft:#1c3320;--code-bg:#0e1319}}
+:root[data-theme="dark"]{--bg:#12171c;--surface:#1a2129;--ink:#e6eaee;--ink-2:#aab4be;--ink-3:#7d8893;--rule:#2c353f;--accent:#5cc3ba;--accent-soft:#173a38;--warn:#e2a54a;--warn-soft:#3a2a10;--bad:#ee8a8d;--bad-soft:#3d1c1e;--good:#8fcf9a;--good-soft:#1c3320;--code-bg:#0e1319}
+body{background:var(--bg);color:var(--ink);font-family:"IBM Plex Sans",system-ui,sans-serif;font-size:16px;line-height:1.55;margin:0}
+main{max-width:80ch;margin:0 auto;padding:3rem 1.25rem 5rem}
+.eyebrow{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.75rem;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3)}
+h1{font-family:"Source Serif 4",Georgia,serif;font-weight:600;font-size:2.25rem;line-height:1.15;margin:.4rem 0 1rem;text-wrap:balance}
+h2{font-family:"Source Serif 4",Georgia,serif;font-weight:600;font-size:1.5rem;margin:3rem 0 .75rem}
+h3{font-size:1rem;font-weight:600;margin:1.5rem 0 .5rem}
+p{margin:0 0 1rem}.lede{font-size:1.15rem;color:var(--ink-2);font-family:"Source Serif 4",Georgia,serif}
+code{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.86em;background:var(--code-bg);padding:.05em .3em;border-radius:3px}
+pre{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.8rem;line-height:1.5;background:var(--code-bg);border:1px solid var(--rule);padding:.9rem 1rem;overflow-x:auto;margin:0 0 1rem}
+.tbl{overflow-x:auto;margin:0 0 1rem}table{border-collapse:collapse;width:100%;font-size:.88rem}
+th{text-align:left;font-weight:600;font-size:.76rem;letter-spacing:.04em;text-transform:uppercase;color:var(--ink-3);border-bottom:1px solid var(--ink-3);padding:.4rem .6rem .4rem 0;vertical-align:bottom}
+td{border-bottom:1px solid var(--rule);padding:.5rem .6rem .5rem 0;vertical-align:top}
+.tag{display:inline-block;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.7rem;padding:.1em .45em;border-radius:3px;white-space:nowrap}
+.gen{background:var(--warn-soft);color:var(--warn)}.hand{background:var(--good-soft);color:var(--good)}.shared{background:var(--accent-soft);color:var(--accent)}.ro{background:var(--code-bg);color:var(--ink-2)}
+.must{background:var(--bad-soft);color:var(--bad)}.should{background:var(--warn-soft);color:var(--warn)}.later{background:var(--code-bg);color:var(--ink-3)}
+.story{background:var(--surface);border:1px solid var(--rule);padding:.9rem 1rem;margin:0 0 .75rem}
+.story h4{margin:0 0 .35rem;font-size:.98rem;font-weight:600;display:flex;gap:.5rem;align-items:baseline;flex-wrap:wrap}
+.story h4 .id{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.75rem;color:var(--ink-3)}
+.story p{margin:0 0 .4rem}.story .acc{font-size:.86rem;color:var(--ink-2)}.story .acc b{color:var(--ink)}
+.story .src{font-size:.78rem;color:var(--ink-3);font-family:"IBM Plex Mono",ui-monospace,monospace}
+.callout{border-left:3px solid var(--accent);background:var(--surface);padding:.8rem 1rem;margin:1.25rem 0}
+ul,ol{padding-left:1.3rem;margin:0 0 1rem}li{margin-bottom:.3rem}
+.sources{font-size:.82rem;color:var(--ink-3);border-top:1px solid var(--rule);padding-top:1rem;margin-top:3rem}
+</style>
+<main>
+<div class="eyebrow">cdktn-bench · user stories for review · 2026-08-27</div>
+<h1>Corpus Studio</h1>
+<p class="lede">A scenario in cdktn-bench is one idea spread across seven places, three of them generated and four hand-authored, with the rules for which is which written in a 2,400-line schema. The editor's single job is to present a scenario as one object and route every edit to the file that owns it — never letting you type into something the generator will overwrite.</p>
+
+<h2>The map the editor has to internalise</h2>
+<p>This is the spread you lost track of. Every row is a place a scenario's truth lives; the editor shows them as one tree and labels each leaf by who owns it.</p>
+<div class="tbl"><table>
+<tr><th>Path</th><th>Owner</th><th>What lives there</th><th>How it changes</th></tr>
+<tr><td><code>specs/&lt;id&gt;.yaml</code></td><td><span class="tag hand">hand</span></td><td>The authoring unit: identity, arms, instruction, catches, oracle asserts, verifier flags, workspace_seed, steps, provenance</td><td>Edit; then <code>make gen SPEC=…</code></td></tr>
+<tr><td><code>specs/split.yaml</code></td><td><span class="tag gen">generated</span></td><td>train/holdout assignment per id</td><td><code>generator/split.py --write</code> + DECISIONS entry</td></tr>
+<tr><td><code>oracles/&lt;id&gt;/intent.md</code></td><td><span class="tag hand">hand</span></td><td>Grading intent in prose — what the catches mean</td><td>Edit</td></tr>
+<tr><td><code>oracles/rego/&lt;id&gt;/policy.rego</code> · <code>oracles/rego-cfn/&lt;id&gt;</code> · <code>oracles/cfn-guard/&lt;id&gt;</code></td><td><span class="tag hand">hand</span></td><td>Tier-1 policy per substrate (TF plan / CFN via Rego / CFN via cfn-guard)</td><td>Edit; proven by <code>make falsifiability</code></td></tr>
+<tr><td><code>tasks/anchor/&lt;id&gt;-&lt;arm&gt;/</code> (×3)</td><td><span class="tag gen">generated</span></td><td><code>task.toml</code>, <code>instruction.md</code>, <code>environment/</code> (the agent image), <code>tests/static_tiers.sh</code>, <code>tests/test.sh</code></td><td>Never edit; regenerate</td></tr>
+<tr><td><code>…/solution/solve.sh</code> · <code>…/solution/broken/&lt;catch&gt;/solve.sh</code></td><td><span class="tag hand">hand</span></td><td>Reference solution and one negative fixture per catch, per arm</td><td>Edit (generator preserves; <code>seed-unchanged</code> is the one generator-owned exception)</td></tr>
+<tr><td><code>…/tests/live_check.py</code> · <code>…/steps/&lt;n&gt;/…</code></td><td><span class="tag hand">hand</span></td><td>Behavioural oracle, byte-identical across arms; per-step equivalents for multi-step</td><td>Edit once, generator mirrors across arms</td></tr>
+<tr><td><code>scenarios/anchor/</code></td><td><span class="tag shared">shared</span></td><td>The aws-bench scenario: account state, deploy/cleanup, source hash</td><td>Edit; then <code>env setup</code></td></tr>
+<tr><td><code>arms/&lt;arm&gt;/</code></td><td><span class="tag shared">shared</span></td><td>Image contract, skeleton workspace copied into every task</td><td>Edit; <code>make build-arms</code>; equipping hash moves</td></tr>
+<tr><td><code>jobs/**/result.json</code> · <code>docs/live-results.md</code></td><td><span class="tag ro">read-only</span></td><td>Every trial's reward, tokens, turns, arm, model, validity</td><td>Produced by runs</td></tr>
+<tr><td><code>DECISIONS.md</code></td><td><span class="tag hand">hand</span></td><td>Append-only amendment log; the pre-registration discipline</td><td>Append only</td></tr>
+</table></div>
+
+<div class="callout">Two rules the editor must never let you break: <strong>generated files are display-only</strong> (the generator hard-errors if hand-authored content shows up where it must not), and <strong>anything under <code>environment/</code> or <code>instruction.md</code> is prompt surface</strong> — the agent sees it, so the spec's <code>id</code>/<code>title</code>/trap vocabulary must not leak there.</div>
+
+<h2>User stories</h2>
+<p>Numbered for reference only. Priority: <span class="tag must">must</span> is the minimum that solves "what to edit where"; <span class="tag should">should</span> makes authoring a loop instead of a checklist; <span class="tag later">later</span> is worth having once the first two exist.</p>
+
+<h3>A · Find and understand</h3>
+<div class="story"><h4><span class="id">A1</span> See the whole corpus at a glance <span class="tag must">must</span></h4>
+<p>As an author, I want the corpus-status summary (form, split, arms, tier counts, live history, last run) as the landing page, so I start from the same picture every time instead of rebuilding it from <code>ls</code>.</p>
+<p class="acc"><b>Accept:</b> one row per spec; columns sortable; stripe colour = measurement state; counts come from the spec + tasks + jobs, never hand-maintained.</p><p class="src">specs/*.yaml · tasks/anchor/*/task.toml · specs/split.yaml · jobs/**/result.json</p></div>
+
+<div class="story"><h4><span class="id">A2</span> Open a scenario and see every file that belongs to it <span class="tag must">must</span></h4>
+<p>As an author, I want a scenario page with a file tree grouped by owner (spec · oracle · per-arm hand-authored · generated · results · decisions), so I never have to remember whether the Rego is under <code>oracles/rego</code> or <code>oracles/rego-cfn</code>, or which <code>solve.sh</code> is mine.</p>
+<p class="acc"><b>Accept:</b> every path from the map above resolves or is shown as "missing"; generated leaves are visibly read-only; hand-authored leaves open in an editor; DECISIONS entries that mention the id are linked.</p><p class="src">the map</p></div>
+
+<div class="story"><h4><span class="id">A3</span> Read the spec as a form, not YAML <span class="tag must">must</span></h4>
+<p>As an author, I want the spec rendered section by section in SCHEMA order (identity → arms → instruction → catches → oracle → verifier → seed/steps → provenance), with each field's SCHEMA §-reference and default inline, so I read the rule where I read the value.</p>
+<p class="acc"><b>Accept:</b> every key in SCHEMA §0–§6 has a labelled slot; unknown keys are flagged; defaults are shown greyed when absent.</p><p class="src">specs/SCHEMA.md · generator/spec_model.py</p></div>
+
+<div class="story"><h4><span class="id">A4</span> See what the agent will actually see <span class="tag must">must</span></h4>
+<p>As an author, I want a per-arm "agent view": the rendered <code>instruction.md</code> and the workspace files as the container has them (entry file, bootstrap, seed, seeded files), so I can review prompt surface without opening three task directories.</p>
+<p class="acc"><b>Accept:</b> tabs per arm; per step for multi-step; a diff between arms highlights asymmetry; leak scan (id, title, deny vocab, trap words) runs on this view and lists hits by file:line.</p><p class="src">tasks/anchor/&lt;id&gt;-&lt;arm&gt;/instruction.md · environment/** · spec.agent_deny_vocab</p></div>
+
+<div class="story"><h4><span class="id">A5</span> See the catch → oracle → fixture chain <span class="tag must">must</span></h4>
+<p>As an author, I want each declared catch shown with the asserts that grade it (tier, per-arm jsonpath), the tier-1 policy that references it, and the <code>broken/&lt;catch&gt;/solve.sh</code> that proves it fires — per arm, with <code>applies_to</code> gaps marked N/A rather than blank — so I can see where coverage is decoration and where it is real.</p>
+<p class="acc"><b>Accept:</b> a catch with no broken fixture on an enabled arm is flagged; an assert that no catch references is flagged; last falsifiability outcome per cell if a run exists.</p><p class="src">spec.catches · spec.oracle.structural_asserts · oracles/rego* · solution/broken/**</p></div>
+
+<div class="story"><h4><span class="id">A6</span> See results in context <span class="tag should">should</span></h4>
+<p>As an author, I want every trial that touched this scenario (arm, model, reward, tokens, turns, validity, date, job dir) on the scenario page, with voided rows explained, so "has this ever been measured?" is answered where I am editing.</p>
+<p class="acc"><b>Accept:</b> rows link to the job directory; strata (greenfield / brownfield / multi-step) never pooled in one summary number.</p><p class="src">jobs/**/result.json · docs/live-results.md</p></div>
+
+<h3>B · Edit</h3>
+<div class="story"><h4><span class="id">B1</span> Edit spec fields with validation, save to YAML with comments intact <span class="tag must">must</span></h4>
+<p>As an author, I want to change instruction text, asserts, catches, verifier flags and arm enablement in the form and have the YAML rewritten with my comments preserved and key order stable, so the file stays reviewable in git.</p>
+<p class="acc"><b>Accept:</b> round-trip of every existing spec is byte-identical when nothing changed; <code>spec_model</code> validation errors shown at the field; save is a normal file write — git remains the undo.</p><p class="src">specs/&lt;id&gt;.yaml · generator/spec_model.py (ruamel round-trip)</p></div>
+
+<div class="story"><h4><span class="id">B2</span> Add an assert or a catch without reading §3–§4 again <span class="tag must">must</span></h4>
+<p>As an author, I want "add structural assert" to offer the op vocabulary, both jsonpath slots with the arm they feed, and the shape rules the gate enforces (no negative ops, jsonpath shape rule), so a rejected assert is rejected in the form, not by <code>make gen</code> ten minutes later.</p>
+<p class="acc"><b>Accept:</b> the same validation as spec load; a new catch scaffolds the <code>broken/&lt;catch&gt;/solve.sh</code> stubs per enabled arm.</p><p class="src">specs/SCHEMA.md §3–§4 · generator/spec_model.py</p></div>
+
+<div class="story"><h4><span class="id">B3</span> Edit hand-authored files in place, with the generator's ownership rules enforced <span class="tag must">must</span></h4>
+<p>As an author, I want to open <code>solve.sh</code>, <code>broken/*/solve.sh</code>, <code>live_check.py</code>, <code>intent.md</code> and <code>policy.rego</code> from the scenario page, so the per-arm hand-authored files are one click from the spec they implement.</p>
+<p class="acc"><b>Accept:</b> generated files open read-only with a "regenerate" affordance; <code>seed-unchanged/solve.sh</code> is shown as generator-owned; <code>live_check.py</code> edits are applied to every arm's copy (byte-identical rule).</p><p class="src">tasks/anchor/**/solution/** · tests/live_check.py · oracles/**</p></div>
+
+<div class="story"><h4><span class="id">B4</span> Author a new scenario from a guided skeleton <span class="tag should">should</span></h4>
+<p>As an author, I want "new scenario" to ask the form-defining questions first (greenfield / brownfield / multi-step; which arms; live check or static; mutating or read-only) and emit a spec with the required blocks for that form (<code>workspace_title</code>+<code>workspace_id</code> for brownfield and multi-step, <code>steps:</code> layout, <code>workspace_seed</code> with deploy), so the form-specific rules in CLAUDE.md are applied by construction.</p>
+<p class="acc"><b>Accept:</b> the skeleton passes <code>make validate-spec</code>; oracle and solution directories are created empty with the right names.</p><p class="src">docs/adding-scenarios.md · SCHEMA §2.6 §2.7</p></div>
+
+<div class="story"><h4><span class="id">B5</span> Edit the shared layers knowingly <span class="tag should">should</span></h4>
+<p>As an author, I want the arm skeletons and the aws-bench scenario shown as shared layers with a blast-radius note ("changes every task's environment hash", "requires <code>env setup</code>"), so I stop discovering that after a run fails.</p>
+<p class="acc"><b>Accept:</b> which specs are affected is listed before save.</p><p class="src">arms/** · scenarios/anchor/**</p></div>
+
+<h3>C · Generate, gate, run</h3>
+<div class="story"><h4><span class="id">C1</span> Regenerate and see the diff <span class="tag must">must</span></h4>
+<p>As an author, I want "regenerate" to run <code>make gen SPEC=&lt;id&gt;</code> and show the resulting <code>git diff</code> on <code>tasks/**</code>, so I see exactly what my spec edit changed in the agent's world.</p>
+<p class="acc"><b>Accept:</b> generator errors shown verbatim; diff grouped per arm; prompt-surface leak scan re-runs on the new output.</p><p class="src">mk/gen.mk · generator/gen.py</p></div>
+
+<div class="story"><h4><span class="id">C2</span> Run the offline gates per scenario and read the verdicts as a matrix <span class="tag must">must</span></h4>
+<p>As an author, I want falsifiability, grading-proof, seed-parity and tier-1 coverage runnable from the scenario page, with results as catch × arm cells (fires / silent / N/A / error) and the raw log one click away, so a red gate points at a cell, not at a 400-line log.</p>
+<p class="acc"><b>Accept:</b> gates run on the host exactly as <code>make</code> does (same env, same stub); concurrent runs allowed; last result cached with its git SHA so stale results are visibly stale.</p><p class="src">gates/*.py · mk/gen.mk · mk/rails.mk</p></div>
+
+<div class="story"><h4><span class="id">C3</span> Launch a trial and watch it <span class="tag later">later</span></h4>
+<p>As an operator, I want to pick spec × arm × model, see the assembled <code>run-bench.sh</code> argv, launch it, and tail the trial log, so a live run does not need a terminal recipe.</p>
+<p class="acc"><b>Accept:</b> credentials are never shown or stored; mutating runs warn about the reset; the row appears in A6 when <code>result.json</code> lands.</p><p class="src">scripts/run-bench.sh · cdktn_bench/cli.py</p></div>
+
+<h3>D · Hygiene</h3>
+<div class="story"><h4><span class="id">D1</span> Detect drift between spec and generated tasks <span class="tag must">must</span></h4>
+<p>As a maintainer, I want the corpus view to flag any task directory whose generated files differ from what the current spec + generator would emit, so "forgot to regenerate" is visible before CI.</p>
+<p class="acc"><b>Accept:</b> dry-run generation into a temp dir and diff; hand-authored files excluded.</p><p class="src">generator/gen.py</p></div>
+
+<div class="story"><h4><span class="id">D2</span> Surface the discrepancies the status page found by hand <span class="tag should">should</span></h4>
+<p>As a maintainer, I want standing checks — stale metadata (<code>max_iters = 8</code> vs Amendment 22), a tier with zero asserts on an enabled arm, a stub policy, a spec never run live, a catch with no fixture — as a checklist on each scenario and as counts on the corpus page.</p>
+<p class="acc"><b>Accept:</b> each check names its source rule (SCHEMA §, DECISIONS amendment) and the file to fix.</p><p class="src">corpus-status "Things worth a second look"</p></div>
+
+<div class="story"><h4><span class="id">D3</span> Keep the decision log attached <span class="tag should">should</span></h4>
+<p>As a maintainer, I want to append a DECISIONS entry from the scenario page with the id pre-filled and the current diff summarised, so amendments are written when the change is made, not reconstructed later.</p>
+<p class="acc"><b>Accept:</b> append-only; numbering continues from the last entry; the entry links back from A2.</p><p class="src">DECISIONS.md</p></div>
+
+<h2>Constraints that shape the stack (for the next conversation)</h2>
+<ul>
+<li>Local-only, reads and writes the checked-out repo; git is the undo and the review. No database — the repo is the database.</li>
+<li>Must call the existing Python: <code>spec_model</code> for validation, <code>gen.py</code> for generation, <code>gates/*</code> for gates. Reimplementing any of them in the UI is how the oracle and the editor drift apart.</li>
+<li>YAML round-trip with comments preserved is non-negotiable (B1); that decides the YAML library before it decides the framework.</li>
+<li>Long-running actions (gates, generation, trials) are subprocesses with streamed logs; the UI must survive a 20-minute falsifiability run.</li>
+<li>The corpus-status page already computes most of A1 from the same sources; the editor should replace that script, not duplicate it.</li>
+</ul>
+
+<h2>Suggested slices</h2>
+<ol>
+<li><strong>Read-only studio</strong> — A1, A2, A3, A4, A5, A6, D1, D2. No writes. Solves "what is where" outright and is safe to land while the cleanup settles.</li>
+<li><strong>Spec editing</strong> — B1, B2, B3, C1. Round-trip YAML, generator diff, hand-authored file editing.</li>
+<li><strong>Gates in the loop</strong> — C2, D3. Matrix verdicts and decision entries.</li>
+<li><strong>Authoring and operations</strong> — B4, B5, C3.</li>
+</ol>
+
+<p class="sources">Sources: <code>specs/SCHEMA.md</code> (§0–§9 headings), <code>specs/split.yaml</code>, <code>generator/spec_model.py</code>, <code>oracles/{rego,rego-cfn,cfn-guard,&lt;id&gt;}</code>, <code>tasks/anchor/named-resource-replacement-hcl-raw</code> and <code>apigw-redeploy-hcl-raw</code> layouts, <code>scenarios/anchor</code>, <code>Makefile</code>/<code>mk/*.mk</code> targets, <code>CLAUDE.md</code>, <code>corpus-status.html</code>.</p>
+</main>

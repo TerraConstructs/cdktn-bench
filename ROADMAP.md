@@ -362,6 +362,30 @@ case, since anchor's agent role is `AdministratorAccess`, making "a bucket this
 principal does not own" **unrepresentable in this account at all**. That one
 needs a second account, i.e. a second scenario, by definition.
 
+**Mechanism (parked 2026-08-27, evaluated against aws-bench's account layer).**
+Parallelism is the number of *scenarios*: `_ScenarioAdmissionGate` is keyed by
+`scenario_id`, and `env init` creates one member account per
+`(scenario, account_tag)` from the management account via Organizations
+(`account_management/manager.py::ensure_scenario_accounts`). A second
+`account_tag` on `anchor` adds nothing. So a split means:
+
+1. N identical shards of `scenarios/anchor` (`anchor-0 … anchor-N-1`; same CDK
+   app, different `scenario.toml name`), listed in `local-registry.json`.
+2. `generator/gen.py` emits `scenario_id` per task: read-only specs may share a
+   shard (they co-run); mutating specs spread across shards so one spec's three
+   arms land on different accounts.
+3. `env init --n-concurrent N --wait-for-quotas` then `env setup` (which
+   `cdk bootstrap`s each account). Check first: the org account quota (default
+   10; closed accounts count for 90 days), and that the role-protection SCP is
+   attached at OU level so new accounts inherit it (aws-bench attaches the
+   region SCP itself).
+4. No assert or Rego may hardcode an account id — plans on shard k carry
+   shard k's account. Already required by Amendment 32 (live-only AWS).
+5. `scenario_id` is trial identity: sharded rows are a new stratum. Land in the
+   same amendment window as Amendment 32 so the churn happens once.
+
+Runner, queue and credential staging need no code change.
+
 **Cheap first step, independent of any split:** shrink the hashed/Docker-context
 tree (`node_modules`, `cdk.out`, `dist` out of `scenarios/anchor/`), which
 removes most spurious baseline invalidation and 218 MB of I/O per reset.

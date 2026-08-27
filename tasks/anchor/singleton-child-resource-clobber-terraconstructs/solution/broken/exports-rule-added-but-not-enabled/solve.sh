@@ -61,7 +61,7 @@ proof_failed() {
 }
 
 grep -q '== summary: tier0_pass=' "$LOG" \
-  || proof_failed "static_tiers.sh never reached its summary line -- the synth or the plan is broken (a mock-STS bail-out on port 17771 looks like this), so nothing here is evidence about this artifact"
+  || proof_failed "static_tiers.sh never reached its summary line -- the synth or the plan is broken (an aws-unavailable preflight bail-out looks like this), so nothing here is evidence about this artifact"
 
 grep -q '== summary: tier0_pass=1 ' "$LOG" \
   || proof_failed "tier 0 did not pass -- every value in this artifact is correct, so a tier-0 failure means this fixture is scoring 0.0 for some other reason and leaves the tier-1 policy unexercised"

@@ -80,6 +80,16 @@ on PATH, and network the first time `npm ci` needs to populate
 node_modules for awscdk/terraconstructs fixtures -- same assumptions as
 gates/oracle_falsifiability.py; not wired into `make check`/test-gates for
 the same reason (mk/rails.mk's gate-preflight note).
+
+AWS access: this script runs CREDENTIAL-FREE, against
+`gates/aws_stub.py::running_stub()` -- started ONCE per invocation in
+main(), its env threaded into every toolchain subprocess below. Live AWS is
+the only trial mode (aws-access.html), so the generated
+tests/static_tiers.sh this script executes preflights `aws sts
+get-caller-identity` on both Terraform-shaped arms and voids the run
+without it; the stub answers that preflight, and it is what keeps this
+check from either failing on a credential-free host or silently planning
+against an operator's real account.
 """
 
 from __future__ import annotations
@@ -95,6 +105,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gates"))
+from aws_stub import running_stub  # noqa: E402
 from gen import ARM_WORKSPACE_SUBDIR, task_dir  # noqa: E402
 from jsonpath_jq import jsonpath_to_jq  # noqa: E402
 from spec_model import Arm, SeedAssert, Spec, StructuralAssert, load_spec  # noqa: E402
@@ -114,7 +126,9 @@ def _is_authored(fixture_dir: Path) -> bool:
     return fixture_dir.exists() and any(fixture_dir.rglob("*"))
 
 
-def _prepare_project(spec: Spec, arm: Arm, fixture_file: Path | None, tmp: Path) -> Path:
+def _prepare_project(
+    spec: Spec, arm: Arm, fixture_file: Path | None, tmp: Path, env: dict[str, str]
+) -> Path:
     """Build a scratch /app/project equivalent: a copy of the GENERATED
     task's own environment/<workspace-subdir> (the exact tree the arm's own
     Dockerfile COPYs into WORKDIR /app/project -- flattened, no
@@ -158,6 +172,7 @@ def _prepare_project(spec: Spec, arm: Arm, fixture_file: Path | None, tmp: Path)
             check=True,
             capture_output=True,
             text=True,
+            env=env,
         )
 
     tests_dst = project / "tests"
@@ -177,24 +192,31 @@ def _prepare_project(spec: Spec, arm: Arm, fixture_file: Path | None, tmp: Path)
     return project
 
 
-def _run_toolchain(project: Path) -> str:
+def _run_toolchain(project: Path, env: dict[str, str]) -> str:
     """Run the real, already-generated (and now path-patched)
     tests/static_tiers.sh -- this is what actually builds/synths/plans the
     fixture. Its own exit code is NOT a useful success/failure signal here:
-    by design (see generator/gen.py's build_static_tiers_sh template) it
-    always writes a reward and `exit 0`, on a toolchain failure exactly as
-    much as on success -- the reward.txt CONTENT is the real signal, and
-    even that is irrelevant to this check (the toy spec's tier-1 policy is
-    still a Slice-D-pending stub, so tier1_status is always SKIPPED_STUB
-    regardless of the fixture's own correctness). The caller determines
-    toolchain success the same way static_tiers.sh's own next step does:
-    by checking whether the artifact file actually landed on disk."""
+    a toolchain failure writes a reward and exits 0 exactly as a success
+    does, and on the Terraform-shaped arms a failed `aws sts
+    get-caller-identity` preflight exits early via the `run_invalid`
+    contract -- so no exit code distinguishes the cases this check cares
+    about. The reward.txt CONTENT is not the signal either (the toy spec's
+    tier-1 policy is still a Slice-D-pending stub, so tier1_status is always
+    SKIPPED_STUB regardless of the fixture's own correctness). The caller
+    determines toolchain success the same way static_tiers.sh's own next
+    step does: by checking whether the artifact file actually landed on
+    disk.
+
+    `env`: the credential-free AWS environment from
+    gates/aws_stub.py::running_stub(); it is what satisfies the preflight.
+    """
     proc = subprocess.run(
         ["bash", str(project / "tests" / "static_tiers.sh")],
         cwd=project,
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
     return proc.stdout + proc.stderr
 
@@ -225,7 +247,7 @@ def _applies(a: StructuralAssert, arm: Arm) -> bool:
     return arm in a.applies_to
 
 
-def check_arm(spec: Spec, arm: Arm) -> list[PathCheckResult]:
+def check_arm(spec: Spec, arm: Arm, env: dict[str, str]) -> list[PathCheckResult]:
     results: list[PathCheckResult] = []
     fixture_dir = FIXTURES_DIR / spec.id / arm
     if not _is_authored(fixture_dir):
@@ -245,8 +267,8 @@ def check_arm(spec: Spec, arm: Arm) -> list[PathCheckResult]:
 
     with tempfile.TemporaryDirectory(prefix="check-paths-good-") as tmp_s:
         tmp = Path(tmp_s)
-        project = _prepare_project(spec, arm, fixture_file, tmp)
-        log = _run_toolchain(project)
+        project = _prepare_project(spec, arm, fixture_file, tmp, env)
+        log = _run_toolchain(project, env)
 
         artifact = project / per_arm.output_contract.artifact_path
         if not artifact.exists() or artifact.stat().st_size == 0:
@@ -277,8 +299,8 @@ def check_arm(spec: Spec, arm: Arm) -> list[PathCheckResult]:
         if bad_fixture.exists():
             with tempfile.TemporaryDirectory(prefix="check-paths-bad-") as tmp_bad_s:
                 tmp_bad = Path(tmp_bad_s)
-                bad_project = _prepare_project(spec, arm, bad_fixture, tmp_bad)
-                bad_log = _run_toolchain(bad_project)
+                bad_project = _prepare_project(spec, arm, bad_fixture, tmp_bad, env)
+                bad_log = _run_toolchain(bad_project, env)
                 bad_artifact = bad_project / per_arm.output_contract.artifact_path
                 if bad_artifact.exists() and bad_artifact.stat().st_size > 0:
                     for a in spec.oracle.structural_asserts:
@@ -339,7 +361,7 @@ def check_arm(spec: Spec, arm: Arm) -> list[PathCheckResult]:
 # intent` already has, and the premise is reviewed the same way.
 
 
-def check_seed_arm(spec: Spec, arm: Arm) -> list[PathCheckResult]:
+def check_seed_arm(spec: Spec, arm: Arm, env: dict[str, str]) -> list[PathCheckResult]:
     """Run the arm's REAL toolchain against the generated, UN-OVERLAID task
     workspace, then resolve every applicable `seed_assert` against the artifact
     it produced."""
@@ -351,11 +373,11 @@ def check_seed_arm(spec: Spec, arm: Arm) -> list[PathCheckResult]:
     with tempfile.TemporaryDirectory(prefix="check-seed-") as tmp_s:
         tmp = Path(tmp_s)
         try:
-            project = _prepare_project(spec, arm, None, tmp)
+            project = _prepare_project(spec, arm, None, tmp, env)
         except (FileNotFoundError, PermissionError) as exc:
             results.append(PathCheckResult(f"{arm}/seed", False, str(exc)))
             return results
-        log = _run_toolchain(project)
+        log = _run_toolchain(project, env)
 
         artifact = project / per_arm.output_contract.artifact_path
         if not artifact.exists() or artifact.stat().st_size == 0:
@@ -402,7 +424,7 @@ def check_seed_arm(spec: Spec, arm: Arm) -> list[PathCheckResult]:
     return results
 
 
-def run_seed_mode(spec: Spec) -> int:
+def run_seed_mode(spec: Spec, env: dict[str, str]) -> int:
     if spec.workspace_seed is None:
         print(
             f"seed-parity: NOT_AUTHORED for {spec.id!r} -- this spec declares no "
@@ -416,7 +438,7 @@ def run_seed_mode(spec: Spec) -> int:
     all_ok = True
     matrix: list[tuple[str, str, bool]] = []
     for arm in spec.arms.enabled_arms():
-        for r in check_seed_arm(spec, arm):
+        for r in check_seed_arm(spec, arm, env):
             status = "PASS" if r.ok else "FAIL"
             first_line = r.detail.splitlines()[0] if r.detail else ""
             print(f"[{status}] {r.label}: {first_line}")
@@ -455,39 +477,46 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv[1:])
 
     spec = load_spec(args.spec_path)
-    if args.seed:
-        return run_seed_mode(spec)
-    all_ok = True
-    any_authored = False
-    for arm in spec.arms.enabled_arms():
-        if _is_authored(FIXTURES_DIR / spec.id / arm):
-            any_authored = True
-        for r in check_arm(spec, arm):
-            status = "PASS" if r.ok else "FAIL"
-            first_line = r.detail.splitlines()[0] if r.detail else ""
-            print(f"[{status}] {r.label}: {first_line}")
-            if not r.ok:
-                all_ok = False
-                for line in r.detail.splitlines()[1:]:
-                    print(f"    {line}")
+    # ONE stub for the whole invocation -- every arm's toolchain run shares
+    # it (the same lifecycle gates/grading_proof.py uses). The generated
+    # tests/static_tiers.sh this drives preflights `aws sts
+    # get-caller-identity` on the Terraform-shaped arms; the stub answers
+    # it, so the check needs no ambient credentials and can never reach a
+    # real account.
+    with running_stub() as env:
+        if args.seed:
+            return run_seed_mode(spec, env)
+        all_ok = True
+        any_authored = False
+        for arm in spec.arms.enabled_arms():
+            if _is_authored(FIXTURES_DIR / spec.id / arm):
+                any_authored = True
+            for r in check_arm(spec, arm, env):
+                status = "PASS" if r.ok else "FAIL"
+                first_line = r.detail.splitlines()[0] if r.detail else ""
+                print(f"[{status}] {r.label}: {first_line}")
+                if not r.ok:
+                    all_ok = False
+                    for line in r.detail.splitlines()[1:]:
+                        print(f"    {line}")
 
-    if not all_ok:
-        print(f"\ncheck-reference-paths FAILED for {spec.id!r}", file=sys.stderr)
-        return 1
-    if not any_authored:
-        # Distinct rc from a real pass -- see this module's own docstring
-        # ("Exit 3 iff...") for the finding this closes.
-        print(
-            f"\ncheck-reference-paths: NOT_AUTHORED for {spec.id!r} -- no enabled "
-            "arm has a reference fixture yet under generator/tests/fixtures/ "
-            "(the G2 path-resolution proof has NOT actually run for this "
-            "scenario; non-gating, but callers must not treat this the same "
-            "as a real PASS).",
-            file=sys.stderr,
-        )
-        return 3
-    print(f"\ncheck-reference-paths OK for {spec.id!r}")
-    return 0
+        if not all_ok:
+            print(f"\ncheck-reference-paths FAILED for {spec.id!r}", file=sys.stderr)
+            return 1
+        if not any_authored:
+            # Distinct rc from a real pass -- see this module's own docstring
+            # ("Exit 3 iff...") for the finding this closes.
+            print(
+                f"\ncheck-reference-paths: NOT_AUTHORED for {spec.id!r} -- no enabled "
+                "arm has a reference fixture yet under generator/tests/fixtures/ "
+                "(the G2 path-resolution proof has NOT actually run for this "
+                "scenario; non-gating, but callers must not treat this the same "
+                "as a real PASS).",
+                file=sys.stderr,
+            )
+            return 3
+        print(f"\ncheck-reference-paths OK for {spec.id!r}")
+        return 0
 
 
 if __name__ == "__main__":

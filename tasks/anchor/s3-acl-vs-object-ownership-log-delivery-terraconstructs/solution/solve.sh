@@ -48,11 +48,10 @@
 #
 # --- OFFLINE vs. LIVE ------------------------------------------------------
 # Default (LIVE unset/0): write the final file, run the same
-# tests/static_tiers.sh a real trial's verifier runs. No AWS call of any kind.
-# LIVE=1: additionally export CDKTN_BENCH_LIVE=1 (which strips the seeded
-# app's dummy credentials and mock-STS endpoint) and run the two real
-# `cdktn deploy`s. The positional argument is the STACK id -- the spec's
-# `workspace_id`, `application-storage` -- not the spec's `id`.
+# tests/static_tiers.sh a real trial's verifier runs.
+# LIVE=1: additionally run the two real `cdktn deploy`s. The positional
+# argument is the STACK id -- the spec's `workspace_id`,
+# `application-storage` -- not the spec's `id`.
 set -euo pipefail
 
 LIVE="${LIVE:-0}"
@@ -179,7 +178,6 @@ TS
 
 if [ "$LIVE" = "1" ]; then
   echo "== LIVE step 1/2: reset the destination bucket's ACL while ACLs are still enabled =="
-  export CDKTN_BENCH_LIVE=1
   write_acl_reset
   npx tsc -p tsconfig.json
   npx cdktn deploy --auto-approve application-storage

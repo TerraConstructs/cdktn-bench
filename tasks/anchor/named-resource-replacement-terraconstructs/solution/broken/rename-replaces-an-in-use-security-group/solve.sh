@@ -45,7 +45,6 @@ set -euo pipefail
 
 MARKER="CDKTN_BENCH_LIVE_ONLY_CONFIRMED"
 STACK_DIR="cdktf.out/stacks/internal-services-network"
-MOCK_STS_PORT=17771
 
 write_stack() {
   # $1 -- the create_before_destroy escape hatch (empty for THIS fixture's shape)
@@ -119,10 +118,8 @@ WITH_CBD='
 '
 WITHOUT_CBD=''
 
-# Graded-artifact probe. The mock STS responder is the same loopback fixture
-# tests/static_tiers.sh starts around its own tf-plan step (main.ts's
-# providerConfig.endpoints.sts points at it) -- AwsStack lazily creates a
-# `data "aws_caller_identity"` that would otherwise 403 offline.
+# Graded-artifact probe: synth+plan a shape and emit the security group node in
+# the same artifact shape tests/static_tiers.sh grades.
 sg_node_for() {
   write_stack "$1" >/dev/null
   npx tsc -p tsconfig.json >/dev/null
@@ -134,39 +131,8 @@ sg_node_for() {
        | jq -S '.configuration.root_module.resources[] | select(.type == "aws_security_group")' )
 }
 
-# ./mock-sts.js, never /app/project/mock-sts.js: cwd is the project root both
-# inside the container AND inside the host sandbox the offline gates prepare
-# (gates/oracle_falsifiability.py copies environment/app/ to a scratch dir and
-# runs solve.sh with cwd=that dir). An absolute /app/project path silently does
-# not exist host-side, the responder never starts, and `terraform plan` then
-# fails against a refused connection -- which is broken TEST INFRASTRUCTURE,
-# indistinguishable in the logs from a real toolchain failure. Readiness is
-# polled and a timeout is FATAL here for the same reason.
-node ./mock-sts.js "$MOCK_STS_PORT" > /tmp/nrr-probe-mock-sts.log 2>&1 &
-MOCK_STS_PID=$!
-trap 'kill "$MOCK_STS_PID" >/dev/null 2>&1 || true' EXIT
-MOCK_STS_READY=0
-for _ in $(seq 1 50); do
-  if (exec 3<>"/dev/tcp/127.0.0.1/$MOCK_STS_PORT") 2>/dev/null; then
-    exec 3<&- 3>&- 2>/dev/null
-    MOCK_STS_READY=1
-    break
-  fi
-  sleep 0.1
-done
-if [ "$MOCK_STS_READY" != "1" ]; then
-  echo "mock-sts.js never opened 127.0.0.1:$MOCK_STS_PORT -- the" >&2
-  echo "static-indistinguishability probe cannot run offline without it." >&2
-  echo "See /tmp/nrr-probe-mock-sts.log." >&2
-  exit 1
-fi
-
 WITH_NODE="$(sg_node_for "$WITH_CBD")"
 WITHOUT_NODE="$(sg_node_for "$WITHOUT_CBD")"
-
-kill "$MOCK_STS_PID" >/dev/null 2>&1 || true
-wait "$MOCK_STS_PID" 2>/dev/null || true
-trap - EXIT
 
 echo "== static-indistinguishability probe: graded artifact, security group node =="
 if [ "$WITH_NODE" = "$WITHOUT_NODE" ]; then
@@ -190,7 +156,6 @@ rm -rf "$STACK_DIR/probe.tfplan"
 
 if [ "${LIVE:-0}" = "1" ]; then
   echo "== LIVE: this deploy is EXPECTED to fail with DependencyViolation =="
-  export CDKTN_BENCH_LIVE=1
   npx tsc -p tsconfig.json
   # The positional argument is the STACK id -- main.ts constructs
   # `new ScenarioStack(app, "internal-services-network", ...)`, i.e. the

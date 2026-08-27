@@ -1,0 +1,272 @@
+<title>The Mock Endpoint Problem</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<style>
+  :root {
+    --ink:#14181a; --ink-2:#3f4a4d; --ink-3:#6c797c;
+    --paper:#f4f6f5; --card:#ffffff; --rule:#d9e0de;
+    --accent:#17636b; --accent-w:#e3efef;
+    --ok:#2d6a4f; --warn:#97650a; --void:#a33a30; --idle-w:#e9ecec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink:#e6eceb; --ink-2:#a8b5b6; --ink-3:#7d8a8c;
+      --paper:#0e1214; --card:#161c1e; --rule:#293335;
+      --accent:#5fb8c2; --accent-w:#16333a;
+      --ok:#6cc39a; --warn:#d6a44a; --void:#e08074; --idle-w:#202829;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink:#e6eceb; --ink-2:#a8b5b6; --ink-3:#7d8a8c;
+    --paper:#0e1214; --card:#161c1e; --rule:#293335;
+    --accent:#5fb8c2; --accent-w:#16333a;
+    --ok:#6cc39a; --warn:#d6a44a; --void:#e08074; --idle-w:#202829;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--paper); color:var(--ink);
+         font-family:"Source Serif 4",Georgia,serif; font-size:16px; line-height:1.62;
+         -webkit-font-smoothing:antialiased; }
+  .wrap { max-width:940px; margin:0 auto; padding:56px 28px 96px; }
+  h1,h2,h3,.lbl,th { font-family:"Archivo","Helvetica Neue",sans-serif; }
+  h1 { font-size:clamp(30px,4.4vw,46px); line-height:1.08; font-weight:700;
+       letter-spacing:-0.02em; margin:0 0 14px; text-wrap:balance; }
+  h2 { font-size:21px; font-weight:600; letter-spacing:-0.01em; margin:0 0 4px; }
+  h3 { font-size:15px; font-weight:600; margin:0 0 8px; }
+  p { margin:0 0 14px; max-width:68ch; }
+  .lede { font-size:18px; color:var(--ink-2); max-width:68ch; }
+  .lbl { font-size:11px; font-weight:600; letter-spacing:0.09em;
+         text-transform:uppercase; color:var(--accent); }
+  code { font-family:"IBM Plex Mono",ui-monospace,monospace; font-size:0.88em;
+         background:var(--idle-w); padding:1px 5px; border-radius:3px; }
+  pre { background:var(--idle-w); padding:13px 15px; border-radius:3px; overflow-x:auto;
+        font-family:"IBM Plex Mono",monospace; font-size:12.5px; line-height:1.5; margin:0 0 14px; }
+  pre code { background:none; padding:0; }
+  header.head { border-bottom:2px solid var(--ink); padding-bottom:22px; margin-bottom:34px; }
+  section { margin-top:46px; }
+  .sechead { border-bottom:1px solid var(--rule); padding-bottom:10px; margin-bottom:20px; }
+  .sechead p { color:var(--ink-2); font-size:15px; margin:6px 0 0; }
+  .scroll { overflow-x:auto; border:1px solid var(--rule); border-radius:3px; background:var(--card); }
+  table { border-collapse:collapse; width:100%; font-size:14px; }
+  th { text-align:left; font-size:11px; font-weight:600; letter-spacing:0.07em;
+       text-transform:uppercase; color:var(--ink-3); padding:11px 12px;
+       border-bottom:1px solid var(--rule); white-space:nowrap; }
+  td { padding:10px 12px; border-bottom:1px solid var(--rule); vertical-align:top; }
+  tr:last-child td { border-bottom:0; }
+  td.id { font-family:"IBM Plex Mono",monospace; font-size:12.5px; white-space:nowrap; }
+  .note { background:var(--card); border:1px solid var(--rule);
+          border-left:3px solid var(--warn); padding:16px 18px; border-radius:3px; margin:18px 0; }
+  .note.bad { border-left-color:var(--void); }
+  .note.good { border-left-color:var(--ok); }
+  .note p:last-child { margin-bottom:0; }
+  .cols { display:grid; grid-template-columns:repeat(auto-fit,minmax(280px,1fr)); gap:16px; }
+  .attr { background:var(--card); border:1px solid var(--rule); padding:14px 16px; border-radius:3px; }
+  ul { margin:0 0 14px; padding-left:20px; }
+  li { margin-bottom:7px; max-width:66ch; }
+  figure { margin:24px 0; }
+  figcaption { font-size:13px; color:var(--ink-3); margin-top:10px; max-width:66ch; }
+  .foot { margin-top:56px; padding-top:18px; border-top:1px solid var(--rule);
+          color:var(--ink-3); font-size:13px; }
+</style>
+
+<div class="wrap">
+
+<header class="head">
+  <div class="lbl">cdktn-bench · offline plan fixtures</div>
+  <h1>The Mock Endpoint Problem</h1>
+  <p class="lede">Two Terraform arms each ship their own loopback HTTP stub so an offline
+  <code>terraform plan</code> can resolve. They work — but they live in the agent's workspace, they
+  are arm-asymmetric, and the port collision everyone worries about is not the one that actually
+  bites.</p>
+</header>
+
+<section>
+  <div class="sechead">
+    <h2>Why they exist at all</h2>
+    <p>Both arms hit the same class of defect: the provider's <code>skip_*</code> flags suppress the
+    <em>provider's own</em> bootstrap calls, and nothing else.</p>
+  </div>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Arm</th><th>Fixture</th><th>Mocks</th><th>Triggered by</th><th>Offline failure without it</th></tr></thead>
+    <tbody>
+      <tr><td class="id">terraconstructs</td><td class="id">mock-sts.js<br><span style="color:var(--ink-3)">Node, <code>http</code></span></td><td>STS <code>GetCallerIdentity</code></td><td><code>AwsStack.account</code> lazily creating a real <code>data "aws_caller_identity"</code> — most L2s read it for ARN formatting</td><td>403 <code>InvalidClientTokenId</code></td></tr>
+      <tr><td class="id">hcl-raw</td><td class="id">mock-sfn.py<br><span style="color:var(--ink-3)">Python, <code>http.server</code></span></td><td>SFN <code>ValidateStateMachineDefinition</code></td><td><code>aws_sfn_state_machine</code>'s own <code>CustomizeDiff</code>, which fires on every <code>definition</code> change — unconditionally true for a new resource</td><td><code>UnrecognizedClientException</code></td></tr>
+      <tr><td class="id">awscdk</td><td>—</td><td>—</td><td><code>bin/app.ts</code> never hardcodes credentials and synth reaches no API</td><td>none</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>The language split is a consequence of the image contracts, not taste: hcl-raw's image is Debian
+  plus terraform/opa/jq/awscli with <strong>no <code>node</code></strong>, so Python's stdlib
+  <code>http.server</code> was used — and Python was added to that image specifically for this
+  fixture. Both are dependency-free and bind loopback only, so they work under
+  <code>--network none</code>.</p>
+  <p>The hcl-raw case is tracked upstream as <code>hashicorp/terraform-provider-aws</code> issue
+  #39472 and reproduced against the pinned provider 6.58.0.</p>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>How it works today</h2>
+  </div>
+
+  <figure>
+    <svg viewBox="0 0 840 300" role="img" aria-label="Two execution contexts. In a real trial each agent container has its own network namespace and its own private loopback, so mock ports never collide. In a host-side gate run, static_tiers.sh is patched to run directly on the host, where every concurrent gate binds the same host loopback port and collides." style="width:100%;height:auto;color:var(--ink)">
+      <text x="0" y="14" font-family="Archivo,sans-serif" font-size="11" font-weight="600" fill="currentColor" opacity="0.65">A · REAL TRIAL — isolated, safe</text>
+      <rect x="0" y="26" width="180" height="92" rx="3" fill="none" stroke="currentColor" stroke-width="1.5"/>
+      <text x="90" y="46" text-anchor="middle" font-family="Archivo,sans-serif" font-size="12" font-weight="600" fill="currentColor">container A</text>
+      <text x="90" y="64" text-anchor="middle" font-family="IBM Plex Mono,monospace" font-size="10" fill="currentColor" opacity="0.72">own netns</text>
+      <text x="90" y="82" text-anchor="middle" font-family="IBM Plex Mono,monospace" font-size="10" fill="#17636b">127.0.0.1:17771</text>
+      <text x="90" y="100" text-anchor="middle" font-family="IBM Plex Mono,monospace" font-size="10" fill="currentColor" opacity="0.72">static_tiers.sh</text>
+
+      <rect x="200" y="26" width="180" height="92" rx="3" fill="none" stroke="currentColor" stroke-width="1.5"/>
+      <text x="290" y="46" text-anchor="middle" font-family="Archivo,sans-serif" font-size="12" font-weight="600" fill="currentColor">container B</text>
+      <text x="290" y="64" text-anchor="middle" font-family="IBM Plex Mono,monospace" font-size="10" fill="currentColor" opacity="0.72">own netns</text>
+      <text x="290" y="82" text-anchor="middle" font-family="IBM Plex Mono,monospace" font-size="10" fill="#17636b">127.0.0.1:17771</text>
+      <text x="290" y="100" text-anchor="middle" font-family="IBM Plex Mono,monospace" font-size="10" fill="currentColor" opacity="0.72">static_tiers.sh</text>
+
+      <text x="190" y="140" text-anchor="middle" font-family="Source Serif 4,serif" font-size="12.5" fill="#2d6a4f">same port number, different namespaces — no collision</text>
+
+      <line x1="0" y1="166" x2="840" y2="166" stroke="currentColor" stroke-width="1" opacity="0.25"/>
+
+      <text x="0" y="192" font-family="Archivo,sans-serif" font-size="11" font-weight="600" fill="#a33a30">B · HOST-SIDE GATE — shared, collides</text>
+      <rect x="0" y="204" width="380" height="80" rx="3" fill="none" stroke="#a33a30" stroke-width="1.5"/>
+      <text x="190" y="224" text-anchor="middle" font-family="Archivo,sans-serif" font-size="12" font-weight="600" fill="#a33a30">the host</text>
+      <text x="190" y="243" text-anchor="middle" font-family="IBM Plex Mono,monospace" font-size="10" fill="#a33a30">falsifiability · grading-proof · check-paths</text>
+      <text x="190" y="261" text-anchor="middle" font-family="IBM Plex Mono,monospace" font-size="10" fill="#a33a30">all bind 127.0.0.1:17771</text>
+      <text x="190" y="278" text-anchor="middle" font-family="IBM Plex Mono,monospace" font-size="10" fill="#a33a30">EADDRINUSE</text>
+
+      <text x="404" y="228" font-family="Source Serif 4,serif" font-size="12.5" fill="currentColor">The gates copy the task into a scratch sandbox and</text>
+      <text x="404" y="246" font-family="Source Serif 4,serif" font-size="12.5" fill="currentColor">patch <tspan font-family="IBM Plex Mono,monospace" font-size="11">static_tiers.sh</tspan>'s absolute paths so it runs</text>
+      <text x="404" y="264" font-family="Source Serif 4,serif" font-size="12.5" fill="currentColor">on the host — the container's isolation is gone.</text>
+    </svg>
+    <figcaption>The collision is a property of the <em>gate</em> harness, not of the trial harness.
+    Two concurrent gate runs share one loopback; two concurrent trials never do.</figcaption>
+  </figure>
+
+  <div class="note good">
+    <h3>Containers do <em>not</em> share the host network</h3>
+    <p>Harbor runs the agent container through docker compose with a <code>main</code> service and
+    the default bridge network — or <code>network_mode: none</code> when internet is disallowed.
+    Neither is host networking. Each container therefore has its own network namespace and its own
+    private <code>127.0.0.1</code>, so a fixed port is genuinely private per trial. Loopback works
+    even under <code>--network none</code>, because <code>lo</code> exists in every namespace.</p>
+    <p><strong>So concurrency between trials was never at risk from these mocks.</strong></p>
+  </div>
+
+  <div class="note bad">
+    <h3>The gates are where it bites</h3>
+    <p><code>gates/oracle_falsifiability.py</code> does not run the container. It copies the task
+    into a scratch directory, runs <code>npm ci</code> for real, and <strong>patches
+    <code>static_tiers.sh</code>'s absolute <code>/app/project</code> and <code>/logs/verifier</code>
+    paths to point at that sandbox</strong> — so the whole chain, mock server included, executes on
+    the host. Every concurrent gate process then races for the same host port.</p>
+    <p>Observed this session: one <code>grading-proof</code> run scored a correct terraconstructs
+    solution <strong>0.0</strong>; an immediate re-run of the identical command scored it
+    <strong>1.0</strong>. The log showed <code>EADDRINUSE 127.0.0.1:17771</code>. The
+    <code>mock-sts-unavailable</code> guard that exists to label exactly this case
+    <em>did not fire</em> — so it surfaced as <code>TF-PLAN FAILED</code>, indistinguishable from a
+    bad solution.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>The real cost: workspace pollution, and it is arm-asymmetric</h2>
+  </div>
+  <p>Both fixtures are byte-copied into the task's <code>environment/</code>, which is
+  <code>COPY</code>'d into the agent image. That means they sit in the agent's own working
+  directory:</p>
+  <pre><code>awscdk           (nothing)
+hcl-raw          environment/workspace/mock-sfn.py     -> /app/project/mock-sfn.py
+terraconstructs  environment/app/mock-sts.js           -> /app/project/mock-sts.js</code></pre>
+  <p>The agent on two of three arms opens its workspace and finds a mock AWS server it did not write
+  and is not asked about — and the third arm has no such file. That is a visible, arm-asymmetric
+  difference in the starting workspace of a benchmark whose headline metric is
+  <strong>tokens-to-green</strong>. Any turn spent reading or reasoning about that file is spend the
+  awscdk arm never incurs.</p>
+  <p>They are always started regardless of need, so 16 of 17 specs ship an SFN mock that is a pure
+  no-op — and every terraconstructs task ships an STS mock whose comment block explains a
+  provider-internals problem the agent is not being tested on.</p>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>A better design</h2>
+    <p>Harbor already has the mechanism. It is not being used.</p>
+  </div>
+
+  <div class="note good">
+    <h3>Sidecar service via <code>extra_docker_compose_paths</code></h3>
+    <p><code>harbor/environments/definition.py</code> accepts
+    <code>extra_docker_compose_paths</code> and treats a task-supplied
+    <code>environment/docker-compose.yaml</code> as a first-class environment definition. Harbor
+    already composes overlays this way — <code>docker-compose-prebuilt.yaml</code> for the image,
+    <code>docker-compose-no-network.yaml</code> to force <code>network_mode: none</code>.</p>
+    <p>A second service on a compose network gives the mocks a DNS name instead of a port number:</p>
+<pre><code>services:
+  main:
+    depends_on: [aws-stub]
+  aws-stub:
+    image: cdktn-bench/aws-stub:pinned
+    # no ports: — reachable only on the compose network</code></pre>
+    <p>The provider config then points at <code>http://aws-stub:443</code> rather than
+    <code>http://127.0.0.1:17771</code>.</p>
+  </div>
+
+  <div class="cols">
+    <div class="attr"><h3>What it fixes</h3>
+      <ul style="margin:0">
+        <li><strong>No workspace pollution.</strong> The stub is a container, not a file in
+        <code>/app/project</code>. The agent's workspace becomes identical in shape across all three
+        arms.</li>
+        <li><strong>No fixed host port.</strong> Compose gives each project its own network; two
+        gate runs get two networks and cannot collide. The <code>EADDRINUSE</code> class disappears
+        rather than being worked around by "run the gates serially".</li>
+        <li><strong>One stub, both arms.</strong> STS and SFN are two routes on one service. No
+        reason for a Node one and a Python one — that split exists only because each fixture had to
+        run inside its own arm's image.</li>
+        <li><strong>Pinned and versioned.</strong> A stub image carries a digest, so "which stub
+        answered" becomes part of trial identity instead of an unversioned file copy.</li>
+        <li><strong>Startup is compose's job.</strong> <code>depends_on</code> plus a healthcheck
+        replaces the hand-rolled "start it, poll the port for 5 s, kill it" wrapper in
+        <code>static_tiers.sh</code> — and with it the guard that failed to fire.</li>
+      </ul></div>
+    <div class="attr"><h3>What it costs, honestly</h3>
+      <ul style="margin:0">
+        <li><strong>The gates still run on the host.</strong> This is the important caveat: a
+        compose sidecar helps the trial path, but <code>oracle_falsifiability.py</code> deliberately
+        runs <code>static_tiers.sh</code> outside a container. Either the gates move into compose
+        too, or they need their own answer — an ephemeral port would do.</li>
+        <li><strong><code>network_mode: none</code> conflicts.</strong> A service on a compose
+        network cannot also be on no network. Offline isolation would have to be expressed as an
+        internal network with no gateway rather than as <code>none</code>.</li>
+        <li><strong>Equipping hash churn.</strong> Adding a service changes the environment
+        definition for every task, so every existing row lands in a different stratum. Worth doing
+        once, deliberately — not incrementally.</li>
+        <li><strong>A second image to build and pin</strong>, and <code>colima</code>'s compose
+        plugin becomes a hard requirement rather than a convenience.</li>
+      </ul></div>
+  </div>
+
+  <div class="note">
+    <h3>Cheaper interim step</h3>
+    <p>If the sidecar is too large a change to make now, the collision itself is fixable without it:
+    bind an <strong>ephemeral port</strong> (<code>:0</code>), have the stub print the port it got,
+    and pass that into the provider config instead of hardcoding 17771. That removes the shared
+    global entirely and costs nothing in strata. It does not fix workspace pollution or the
+    arm asymmetry — those need the stub out of <code>/app/project</code>.</p>
+  </div>
+</section>
+
+<div class="foot">
+  Sources: <code>arms/terraconstructs/environment/app/mock-sts.js</code>,
+  <code>arms/hcl-raw/environment/workspace/mock-sfn.py</code>,
+  <code>generator/gen.py::build_static_tiers_sh</code>,
+  <code>gates/oracle_falsifiability.py</code>,
+  <code>harbor/environments/docker/</code> and <code>harbor/environments/definition.py</code>.
+  Container isolation verified from harbor's compose overlays, not assumed.
+</div>
+
+</div>

@@ -14,6 +14,6 @@ access-logs bucket, under the same `app-data/` prefix, when you are done.
 
 This workspace is an AWS CDK (TypeScript) app using aws-cdk-lib L2 constructs.
 
-`lib/scenario-stack.ts` in this workspace holds this project's existing configuration -- change it as needed. Do not create, modify, or delete `bin/app.ts`: it is a pre-wired bootstrap file (app entrypoint / offline provider config) that synth/plan depends on and is not part of what you are being asked to change.
+`lib/scenario-stack.ts` in this workspace holds this project's existing configuration -- change it as needed. Do not create, modify, or delete `bin/app.ts`: it is a pre-wired bootstrap file (app entrypoint / provider config) that synth/plan depends on and is not part of what you are being asked to change.
 
 IMPORTANT: Write your final answer to `/logs/agent/agent-output.txt`.

@@ -172,11 +172,14 @@
 # 4. The zone: the prompt says "the public hosted zone for {{ZONE_NAME}}",
 #    singular and newly created ("moving the storefront to a new domain").
 #    An agent that instead referenced a pre-existing zone via a data source
-#    could not pass offline synth at all (no such zone exists in the offline
-#    mirror/mock-STS fixture) -- so unlike `s3-bucket-hardening-decomposition`'s
+#    could not be checked at all: no such zone exists to look up, and the
+#    credential-free host gates run against `gates/aws_stub.py`, which answers
+#    only `sts:GetCallerIdentity` and `states:ValidateStateMachineDefinition`
+#    -- so unlike `s3-bucket-hardening-decomposition`'s
 #    KMS-key alternative, there is no second shape to behavioralize around
-#    here; "create the zone in this configuration" is the only offline-
-#    synthable reading, and every graph-edge check below is written against
+#    here; "create the zone in this configuration" is the only reading that
+#    resolves without a pre-existing zone, and every graph-edge check below
+#    is written against
 #    "the zone this configuration creates" for that reason.
 #
 # ---------------------------------------------------------------------------

@@ -359,9 +359,10 @@ def test_pins_catch_must_name_a_real_catch() -> None:
 
 
 def test_a_brownfield_terraform_plan_must_not_refresh() -> None:
-    """MEASURED: with state present the OFFLINE verifier's plan refreshes
-    through provider.tf's dummy credentials and dies, scoring a PERFECT solution
-    0.0."""
+    """The seed is already deployed when the verifier runs, so a refreshing
+    plan re-contacts AWS to reconcile every seeded resource and can report
+    pending changes for reasons that have nothing to do with the agent's
+    change -- scoring a PERFECT solution 0.0."""
     raw = _raw()
     raw["instruction"]["per_arm"]["hcl_raw"]["output_contract"]["plan_command"] = (
         "terraform init && terraform plan -input=false -out=plan.tfplan && "
@@ -1226,17 +1227,13 @@ def test_the_two_plan_matchers_are_the_same_rule() -> None:
 def test_every_emitted_terraform_plan_of_a_brownfield_spec_is_refresh_free(
     spec_path: Path, arm: str
 ) -> None:
-    """The SHIPPED bytes, per arm, for EVERY brownfield spec (finding E,
-    adversarial review round 3, 2026-08-25 -- this used to take the module
-    `spec` fixture and therefore spoke only for named-resource-replacement).
+    """The SHIPPED bytes, per arm, for EVERY brownfield spec -- the assert
+    speaks for every brownfield spec, not only named-resource-replacement.
 
-    MEASURED, not predicted: with deploy state in /app/project a refreshing
-    plan re-contacts AWS through provider.tf's dummy credentials and dies
-    (`Refreshing state... [id=vpc-05c33a26cbf19bef8]` then `PLAN FAILED`,
-    jobs/rerun-named-resource-replacement/2026-08-25__01-43-17/
-    named-resource-replacement-hcl-r__rtmpCyN/verifier/test-stdout.txt:42-46),
-    scoring a PERFECT solution 0.0. `workspace_seed.deploy` puts that state
-    there on purpose, on every trial.
+    `workspace_seed.deploy` puts deploy state in /app/project on purpose, on
+    every trial. With that state present a refreshing plan re-contacts AWS to
+    reconcile every seeded resource, and can report pending changes for reasons
+    unrelated to the agent's change -- scoring a PERFECT solution 0.0.
     """
     model = load_spec(spec_path)
     if arm not in model.arms.enabled_arms():

@@ -44,7 +44,6 @@
 set -euo pipefail
 
 STACK_DIR="cdktf.out/stacks/application-storage"
-MOCK_STS_PORT=17771
 REFERENCE_PRINCIPAL="logging.s3.amazonaws.com"
 FIXTURE_PRINCIPAL="delivery.logs.amazonaws.com"
 
@@ -111,40 +110,6 @@ export class ScenarioStack extends AwsStack {
 TS
 
 # --- the tier probe --------------------------------------------------------
-# ./mock-sts.js, never /app/project/mock-sts.js: cwd is the project root both
-# inside the container AND inside the host sandbox the offline gates prepare
-# (gates/oracle_falsifiability.py copies environment/app/ to a scratch dir and
-# runs solve.sh with cwd=that dir). AwsStack lazily creates a
-# `data "aws_caller_identity"` that would otherwise 403 offline, so without the
-# responder `terraform plan` fails against a refused connection -- broken TEST
-# INFRASTRUCTURE, indistinguishable in the logs from a real toolchain failure.
-# Readiness is polled and a timeout is FATAL here for the same reason.
-node ./mock-sts.js "$MOCK_STS_PORT" > /tmp/s3-acl-ownership-tier-probe-mock-sts.log 2>&1 &
-MOCK_STS_PID=$!
-trap 'kill "$MOCK_STS_PID" >/dev/null 2>&1 || true' EXIT
-MOCK_STS_READY=0
-for _ in $(seq 1 50); do
-  if (exec 3<>"/dev/tcp/127.0.0.1/$MOCK_STS_PORT") 2>/dev/null; then
-    # Braces, NOT a bare `exec ... 2>/dev/null`. Written the bare way (which is
-    # how the sibling brownfield scenario's own probe still writes it), the
-    # redirection attaches to `exec` with no command and therefore rebinds THIS
-    # SHELL's stderr to /dev/null for the remainder of the script -- silently
-    # swallowing every failure branch below. Reproduced during authoring: a
-    # probe failed, printed nothing at all, and the only visible symptom was a
-    # missing marker. Wrong output, no error.
-    { exec 3<&- 3>&-; } 2>/dev/null
-    MOCK_STS_READY=1
-    break
-  fi
-  sleep 0.1
-done
-if [ "$MOCK_STS_READY" != "1" ]; then
-  echo "mock-sts.js never opened 127.0.0.1:$MOCK_STS_PORT -- the tier probe" >&2
-  echo "cannot run offline without it. See" >&2
-  echo "/tmp/s3-acl-ownership-tier-probe-mock-sts.log." >&2
-  exit 1
-fi
-
 npx tsc -p tsconfig.json >/dev/null
 npx cdktn synth >/dev/null 2>&1
 PROBE_ARTIFACT="$(
@@ -153,29 +118,7 @@ PROBE_ARTIFACT="$(
     && terraform plan -input=false -refresh=false -out=probe.tfplan >/dev/null \
     && terraform show -json probe.tfplan
 )"
-kill "$MOCK_STS_PID" >/dev/null 2>&1 || true
-wait "$MOCK_STS_PID" 2>/dev/null || true
-trap - EXIT
 rm -f "$STACK_DIR/probe.tfplan"
-
-# WAIT FOR THE PORT TO BE FREE BEFORE HANDING OVER, and this is not defensive
-# padding -- it is a REPRODUCED gate failure. `tests/static_tiers.sh` starts its
-# OWN mock-STS responder on this same port around its `terraform plan` step
-# (that is why main.ts points at 17771 in the first place). `kill` + `wait`
-# returns as soon as the child is reaped, which is not the same instant the
-# listening socket is released; the handover below then raced it, static_tiers'
-# responder failed to bind, its `terraform plan` died against a refused
-# connection, and `make falsifiability` reported `TF-PLAN FAILED` -- for the
-# NEXT fixture in the run, not this one. That is a broken-test-infrastructure
-# outcome wearing the costume of a graded result, which SCHEMA.md §2.7 is
-# explicit must never be counted as a fixture verdict.
-for _ in $(seq 1 100); do
-  if ! (exec 3<>"/dev/tcp/127.0.0.1/$MOCK_STS_PORT") 2>/dev/null; then
-    break
-  fi
-  { exec 3<&- 3>&-; } 2>/dev/null
-  sleep 0.1
-done
 
 POLICY_DOC="$(
   printf '%s' "$PROBE_ARTIFACT" \

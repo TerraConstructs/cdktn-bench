@@ -678,20 +678,11 @@ MECHANISM_PATTERNS = (
 # appear under a stepless greenfield task's environment/, which makes it text
 # written before this scenario existed and therefore incapable of encoding its
 # trap. Keep this list minimal: it is the one place a real leak could hide.
-BROWNFIELD_BOILERPLATE = (
-    # arms/awscdk/environment/workspace/lib/example-stack.ts, describing what
-    # the generator does to the placeholder stack it ships:
-    # NOTE: "replaced by the generator" was allowlisted here while every awscdk
-    # task shipped the arm's lib/example-stack.ts, whose docstring carried that
-    # phrase. That file is no longer copied into generated tasks (it was an
-    # answer-key leak and an arm asymmetry -- see the generator fix that deletes
-    # it), so the phrase no longer appears in any greenfield control's
-    # environment/ and the allowlist entry is now stale. Removed rather than
-    # kept, because this test exists precisely to prove every allowlisted phrase
-    # is REAL arm boilerplate and not scenario-specific text being scrubbed.
-    # arms/hcl-raw/environment/workspace/provider.tf, on the live-mode env var:
-    "explicitly export",
-)
+# Empty is the correct state whenever no arm ships text that trips
+# MECHANISM_PATTERNS: an entry earns its place only by appearing in a
+# greenfield control's own environment/, and one that no longer does is a
+# scenario-specific scrub in disguise, so it is deleted rather than kept.
+BROWNFIELD_BOILERPLATE: tuple[str, ...] = ()
 
 # Machine-generated; package names/versions are not authored text.
 BROWNFIELD_SCAN_EXCLUDE = {"package-lock.json"}

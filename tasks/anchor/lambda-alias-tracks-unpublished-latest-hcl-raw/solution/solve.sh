@@ -84,7 +84,6 @@ HCL
 
 if [ "${LIVE:-0}" = "1" ]; then
   echo "== LIVE: real terraform apply against this account =="
-  export TF_VAR_cdktn_bench_live=1
   terraform init -input=false
   terraform apply -input=false -auto-approve
   # The gating live oracle, invoked in its fixture shape. Exits 1 if the

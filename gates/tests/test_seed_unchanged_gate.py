@@ -82,17 +82,18 @@ def test_the_generic_extra_broken_loop_does_not_double_run_it() -> None:
 # 3. reward < 1.0 is NECESSARY BUT NOT SUFFICIENT
 #
 # `tests/static_tiers.sh` writes 0.0 for a broken TOOLCHAIN as well as for a
-# rejected solution -- `TF-PLAN FAILED`, `MISSING ARTIFACT`, and the mock-STS
-# `tf-plan-mock-sts-unavailable` bail-out, which that script itself labels
-# "a run-invalidating test-infrastructure condition, NOT a bad solution".
+# rejected solution -- `TF-PLAN FAILED`, `MISSING ARTIFACT`, and the
+# `aws-unavailable` preflight bail-out (live AWS is the only trial mode; see
+# aws-access.html) -- each of which that script itself labels "a
+# run-invalidating test-infrastructure condition, NOT a bad solution".
 #
 # Accepting those 0.0s would let this gate report "the oracle rejects doing
 # nothing" on a run where nothing was ever graded -- a vacuous pass in the one
 # check whose entire purpose is to be un-fakeable. Observed for real: a batch
 # `make falsifiability` run on 2026-08-20 produced `TF-PLAN FAILED` for the
-# terraconstructs do-nothing fixture (mock-STS port contention between
-# back-to-back fixtures) while the same fixture, run in isolation, failed
-# honestly on `security-group-uses-the-new-team-prefixed-name`.
+# terraconstructs do-nothing fixture (port contention between back-to-back
+# fixtures) while the same fixture, run in isolation, failed honestly on
+# `security-group-uses-the-new-team-prefixed-name`.
 #
 # These tests drive `_check_seed_unchanged` with `_run_solve` stubbed, so they
 # stay in the offline floor (`make check`) rather than needing a toolchain.

@@ -117,7 +117,7 @@ cd /app/project || fail seed_unverifiable "no /app/project in this container" 3
 # of _prepare, and Trial.run's handler then NEVER calls _run() -- no
 # agent phase, no verifier, no reward key at all.
 echo "== seed deploy (terraconstructs) =="
-if ! ( CDKTN_BENCH_LIVE=1 npx cdktn deploy --auto-approve internal-services-network ); then
+if ! ( npx cdktn deploy --auto-approve internal-services-network ); then
   fail seed_absent "seed deploy command exited non-zero -- see stdout.log" 2
 fi
 

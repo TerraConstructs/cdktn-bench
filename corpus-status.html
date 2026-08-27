@@ -1,0 +1,847 @@
+<title>Measured and Unmeasured</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<style>
+  :root {
+    --ink:      #14181a;
+    --ink-2:    #3f4a4d;
+    --ink-3:    #6c797c;
+    --paper:    #f4f6f5;
+    --card:     #ffffff;
+    --rule:     #d9e0de;
+    --accent:   #17636b;
+    --accent-w: #e3efef;
+    --ok:       #2d6a4f;
+    --warn:     #97650a;
+    --void:     #a33a30;
+    --idle:     #8a9296;
+    --idle-w:   #e9ecec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ink:      #e6eceb;
+      --ink-2:    #a8b5b6;
+      --ink-3:    #7d8a8c;
+      --paper:    #0e1214;
+      --card:     #161c1e;
+      --rule:     #293335;
+      --accent:   #5fb8c2;
+      --accent-w: #16333a;
+      --ok:       #6cc39a;
+      --warn:     #d6a44a;
+      --void:     #e08074;
+      --idle:     #7d8a8c;
+      --idle-w:   #202829;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink:      #e6eceb;
+    --ink-2:    #a8b5b6;
+    --ink-3:    #7d8a8c;
+    --paper:    #0e1214;
+    --card:     #161c1e;
+    --rule:     #293335;
+    --accent:   #5fb8c2;
+    --accent-w: #16333a;
+    --ok:       #6cc39a;
+    --warn:     #d6a44a;
+    --void:     #e08074;
+    --idle:     #7d8a8c;
+    --idle-w:   #202829;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Source Serif 4", Georgia, serif;
+    font-size: 16px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 56px 28px 96px; }
+
+  h1, h2, h3, .lbl, th { font-family: "Archivo", "Helvetica Neue", sans-serif; }
+  h1 {
+    font-size: clamp(30px, 4.4vw, 46px);
+    line-height: 1.08; font-weight: 700; letter-spacing: -0.02em;
+    margin: 0 0 14px; text-wrap: balance;
+  }
+  h2 {
+    font-size: 21px; font-weight: 600; letter-spacing: -0.01em;
+    margin: 0 0 4px; padding-top: 4px;
+  }
+  h3 { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
+  p { margin: 0 0 14px; max-width: 68ch; }
+  .lede { font-size: 18px; color: var(--ink-2); max-width: 70ch; }
+  .lbl {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.09em;
+    text-transform: uppercase; color: var(--accent);
+  }
+  code, .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.88em; }
+  code { background: var(--idle-w); padding: 1px 5px; border-radius: 3px; }
+  a { color: var(--accent); }
+
+  header.head { border-bottom: 2px solid var(--ink); padding-bottom: 22px; margin-bottom: 34px; }
+  .stamp {
+    display: flex; gap: 14px; flex-wrap: wrap;
+    font-family: "IBM Plex Mono", monospace; font-size: 12px;
+    color: var(--ink-3); margin-top: 16px;
+  }
+
+  section { margin-top: 46px; }
+  .sechead { border-bottom: 1px solid var(--rule); padding-bottom: 10px; margin-bottom: 20px; }
+  .sechead p { color: var(--ink-2); font-size: 15px; margin: 6px 0 0; }
+
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .tile {
+    background: var(--card); border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent);
+    padding: 14px 16px; border-radius: 3px;
+  }
+  .tile .n {
+    font-family: "Archivo", sans-serif; font-size: 30px; font-weight: 700;
+    line-height: 1; font-variant-numeric: tabular-nums; letter-spacing: -0.02em;
+  }
+  .tile .k {
+    font-family: "Archivo", sans-serif; font-size: 11px; font-weight: 600;
+    letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-3);
+    margin-top: 7px;
+  }
+  .tile.alarm { border-left-color: var(--void); }
+  .tile.alarm .n { color: var(--void); }
+
+  .scroll { overflow-x: auto; border: 1px solid var(--rule); border-radius: 3px; background: var(--card); }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th {
+    text-align: left; font-size: 11px; font-weight: 600; letter-spacing: 0.07em;
+    text-transform: uppercase; color: var(--ink-3);
+    padding: 11px 12px; border-bottom: 1px solid var(--rule); white-space: nowrap;
+  }
+  td {
+    padding: 10px 12px; border-bottom: 1px solid var(--rule);
+    vertical-align: top; font-variant-numeric: tabular-nums;
+  }
+  tr:last-child td { border-bottom: 0; }
+  td.id { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; white-space: nowrap; }
+  td.num { text-align: right; font-family: "IBM Plex Mono", monospace; font-size: 13px; }
+  tbody tr.measured td:first-child { box-shadow: inset 3px 0 0 var(--ok); }
+  tbody tr.partial  td:first-child { box-shadow: inset 3px 0 0 var(--warn); }
+  tbody tr.unrun    td:first-child { box-shadow: inset 3px 0 0 var(--idle); }
+  tbody tr.broken   td:first-child { box-shadow: inset 3px 0 0 var(--void); }
+
+  .chip {
+    display: inline-block; font-family: "Archivo", sans-serif;
+    font-size: 10.5px; font-weight: 600; letter-spacing: 0.05em; text-transform: uppercase;
+    padding: 2px 7px; border-radius: 2px; white-space: nowrap;
+    background: var(--idle-w); color: var(--ink-2);
+  }
+  .chip.ok   { background: var(--accent-w); color: var(--ok); }
+  .chip.warn { color: var(--warn); }
+  .chip.void { color: var(--void); }
+  .chip.acc  { background: var(--accent-w); color: var(--accent); }
+
+  .note {
+    background: var(--card); border: 1px solid var(--rule);
+    border-left: 3px solid var(--warn);
+    padding: 16px 18px; border-radius: 3px; margin: 18px 0;
+  }
+  .note.bad { border-left-color: var(--void); }
+  .note.good { border-left-color: var(--ok); }
+  .note h3 { color: var(--ink); }
+  .note p:last-child { margin-bottom: 0; }
+
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 16px; }
+  .attr {
+    background: var(--card); border: 1px solid var(--rule);
+    padding: 14px 16px; border-radius: 3px;
+  }
+  .attr .who { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--ink-3); margin-top: 7px; }
+  ul { margin: 0 0 14px; padding-left: 20px; }
+  li { margin-bottom: 6px; max-width: 66ch; }
+  .foot { margin-top: 56px; padding-top: 18px; border-top: 1px solid var(--rule); color: var(--ink-3); font-size: 13px; }
+</style>
+
+<div class="wrap">
+
+<header class="head">
+  <div class="lbl">cdktn-bench · scenario corpus</div>
+  <h1>Measured and Unmeasured</h1>
+  <p class="lede">Seventeen specs, fifty-one tasks, three arms, one AWS account. The hypothesis is
+  <strong>day-2 operations and brownfield</strong>, not greenfield generation — and 71% of the
+  corpus is greenfield, statically graded. Six specs have ever touched a real account — and on
+  2026-08-27 the first battery under Amendment 32 (live AWS as the only trial mode) produced
+  valid rows on the first attempt, on every arm, for every scenario it touched.</p>
+  <div class="stamp">
+    <span>2026-08-27</span><span>main @ 6f1fed5 + Amendment 32 (uncommitted)</span><span>17 specs + 1 toy</span><span>train 10 / holdout 7</span>
+  </div>
+</header>
+
+<section>
+  <div class="tiles">
+    <div class="tile"><div class="n">17</div><div class="k">specs</div></div>
+    <div class="tile"><div class="n">51</div><div class="k">task dirs</div></div>
+    <div class="tile"><div class="n">13</div><div class="k">greenfield</div></div>
+    <div class="tile"><div class="n">4</div><div class="k">brownfield</div></div>
+    <div class="tile"><div class="n">1</div><div class="k">multi-step</div></div>
+    <div class="tile alarm"><div class="n">11</div><div class="k">never run live</div></div>
+  </div>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>Form</h2>
+    <p>Every scenario is single-step greenfield unless it says otherwise. The corpus is far less
+    varied in form than the roadmap implies.</p>
+  </div>
+
+  <div class="scroll">
+  <table>
+    <thead><tr>
+      <th>Scenario</th><th>Form</th><th>Split</th><th>Live check</th>
+      <th class="num">Catches</th><th class="num">Tier 0</th><th class="num">Tier 1</th>
+    </tr></thead>
+    <tbody>
+      <tr class="measured"><td class="id">ecs-swappiness</td><td><span class="chip">greenfield</span></td><td>train</td><td>—</td><td class="num">2</td><td class="num">3</td><td class="num">1</td></tr>
+      <tr class="measured"><td class="id">apigw-redeploy</td><td><span class="chip acc">multi-step</span></td><td>holdout</td><td><span class="chip ok">gating</span></td><td class="num">3</td><td class="num">6</td><td class="num">1</td></tr>
+      <tr class="measured"><td class="id">named-resource-replacement</td><td><span class="chip acc">brownfield + deploy</span></td><td>train</td><td><span class="chip ok">gating</span></td><td class="num">2</td><td class="num">4</td><td class="num">1</td></tr>
+      <tr class="measured"><td class="id">s3-lambda-log-retention</td><td><span class="chip">greenfield</span></td><td>train</td><td>—</td><td class="num">2</td><td class="num">6</td><td class="num">2</td></tr>
+      <tr class="partial"><td class="id">sfn-jsonata</td><td><span class="chip">greenfield</span></td><td>holdout</td><td>—</td><td class="num">2</td><td class="num">2</td><td class="num">7</td></tr>
+      <tr class="broken"><td class="id">apigw-openapi</td><td><span class="chip">greenfield</span></td><td>train</td><td>—</td><td class="num">2</td><td class="num">5</td><td class="num">2</td></tr>
+      <tr class="broken"><td class="id">lambda-alias-tracks-unpublished-latest</td><td><span class="chip acc">brownfield + deploy</span></td><td>train</td><td><span class="chip ok">gating</span></td><td class="num">2</td><td class="num">3</td><td class="num">0</td></tr>
+      <tr class="unrun"><td class="id">s3-acl-vs-object-ownership-log-delivery</td><td><span class="chip acc">brownfield + deploy</span></td><td>holdout</td><td><span class="chip ok">gating</span></td><td class="num">4</td><td class="num">5</td><td class="num">2</td></tr>
+      <tr class="unrun"><td class="id">singleton-child-resource-clobber</td><td><span class="chip acc">brownfield + deploy</span></td><td>train</td><td><span class="chip ok">gating</span></td><td class="num">3</td><td class="num">7</td><td class="num">1</td></tr>
+      <tr class="unrun"><td class="id">s3-notification-authoritative-singleton</td><td><span class="chip">greenfield</span></td><td>holdout</td><td>—</td><td class="num">7</td><td class="num">8</td><td class="num">5</td></tr>
+      <tr class="unrun"><td class="id">s3-bucket-hardening-decomposition</td><td><span class="chip">greenfield</span></td><td>train</td><td>—</td><td class="num">6</td><td class="num">7</td><td class="num">5</td></tr>
+      <tr class="unrun"><td class="id">iam-managed-policy-exclusive-vs-attachment</td><td><span class="chip">greenfield</span></td><td>holdout</td><td>—</td><td class="num">6</td><td class="num">5</td><td class="num">2</td></tr>
+      <tr class="unrun"><td class="id">ddb-gsi-attribute-definitions</td><td><span class="chip">greenfield</span></td><td>train</td><td>—</td><td class="num">6</td><td class="num">5</td><td class="num">1</td></tr>
+      <tr class="unrun"><td class="id">acm-dns-validation-record-wiring</td><td><span class="chip">greenfield</span></td><td>train</td><td>—</td><td class="num">5</td><td class="num">6</td><td class="num">3</td></tr>
+      <tr class="unrun"><td class="id">lambda-log-group-ownership-and-retention</td><td><span class="chip">greenfield</span></td><td>holdout</td><td>—</td><td class="num">5</td><td class="num">6</td><td class="num">2</td></tr>
+      <tr class="unrun"><td class="id">asg-launch-template-tag-propagation</td><td><span class="chip">greenfield</span></td><td>holdout</td><td>—</td><td class="num">4</td><td class="num">11</td><td class="num">1</td></tr>
+      <tr class="unrun"><td class="id">s3-notification-custom-resource-tax</td><td><span class="chip">greenfield</span></td><td>train</td><td>—</td><td class="num">3</td><td class="num">6</td><td class="num">4</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p style="font-size:13.5px;color:var(--ink-3);margin-top:10px;">
+    Stripe: <strong style="color:var(--ok)">green</strong> measured ·
+    <strong style="color:var(--warn)">amber</strong> partial ·
+    <strong style="color:var(--void)">red</strong> ran but produced nothing usable ·
+    grey never run.
+  </p>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>Live-run history</h2>
+    <p>Every trial that ever reached a real account, including the ones whose rows were later voided.</p>
+  </div>
+
+  <div class="scroll">
+  <table>
+    <thead><tr>
+      <th>Scenario</th><th class="num">Trials</th><th>Arms</th><th>Last run</th><th>Outcomes</th><th>What it produced</th>
+    </tr></thead>
+    <tbody>
+      <tr class="measured">
+        <td class="id">named-resource-replacement</td><td class="num">16+</td><td>all 3</td><td>2026-08-27</td>
+        <td><span class="chip ok">6 × 1.0</span> <span class="chip void">7 × 0.0</span> <span class="chip">3 exc</span></td>
+        <td>The brownfield stratum. 7 zeros and 3 exceptions (pre-Amendment-32) were harness defects, not agent failures. Amendment 32 battery (k=2, in progress): awscdk 1.0, hcl-raw 1.0 so far, both first attempt.</td>
+      </tr>
+      <tr class="measured">
+        <td class="id">apigw-redeploy</td><td class="num">10+</td><td>all 3</td><td>2026-08-27</td>
+        <td><span class="chip ok">9 × 1.0</span> <span class="chip">1 exc</span></td>
+        <td>The only multi-step evidence. Promoted Amendments 26/27. Amendment 32 battery: all three arms 1.0 on the first attempt, both steps, no harness archaeology in any trajectory.</td>
+      </tr>
+      <tr class="measured">
+        <td class="id">ecs-swappiness</td><td class="num">12</td><td>all 3</td><td>2026-08-27</td>
+        <td><span class="chip ok">7 × 1.0</span> <span class="chip void">4 × 0.0</span> <span class="chip">1 exc</span></td>
+        <td>The strongest thesis evidence in the corpus — see below. Replicated k=2 under Amendment 32: 6/6 valid rows in 6m54s wall-clock.</td>
+      </tr>
+      <tr class="partial">
+        <td class="id">s3-lambda-log-retention</td><td class="num">3</td><td>all 3</td><td>2026-08-20</td>
+        <td><span class="chip ok">2 × 1.0</span> <span class="chip void">1 × 0.0</span></td>
+        <td>One row per arm, single attempt. Directional only.</td>
+      </tr>
+      <tr class="partial">
+        <td class="id">sfn-jsonata</td><td class="num">2</td><td>2 of 3</td><td>2026-08-20</td>
+        <td><span class="chip ok">2 × 1.0</span></td>
+        <td>terraconstructs is <em>deliberately disabled</em> — no JSONata substrate exists on that arm.</td>
+      </tr>
+      <tr class="broken">
+        <td class="id">apigw-openapi</td><td class="num">3</td><td>all 3</td><td>2026-08-20</td>
+        <td><span class="chip void">3 exc</span></td>
+        <td>Zero usable rows. Prompt is known-bad (over-specified); deliberately not re-run.</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>What the measured runs actually say</h2>
+    <p>Two scenarios carry essentially all of the thesis evidence.</p>
+  </div>
+
+  <div class="note good">
+    <h3><code>ecs-swappiness</code> — the abstraction makes the mistake unwritable</h3>
+    <p><strong>Expectation:</strong> setting <code>swappiness</code> without <code>maxSwap</code> is
+    silently inert. <strong>Result:</strong> awscdk 1.0 / 3,332 tok · terraconstructs 1.0 / 5,090 ·
+    hcl-raw <strong>0.0 / 1,780</strong>.</p>
+    <p>The raw-HCL arm failed with the <em>fewest tokens of any arm</em>. Both L2s compile to
+    <code>swappiness = props.maxSwap ? props.swappiness : undefined</code>, so the error cannot be
+    expressed. Every local checkpoint — validate, plan — was green on the wrong config.</p>
+    <p><strong>Replication, 2026-08-27 (Amendment 32 harness, k=2, output tokens / turns):</strong>
+    awscdk 1.0 / 3,815 / 22 and 1.0 / 4,245 / 20 · terraconstructs 1.0 / 6,099 / 44 and 1.0 / 3,947 / 25 ·
+    hcl-raw <strong>0.0 / 1,244 / 9</strong> and <strong>0.0 / 1,158 / 10</strong>. Same verdict on every
+    arm, both attempts; on hcl-raw <code>terraform plan</code> was green against the real account on
+    the agent's first try and tier-1 caught the trap. The terraconstructs spread (44 vs 25 turns) is
+    vocabulary discovery in <code>node_modules/terraconstructs/**/*.d.ts</code>, not harness cost.</p>
+  </div>
+
+  <div class="note good">
+    <h3><code>named-resource-replacement</code> — cost, not correctness</h3>
+    <p><strong>Expectation:</strong> renaming a literally-named security group forces
+    destroy-then-create, and an interface endpoint holding it raises
+    <code>DependencyViolation</code>. <strong>Result:</strong> all three arms 1.0 —
+    awscdk 2,727 tok / 9 turns · hcl-raw 5,382 / 14 · terraconstructs 11,558 / 28.</p>
+    <p>The scenario does not discriminate on reward. It discriminates on cost: 4.2× spread, and
+    read-before-write of 22% / 19% / 4%. Brownfield is a separate stratum and is never pooled
+    with greenfield.</p>
+    <p><strong>2026-08-27 (Amendment 32 harness):</strong> awscdk 1.0 / 3,103 tok / 18 turns ·
+    hcl-raw 1.0 / 4,502 / 17 · terraconstructs pending. Both first-attempt, no rerun needed.</p>
+  </div>
+
+  <div class="note good">
+    <h3><code>apigw-redeploy</code> — the multi-step form, first clean battery</h3>
+    <p><strong>2026-08-27:</strong> all three arms 1.0 on both steps, first attempt — awscdk 8,447 tok /
+    56 turns · hcl-raw 13,480 / 49 · terraconstructs 16,040 / 116. Earlier multi-step rows only
+    passed because the agent found and exported the workspace's hidden live switch
+    (<code>TF_VAR_cdktn_bench_live=1</code> / <code>CDKTN_BENCH_LIVE=1</code>); under Amendment 32
+    that switch no longer exists and no trajectory in the battery contains
+    <code>InvalidClientTokenId</code>, a mock server, or a mode variable.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>Attributes that vary across the corpus</h2>
+    <p>Optional capabilities, opt-in oracle machinery, and per-task customizations — most used by
+    exactly one or a few scenarios.</p>
+  </div>
+
+  <div class="cols">
+    <div class="attr"><h3>Mutating concurrency</h3>
+      <p style="margin:0">Triggers an automatic ~8 min account reset after every trial.</p>
+      <div class="who">5 scenarios — all with live checks</div></div>
+
+    <div class="attr"><h3>Hand-authored <code>live_check.py</code></h3>
+      <p style="margin:0">Behavioural oracle, byte-identical across arms by design.</p>
+      <div class="who">5 — the same five</div></div>
+
+    <div class="attr"><h3>Gating live check</h3>
+      <p style="margin:0">Anything not <code>pass</code> forces reward 0.0, fail-closed.</p>
+      <div class="who">5</div></div>
+
+    <div class="attr"><h3>Gating idempotence</h3>
+      <p style="margin:0">A second apply must be a no-op, or the row is void.</p>
+      <div class="who">2 — <code>named-resource-replacement</code>, <code>singleton-child-resource-clobber</code></div></div>
+
+    <div class="attr"><h3>awscdk tier-1 on OPA/Rego</h3>
+      <p style="margin:0">Rather than cfn-guard, which cannot express a cross-resource join.</p>
+      <div class="who">3 — the M8 backport, not yet universal</div></div>
+
+    <div class="attr"><h3><code>hcl_traversal</code></h3>
+      <p style="margin:0">hcl2json static traversal, resolving symbols a plan cannot.</p>
+      <div class="who">1 — <code>s3-notification-authoritative-singleton</code></div></div>
+
+    <div class="attr"><h3><code>tier05_jsonata</code></h3>
+      <p style="margin:0">A whole tier used by one scenario.</p>
+      <div class="who">1 — <code>sfn-jsonata</code></div></div>
+
+    <div class="attr"><h3><code>seeded_files</code></h3>
+      <p style="margin:0">Read-only reference inputs (0444), distinct from a writable seed.</p>
+      <div class="who">1 — <code>apigw-openapi</code>, and it is the cautionary example</div></div>
+
+    <div class="attr"><h3>Prompt placeholders</h3>
+      <p style="margin:0">Runtime substitution into the ticket.</p>
+      <div class="who">2</div></div>
+
+    <div class="attr"><h3>Arm-specific catches</h3>
+      <p style="margin:0"><code>applies_to</code> — a mistake unwritable on one arm is N/A, not a free pass.</p>
+      <div class="who">13 of 17 — the norm, not the exception</div></div>
+
+    <div class="attr"><h3>Identity separation</h3>
+      <p style="margin:0"><code>workspace_id</code> hides a pitfall-naming spec id from the agent.</p>
+      <div class="who">13 — <code>workspace_title</code> on the 5 live ones</div></div>
+
+    <div class="attr"><h3>Per-arm memory</h3>
+      <p style="margin:0">awscdk and terraconstructs 4096 MB; hcl-raw 2048. The TS arms compile.</p>
+      <div class="who">all — asymmetric by necessity</div></div>
+  </div>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>Things worth a second look</h2>
+    <p>Discrepancies surfaced while assembling this, not previously tracked.</p>
+  </div>
+
+  <div class="note bad">
+    <h3>Every task still declares <code>max_iters = 8</code></h3>
+    <p>CLAUDE.md records that 8 was raised to 100 under Amendment 22, because 8 was
+    "far too tight — the first live trial hit <code>error_max_turns</code> at 8". Every generated
+    <code>task.toml</code> still carries <code>[metadata] max_iters = 8</code>, emitted from
+    <code>spec.verifier.budget.max_iters</code>. Live runs pass <code>max_turns</code> explicitly and
+    are unaffected, so this is inert metadata — confirmed 2026-08-27: every job config carries
+    <code>max_turns: 100</code> and the longest trajectory to date is 116 turns
+    (<code>apigw-redeploy-terraconstructs</code>, two steps, <code>success</code>). It is still a
+    stale number in 51 files that contradicts the documented decision; the generator should stop
+    emitting it or emit 100.</p>
+  </div>
+
+  <div class="note bad">
+    <h3><code>lambda-alias-tracks-unpublished-latest</code> has zero tier-1 asserts</h3>
+    <p>Deliberately — the spec argues that a tier which cannot fail for a reason the scenario is
+    about is decoration. But it ships a 61-line <code>policy.rego</code> that is an inert stub
+    (<code>allow if { false }</code>), and <code>make grading-proof</code> treats "no tier-1-graded
+    catch on any arm" as a hard failure. <strong>CI is red on this today.</strong> The scenario
+    argues for no tier-1, ships a stub tier-1, and the gate catches the gap.</p>
+  </div>
+
+  <div class="note">
+    <h3>Oracle depth varies by an order of magnitude</h3>
+    <p><code>sfn-jsonata</code> is inverted — 2 tier-0 asserts against 7 tier-1.
+    <code>asg-launch-template-tag-propagation</code> has 11 tier-0 and 1 tier-1.
+    <code>s3-notification-authoritative-singleton</code> carries 7 catches, 8 tier-0 and 5 tier-1 —
+    and its Rego is 2,677 lines for one scenario. Depth tracks how much trouble a scenario gave its
+    author, not how much signal it yields.</p>
+  </div>
+
+  <div class="note">
+    <h3>Timeouts split cleanly by liveness</h3>
+    <p>Live scenarios: 3600 s agent / 900 s verifier. Static: 900 / 300. The five live ones also
+    carry a 2400 s <code>pre_invoke</code> budget where they deploy a seed. Nothing anomalous —
+    worth knowing when a battery's wall-clock is being estimated.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>The coverage problem</h2>
+  </div>
+  <p><strong>Eleven of seventeen scenarios have never run against AWS.</strong> They pass every
+  credential-free host gate — falsifiability, seed-parity, grading-proof, tier-1 coverage — which proves each
+  <em>declared</em> catch fires against a hand-written fixture. It does not prove the scenario
+  discriminates between arms when a real agent meets it.</p>
+  <p>Both scenarios carrying the thesis evidence needed a re-run before they produced a valid row,
+  and in both cases the first attempt was invalidated by a harness defect rather than by anything
+  the agent did. The host gates did not catch either one. That is the base rate to assume for
+  the eleven unrun scenarios — not that they are fine because the gates are green.</p>
+  <p><strong>Update 2026-08-27.</strong> The defect class behind both re-runs was identified — the
+  workspace encoded an offline/live AWS switch that only the verifier flipped, so agents on the two
+  Terraform arms paid tokens rediscovering the harness (18 trajectories) — and removed under
+  Amendment 32: live AWS is the only trial mode, the mock servers and <code>skip_*</code>/dummy
+  credentials are gone from every workspace, and a credential failure voids the row instead of
+  scoring 0.0. The promotion battery produced 11/11 valid rows so far on the first attempt.
+  The eleven never-run scenarios remain never-run.</p>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>Terminology — four words that get overloaded</h2>
+    <p>The word "scenario" means two different things depending on which layer you are in. Nearly
+    every architectural confusion in this project traces back to that.</p>
+  </div>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Term</th><th>Layer</th><th>What it actually is</th><th>Count</th></tr></thead>
+    <tbody>
+      <tr><td class="id">spec</td><td>cdktn-bench</td><td><code>specs/&lt;id&gt;.yaml</code> — one task specification plus the arms it applies to. The authoring unit.</td><td class="num">17</td></tr>
+      <tr><td class="id">generator</td><td>cdktn-bench</td><td><code>generator/gen.py</code> — compiles one spec into one task directory <em>per arm</em>. Everything under <code>tasks/**</code> is its output; only <code>solution/**/solve.sh</code> and a declared <code>live_check.py</code> are hand-authored.</td><td class="num">—</td></tr>
+      <tr><td class="id">task</td><td>Harbor</td><td><code>tasks/anchor/&lt;id&gt;-&lt;arm&gt;/</code> — what a trial actually runs. Carries <code>task.toml</code>, <code>environment/</code>, <code>tests/</code>, <code>solution/</code>.</td><td class="num">51</td></tr>
+      <tr class="broken"><td class="id">scenario</td><td>aws-bench</td><td><strong>Not a spec.</strong> A pre-provisioned AWS <em>account state</em> — the unit of <code>env setup</code>, reset, contamination and admission control. Every task declares <code>scenario_id</code>.</td><td class="num">1</td></tr>
+      <tr><td class="id">arm</td><td>cdktn-bench</td><td><code>arms/&lt;arm&gt;/</code> — a toolchain under test: <code>awscdk</code>, <code>terraconstructs</code>, <code>hcl-raw</code>. Owns the image contract.</td><td class="num">3</td></tr>
+      <tr><td class="id">environment</td><td>Harbor</td><td><code>&lt;task&gt;/environment/</code> — the Docker build context. <strong>COPY'd into the agent image, so every byte is prompt surface.</strong></td><td class="num">51</td></tr>
+      <tr><td class="id">workspace</td><td>agent</td><td><code>/app/project</code> inside the container — what the agent edits. Greenfield: an empty skeleton. Brownfield: a hand-authored seed.</td><td class="num">—</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div class="note bad" style="margin-top:18px">
+    <h3>One scenario, seventeen specs</h3>
+    <p>All 51 tasks hardcode <code>scenario_id = "anchor"</code> against a single account
+    (<code>886312446417</code>). Upstream aws-bench runs 8 scenarios / 134 tasks, split by
+    <em>deployed infra shape</em>. The one-scenario choice is asserted as a premise in
+    <code>scenarios/anchor/README.md</code>, <code>scenario.toml</code>, <code>local-registry.json</code>
+    and <code>SCHEMA.md</code> §8.3 — and <strong>argued in none of them</strong>. No DECISIONS entry
+    has ever weighed one-vs-many.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>Grading — oracles and their tiers</h2>
+    <p>An oracle decides whether a solution is correct. Tiers are ordered by cost and by how close
+    they sit to the truth.</p>
+  </div>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Tier</th><th>What it asks</th><th>awscdk</th><th>Terraform arms</th><th>Cost</th></tr></thead>
+    <tbody>
+      <tr><td class="id">tier 0</td><td>Does the synthesized artifact have the right shape? Structural asserts (jq) over a template or plan.</td><td><code>tsc</code> + <code>cdk synth</code> → CloudFormation JSON</td><td><code>validate</code> + <code>plan -json</code></td><td>seconds</td></tr>
+      <tr><td class="id">tier 0.5</td><td>Host-side JSONata evaluation. One scenario only.</td><td colspan="2"><code>tier05_jsonata</code> — <code>sfn-jsonata</code></td><td>seconds</td></tr>
+      <tr><td class="id">tier 1</td><td>A <em>quantified</em> statement a jq path cannot express — "no rule anywhere in this group may be open to the world".</td><td>cfn-guard, migrating to OPA/Rego (3 of 17 so far)</td><td>OPA/Rego</td><td>seconds</td></tr>
+      <tr class="measured"><td class="id">live</td><td>Does the deployed infrastructure actually behave? Hand-authored <code>live_check.py</code>, byte-identical across arms.</td><td colspan="2">Real AWS API calls — 5 of 17 specs</td><td>minutes + $</td></tr>
+      <tr class="measured"><td class="id">idempotence</td><td>Is a second apply a no-op? Plus a seed-movement guard so a do-nothing agent cannot inherit the seed's convergence.</td><td><code>cdk diff --fail</code> + completion marker</td><td><code>plan -detailed-exitcode</code></td><td>minutes</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p style="font-size:14px;color:var(--ink-2);margin-top:12px">
+    <strong>Same intent, different substrate.</strong> The generator compiles one spec's assertions
+    into per-arm forms — a <code>cfn_jsonpath</code> for CloudFormation and a <code>tf_jsonpath</code>
+    for a Terraform plan. The <em>intent</em> is shared; the <em>expression</em> is not, and that gap
+    is where arm-asymmetric grading bugs live. The live check is the one instrument that is
+    genuinely arm-agnostic: the account does not know which toolchain produced a resource, which is
+    why <code>live_check.py</code> is byte-identical across all three arms by construction.
+  </p>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>Static grading is cheap and hard to get right</h2>
+    <p>Every tier below "live" is fast and near-free (the static tiers plan against the real account
+    with staged credentials in a trial, and against a two-route stub in the credential-free host gates). The cost shows up as an unbounded stream of
+    corrections, each one closing a hole the previous fix opened.</p>
+  </div>
+
+  <div class="note good">
+    <h3>When static grading works: <code>ecs-swappiness</code></h3>
+    <p>The property is <em>structural and closed</em> — <code>swappiness</code> is either at the
+    right nesting level with <code>maxSwap</code> set, or it is not. The correct config is known in
+    advance, so no live observation adds anything. One tier-0 assert decides it, and the typed arms
+    make the error unwritable at compile time. This is the regime static grading is built for.</p>
+  </div>
+
+  <div class="note bad">
+    <h3>When it does not: a policy that could live anywhere</h3>
+    <p><strong>cfn-guard could not express a cross-resource join.</strong> No logical-id join between
+    a role and the policy naming it, so the awscdk tier-1 for
+    <code>iam-managed-policy-exclusive-vs-attachment</code> degraded into a count-equality proxy that
+    was unsound <em>in both directions</em>: a policy reaching only one role scored <strong>1.0</strong>
+    (false pass, defeating the scenario's own catch), while a policy attached to both roles from both
+    sides scored <strong>0.0</strong> (false fail, contradicted by the template). Byte-equivalent
+    terraconstructs solutions scored the opposite way in each case. Three fix rounds could not close
+    it — a tooling ceiling, which is what M8 (OPA everywhere) exists to remove.</p>
+    <p><strong>Terraform plans hide their own symbols.</strong> <code>terraform show -json</code> does
+    not carry the <code>locals</code> map, and an attribute of a resource being <em>created</em> is
+    unknown at plan time — so the plan shows <code>local.arns.media_bucket</code>, never its referent.
+    Lacking a way to resolve that, the Rego grew proximity heuristics
+    (<code>config_reaches_arn_of</code> and friends) that asked "does the plan depend on
+    <em>some</em> bucket ARN anywhere?". Proven wrong in both directions by execution. Retired and
+    replaced with <code>tmccombs/hcl2json</code> static traversal, which resolves the symbol to its
+    referent instead of guessing from proximity.</p>
+    <p><strong>The cost is a signal, not just a bill.</strong> One scenario's policy is 2,677 lines
+    plus a 952-line shared library — with no proof that a fifth review round would find nothing.
+    Falsifiability proves every <em>declared</em> catch fires; it never proves no undeclared hole
+    remains.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>Emulated grading — when to revisit</h2>
+  </div>
+  <p><code>floci</code> (<code>ghcr.io/lex00/floci:awsbench</code>) and LocalStack/moto are
+  <strong>excluded by locked decision</strong>, on one specific ground: <em>they return false greens
+  on exactly the value-rejection class the study targets</em> — moto accepts invalid enums and
+  attributes, so an emulator would grade a wrong value as correct.</p>
+  <p>That reasoning is sound for v1, whose traps were largely <strong>value-acceptance</strong>
+  questions. It is a different question for day-2, where the traps are about
+  <strong>sequencing and dependency</strong>: does a rename force destroy-then-create, does an
+  in-use endpoint raise <code>DependencyViolation</code>, does a second apply converge. Those are
+  control-flow properties an emulator may model faithfully even while mis-modelling value validation.</p>
+  <div class="note">
+    <h3>What would tip the scale</h3>
+    <ul style="margin:0">
+      <li><strong>A measured false-green rate.</strong> Run a scenario whose live verdict is already
+      known against the emulator and count disagreements. Until that number exists, the exclusion
+      rests on an argument rather than evidence — the same criticism this project applies everywhere else.</li>
+      <li><strong>Live throughput becoming the binding constraint.</strong> Mutating trials serialize
+      account-wide with an ~8.5 min reset inside the lock. If day-2 coverage grows and the account is
+      the bottleneck, an emulator tier that is <em>demonstrably</em> sound for sequencing traps buys
+      parallelism a single account cannot.</li>
+      <li><strong>Evaluated and rejected as a gate backend (2026-08-27).</strong> The credential-free
+      host gates need exactly two plan-time answers (<code>sts:GetCallerIdentity</code>,
+      <code>states:ValidateStateMachineDefinition</code>); <code>gates/aws_stub.py</code> answers both
+      deterministically and rejects everything else, so floci's ~80 services would add fidelity
+      questions without adding coverage. The emulator question is now solely about
+      <em>emulated grading</em> of day-2 sequencing traps, gated on the false-green measurement below.</li>
+      <li><strong>Scoped adoption, never blanket.</strong> The defensible shape is a per-spec opt-in
+      — the same shape as <code>hcl_traversal</code> — declaring "this trap's truth is
+      sequencing, and the emulator models it", with a live run proving the agreement first. A blanket
+      emulator tier reintroduces the exact false-green class the exclusion was written against.</li>
+    </ul>
+  </div>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>Concurrency — why <code>-n</code> mostly does not help</h2>
+  </div>
+  <p>The trial queue takes the scenario admission gate <em>before</em> the concurrency semaphore:</p>
+  <pre style="background:var(--idle-w);padding:12px 14px;border-radius:3px;overflow-x:auto;font-family:'IBM Plex Mono',monospace;font-size:12.5px;margin:0 0 14px"><code style="background:none;padding:0">async with gate.hold(trial_config.concurrency_mode), self._semaphore:
+    return await self._execute_trial_with_retries(trial_config)</code></pre>
+  <ul>
+    <li><strong>READ_ONLY</strong> trials admit freely alongside one another — the 12 static specs
+    genuinely parallelize.</li>
+    <li><strong>MUTATING</strong> trials require no writer <em>and zero readers in flight</em>, and
+    the hold spans the whole trial <strong>including its reset</strong>. The 5 live specs are all
+    mutating, so they serialize account-wide at roughly one trial per ~10 minutes regardless of
+    <code>-n</code>. Measured: 3 trials, 1 h 09 wall-clock.</li>
+    <li>The gate is <strong>reader-preferring</strong> — a continuous stream of read-only trials can
+    park a waiting mutating one. Liveness holds only because a run is finite.</li>
+    <li><strong>Contamination is account-global.</strong> A failed reset tags the account and every
+    later trial on that scenario is refused — all 51 tasks, not just the mutating ones.</li>
+  </ul>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>Reset — cost and observed failure modes</h2>
+  </div>
+  <div class="tiles" style="margin-bottom:16px">
+    <div class="tile"><div class="n">4–8<span style="font-size:16px">min</span></div><div class="k">observed range</div></div>
+    <div class="tile alarm"><div class="n">3</div><div class="k">failures in one day</div></div>
+    <div class="tile"><div class="n">218<span style="font-size:16px">MB</span></div><div class="k">re-hashed per reset</div></div>
+    <div class="tile"><div class="n">8,289</div><div class="k">files in scenario tree</div></div>
+  </div>
+  <p>Reset restores the account to the POST_SETUP baseline by diffing against a snapshot, deleting
+  what is not in it, and re-hashing the scenario tree. Observed durations: 4:00, 5:43, 7:57.</p>
+  <ul>
+    <li><strong><code>Read timeout on endpoint URL: "None"</code> — three times in one day.</strong>
+    Two post-trial resets and one <code>env reset</code>. The reset that finally succeeded was the
+    third attempt of an unchanged command against an unchanged account. There is no retry.</li>
+    <li><strong>A killed reset leaves no contamination flag.</strong> A <code>ResetFailure</code>
+    sets the flag; a process killed mid-run never reaches either handler. The automatic pre-trial
+    guard reads an Organizations <em>tag</em>, not the account, so it cannot see the drift. Only a
+    hand-run <code>env verify</code> scans for real.</li>
+    <li><strong>The scenario hash has no blast-radius boundary.</strong> <code>compute_scenario_hash</code>
+    SHA256s every file under the scenario dir — 218 MB, 8,289 files, overwhelmingly
+    <code>node_modules</code> plus committed <code>cdk.out/</code> and <code>dist/</code>. Any
+    <code>npm install</code> silently invalidates the baseline.</li>
+  </ul>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>Environments and checksums</h2>
+  </div>
+  <ul>
+    <li><strong>One image contract per arm.</strong> <code>arms/&lt;arm&gt;/environment/</code> holds
+    the Dockerfile, the pinned toolchain and the workspace skeleton. The generator copies it into
+    every task of that arm, so a change to one arm Dockerfile propagates to all 17 of its tasks.</li>
+    <li><strong>One hand-maintained exception.</strong> <code>tasks/anchor/smoke/environment/</code>
+    is a byte-copy of the awscdk arm, guarded by <code>ci/check-smoke-drift.sh</code> (leading
+    comments stripped before comparison). It is the last step of <code>make check</code> and it
+    caught a real drift this session.</li>
+    <li><strong>Two independent hashes.</strong> The <em>equipping hash</em> covers what equips one
+    trial — instruction, image ref, skills/MCP config, and for brownfield the
+    <code>workspace_seed_sha256</code>. Rows under different equipping hashes are different strata
+    and are never pooled. The <em>scenario hash</em> covers the account substrate. They answer
+    different questions and are not interchangeable.</li>
+    <li><strong>Per-arm resources are deliberately asymmetric.</strong> awscdk and terraconstructs
+    get 4096 MB (both compile TypeScript); hcl-raw gets 2048. Both TS arms now bake the compile at
+    image build so the first in-trial compile is warm.</li>
+  </ul>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>The pre-run ladder</h2>
+    <p>Five rungs, ordered by scope. Each answers "what already exists when the agent starts?" —
+    and day-2 measurement lives entirely on the upper rungs.</p>
+  </div>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Rung</th><th>Scope</th><th>Runs</th><th>Creates</th><th>Used by</th></tr></thead>
+    <tbody>
+      <tr class="measured"><td class="id">env setup</td><td>account, persists</td><td>once per environment</td><td>Real AWS infra shared by every task on that scenario</td><td class="num">1 (anchor)</td></tr>
+      <tr class="measured"><td class="id">pre_invoke</td><td>per trial, in the agent container</td><td>before the agent's first token</td><td>Real AWS infra for this trial only — the seed deploy</td><td class="num">5</td></tr>
+      <tr class="broken"><td class="id">deploy_prior</td><td>per <em>step</em>, multi-step only</td><td>before that step's agent</td><td>The previous step's deployment</td><td class="num">0 real specs</td></tr>
+      <tr class="broken"><td class="id">post_invoke</td><td>per trial</td><td>after the agent</td><td>—</td><td class="num">0</td></tr>
+      <tr><td class="id">workspace_seed</td><td>files in the container</td><td>image build</td><td>Hand-authored config — <strong>no AWS</strong></td><td class="num">4</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p style="font-size:14px;color:var(--ink-2);margin-top:12px">The distinction that matters:
+  <code>workspace_seed</code> alone makes the workspace <em>describe</em> infrastructure;
+  <code>pre_invoke</code> makes that infrastructure <strong>exist</strong>. Shipping the first
+  without the second is exactly the defect that voided the earlier brownfield battery — the prompt
+  said "already deployed in this account" and nothing had deployed it.</p>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>Scenario splitting — what it would mean</h2>
+    <p>Not started. Needs a pre-registered amendment, not just a code change, because
+    <code>scenario_id</code> is part of trial identity.</p>
+  </div>
+  <p>A split means: more than one aws-bench scenario, each with its own account, its own
+  <code>env setup</code> deploying a different infra shape, its own reset, its own contamination
+  boundary and — critically — <strong>its own admission gate</strong>. Tasks choose a scenario by
+  <code>scenario_id</code>.</p>
+  <div class="cols">
+    <div class="attr"><h3>What it buys</h3>
+      <ul style="margin:0">
+        <li>Mutating trials on different scenarios run <em>concurrently</em> — the single biggest
+        throughput lever for day-2 coverage.</li>
+        <li>A failed reset stops one scenario's tasks, not all 51.</li>
+        <li>Hash blast radius becomes real: today "within a scenario" means everything.</li>
+      </ul></div>
+    <div class="attr"><h3>What forces it</h3>
+      <p style="margin:0 0 6px">Three Batch C items cannot be served by <code>workspace_seed</code>
+      (a file) or <code>pre_invoke</code> (per-trial):</p>
+      <ul style="margin:0">
+        <li><code>rds-blue-green</code> — a live RDS instance cannot live in a $0 anchor shared by 51 tasks.</li>
+        <li><code>cross-stack-export-deadly-embrace</code> — needs ≥2 deployed stacks with a live export/import edge.</li>
+        <li><code>s3-notification-on-unowned-bucket</code> — anchor's agent role is
+        <code>AdministratorAccess</code>, so "a bucket this principal does not own" is
+        <strong>unrepresentable in this account at all</strong>. Needs a second account by definition.</li>
+      </ul></div>
+    <div class="attr"><h3>Shape of a first split</h3>
+      <p style="margin:0">Split by <em>deployed infra shape</em>, as upstream does — not by task
+      count. The natural first cut is one scenario per mutating day-2 family, so the live specs stop
+      queueing behind each other, plus a second account for the ownership case.</p></div>
+    <div class="attr"><h3>Cheap first step, independent of any split</h3>
+      <p style="margin:0">Get <code>node_modules</code>, <code>cdk.out</code> and <code>dist</code>
+      out of <code>scenarios/anchor/</code>. Removes most spurious baseline invalidation and 218 MB
+      of I/O from every reset. No amendment needed.</p></div>
+  </div>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>Queued this session, not yet done</h2>
+    <p>Work identified today and deliberately deferred. Ordered by what has downside if left.</p>
+  </div>
+
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Item</th><th>Why it was deferred</th><th>Downside if left</th></tr></thead>
+    <tbody>
+      <tr class="broken"><td><strong>CI red on <code>lambda-alias</code></strong><br><span class="mono" style="font-size:12px;color:var(--ink-3)">grading-proof, no tier-1 catch</span></td>
+        <td>Fixing it means either wiring a real tier-1 or changing gate semantics — neither is a patch.</td>
+        <td>A red <code>main</code> hides the next real regression. Three options open: withhold the scenario, wire tier-1, or leave red.</td></tr>
+      <tr class="broken"><td><strong>Batch B oracle debt</strong> — 8 majors<br><span class="mono" style="font-size:12px;color:var(--ink-3)">ROADMAP §5b.2</span></td>
+        <td>Fix round not yet run.</td>
+        <td>Two of the eight bias the headline metric, not just leak reward. No brownfield row from these three may be published.</td></tr>
+      <tr class="partial"><td><strong>Bounded retry on live oracles</strong><br><span class="mono" style="font-size:12px;color:var(--ink-3)">ROADMAP §5b.1</span></td>
+        <td>Postponed to the debt list.</td>
+        <td>Five instances in one day, including a correct solution scored 0.0 on a timed-out call with ground truth still in the account.</td></tr>
+      <tr class="partial"><td><strong><code>policy-json-string-normalization-diff</code></strong> unauthored</td>
+        <td>Its author marked it BLOCKED; the blocking evidence is itself unsound (no negative control, 50 provider crashes in the probe window).</td>
+        <td>Batch B stays 3 of 4. The blocked verdict is neither confirmed nor refuted.</td></tr>
+      <tr class="partial"><td><strong>Seed receipt not downloaded</strong><br><span class="mono" style="font-size:12px;color:var(--ink-3)">Amendment 31</span></td>
+        <td>Found while promoting 31.</td>
+        <td><code>/logs/seed-deploy-receipt.json</code> is the anti-vacuity channel and cannot be audited post-hoc from a finished job dir.</td></tr>
+      <tr class="partial"><td><strong>awscdk parity row</strong> never obtained</td>
+        <td>Run scored 0.0 on a CLI timeout.</td>
+        <td>The baked-<code>tsc</code> image change has no measured row; it is a new equipping stratum with n=0.</td></tr>
+      <tr class="unrun"><td><strong><code>make parity</code> absent from CI</strong></td>
+        <td>Found in the CI audit.</td>
+        <td>Cross-arm prompt parity — the property keeping tokens-to-green comparable — has zero CI coverage.</td></tr>
+      <tr class="unrun"><td><strong>CI runtime and hygiene</strong></td>
+        <td>Audit findings, not yet in §5b.</td>
+        <td><code>full-ci</code> ~45 min → ~3 h as the corpus grew; no <code>timeout-minutes</code> (6 h default), no npm/Terraform caching.</td></tr>
+      <tr class="unrun"><td><strong><code>max_iters = 8</code> in 51 files</strong></td>
+        <td>Found while assembling this page.</td>
+        <td>Contradicts Amendment 22 (raised to 100). Likely inert, but nobody should have to work out which wins.</td></tr>
+      <tr class="unrun"><td><strong>Multi-step still one scenario</strong></td>
+        <td>No driver until a scenario needs pre-deployed <em>state</em>.</td>
+        <td><code>pre_invoke.deploy_prior</code> is exercised by no real spec — only unit tests. Upstream aws-bench still refuses multi-step outright.</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>Authoring queue</h2>
+    <p>Batch A is greenfield on today's harness; B is brownfield; C needs multi-step.</p>
+  </div>
+  <div class="cols">
+    <div class="attr"><h3>Batch A — 8 of 12</h3>
+      <p style="margin:0 0 6px">Remaining four, blueprinted in <code>docs/design/batch-a-greenfield-blueprints.md</code>:</p>
+      <div class="who">caller-identity-arn-as-principal · lambda-function-url-partner-scoped-invoke · apigwv2-route-settings-zero-vs-unset · ecr-repo-destroy-force-delete</div>
+      <p style="margin:8px 0 0;font-size:13.5px;color:var(--ink-2)">Needs: a literal AMI id, (the hcl-raw STS blocker is resolved by Amendment 32 — plans resolve <code>sts:GetCallerIdentity</code> against the real account in trials and the stub in gates), <code>verifier.teardown</code> (not built), and <code>hashicorp/archive</code> in the provider mirror.</p></div>
+
+    <div class="attr"><h3>Batch B — 3 of 4</h3>
+      <p style="margin:0 0 6px">Unblocked 2026-08-26 by the seed-deploy mechanism. Authored today; all carry §5b.2 debt.</p>
+      <div class="who">s3-acl-vs-object-ownership-log-delivery · singleton-child-resource-clobber · lambda-alias-tracks-unpublished-latest · <em>policy-json-string-normalization-diff (not authored)</em></div></div>
+
+    <div class="attr"><h3>Batch C — 0 of 5</h3>
+      <p style="margin:0 0 6px">Multi-step; <code>apigw-redeploy</code> is the template and the only working example.</p>
+      <div class="who">drift-blindness · sg-inline-vs-standalone-rules · cross-stack-export-deadly-embrace · rds-blue-green · s3-notification-on-unowned-bucket</div></div>
+
+    <div class="attr"><h3>Empirical gates</h3>
+      <p style="margin:0 0 6px">Need AWS, run outside a measurement battery:</p>
+      <div class="who">default-tags-vs-tags-all — does the perpetual diff still reproduce on provider v6? · auto-created-security-groups-allow-all-egress — does aws-cdk-lib still do this?</div></div>
+  </div>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>Measurement roadmap</h2>
+    <p>M1–M9. None started; several are cheap and need no new trials.</p>
+  </div>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Item</th><th>What it does</th><th>Cost</th></tr></thead>
+    <tbody>
+      <tr class="unrun"><td class="id">M1</td><td>Finish the profile — land blast radius, wire <code>extract_signals.py</code> into the pipeline, make rbw / escape-hatch first-class result fields instead of post-hoc extraction.</td><td>Cheap, no new trials</td></tr>
+      <tr class="unrun"><td class="id">M2</td><td>Equipping factorial — does materialized discovery erase the abstraction tax? <code>gates/equipping.py</code> already hashes skills/MCP into trial identity, so <code>arm × equipping</code> is a legitimate design today.</td><td>Battery</td></tr>
+      <tr class="unrun"><td class="id">M3</td><td>The <code>hcl-modules</code> arm, as a <em>falsification test</em>. Raw HCL is arguably a strawman — practice is community modules. Without this, the most obvious practitioner objection to the headline stands.</td><td>New arm</td></tr>
+      <tr class="unrun"><td class="id">M4</td><td>Scale dose-response — the biggest live limitation. Every scenario is 1–2 files, the regime where abstraction pays off <em>least</em>. The maintainability argument is fundamentally about scale.</td><td>High</td></tr>
+      <tr class="unrun"><td class="id">M5</td><td>Oracle-authority inversion — decide after a full battery, on the measured divergence rate between static-green and live-green.</td><td>Decision</td></tr>
+      <tr class="unrun"><td class="id">M6</td><td>Closed-book knowledge probe — for each trap, ask the model the underlying question with no workspace, docs or tools, and record whether it knows. Operationalizes the §3 law.</td><td>Cheap, no AWS</td></tr>
+      <tr class="unrun"><td class="id">M7</td><td>Split the aws-bench scenario — throughput, isolation, hash blast radius. All 51 tasks hardcode <code>scenario_id = "anchor"</code>; a framework-sanctioned degenerate use, not a mistake.</td><td>Infra</td></tr>
+      <tr class="unrun"><td class="id">M8</td><td>OPA/Rego on all three arms; cfn-guard demoted to a measured capability. Proven necessary: cfn-guard cannot express a cross-resource join, and the resulting proxy was unsound <em>in both directions</em>. Backported to 3 scenarios so far.</td><td>Per-scenario</td></tr>
+      <tr class="unrun"><td class="id">M9</td><td>Brownfield <em>adoption</em> scenarios — import existing infrastructure. Distinct from Amendment 28 brownfield, which seeds <em>code</em>; adoption starts from resources with no config at all.</td><td>New form</td></tr>
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>Backlog and open decisions</h2>
+  </div>
+  <div class="cols">
+    <div class="attr"><h3>Backlog</h3>
+      <ul style="margin:0">
+        <li><strong>#12</strong> community contribution path — CONTRIBUTING.md, proposal template, credential-free CI gates. Tension with M5: full behavioural oracles make the bench unrunnable without an AWS account.</li>
+        <li><strong>#17</strong> equipping-hash gap — the bare-tag image-digest fallback blinds the hash.</li>
+        <li><strong>#8</strong> differential oracle-strictness check.</li>
+      </ul></div>
+    <div class="attr"><h3>Open decisions</h3>
+      <ul style="margin:0">
+        <li>Adopt the oracle-authority inversion (M5)? Decide on battery data.</li>
+        <li>Is the §3 law — <em>abstraction advantage = encoded experience − vocabulary cost</em> — pre-registered as <strong>the</strong> thesis, replacing the flatter "typed L2s beat raw HCL"? Better supported and falsifiable, but derived post-hoc from n=1 pairs; M6 should test it first.</li>
+        <li>Do rbw / escape-hatch / blast radius become pre-registered <strong>headline</strong> columns or exploratory secondary ones? They were found post-hoc — exactly the situation pre-registration exists to discipline.</li>
+        <li>Does <code>hcl-modules</code> become a fourth arm, or a treatment on a subset?</li>
+        <li>Is fresh-session-per-step pre-registered as <em>modelling maintenance by a different engineer</em>, and does an explicitly-cached variant become an M2 condition?</li>
+      </ul></div>
+  </div>
+</section>
+
+<div class="foot">
+  Generated from <code>specs/*.yaml</code>, <code>tasks/anchor/*/task.toml</code>,
+  <code>specs/split.yaml</code> and every <code>result.json</code> under <code>jobs/</code>
+  at <code>main @ 6f1fed5</code>. Token counts are directional: n=1 per arm, and two runs of one
+  scenario on one arm have differed by 54%.
+</div>
+
+</div>

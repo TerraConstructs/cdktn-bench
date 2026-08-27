@@ -85,7 +85,6 @@ HCL
 
 if [ "${LIVE:-0}" = "1" ]; then
   echo "== LIVE: this apply is EXPECTED to succeed and to leave the alias behind =="
-  export TF_VAR_cdktn_bench_live=1
   terraform init -input=false
   # FIXTURE SELF-PROOF (the discipline finding M5 introduced on the sibling
   # brownfield scenario): `--expect stale` alone cannot tell this catch from a

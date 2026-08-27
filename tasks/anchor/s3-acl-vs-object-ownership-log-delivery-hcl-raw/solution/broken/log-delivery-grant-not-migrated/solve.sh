@@ -206,7 +206,6 @@ if [ "$LIVE" = "1" ]; then
   # must SUCCEED, because "everything is green and the logs stop anyway" IS the
   # catch. Both applies must exit 0 before the live oracle is consulted.
   echo "== LIVE step 1/2: reset the destination bucket's ACL (identical to the reference) =="
-  export TF_VAR_cdktn_bench_live=1
   write_acl_reset
   terraform init -input=false
   terraform apply -input=false -auto-approve

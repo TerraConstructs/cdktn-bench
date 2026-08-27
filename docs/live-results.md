@@ -131,3 +131,47 @@ earlier in this project differed 54% in tokens on the same scenario).
   deployed, idempotence converged, rename correctly applied — scored 0.0 because
   one `describe-security-groups` call timed out. A direct account scan
   afterwards found the group present and correctly renamed. See ROADMAP §5b.1.
+
+
+## 2026-08-27 — Amendment 32 promotion battery (`jobs/amend32-promotion`)
+
+First battery under live-only AWS access (DECISIONS.md Amendment 32, promoted
+2026-08-28 on these rows). claude-sonnet-5, k=2, `max_turns=100`, arm images
+rebuilt (`make build-arms`) and `env setup` re-run beforehand — new equipping
+and environment hashes; rows are a new stratum relative to everything above.
+Every trial valid on its first attempt; zero harness-archaeology strings in
+any agent trajectory.
+
+**Greenfield, read-only** — `2026-08-27__21-38-21`, 6 trials in 6m54s wall-clock:
+
+| arm | reward | output tok | num_turns | cost $ |
+|-----|-------:|-----------:|----------:|-------:|
+| awscdk | 1.0 / 1.0 | 3,815 / 4,245 | 22 / 20 | 0.19 / 0.17 |
+| hcl_raw | **0.0 / 0.0** | 1,244 / 1,158 | 9 / 10 | 0.09 / 0.06 |
+| terraconstructs | 1.0 / 1.0 | 6,099 / 3,947 | 44 / 25 | 0.40 / 0.22 |
+
+`ecs-swappiness`: the Amendment 22 thesis row replicates on both attempts.
+hcl_raw's `terraform plan` was green against the real account on the agent's
+first command; tier-1 caught the swappiness-without-maxSwap trap.
+
+**Multi-step, mutating** — `apigw-redeploy`, `2026-08-27__21-50-09`
+(second attempts appended as they land):
+
+| arm | reward | output tok | num_turns | cost $ | live_check |
+|-----|-------:|-----------:|----------:|-------:|:----------:|
+| awscdk | 1.0 / 1.0 | 8,447 / 10,314 | 56 / 65 | 0.47 / 0.55 | pass |
+| hcl_raw | 1.0 / 1.0 | 13,480 / 13,781 | 49 / 64 | 0.48 / 0.56 | pass |
+| terraconstructs | 1.0 | 16,040 | 116 | 1.09 | pass |
+
+**Brownfield, mutating** — `named-resource-replacement`, same job dir:
+
+| arm | reward | output tok | num_turns | cost $ | live_check | idempotence |
+|-----|-------:|-----------:|----------:|-------:|:----------:|:-----------:|
+| awscdk | 1.0 | 3,103 | 18 | 0.14 | pass | converged |
+| hcl_raw | 1.0 | 4,502 | 17 | 0.16 | pass | converged |
+| terraconstructs | 1.0 | 11,024 † | 75 | 0.66 | pass | converged |
+
+† `result.json` carried `None` for every token field on this row (harbor
+trajectory-conversion failure, see Amendment 32 "What the run CORRECTED");
+values are from the transcript's terminal `result` event via
+`gates/emit_result.py`'s `claude-code-stream` fallback.

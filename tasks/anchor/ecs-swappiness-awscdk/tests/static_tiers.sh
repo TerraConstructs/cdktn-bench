@@ -5,8 +5,7 @@
 #
 # Reward contract (reused from tasks/anchor/smoke/tests/test.sh):
 # writes a bare float to /logs/verifier/reward.txt
-# (harbor/verifier/verifier.py::_parse_reward_text). No live AWS
-# calls -- verifier.live_check.enabled is always false in v1.
+# (harbor/verifier/verifier.py::_parse_reward_text).
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/_assert_lib.sh"

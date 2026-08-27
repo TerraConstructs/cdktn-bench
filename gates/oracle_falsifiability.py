@@ -95,11 +95,14 @@ from spec_model import Arm, Catch, Spec, Step, load_spec  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from oracles.lib.tier05_jsonata import Tier05Error, run_tier05  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from aws_stub import running_stub  # noqa: E402
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Slice G addition (apigw-redeploy, 2026-08-06): the fixed marker string a
-# `predicted_tier_caught: "live"` broken/ fixture's OFFLINE (LIVE unset/0)
-# run must print, after mechanically confirming (not just claiming) the
+# `predicted_tier_caught: "live"` broken/ fixture's normal (single-mode)
+# gate run must print, after mechanically confirming (not just claiming) the
 # static-indistinguishability property that is this catch's whole point --
 # see check_arm()'s "live" branch below and
 # docs/apigw-redeploy-mechanics.md §6(c). Shared here (not duplicated in
@@ -327,6 +330,7 @@ def _run_solve(
     tier05_spec: dict | None = None,
     artifact_rel: str | None = None,
     step: Step | None = None,
+    env: dict[str, str] | None = None,
 ) -> RunResult:
     """Copy `task`'s environment/<workspace-subdir> (the exact tree the
     arm's own Dockerfile COPYs into WORKDIR /app/project -- flattened, no
@@ -357,7 +361,26 @@ def _run_solve(
     (gates/tests/test_oracle_falsifiability.py) that runs this exact
     function against a known-good, hand-authored solve.sh and asserts
     reward 1.0 -- a regression back to the whole-`environment/` copy makes
-    that test fail loudly instead of silently reintroducing the bug."""
+    that test fail loudly instead of silently reintroducing the bug.
+
+    `env`: the credential-free AWS environment every toolchain subprocess
+    below runs under (gates/aws_stub.py::running_stub() -- AWS_ENDPOINT_URL
+    pointed at a loopback stub, dummy static credentials, no inherited
+    `AWS_*` variable of any kind). Live AWS is the only trial mode
+    (aws-access.html), so the generated toolchain always talks to `aws`/the
+    provider's STS calls regardless of whether this specific scenario needs
+    them -- there is no offline-fixture branch to fall back to. Defaults to
+    `None`, in which case THIS call starts and tears down its own one-off
+    stub (correct but wasteful for a caller running many solve.sh in a row);
+    `check_arm` below hoists one shared `env` for its whole per-arm run, and
+    each gate's own `main()` hoists further, to ONE stub per gate process."""
+    if env is None:
+        with running_stub() as stub_env:
+            return _run_solve(
+                task, arm, solve_sh, label,
+                tier05_spec=tier05_spec, artifact_rel=artifact_rel, step=step,
+                env=stub_env,
+            )
     with tempfile.TemporaryDirectory(prefix="falsifiability-") as tmp:
         project = Path(tmp) / "project"
         logs = Path(tmp) / "logs" / "verifier"
@@ -382,6 +405,7 @@ def _run_solve(
             subprocess.run(
                 ["npm", "ci", "--no-audit", "--no-fund"],
                 cwd=project,
+                env=env,
                 check=True,
                 capture_output=True,
                 text=True,
@@ -405,6 +429,7 @@ def _run_solve(
         proc = subprocess.run(
             ["bash", str(project / rel_solve)],
             cwd=project,
+            env=env,
             capture_output=True,
             text=True,
             check=False,
@@ -461,7 +486,9 @@ def _run_solve(
         )
 
 
-def _check_non_final_steps(spec: Spec, arm: Arm, task: Path) -> list[RunResult]:
+def _check_non_final_steps(
+    spec: Spec, arm: Arm, task: Path, env: dict[str, str] | None = None
+) -> list[RunResult]:
     """Every NON-final step needs its own reference solution scoring 1.0.
 
     The new proof obligation the multi-step decomposition creates (see this
@@ -484,7 +511,7 @@ def _check_non_final_steps(spec: Spec, arm: Arm, task: Path) -> list[RunResult]:
         if _is_stub(step_solve):
             results.append(RunResult(label, None, True, "NOT_AUTHORED (step reference solution pending)"))
             continue
-        run = _run_solve(task, arm, step_solve, label, artifact_rel=artifact_rel, step=step)
+        run = _run_solve(task, arm, step_solve, label, artifact_rel=artifact_rel, step=step, env=env)
         run.ok = run.ok and run.reward == 1.0
         if run.mirror_ok is False:
             run.ok = False
@@ -493,7 +520,7 @@ def _check_non_final_steps(spec: Spec, arm: Arm, task: Path) -> list[RunResult]:
 
 
 def _check_seed_unchanged(
-    spec: Spec, arm: Arm, task: Path, step: Step | None
+    spec: Spec, arm: Arm, task: Path, step: Step | None, env: dict[str, str] | None = None
 ) -> list[RunResult]:
     """THE MANDATORY BROWNFIELD DO-NOTHING CATCH (SCHEMA.md §2.7,
     DECISIONS.md Amendment 28 §5).
@@ -534,19 +561,20 @@ def _check_seed_unchanged(
             )
         ]
     artifact_rel = getattr(spec.instruction.per_arm, arm).output_contract.artifact_path
-    run = _run_solve(task, arm, solve, label, artifact_rel=artifact_rel, step=step)
+    run = _run_solve(task, arm, solve, label, artifact_rel=artifact_rel, step=step, env=env)
     scored = run.reward is not None and run.reward < 1.0
     # A reward BELOW 1.0 is necessary but NOT sufficient, and this is the one
     # fixture where that distinction bites. `tests/static_tiers.sh` writes 0.0
     # for a toolchain failure too -- `TF-PLAN FAILED`, `MISSING ARTIFACT`, the
-    # mock-STS `tf-plan-mock-sts-unavailable` bail-out -- and each of those is a
-    # RUN-INVALIDATING condition that static_tiers.sh itself labels "NOT a bad
-    # solution". Accepting those 0.0s would let this gate report "doing nothing
-    # is rejected" on a run where nothing was ever graded, which is exactly the
+    # `aws-unavailable` preflight bail-out (live AWS is the only trial mode;
+    # see aws-access.html) -- and each of those is a RUN-INVALIDATING
+    # condition that static_tiers.sh itself labels "NOT a bad solution".
+    # Accepting those 0.0s would let this gate report "doing nothing is
+    # rejected" on a run where nothing was ever graded, which is exactly the
     # vacuous pass the do-nothing catch exists to prevent (and it is not
     # hypothetical: a batch run on 2026-08-20 produced `TF-PLAN FAILED` on the
-    # terraconstructs arm from mock-STS port contention between back-to-back
-    # fixtures, while the same fixture run in isolation failed honestly on
+    # terraconstructs arm from port contention between back-to-back fixtures,
+    # while the same fixture run in isolation failed honestly on
     # `security-group-uses-the-new-team-prefixed-name`).
     #
     # So the tier-0 summary marker must be present: it is printed only after the
@@ -560,8 +588,7 @@ def _check_seed_unchanged(
             "this run proves NOTHING about whether the oracle rejects doing "
             "nothing -- static_tiers.sh writes 0.0 for a broken toolchain too. "
             "This is a run-invalidating infrastructure condition, not a "
-            "verdict: fix the toolchain (or re-run -- mock-STS port contention "
-            "between back-to-back fixtures is a known cause) and try again.\n"
+            "verdict: fix the toolchain (or re-run) and try again.\n"
             + run.detail
         )
     if run.ok and not scored:
@@ -575,7 +602,17 @@ def _check_seed_unchanged(
     return [run]
 
 
-def check_arm(spec: Spec, arm: Arm) -> list[RunResult]:
+def check_arm(spec: Spec, arm: Arm, env: dict[str, str] | None = None) -> list[RunResult]:
+    """`env`: the credential-free AWS environment (gates/aws_stub.py::
+    running_stub()) every `_run_solve` call below shares. Defaults to
+    `None`, in which case this call starts and tears down ONE stub for its
+    own whole run (every solve.sh this one `check_arm` call executes shares
+    it) -- correct for a standalone call (e.g. this module's own tests) but
+    still one stub per arm; a gate's `main()` hoists a single shared `env`
+    across every enabled arm, for one stub per gate process."""
+    if env is None:
+        with running_stub() as stub_env:
+            return check_arm(spec, arm, env=stub_env)
     task = task_dir(spec, arm)
     solve_sh = task / "solution" / "solve.sh"
     results: list[RunResult] = []
@@ -591,8 +628,8 @@ def check_arm(spec: Spec, arm: Arm) -> list[RunResult]:
         results.append(RunResult(f"{arm}/solution/solve.sh", None, True, "NOT_AUTHORED (Slice D pending)"))
         return results
 
-    results.extend(_check_non_final_steps(spec, arm, task))
-    results.extend(_check_seed_unchanged(spec, arm, task, final_step))
+    results.extend(_check_non_final_steps(spec, arm, task, env))
+    results.extend(_check_seed_unchanged(spec, arm, task, final_step, env))
 
     # Tier-0.5-aware plumbing (SCHEMA.md §4.4, DECISIONS.md "Tier-0.5 runs
     # host-side, non-gating"): a catch whose predicted_tier_caught is "0.5"
@@ -608,7 +645,7 @@ def check_arm(spec: Spec, arm: Arm) -> list[RunResult]:
 
     good = _run_solve(
         task, arm, solve_sh, f"{arm}/solution/solve.sh",
-        tier05_spec=tier05_spec, artifact_rel=artifact_rel, step=final_step,
+        tier05_spec=tier05_spec, artifact_rel=artifact_rel, step=final_step, env=env,
     )
     good.ok = good.ok and good.reward == 1.0
     if tier05_spec is not None:
@@ -653,32 +690,36 @@ def check_arm(spec: Spec, arm: Arm) -> list[RunResult]:
             # discriminates it). Mirrors the "0.5" branch immediately below
             # in SHAPE (reward is EXPECTED to stay 1.0 -- that invisibility
             # IS the catch), but the falsifying evidence is a fixed marker
-            # string this fixture's own OFFLINE run prints after
+            # string this fixture's own gate run prints after
             # mechanically confirming the static-indistinguishability
             # property itself (e.g. two-plan triggers-hash diff showing no
             # change) -- LIVE_ONLY_CONFIRMED_MARKER, not a second static-
             # tool invocation (there is no static tool for this tier by
-            # definition). This keeps `make ci`/`make falsifiability` fully
-            # offline -- no AWS credentials or network needed -- while still
-            # requiring the fixture to MECHANICALLY demonstrate (not just
-            # claim in a comment) that it reproduces the documented gap.
+            # definition). The run is credential-FREE, not offline: like
+            # every other fixture it executes under `running_stub()`, so its
+            # `terraform plan`s and the generated `tests/static_tiers.sh`
+            # `aws sts get-caller-identity` preflight resolve against the
+            # loopback stub (which needs `aws` on PATH) instead of an
+            # operator's ambient `~/.aws`. What that buys is the same thing:
+            # the fixture MECHANICALLY demonstrates (not just claims in a
+            # comment) that it reproduces the documented gap.
             bad = _run_solve(
                 task, arm, broken_solve, label,
-                artifact_rel=artifact_rel, step=final_step,
+                artifact_rel=artifact_rel, step=final_step, env=env,
             )
             bad.ok = bad.ok and bad.reward == 1.0 and LIVE_ONLY_CONFIRMED_MARKER in bad.detail
             if bad.reward == 1.0 and LIVE_ONLY_CONFIRMED_MARKER not in bad.detail:
                 bad.detail = (
                     f"predicted_tier_caught={tier!r} (live-only) but this fixture's "
                     f"stdout never printed {LIVE_ONLY_CONFIRMED_MARKER!r} -- a "
-                    "live-only catch's offline run must mechanically confirm the "
+                    "live-only catch's gate run must mechanically confirm the "
                     "static-indistinguishability property it claims, not just "
                     "assert it in a comment\n" + bad.detail
                 )
         elif tier == "0.5":
             bad = _run_solve(
                 task, arm, broken_solve, label,
-                tier05_spec=tier05_spec, artifact_rel=artifact_rel, step=final_step,
+                tier05_spec=tier05_spec, artifact_rel=artifact_rel, step=final_step, env=env,
             )
             # Falsified two ways at once, both required: (a) reward stays
             # 1.0 -- proving the static tiers genuinely cannot see this
@@ -692,7 +733,7 @@ def check_arm(spec: Spec, arm: Arm) -> list[RunResult]:
         else:
             bad = _run_solve(
                 task, arm, broken_solve, label,
-                artifact_rel=artifact_rel, step=final_step,
+                artifact_rel=artifact_rel, step=final_step, env=env,
             )
             observed = observed_tier(bad.detail)
             # Mechanical backstop for `predicted_tier_caught` (benchmark-
@@ -742,7 +783,7 @@ def check_arm(spec: Spec, arm: Arm) -> list[RunResult]:
             if not extra_solve.exists():
                 results.append(RunResult(label, None, False, "directory present but solve.sh missing"))
                 continue
-            bad = _run_solve(task, arm, extra_solve, label, step=final_step)
+            bad = _run_solve(task, arm, extra_solve, label, step=final_step, env=env)
             bad.ok = bad.ok and bad.reward == 0.0
             results.append(bad)
 
@@ -756,20 +797,23 @@ def main(argv: list[str]) -> int:
 
     spec = load_spec(args.spec_path)
     all_ok = True
-    for arm in spec.arms.enabled_arms():
-        for r in check_arm(spec, arm):
-            status = "PASS" if r.ok else "FAIL"
-            tier05_note = f" tier05_ok={r.tier05_ok}" if r.tier05_ok is not None else ""
-            last_line = r.detail.splitlines()[-1] if r.detail else ""
-            print(f"[{status}] {r.label}: reward={r.reward}{tier05_note} -- {last_line}")
-            if not r.ok and "tier-attribution mismatch" in r.detail:
-                print(f"    {r.detail.splitlines()[0]}")
-            if not r.ok and r.tier05_detail:
-                print(f"    tier05_detail: {r.tier05_detail}")
-            if r.mirror_ok is False:
-                print(f"    mirror_detail: {r.mirror_detail}")
-            if not r.ok:
-                all_ok = False
+    # ONE stub for the whole gate process (not one per arm/per solve.sh) --
+    # see running_stub()'s own docstring and check_arm's `env` parameter.
+    with running_stub() as env:
+        for arm in spec.arms.enabled_arms():
+            for r in check_arm(spec, arm, env):
+                status = "PASS" if r.ok else "FAIL"
+                tier05_note = f" tier05_ok={r.tier05_ok}" if r.tier05_ok is not None else ""
+                last_line = r.detail.splitlines()[-1] if r.detail else ""
+                print(f"[{status}] {r.label}: reward={r.reward}{tier05_note} -- {last_line}")
+                if not r.ok and "tier-attribution mismatch" in r.detail:
+                    print(f"    {r.detail.splitlines()[0]}")
+                if not r.ok and r.tier05_detail:
+                    print(f"    tier05_detail: {r.tier05_detail}")
+                if r.mirror_ok is False:
+                    print(f"    mirror_detail: {r.mirror_detail}")
+                if not r.ok:
+                    all_ok = False
 
     if all_ok:
         print(f"\nfalsifiability OK for {spec.id!r}")

@@ -154,7 +154,11 @@ def test_every_tracked_workspace_file_is_copied_into_the_image(
     sources = dockerfile_context_sources((env_dir / "Dockerfile").read_text())
 
     ws_repo_rel = workspace.relative_to(REPO_ROOT).as_posix()
-    tracked = _git_tracked([ws_repo_rel])
+    # A path the index still carries but the working tree no longer has (a
+    # generator run that DELETED a workspace file, before that deletion is
+    # committed) reaches the container as nothing at all -- the invariant is
+    # about files that EXIST, so the index is filtered by the working tree.
+    tracked = [p for p in _git_tracked([ws_repo_rel]) if (REPO_ROOT / p).is_file()]
     if not tracked:
         # A task dir that was JUST generated and not yet committed (the normal
         # state while a new scenario is being authored) has zero git-tracked

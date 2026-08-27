@@ -112,33 +112,6 @@ ARM_MEMORY_MB: dict[Arm, int] = {
     "terraconstructs": 4096,
 }
 
-# DECISIONS.md "terraconstructs offline `terraform plan` needs a mocked STS
-# endpoint": AwsStack's `account` getter (node_modules/terraconstructs/lib/
-# aws/aws-stack.js) lazily creates a `data "aws_caller_identity"` the moment
-# ANY construct references `stack.account` (which most L2s do internally for
-# ARN formatting) -- an EXPLICIT data source, so `skip_requesting_account_id`
-# (which only suppresses the *provider's own implicit* account lookup) does
-# NOT suppress it, and `terraform plan` fails offline/without credentials.
-# Fix: point providerConfig.endpoints.sts at a loopback HTTP stub
-# (arms/terraconstructs/environment/app/mock-sts.js, byte-copied into every
-# generated task's /app/project/mock-sts.js) that answers any request with a
-# canned GetCallerIdentity response, and have the tf-plan step start/stop it
-# around `terraform init/plan/show`. Loopback works even under `docker run
-# --network none` (the `lo` interface is always present in a container's own
-# network namespace), so this keeps the arm's offline-plan contract intact.
-TERRACONSTRUCTS_MOCK_STS_PORT = 17771
-
-# hcl_raw's own offline-plan fixture port (arms/hcl-raw/environment/workspace/
-# mock-sfn.py + provider.tf's `endpoints.sfn`) -- see build_static_tiers_sh's
-# hcl_raw plan_command wrapper below and mock-sfn.py's own docstring for the
-# `aws_sfn_state_machine` CustomizeDiff / ValidateStateMachineDefinition gap
-# this fixes. Deliberately a different port than
-# TERRACONSTRUCTS_MOCK_STS_PORT (distinct services, distinct arms, distinct
-# containers -- but kept apart anyway for host-side dev/testing clarity,
-# e.g. gates/oracle_falsifiability.py running both arms sequentially on the
-# same bare host).
-HCL_RAW_MOCK_SFN_PORT = 17772
-
 # terraconstructs' TypeScript compile gate, injected UNCONDITIONALLY by
 # build_static_tiers_sh (never read from a spec's own
 # `output_contract.build_command`) -- see that function's own
@@ -189,9 +162,9 @@ def shared_body_resolved(spec: Spec, step: Step | None = None) -> str:
 # the file a normal agent solution is expected to (fully) rewrite. Threaded
 # into instruction.md via ownership_note() below (benchmark-integrity
 # finding G1: an agent that fully rewrites its OWN entry_file, normal
-# behavior, must never be able to lose the other file's offline-plan/
-# bootstrap fixture -- see hcl_raw_main_tf()/terraconstructs_main_ts()'s own
-# docstrings for the failure this fixes).
+# behavior, must never be able to lose the other file's provider bootstrap --
+# see hcl_raw_main_tf()/terraconstructs_main_ts()'s own docstrings for the
+# failure this fixes).
 ARM_BOOTSTRAP_FILE: dict[Arm, str] = {
     "awscdk": "bin/app.ts",
     "hcl_raw": "provider.tf",
@@ -224,14 +197,14 @@ def ownership_note(
             "this project's existing configuration -- change "
             f"{'it' if len(owned) == 1 else 'them'} as needed. Do not create, "
             f"modify, or delete `{bootstrap}`: it is a pre-wired bootstrap file "
-            "(app entrypoint / offline provider config) that synth/plan depends "
+            "(app entrypoint / provider config) that synth/plan depends "
             "on and is not part of what you are being asked to change."
         )
     else:
         note = (
             f"You own only `{entry_file}` in this workspace -- write your entire "
             f"solution there. Do not create, modify, or delete `{bootstrap}`: it "
-            "is a pre-wired bootstrap file (app entrypoint / offline provider "
+            "is a pre-wired bootstrap file (app entrypoint / provider "
             "config) that synth/plan depends on and is not part of what you are "
             "being asked to write."
         )
@@ -251,40 +224,6 @@ def ownership_note(
             f"not modify {'it' if len(seeded_paths) == 1 else 'them'}."
         )
     return note
-
-
-# Finding G2 (benchmark-integrity review, fixed 2026-08-07): the env var
-# name each of hcl_raw's provider.tf / terraconstructs' main.ts reads to
-# switch from their offline dummy-credential fixture to real ambient AWS
-# credentials -- see arms/hcl-raw/environment/workspace/provider.tf's own
-# header comment and terraconstructs_main_ts()'s docstring for the full
-# mechanism each one implements. awscdk needs no entry here: bin/app.ts
-# never hardcodes credentials in the first place (it always uses ambient
-# ones), so there is no switch for an agent to know about on that arm.
-LIVE_CREDENTIALS_ENV_VAR: dict[Arm, str] = {
-    "hcl_raw": "TF_VAR_cdktn_bench_live=1",
-    "terraconstructs": "CDKTN_BENCH_LIVE=1",
-}
-
-
-def live_credentials_note(spec: Spec, arm: Arm, bootstrap: str) -> str | None:
-    """Only emitted when this scenario's verifier.live_check.enabled is
-    true AND the arm has a bootstrap-file credential switch (hcl_raw,
-    terraconstructs) -- every pre-Slice-G spec has live_check.enabled=false
-    and gets None here, an exact no-op for every scenario that isn't this
-    one (finding G2's fix must not touch any other scenario's
-    instruction.md)."""
-    if not spec.verifier.live_check.enabled or arm not in LIVE_CREDENTIALS_ENV_VAR:
-        return None
-    env_var = LIVE_CREDENTIALS_ENV_VAR[arm]
-    return (
-        f"Real deploy note: `{bootstrap}` (which you must not edit, see "
-        "above) defaults to an offline fixture with dummy AWS credentials "
-        f"-- before running your REAL deploy command, export `{env_var}` "
-        f"in your shell so `{bootstrap}` uses this environment's real "
-        "ambient AWS credentials instead. This is a normal environment "
-        f"variable, not a change to `{bootstrap}` itself."
-    )
 
 
 def step_language_line(spec: Spec, arm: Arm, step: Step | None) -> str:
@@ -307,8 +246,8 @@ def build_instruction_md(spec: Spec, arm: Arm, step: Step | None = None) -> str:
     """Assemble one prompt. `step=None` is the single-step shape, unchanged.
 
     For a step, ONLY the body and (optionally) the language line differ; every
-    other part -- ownership note, live-credentials note, trailer, JSON fence --
-    is reused verbatim. That is deliberate: sessions are fresh per step
+    other part -- ownership note, trailer, JSON fence -- is reused verbatim.
+    That is deliberate: sessions are fresh per step
     (DECISIONS.md Amendment 26 §1), so each step's prompt must be
     self-contained, which means it must re-state the workspace-ownership and
     output contracts rather than assume the agent remembers them.
@@ -344,12 +283,7 @@ def build_instruction_md(spec: Spec, arm: Arm, step: Step | None = None) -> str:
             f.path for f in (spec.workspace_seed.extras_for(arm) if spec.workspace_seed else [])
         ],
     )
-    live_note = live_credentials_note(spec, arm, ARM_BOOTSTRAP_FILE.get(arm, per_arm.output_contract.entry_file))
-
-    parts = [body, "", lang_line, "", own_note]
-    if live_note:
-        parts += ["", live_note]
-    parts += ["", TRAILER]
+    parts = [body, "", lang_line, "", own_note, "", TRAILER]
 
     if per_arm.output_contract.json_fields:
         fields_obj = {
@@ -441,7 +375,7 @@ def seed_entry_body(spec: Spec, arm: Arm) -> str | None:
     per-arm structural contract each arm's bootstrap file depends on is checked
     HERE, at generation time, instead of failing later as an opaque `tsc` or
     `terraform validate` error inside a gate. The provider-block rule for
-    hcl_raw is finding G1's invariant restated: `provider.tf` owns the offline
+    hcl_raw is finding G1's invariant restated: `provider.tf` owns the provider
     bootstrap, and a second `provider "aws"` block in `main.tf` is a duplicate
     the plan rejects.
     """
@@ -466,8 +400,8 @@ def seed_entry_body(spec: Spec, arm: Arm) -> str | None:
             raise SeedContractError(
                 "workspace_seed.entry_file.hcl_raw: the seed body IS this arm's "
                 "main.tf and must not declare a second `provider \"aws\"` block "
-                "-- the offline provider/dummy-credential bootstrap lives in the "
-                "separate, non-agent-owned provider.tf (finding G1)"
+                "-- the provider bootstrap lives in the separate, "
+                "non-agent-owned provider.tf (finding G1)"
             )
         if re.search(r"^\s*terraform\s*\{", body, re.MULTILINE):
             raise SeedContractError(
@@ -544,21 +478,17 @@ def awscdk_bin_app_ts(spec: Spec) -> str:
 def hcl_raw_main_tf(spec: Spec) -> str:
     """The hcl_raw arm's output_contract.entry_file -- resource blocks ONLY.
 
-    Finding G1 (benchmark-integrity review, fixed 2026-08-06): the offline
-    provider/skip_*/dummy-credential fixture used to be pre-seeded at the
-    top of THIS file. Since main.tf is entry_file, a normal agent solution
-    that fully rewrites it from scratch (entirely reasonable -- the
-    instruction never mentions the fixture, and there's no reason hand-
-    written HCL should preserve boilerplate it didn't author) silently
-    deleted the fixture along with it, and `terraform plan` then failed
-    offline with "No valid credential sources found" -- scoring an
-    otherwise-CORRECT solution 0.0. Reproduced directly (before this fix):
-    a bare, oracle-correct main.tf (three resources, no provider block)
-    against the old single-file workspace fails plan with exactly that
-    error.
+    Finding G1 (benchmark-integrity review, fixed 2026-08-06): the provider
+    bootstrap must not live at the top of THIS file. Since main.tf is
+    entry_file, a normal agent solution that fully rewrites it from scratch
+    (entirely reasonable -- the instruction never mentions the bootstrap, and
+    there's no reason hand-written HCL should preserve boilerplate it didn't
+    author) deletes the bootstrap along with it, and `terraform plan` then
+    fails for a reason unrelated to the solution -- scoring an
+    otherwise-CORRECT solution 0.0.
 
-    Fix: the provider bootstrap now lives in ../../README.md-documented
-    provider.tf (see hcl_raw's own write_environment() branch below and
+    So the provider bootstrap lives in the separate, pre-seeded provider.tf
+    (see hcl_raw's own write_environment() branch below and
     arms/hcl-raw/environment/workspace/provider.tf) -- a file
     write_environment() copies unmodified and NEVER treats as entry_file,
     so an agent's full rewrite of main.tf can no longer touch it. The
@@ -573,9 +503,8 @@ def hcl_raw_main_tf(spec: Spec) -> str:
         # {spec.workspace_header()}
         #
         # {SKELETON_PROVENANCE_LINE}
-        # This is YOUR file -- add your resource blocks below. The offline
-        # provider bootstrap (provider block + skip_*/dummy-credential
-        # fixture, see ../../README.md "What terraform plan needs") lives in
+        # This is YOUR file -- add your resource blocks below. The provider
+        # bootstrap (the `terraform` and `provider "aws"` blocks) lives in
         # the separate, pre-seeded ./provider.tf -- do not create a second
         # `provider "aws"` block here, and do not modify provider.tf. Do not
         # hand-edit this header; regenerate instead
@@ -596,39 +525,20 @@ def terraconstructs_main_ts(spec: Spec) -> str:
     used to ALSO define the `ScenarioStack` class body AND be entry_file at
     the same time. A normal agent solution that fully rewrites its own
     entry_file (entirely reasonable behavior) then silently deleted this
-    providerConfig block -- including the skip_*/dummy-credential fixture
-    and the endpoints.sts mock-STS pointer below -- along with it, and
-    `terraform plan` failed offline against real STS with no credentials,
-    scoring an otherwise-CORRECT solution 0.0 (the identical failure mode
-    hcl_raw_main_tf()'s provider.tf split fixes for that arm). Fix: the
-    stack's resource logic now lives in a SEPARATE file,
-    terraconstructs_stack_skeleton() below (lib/scenario-stack.ts,
-    mirroring awscdk's bin/app.ts / lib/scenario-stack.ts split -- see the
-    entry_rel assert in write_environment()'s terraconstructs branch), and
-    THIS file -- App + providerConfig only -- is what write_environment()
-    regenerates every run without ever treating it as entry_file.
+    providerConfig block along with it, and `terraform plan` failed with no
+    provider configured. Fix: the stack's resource logic now lives in a
+    SEPARATE file, terraconstructs_stack_skeleton() below
+    (lib/scenario-stack.ts, mirroring awscdk's bin/app.ts /
+    lib/scenario-stack.ts split -- see the entry_rel assert in
+    write_environment()'s terraconstructs branch), and THIS file -- App +
+    providerConfig only -- is what write_environment() regenerates every
+    run without ever treating it as entry_file.
 
-    Finding G2 (benchmark-integrity review, fixed 2026-08-07): the
-    accessKey/secretKey/skip_*/endpoints.sts fixture below used to be
-    unconditional, which -- exactly like hcl_raw's old provider.tf -- makes
-    a REAL `cdktn deploy`/`terraform apply` against this account impossible
-    even though the agent is told not to touch this file (blocker: an
-    agent-unsolvable scenario on this arm whenever
-    verifier.live_check.enabled=true). Fix: the SAME `CDKTN_BENCH_LIVE`
-    env-var switch as arms/hcl-raw/environment/workspace/provider.tf's own
-    `var.cdktn_bench_live` (see that file's header comment for the full
-    rationale) -- read directly via `process.env` here since this is a
-    plain Node script, not a `terraform variable`. Default (unset/not "1"):
-    byte-identical offline fixture to before this fix. `CDKTN_BENCH_LIVE=1`
-    (set by whoever is about to run a REAL deploy -- see this scenario's
-    solution/solve.sh LIVE=1 path and its instruction.md): the whole
-    accessKey/secretKey/skip_*/endpoints block is omitted from
-    providerConfig (every field in AwsProviderConfig is optional -- see
-    terraconstructs' own provider-config.generated.d.ts), so the AWS
-    provider falls through to its normal ambient credential chain (real
-    `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN` env
-    vars staged by the trial), the same mechanism arms/awscdk's bin/app.ts
-    already relies on.
+    Live AWS is the only trial mode (aws-access.html): providerConfig
+    carries only `region`, so the AWS provider always falls through to its
+    normal ambient credential chain (real `AWS_ACCESS_KEY_ID`/
+    `AWS_SECRET_ACCESS_KEY`/`AWS_SESSION_TOKEN` env vars staged by the
+    trial), the same mechanism arms/awscdk's bin/app.ts already relies on.
     """
     return textwrap.dedent(
         f"""\
@@ -641,59 +551,12 @@ def terraconstructs_main_ts(spec: Spec) -> str:
         import {{ App }} from "cdktn";
         import {{ ScenarioStack }} from "./lib/scenario-stack";
 
-        // OFFLINE vs. LIVE switch (finding G2, 2026-08-07) -- see this
-        // file's own generator docstring (gen.py::terraconstructs_main_ts)
-        // for the full rationale. Default false: offline dummy-credential
-        // fixture, unchanged from before this fix. `CDKTN_BENCH_LIVE=1`:
-        // real ambient AWS credentials, no mock endpoints -- for a genuine
-        // deploy against a real account.
-        const CDKTN_BENCH_LIVE = process.env.CDKTN_BENCH_LIVE === "1";
-
         const app = new App();
         new ScenarioStack(app, {json.dumps(spec.workspace_identity())}, {{
           environmentName: "cdktn-bench",
           gridUUID: {json.dumps(spec.workspace_identity())},
           providerConfig: {{
             region: "us-east-1",
-
-            // Same skip_*/dummy-credential fixture as arms/hcl-raw's
-            // provider.tf (see ../../README.md "What terraform plan
-            // needs") -- gen.py's static_tiers.sh always runs a real
-            // `terraform init && terraform plan` against this synthesized
-            // stack (see build_static_tiers_sh's tf-plan step), so this arm
-            // needs the same offline-plan fixture hcl_raw has, not just an
-            // offline synth. Omitted entirely in LIVE mode (see
-            // CDKTN_BENCH_LIVE above) -- every field here is optional on
-            // AwsProviderConfig, so leaving them out is a real "no
-            // override", not an empty-string override.
-            //
-            // AwsStack's `account` getter lazily creates an EXPLICIT
-            // `data "aws_caller_identity"` the moment any construct
-            // references it (most L2s do, for ARN formatting) --
-            // `skipRequestingAccountId` below only suppresses the
-            // provider's own IMPLICIT account lookup, not this data
-            // source's real STS call. Point it at the loopback mock
-            // static_tiers.sh's tf-plan step starts before `terraform
-            // plan` (mock-sts.js, byte-copied to /app/project/mock-sts.js)
-            // so the plan resolves offline. See DECISIONS.md
-            // "terraconstructs offline `terraform plan` needs a mocked STS
-            // endpoint". Do not remove this block for the OFFLINE case --
-            // an idiomatic L2 solution (e.g. a bare Bucket or Role
-            // construct) will fail `terraform plan` with a 403
-            // InvalidClientTokenId without it. This file is NOT
-            // entry_file, so an agent fully rewriting lib/scenario-stack.ts
-            // can never delete this block.
-            ...(CDKTN_BENCH_LIVE
-              ? {{}}
-              : {{
-                  accessKey: "AKIAIOSFODNN7EXAMPLE",
-                  secretKey: "dummy-secret-key-not-real",
-                  skipCredentialsValidation: true,
-                  skipRequestingAccountId: true,
-                  skipRegionValidation: true,
-                  skipMetadataApiCheck: "true",
-                  endpoints: [{{ sts: "http://127.0.0.1:{TERRACONSTRUCTS_MOCK_STS_PORT}" }}],
-                }}),
           }},
         }});
         app.synth();
@@ -883,14 +746,14 @@ def write_workspace_seed_extras(spec: Spec, arm: Arm, workspace: Path) -> None:
 # The chained-tsc toolchain (Amendment 25) makes it routine to run the build
 # gate inside arms/<arm>/environment/ by hand, which emits .js/.d.ts/.tsbuildinfo
 # next to the sources. .gitignore hides those, so without this filter they
-# would be copied invisibly into every generated task. Allowlist the one
-# tracked .js source (mock-sts.js). Module-level (was local to
-# write_environment) because workspace_files_missing_from_dockerfile() below
-# must apply the SAME definition of "build artifact, not task content" when it
-# decides which workspace files need a Dockerfile COPY.
+# would be copied invisibly into every generated task. No tracked .js source
+# needs an allowlist entry. Module-level because
+# workspace_files_missing_from_dockerfile() below must apply the SAME
+# definition of "build artifact, not task content" when it decides which
+# workspace files need a Dockerfile COPY.
 _ARTIFACT_SUFFIXES = (".js", ".d.ts", ".tsbuildinfo")
 _ARTIFACT_DIRS = {"node_modules", "cdk.out", "cdktf.out", "dist"}
-_JS_ALLOWLIST = {"mock-sts.js"}
+_JS_ALLOWLIST: set[str] = set()
 
 
 def _ignore_build_artifacts(_dir: str, names: list[str]) -> set[str]:
@@ -1129,7 +992,7 @@ def write_environment(spec: Spec, arm: Arm, dest: Path) -> None:
         preflight_path = dest / "preflight.sh"
         preflight_path.write_text(patch_awscdk_preflight(preflight_path.read_text()))
         # lib/example-stack.ts is the ARM image's offline-synth smoke test. In a
-        # GENERATED task nothing references it any more: bin/app.ts is rewritten
+        # GENERATED task nothing references it: bin/app.ts is rewritten
         # to instantiate ScenarioStack, and patch_awscdk_preflight() above
         # repoints the preflight at ScenarioStack.template.json. It is therefore
         # dead code -- but it is dead code the agent can READ, and it ships a
@@ -1146,8 +1009,8 @@ def write_environment(spec: Spec, arm: Arm, dest: Path) -> None:
             example_stack.unlink()
     elif arm == "hcl_raw":
         assert entry_rel == "main.tf", (
-            f"hcl_raw output_contract.entry_file must be main.tf (the offline "
-            f"provider bootstrap lives in the separate, non-entry provider.tf "
+            f"hcl_raw output_contract.entry_file must be main.tf (the provider "
+            f"bootstrap lives in the separate, non-entry provider.tf "
             f"-- see hcl_raw_main_tf()'s docstring, finding G1), got {entry_rel!r}"
         )
         (workspace / entry_rel).write_text(hcl_raw_main_tf(spec))
@@ -2120,9 +1983,8 @@ def build_assert_calls(
 # WHY PYTHON AND NOT A SHELL LOOP: the merged document has to be valid JSON
 # with the parsed files under one key, and `jq -s` over a shell-built list is
 # fragile about filenames and about hcl2json's exit status per file. python3
-# is already in this arm's image (arms/hcl-raw/environment/Dockerfile installs
-# it for workspace/mock-sfn.py) and is stdlib-only here -- no pip package, in
-# keeping with that Dockerfile's own note. Tier-0 structural asserts still run
+# is already in this arm's image (arms/hcl-raw/environment/Dockerfile) and is
+# stdlib-only here -- no pip package. Tier-0 structural asserts still run
 # entirely on jq; this touches only the tier-1 input document.
 #
 # WHY `_hcl` AND NOT A SECOND `opa eval --input`: `input` must stay
@@ -2406,68 +2268,13 @@ def build_static_tiers_sh(spec: Spec, arm: Arm, step: Step | None = None) -> str
         toolchain_steps.append(("build", oc.build_command))
     if oc.synth_command:
         toolchain_steps.append(("synth", oc.synth_command))
-    if oc.plan_command and arm != "hcl_raw":
+    # Every arm's plan_command runs as written. Live AWS is the only trial mode
+    # (aws-access.html), so the real API calls a plan makes -- e.g.
+    # `aws_sfn_state_machine`'s CustomizeDiff calling
+    # `states:ValidateStateMachineDefinition` -- are answered by the ambient
+    # credentials aws-bench stages for this container.
+    if oc.plan_command:
         toolchain_steps.append(("plan", oc.plan_command))
-
-    # hcl_raw: `aws_sfn_state_machine`'s own CustomizeDiff runs a REAL
-    # `states:ValidateStateMachineDefinition` API call whenever `definition`
-    # changes (true for any brand-new resource) -- NOT suppressed by any of
-    # provider.tf's four `skip_*` flags (those only cover the provider's OWN
-    # bootstrap calls, not a resource's own CustomizeDiff-triggered service
-    # call). Left unhandled, `terraform plan` for ANY hcl_raw scenario using
-    # this resource type (sfn-jsonata) fails with `UnrecognizedClientException`
-    # against real AWS -- the exact same SHAPE of offline-plan gap
-    # terraconstructs' own tf-plan block below already fixes for THAT arm's
-    # `data "aws_caller_identity"` call, just a different resource/service.
-    # Fix: start the loopback mock SFN responder (mock-sfn.py, byte-copied
-    # to /app/project/mock-sfn.py by write_environment()'s shutil.copytree
-    # of the whole environment/ tree -- see
-    # arms/hcl-raw/environment/workspace/mock-sfn.py) around the WHOLE
-    # plan_command chain (harmless during `terraform init`/`validate`, which
-    # never call it), matching the port provider.tf's `endpoints.sfn` points
-    # at, and stop it afterward for the same EADDRINUSE-across-sequential-
-    # runs reason the terraconstructs block documents. Wrapping EVERY
-    # hcl_raw scenario's plan_command (not just sfn-jsonata's) mirrors that
-    # same "always start it, harmless no-op if unused" precedent -- a
-    # scenario with no aws_sfn_state_machine resource simply never causes
-    # anything to connect to this port. Readiness-polled the same way (G3
-    # fix precedent) rather than a bare sleep.
-    if oc.plan_command and arm == "hcl_raw":
-        hcl_raw_plan_chain = textwrap.dedent(
-            f"""\
-            python3 /app/project/mock-sfn.py {HCL_RAW_MOCK_SFN_PORT} \\
-              > /tmp/cdktn-bench-mock-sfn-{spec.id}.log 2>&1 &
-            MOCK_SFN_PID=$!
-            MOCK_SFN_READY=0
-            for _attempt in $(seq 1 50); do
-              if (exec 3<>"/dev/tcp/127.0.0.1/{HCL_RAW_MOCK_SFN_PORT}") 2>/dev/null; then
-                exec 3<&- 3>&- 2>/dev/null
-                MOCK_SFN_READY=1
-                break
-              fi
-              sleep 0.1
-            done
-            if [ "$MOCK_SFN_READY" != "1" ]; then
-              {{
-                echo "mock-sfn.py (pid $MOCK_SFN_PID) never opened"
-                echo "127.0.0.1:{HCL_RAW_MOCK_SFN_PORT} within 5s (EADDRINUSE from a"
-                echo "leftover process, or a slow bind under load -- see"
-                echo "/tmp/cdktn-bench-mock-sfn-{spec.id}.log). This is a"
-                echo "run-invalidating test-infrastructure condition, NOT a bad"
-                echo "solution -- terraform plan was never attempted."
-              }} | tee /logs/verifier/tf-plan-mock-sfn-unavailable
-              kill "$MOCK_SFN_PID" >/dev/null 2>&1 || true
-              wait "$MOCK_SFN_PID" 2>/dev/null
-              exit 1
-            fi
-            {oc.plan_command}
-            TF_RC=$?
-            kill "$MOCK_SFN_PID" >/dev/null 2>&1 || true
-            wait "$MOCK_SFN_PID" 2>/dev/null
-            exit "$TF_RC"
-            """
-        )
-        toolchain_steps.append(("plan", hcl_raw_plan_chain))
 
     # terraconstructs' raw `cdktn synth` output (cdk.tf.json) is in a
     # completely different shape (`resource.<type>.<id>`) than every
@@ -2478,53 +2285,22 @@ def build_static_tiers_sh(spec: Spec, arm: Arm, step: Step | None = None) -> str
     # document with no `planned_values` key at all and scores a constant
     # 0.0, including for a perfect reference solution. Fix: after synth,
     # always run `terraform init/plan/show` inside the synthesized stack's
-    # own directory (offline, filesystem_mirror-configured provider, dummy
-    # credentials -- see terraconstructs_main_ts()'s providerConfig, which
-    # mirrors hcl_raw_main_tf()'s skip_*/dummy-credential fixture), so both
-    # TF-shaped arms end up graded against the *same* artifact shape.
+    # own directory against real ambient AWS credentials (see
+    # terraconstructs_main_ts()'s providerConfig -- aws-access.html: live
+    # AWS is the only trial mode), so both TF-shaped arms end up graded
+    # against the *same* artifact shape.
     if arm == "terraconstructs":
         stack_dir = f"cdktf.out/stacks/{spec.workspace_identity()}"
-        # AwsStack's `account` getter lazily instantiates an EXPLICIT
-        # `data "aws_caller_identity"` the moment any construct references
-        # it (most L2s do, for ARN formatting) -- `skip_requesting_account_id`
-        # only suppresses the provider's own IMPLICIT account lookup, not
-        # this data source's real STS call, so an idiomatic L2 solution's
-        # `terraform plan` 403s against real STS with no credentials. Fix:
-        # start the loopback mock STS responder (mock-sts.js, byte-copied
-        # to /app/project/mock-sts.js by write_environment()'s
-        # shutil.copytree of the whole environment/ tree -- see
-        # arms/terraconstructs/environment/app/mock-sts.js) before
-        # `terraform plan`, matching the port terraconstructs_main_ts()'s
-        # providerConfig.endpoints.sts points at, and stop it afterward so
-        # a second static_tiers.sh run on the same host (e.g.
-        # gates/oracle_falsifiability.py running solve.sh then each
-        # broken/<catch>/solve.sh in sequence) doesn't hit EADDRINUSE from
-        # an orphaned server. See DECISIONS.md "terraconstructs offline
-        # `terraform plan` needs a mocked STS endpoint".
-        #
-        # Finding G3 (benchmark-integrity review, fixed 2026-08-06): this
-        # used to be "start in background; sleep 0.3" with no readiness
-        # check at all. EADDRINUSE (a leftover mock-sts from a prior run on
-        # this host/container -- see the falsifiability-gate scenario
-        # above) or a slow bind under load meant `terraform plan` could run
-        # before the responder was actually listening, fail against nothing
-        # (connection refused) exactly like a genuinely-missing offline
-        # fixture, and score 0.0 -- indistinguishable in the logs from a
-        # bad SOLUTION, when it was actually broken TEST INFRASTRUCTURE.
-        # Fix: poll the port (bash's own /dev/tcp, no extra tool needed) for
-        # up to 5s before ever invoking `terraform plan`; on timeout, write
-        # a distinguishable marker file (mirroring tier1-unavailable's
-        # role for TOOL_MISSING -- see the tier-1 blocks below) instead of
-        # silently falling through to a plan attempt that can only fail.
         # -refresh=false whenever this spec's own working tree can
         # legitimately arrive here already REAL-applied (B3 fix,
         # DECISIONS.md Slice G amendment) -- `verifier.live_check.enabled`
         # is the only spec-level signal for that (only `apigw-redeploy`
         # sets it true today). A leftover terraform.tfstate names a real
         # REST API/Lambda/IAM role; a default (refreshing) `terraform plan`
-        # re-contacts AWS to reconcile it and 403s against this arm's own
-        # dummy provider credentials -- a PERFECT solution would fail this
-        # offline tier for a reason unrelated to its own correctness. Gated
+        # re-contacts AWS to reconcile it, which is slow and can drift from
+        # what this run's own apply is about to produce -- a PERFECT
+        # solution would fail this tier for a reason unrelated to its own
+        # correctness. Gated
         # (not unconditional) so every OTHER spec's generated
         # tests/static_tiers.sh is a byte-for-byte no-op change (matches
         # the same "confirmed no diff for any live_check.enabled=false
@@ -2532,7 +2308,7 @@ def build_static_tiers_sh(spec: Spec, arm: Arm, step: Step | None = None) -> str
         # this spec's other generator changes) -- their working trees never
         # carry prior state to begin with, so the flag would be harmless
         # there too, just unnecessary text.
-        # BROWNFIELD TOO (finding M4, adversarial review 2026-08-25, MEASURED).
+        # BROWNFIELD TOO (finding M4, adversarial review 2026-08-25).
         # Spec._brownfield_plan_must_not_refresh validates
         # `output_contract.plan_command` -- and `continue`s when it is empty.
         # It is empty on BOTH cdk-shaped arms: this arm's `terraform plan` is
@@ -2541,10 +2317,10 @@ def build_static_tiers_sh(spec: Spec, arm: Arm, step: Step | None = None) -> str
         # nothing, and the guarantee was actually held by an unrelated
         # coupling -- `live_check.enabled` -- that the validator never checks.
         # A brownfield spec with live_check disabled would have silently lost
-        # the flag on this arm and scored a PERFECT solution 0.0 (a refreshing
-        # offline plan signs a real EC2 call with provider.tf's dummy
-        # credentials and dies; measured verbatim in
-        # jobs/rerun-named-resource-replacement/2026-08-25__01-43-17/).
+        # the flag on this arm and scored a PERFECT solution 0.0: the seed is
+        # already deployed, so a refreshing plan re-contacts AWS to reconcile
+        # every seeded resource -- slow, and able to report pending changes
+        # for a reason unrelated to the agent's own correctness.
         #
         # `workspace_seed is not None` is the honest condition for the same
         # reason Spec._brownfield_plan_must_not_refresh uses it: a brownfield
@@ -2566,38 +2342,10 @@ def build_static_tiers_sh(spec: Spec, arm: Arm, step: Step | None = None) -> str
         tf_plan_chain = textwrap.dedent(
             f"""\
             cd {stack_dir} && rm -rf .terraform .terraform.lock.hcl || exit 1
-            node /app/project/mock-sts.js {TERRACONSTRUCTS_MOCK_STS_PORT} \\
-              > /tmp/cdktn-bench-mock-sts-{spec.id}.log 2>&1 &
-            MOCK_STS_PID=$!
-            MOCK_STS_READY=0
-            for _attempt in $(seq 1 50); do
-              if (exec 3<>"/dev/tcp/127.0.0.1/{TERRACONSTRUCTS_MOCK_STS_PORT}") 2>/dev/null; then
-                exec 3<&- 3>&- 2>/dev/null
-                MOCK_STS_READY=1
-                break
-              fi
-              sleep 0.1
-            done
-            if [ "$MOCK_STS_READY" != "1" ]; then
-              {{
-                echo "mock-sts.js (pid $MOCK_STS_PID) never opened"
-                echo "127.0.0.1:{TERRACONSTRUCTS_MOCK_STS_PORT} within 5s (EADDRINUSE from a"
-                echo "leftover process, or a slow bind under load -- see"
-                echo "/tmp/cdktn-bench-mock-sts-{spec.id}.log). This is a"
-                echo "run-invalidating test-infrastructure condition, NOT a bad"
-                echo "solution -- terraform plan was never attempted."
-              }} | tee /logs/verifier/tf-plan-mock-sts-unavailable
-              kill "$MOCK_STS_PID" >/dev/null 2>&1 || true
-              wait "$MOCK_STS_PID" 2>/dev/null
-              cd /app/project || true
-              exit 1
-            fi
             terraform init -input=false \\
               && terraform plan -input=false{refresh_flag} -out=plan.tfplan \\
               && terraform show -json plan.tfplan > plan.json
             TF_RC=$?
-            kill "$MOCK_STS_PID" >/dev/null 2>&1 || true
-            wait "$MOCK_STS_PID" 2>/dev/null
             cd /app/project || true
             exit "$TF_RC"
             """
@@ -2631,9 +2379,9 @@ def build_static_tiers_sh(spec: Spec, arm: Arm, step: Step | None = None) -> str
         # safe only as long as every command was single-line and contained
         # no literal `"` -- true of every step until terraconstructs'
         # tf-plan step started needing embedded double-quoted variable
-        # references (`"$MOCK_STS_PID"`) and multiple newlines (to start/
-        # stop the offline STS mock around `terraform plan`, see above).
-        # Interpolated raw, those `"` characters prematurely close/reopen
+        # references (`"$TF_RC"`) and multiple newlines (init/plan/show
+        # chained together, see above). Interpolated raw, those `"`
+        # characters prematurely close/reopen
         # the outer double-quoted echo argument, turning `>`/`>>` sequences
         # that were meant to stay literal text into REAL shell redirections
         # once they land outside a quote context -- a preview-only echo line
@@ -3059,6 +2807,56 @@ def build_static_tiers_sh(spec: Spec, arm: Arm, step: Step | None = None) -> str
             )
         )
 
+    # Live AWS is the only trial mode (aws-access.html): this arm's toolchain
+    # (terraform init/plan, or cdktn synth's own STS/partition data sources)
+    # needs REAL ambient AWS credentials, staged by aws-bench before this
+    # container's pre_invoke/verifier phases run -- neither TF-shaped arm's
+    # bootstrap file carries an offline fixture. A missing/broken
+    # credential chain here is test INFRASTRUCTURE failing, not a bad
+    # solution, so it must VOID this row, never score 0.0 (which would be
+    # indistinguishable from a genuinely wrong answer). Preflighting with a
+    # cheap, read-only `aws sts get-caller-identity` catches that BEFORE any
+    # toolchain command runs, so a solution is never blamed for it.
+    #
+    # Writes NO reward.txt, and drops the /logs/verifier/aws-unavailable marker
+    # its caller keys off: build_test_sh short-circuits the WHOLE verifier on
+    # that marker, before any gating block can turn this into a 0.0, so the
+    # trial ends with no reward file at all and harbor's own
+    # RewardFileNotFoundError reports it INVALID -- the same run_invalid
+    # contract test.sh's SPEC_SEED_DEPLOY_REQUIRED guard uses. awscdk needs no
+    # equivalent: its synth/tier-0/tier-1 chain makes no AWS call
+    # (`cdk synth --no-lookups`).
+    #
+    # REGION comes first. The staged credentials file carries credential keys
+    # only (aws_bench/utils/credentials_provider.py), no arm Dockerfile sets
+    # AWS_DEFAULT_REGION and no task.toml does -- without it the preflight `aws`
+    # call itself dies with exit 253 (`NoRegion`) BEFORE reaching AWS and would
+    # void every row, perfect solutions included. Same two lines build_test_sh
+    # and build_pre_invoke_sh carry, for the same measured reason; `:=` so a
+    # region the harness DOES inject always wins.
+    aws_preflight = ""
+    if arm in ("hcl_raw", "terraconstructs"):
+        aws_preflight = textwrap.dedent(
+            """\
+            : "${AWS_DEFAULT_REGION:=us-east-1}"
+            export AWS_DEFAULT_REGION
+            rm -f /logs/verifier/aws-unavailable /logs/verifier/aws-unavailable.json
+            if ! aws sts get-caller-identity >/dev/null 2>&1; then
+              {
+                echo "aws-unavailable: 'aws sts get-caller-identity' failed --"
+                echo "no working AWS credentials in this environment. This is a"
+                echo "run-invalidating test-infrastructure condition, NOT a bad"
+                echo "solution -- no toolchain command was ever attempted."
+              } | tee /logs/verifier/aws-unavailable
+              jq -n \\
+                '{outcome: "run_invalid", status: "run_invalid", reason: "aws sts get-caller-identity failed -- no working AWS credentials in this environment"}' \\
+                > /logs/verifier/aws-unavailable.json 2>/dev/null \\
+                || echo '{"outcome":"run_invalid","status":"run_invalid","reason":"aws credentials unavailable"}' > /logs/verifier/aws-unavailable.json
+              exit 1
+            fi
+            """
+        )
+
     template = textwrap.dedent(
         """\
         #!/usr/bin/env bash
@@ -3068,13 +2866,12 @@ def build_static_tiers_sh(spec: Spec, arm: Arm, step: Step | None = None) -> str
         #
         # Reward contract (reused from tasks/anchor/smoke/tests/test.sh):
         # writes a bare float to /logs/verifier/reward.txt
-        # (harbor/verifier/verifier.py::_parse_reward_text). No live AWS
-        # calls -- verifier.live_check.enabled is always false in v1.
+        # (harbor/verifier/verifier.py::_parse_reward_text).
         set -uo pipefail
         DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
         source "$DIR/_assert_lib.sh"
         mkdir -p /logs/verifier
-
+        __AWS_PREFLIGHT__
         cd /app/project
 
         __TOOLCHAIN_BLOCK__
@@ -3124,6 +2921,7 @@ def build_static_tiers_sh(spec: Spec, arm: Arm, step: Step | None = None) -> str
         template.replace("__SPEC_ID__", spec.id)
         .replace("__ARM__", arm)
         .replace("__STEP_NOTE__", step_note)
+        .replace("__AWS_PREFLIGHT__", aws_preflight)
         .replace("__TOOLCHAIN_BLOCK__", toolchain_block)
         .replace("__ARTIFACT_PATH__", oc.artifact_path)
         .replace("__TIER0_TOTAL__", str(tier0_total))
@@ -3161,10 +2959,10 @@ IDEMPOTENCE_STATE_VANISHED_MARKER = "IDEMPOTENCE_STATE_VANISHED:"
 #                    agent's own `terraform apply` left in /app/project.
 #                    -refresh=false, matching the same reasoning
 #                    build_static_tiers_sh already applies to a post-apply
-#                    working tree: a refreshing plan re-contacts AWS through
-#                    provider.tf's OFFLINE dummy credentials and 403s, which
-#                    would report `pending_changes` for a reason unrelated to
-#                    convergence. Exit 0 = converged, 2 = pending changes.
+#                    working tree: a refreshing plan re-contacts AWS to
+#                    reconcile it, which would report `pending_changes` for a
+#                    reason unrelated to convergence. Exit 0 = converged, 2 =
+#                    pending changes.
 #   terraconstructs  synth, then the same plan inside the synthesized stack dir.
 #   awscdk           `cdk diff --fail` against the DEPLOYED stack. NOT a second
 #                    synth + template self-diff: CDK synth is deterministic, so
@@ -3204,30 +3002,17 @@ IDEMPOTENCE_COMMAND: dict[Arm, str] = {
     # state file that vanished") is the contract, and the mechanism being cheap
     # is not a reason to drop the belt.
     "terraconstructs": (
-        # CDKTN_BENCH_LIVE=1 (2026-08-26, first live brownfield battery). This
-        # tier is LIVE-ONLY by construction -- the state probe above catches
-        # every offline case before this command runs -- so the synth here must
-        # produce the LIVE provider config, not the offline mock-STS fixture.
-        # Without it, `npx cdktn synth` rewrote cdk.tf.json pointing
-        # `endpoints.sts` at arms/terraconstructs' loopback mock, and the plan
-        # died dialing a port nothing listens on in the verifier phase:
-        #   Error: reading STS Caller Identity ... Post "http://127.0.0.1:17771/":
-        #   dial tcp 127.0.0.1:17771: connect: connection refused
-        # -> rc 1 -> `not_verifiable` -> gating downgraded a GREEN run to 0.0
-        # (jobs/live-brownfield-seed/2026-08-25__22-21-37). The arm's live
-        # oracle had already passed; this tier alone lost the row.
+        # `npx cdktn synth` always produces the live provider config (Live AWS
+        # is the only trial mode -- aws-access.html; terraconstructs_main_ts's
+        # providerConfig carries only `region`), so this tier's synth needs no
+        # env-var switch to reach real credentials.
         #
-        # `-refresh=false` does NOT avoid this: cdktn emits
+        # `-refresh=false` does NOT avoid a real STS round-trip: cdktn emits
         # `data.aws_caller_identity` + `data.aws_partition` into cdk.tf.json
         # unconditionally, and a DATA SOURCE resolves at plan time whether or
-        # not the plan refreshes managed resources.
-        #
-        # hcl_raw needs no equivalent: its plan reads no data source, and
-        # `skip_requesting_account_id` keeps the provider off STS entirely, so
-        # it compares config against state without ever reaching AWS -- which
-        # is exactly what `-refresh=false` idempotence means. The asymmetry is
-        # the arms' synthesized provider config, not the tier.
-        f"{LIVE_CREDENTIALS_ENV_VAR['terraconstructs']} npx cdktn synth >/dev/null "
+        # not the plan refreshes managed resources -- harmless here since both
+        # arms always run against real ambient credentials.
+        "npx cdktn synth >/dev/null "
         "&& cd cdktf.out/stacks/__WORKSPACE_ID__ "
         "&& { [ -s /app/project/terraform.__WORKSPACE_ID__.tfstate ] || { "
         f'echo "{IDEMPOTENCE_STATE_VANISHED_MARKER} /app/project/'
@@ -3747,6 +3532,25 @@ def build_test_sh(spec: Spec, arm: Arm) -> str:
 
         "$DIR/static_tiers.sh"
         rc=$?
+
+        # AWS UNAVAILABLE => THE ROW IS VOID, NOT A ZERO. static_tiers.sh
+        # preflights `aws sts get-caller-identity` on the Terraform-shaped arms
+        # and drops this marker when there is no working credential chain
+        # (gen.py::build_static_tiers_sh). A nonzero rc from static_tiers.sh
+        # does NOT stop this script, and every block below it writes
+        # /logs/verifier/reward.txt on a gating failure -- so without this
+        # short-circuit a broken credential chain would score 0.0, i.e. an
+        # infrastructure failure wearing the costume of a wrong answer. Exit
+        # here instead, before any reward file exists, so harbor's own
+        # RewardFileNotFoundError aborts the trial as INVALID -- the same
+        # contract as the SPEC_SEED_DEPLOY_REQUIRED guard above.
+        if [ -f /logs/verifier/aws-unavailable ]; then
+          echo "AWS UNAVAILABLE: static_tiers.sh could not reach AWS -- see" >&2
+          echo "/logs/verifier/aws-unavailable. REFUSING TO GRADE: no reward file" >&2
+          echo "is written, so this trial reports as INVALID rather than as a score." >&2
+          rm -f /logs/verifier/reward.txt
+          exit 1
+        fi
 
         if [ "${SPEC_LIVE_CHECK_ENABLED:-false}" = "true" ] \\
            && [ -f "$DIR/live_check.py" ]; then

@@ -50,17 +50,6 @@ LABEL org.opencontainers.image.title="cdktn-bench hcl-raw" \
 # Baseline agent-container utility set shared with arms/awscdk and
 # arms/terraconstructs — see ../../DECISIONS.md "Agent-container baseline
 # contract". gnupg is needed for the HashiCorp apt-key step below.
-#
-# python3 (stdlib only, no pip package ever installed) is NOT part of that
-# shared baseline -- it exists solely to run workspace/mock-sfn.py, this
-# arm's own offline-plan fixture for `aws_sfn_state_machine`'s
-# CustomizeDiff-triggered `states:ValidateStateMachineDefinition` call (see
-# workspace/provider.tf's own header comment and mock-sfn.py's docstring
-# for the full mechanism -- the same class of gap arms/terraconstructs'
-# Node-based mock-sts.js fixes for that arm's `data "aws_caller_identity"`
-# call). Kept out of the grading-tool baseline deliberately: structural
-# assertions still run entirely on jq (generator/jsonpath_jq.py's own
-# docstring, "no Python, no jsonpath-ng" -- unaffected by this addition).
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates \
       curl \
@@ -189,7 +178,8 @@ RUN chmod +x ./preflight.sh
 #
 # --- Workspace scaffold ---------------------------------------------------
 # Bakes the starter main.tf (resource-only skeleton, agent-owned entry_file)
-# and provider.tf (offline provider/skip_*/dummy-credential bootstrap, NOT
+# and provider.tf (provider bootstrap: pinned hashicorp/aws + a bare
+# provider "aws" resolved by the ambient credential chain, NOT
 # agent-owned) into the agent's working directory, mirroring how
 # arms/awscdk COPYs workspace/lib and arms/terraconstructs COPYs app/main.ts
 # into /app/project (see ../../DECISIONS.md "Agent-container baseline
@@ -200,13 +190,11 @@ RUN chmod +x ./preflight.sh
 #
 # provider.tf is COPY'd as its own file, separately from main.tf, because
 # main.tf is output_contract.entry_file — the file a normal agent solution
-# fully rewrites from scratch. When the offline provider bootstrap used to
-# live at the top of main.tf, a correct-but-bare agent rewrite silently
-# deleted the skip_*/dummy-credential fixture lines and `terraform plan`
-# failed with "No valid credential sources found" even for a correct
-# solution — see ../../README.md "Generated-task workspace split".
+# fully rewrites from scratch. Keeping the bootstrap in a file the generator
+# never treats as entry_file makes it structurally impossible for such a
+# rewrite to delete the provider block — see ../../README.md
+# "Generated-task workspace split".
 WORKDIR /app/project
 COPY workspace/provider.tf ./provider.tf
-COPY workspace/mock-sfn.py ./mock-sfn.py
 COPY workspace/main.tf ./main.tf
 CMD ["/bin/bash"]

@@ -615,24 +615,27 @@ instruction:
         artifact_path: plan.json
         # `-refresh=false` is MANDATORY on a brownfield spec and the generator
         # hard-errors without it (SCHEMA.md §2.7.1 hard error 7): with the
-        # seed's state file present in /app/project, the OFFLINE verifier's
-        # plan would otherwise refresh through provider.tf's dummy credentials
-        # and die, scoring a perfect solution 0.0. Grading is unaffected --
+        # seed's state file present in /app/project, the plan would otherwise
+        # refresh every seeded resource through AWS -- and this same
+        # static_tiers.sh also runs at the credential-free host gates against
+        # gates/aws_stub.py, which answers exactly two operations, so a
+        # perfect solution would die there and score 0.0 for a reason that has
+        # nothing to do with its own correctness. Grading is unaffected --
         # every tf_jsonpath below reads $.planned_values / $.configuration,
         # which carry the full desired end state, not a changeset.
         plan_command: >-
           terraform init && terraform validate &&
           terraform plan -input=false -refresh=false -out=plan.tfplan &&
           terraform show -json plan.tfplan > plan.json
-        # §2.7.1. TF_VAR_cdktn_bench_live=1 is MANDATORY: provider.tf hardcodes
-        # dummy access_key/secret_key otherwise and the AWS provider ranks an
-        # explicit access_key above every ambient credential source, so the
-        # seed apply would fail InvalidClientTokenId. State lands at
+        # §2.7.1. Live AWS is the only trial mode (DECISIONS.md Amendment 32):
+        # provider.tf carries no dummy access_key/secret_key to outrank the
+        # ambient credentials staged for pre_invoke, so the seed apply just
+        # uses them. State lands at
         # /app/project/terraform.tfstate (implicit local backend), i.e. the
         # agent's own cwd -- which is the whole handoff.
         deploy_command: >-
-          TF_VAR_cdktn_bench_live=1 terraform init -input=false &&
-          TF_VAR_cdktn_bench_live=1 terraform apply -input=false -auto-approve
+          terraform init -input=false &&
+          terraform apply -input=false -auto-approve
     terraconstructs:
       language_line: "This workspace is a terraconstructs (TypeScript) app using its AWS L2 constructs."
       output_contract:
@@ -650,7 +653,7 @@ instruction:
         # path baked into cdk.tf.json at synth time, so every later synth from
         # /app/project resolves the identical file.
         deploy_command: >-
-          CDKTN_BENCH_LIVE=1 npx cdktn deploy --auto-approve application-storage
+          npx cdktn deploy --auto-approve application-storage
 
 catches:
   - name: log-delivery-grant-not-migrated

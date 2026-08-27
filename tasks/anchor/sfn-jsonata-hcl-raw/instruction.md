@@ -21,6 +21,6 @@ branching logic -- not the classic JSONPath query language.
 
 Author this as hand-written Terraform HCL (no modules), using the aws_sfn_state_machine resource.
 
-You own only `main.tf` in this workspace -- write your entire solution there. Do not create, modify, or delete `provider.tf`: it is a pre-wired bootstrap file (app entrypoint / offline provider config) that synth/plan depends on and is not part of what you are being asked to write.
+You own only `main.tf` in this workspace -- write your entire solution there. Do not create, modify, or delete `provider.tf`: it is a pre-wired bootstrap file (app entrypoint / provider config) that synth/plan depends on and is not part of what you are being asked to write.
 
 IMPORTANT: Write your final answer to `/logs/agent/agent-output.txt`.

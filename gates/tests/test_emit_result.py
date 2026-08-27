@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from gates.emit_result import (
+    _extract_score_fields,
     INVALID_BYPASS,
     INVALID_INFRA,
     VALID,
@@ -684,7 +685,7 @@ class TestTierEvidence:
         Runs the REAL generated `tests/static_tiers.sh` for the toy spec's
         hcl_raw arm (smallest toolchain footprint -- same precedent as
         `gates/tests/test_oracle_falsifiability.py`, which needs neither
-        `npm ci` nor a mock-STS/cdktn synth step) via
+        `npm ci` nor a cdktn synth step) via
         `gates.oracle_falsifiability._run_solve`, and feeds its ACTUAL
         stdout through `read_tier_evidence()` -- not a hand-frozen
         literal. A future change to `generator/gen.py`'s echo/summary
@@ -975,3 +976,66 @@ class TestToResultRowAutoCensoring:
     def test_missing_n_llm_calls_does_not_crash_max_iters_check(self) -> None:
         row = self._row_for(tokens_total=500, reward=0.0, n_llm_calls=None, max_iters=8)
         assert row["censored"] is False
+
+
+def _stream_line(msg_id: str, usage: dict, uuid: str = "u") -> str:
+    return json.dumps({"type": "assistant", "uuid": uuid,
+                       "message": {"id": msg_id, "role": "assistant", "usage": usage, "content": []}})
+
+
+def _result_line(usage: dict, cost: float) -> str:
+    return json.dumps({"type": "result", "subtype": "success", "usage": usage, "total_cost_usd": cost, "num_turns": 3})
+
+
+def test_tokens_recovered_from_claude_code_stream_when_result_json_has_none(tmp_path) -> None:
+    """A harbor trajectory-conversion failure leaves agent_result token fields
+    None while agent/claude-code.txt is complete; the transcript's terminal
+    result event is then the source. Per-message usage is a streaming partial
+    and is deliberately ignored."""
+    trial = tmp_path / "trial"
+    (trial / "agent").mkdir(parents=True)
+    (trial / "result.json").write_text(json.dumps({
+        "verifier_result": {"rewards": {"reward": 1.0}},
+        "agent_result": {"n_input_tokens": None, "n_cache_tokens": None, "n_output_tokens": None, "cost_usd": None},
+    }))
+    lines = [
+        json.dumps({"type": "system", "subtype": "init"}),
+        _stream_line("m1", {"input_tokens": 10, "cache_read_input_tokens": 100, "output_tokens": 2}),
+        _stream_line("m2", {"input_tokens": 3, "cache_read_input_tokens": 200, "output_tokens": 4}),
+        _result_line({"input_tokens": 20, "cache_creation_input_tokens": 50, "cache_read_input_tokens": 300, "output_tokens": 777}, 0.42),
+    ]
+    (trial / "agent" / "claude-code.txt").write_text("\n".join(lines) + "\n")
+
+    out = _extract_score_fields(trial)
+
+    assert out["reward"] == 1.0
+    assert out["n_output_tokens"] == 777
+    assert out["n_input_tokens"] == 20 + 50 + 300
+    assert out["n_cache_tokens"] == 300
+    assert out["cost_usd"] == 0.42
+    assert out["tokens_source"] == "claude-code-stream"
+
+
+def test_transcript_without_result_event_recovers_nothing(tmp_path) -> None:
+    trial = tmp_path / "trial"
+    (trial / "agent").mkdir(parents=True)
+    (trial / "result.json").write_text(json.dumps({
+        "verifier_result": {"rewards": {"reward": 1.0}},
+        "agent_result": {"n_input_tokens": None, "n_cache_tokens": None, "n_output_tokens": None, "cost_usd": None},
+    }))
+    (trial / "agent" / "claude-code.txt").write_text(_stream_line("m1", {"input_tokens": 1, "output_tokens": 1}) + "\n")
+    out = _extract_score_fields(trial)
+    assert out["n_output_tokens"] is None and "tokens_source" not in out
+
+
+def test_transcript_fallback_does_not_override_harbor_totals(tmp_path) -> None:
+    trial = tmp_path / "trial"
+    (trial / "agent").mkdir(parents=True)
+    (trial / "result.json").write_text(json.dumps({
+        "verifier_result": {"rewards": {"reward": 0.0}},
+        "agent_result": {"n_input_tokens": 50, "n_cache_tokens": 40, "n_output_tokens": 9, "cost_usd": 0.01},
+    }))
+    (trial / "agent" / "claude-code.txt").write_text(_result_line({"input_tokens": 999, "output_tokens": 999}, 9.9) + "\n")
+    out = _extract_score_fields(trial)
+    assert out["n_output_tokens"] == 9 and out["cost_usd"] == 0.01
+    assert "tokens_source" not in out

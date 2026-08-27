@@ -14,7 +14,7 @@
 # wired correctly. Tier-0 asserts still pass; reward must be 0.0 from
 # tier-1 (policy.rego) alone.
 #
-# OFFLINE-only (gates/oracle_falsifiability.py never sets LIVE=1) -- this
+# Static-only (gates/oracle_falsifiability.py never sets LIVE=1) -- this
 # catch is fully static (structural depends_on coverage), no live proof
 # needed to falsify it. Single revision (unlike the sibling fixtures,
 # which need two revisions to exercise the triggers-hash side) -- the
@@ -32,29 +32,9 @@ JS
 ( cd lambda-src && cp hello.js index.js && zip -q -X ../lambda/hello.zip index.js && rm index.js )
 ( cd lambda-src && cp version.js index.js && zip -q -X ../lambda/version.zip index.js && rm index.js )
 
-cat > provider.tf <<'TF'
-terraform {
-  required_version = ">= 1.5"
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "6.58.0"
-    }
-  }
-}
-
-provider "aws" {
-  region = "us-east-1"
-
-  access_key = "AKIAIOSFODNN7EXAMPLE"
-  secret_key = "dummy-secret-key-not-real"
-
-  skip_credentials_validation = true
-  skip_requesting_account_id  = true
-  skip_region_validation      = true
-  skip_metadata_api_check     = true
-}
-TF
+# No provider.tf is written here: the SEEDED ./provider.tf is not agent-owned,
+# and its bare `provider "aws"` block resolves ambient AWS credentials --
+# same rule as solution/solve.sh.
 
 cat > main.tf <<'TF'
 resource "aws_iam_role" "lambda_exec" {

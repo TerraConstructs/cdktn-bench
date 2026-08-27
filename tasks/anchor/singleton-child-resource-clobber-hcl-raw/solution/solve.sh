@@ -31,12 +31,11 @@
 #
 # --- OFFLINE vs. LIVE ------------------------------------------------------
 # Default (LIVE unset/0): write the file, run the same tests/static_tiers.sh a
-# real trial's verifier runs. No AWS call of any kind.
-# LIVE=1: additionally export TF_VAR_cdktn_bench_live=1 so the SEEDED,
-# non-agent-owned ./provider.tf switches from its offline dummy-credential
-# fixture to real ambient credentials, run a real `terraform apply`, and then
-# assert the live oracle. This script never writes or edits provider.tf --
-# exactly the constraint a real agent solving this scenario is under.
+# real trial's verifier runs.
+# LIVE=1: additionally run a real `terraform apply` against the SEEDED,
+# non-agent-owned ./provider.tf's ambient credentials, and then assert the
+# live oracle. This script never writes or edits provider.tf -- exactly the
+# constraint a real agent solving this scenario is under.
 set -euo pipefail
 
 LIVE="${LIVE:-0}"
@@ -85,7 +84,6 @@ TF
 
 if [ "$LIVE" = "1" ]; then
   echo "== LIVE: real terraform apply against this account =="
-  export TF_VAR_cdktn_bench_live=1
   terraform init -input=false
   terraform apply -input=false -auto-approve
   python3 tests/live_check.py --expect ok

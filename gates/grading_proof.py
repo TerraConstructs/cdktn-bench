@@ -93,6 +93,7 @@ from spec_model import load_spec  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from oracle_falsifiability import RunResult, check_arm, observed_tier  # noqa: E402
+from aws_stub import running_stub  # noqa: E402
 
 
 def auto_select_negative(results: list[RunResult], arm: str) -> RunResult | None:
@@ -140,44 +141,47 @@ def main(argv: list[str]) -> int:
     any_tier1_proof = False
     rows: list[tuple[str, str, float | None, str]] = []  # (arm, kind, reward, status)
 
-    for arm in spec.arms.enabled_arms():
-        results = check_arm(spec, arm)
-        good = next((r for r in results if r.label == f"{arm}/solution/solve.sh"), None)
+    # ONE stub for the whole gate process (every arm's check_arm run shares
+    # it) -- see gates/aws_stub.py::running_stub()'s own docstring.
+    with running_stub() as env:
+        for arm in spec.arms.enabled_arms():
+            results = check_arm(spec, arm, env)
+            good = next((r for r in results if r.label == f"{arm}/solution/solve.sh"), None)
 
-        if good is None or good.reward is None:
-            rows.append((arm, "correct solution", None, "FAIL"))
-            all_ok = False
-        else:
-            ok = good.ok and good.reward == 1.0
-            rows.append((arm, "correct solution", good.reward, "PASS" if ok else "FAIL"))
-            all_ok = all_ok and ok
-
-        if args.catch:
-            negative = next(
-                (r for r in results if r.label == f"{arm}/solution/broken/{args.catch}/solve.sh"), None
-            )
-            if negative is None:
-                rows.append((arm, f"negative ({args.catch})", None, "FAIL"))
+            if good is None or good.reward is None:
+                rows.append((arm, "correct solution", None, "FAIL"))
                 all_ok = False
-                continue
-            any_tier1_proof = True
-        else:
-            negative = auto_select_negative(results, arm)
-            if negative is None:
-                rows.append(
-                    (arm, "negative (no fixture reaches tier 1 on this arm)", None, "SKIP")
-                )
-                continue
-            any_tier1_proof = True
+            else:
+                ok = good.ok and good.reward == 1.0
+                rows.append((arm, "correct solution", good.reward, "PASS" if ok else "FAIL"))
+                all_ok = all_ok and ok
 
-        catch_name = _catch_name_from_label(negative.label)
-        if negative.reward is None:
-            rows.append((arm, f"negative ({catch_name})", None, "FAIL"))
-            all_ok = False
-        else:
-            ok = negative.ok and negative.reward == 0.0
-            rows.append((arm, f"negative ({catch_name})", negative.reward, "PASS" if ok else "FAIL"))
-            all_ok = all_ok and ok
+            if args.catch:
+                negative = next(
+                    (r for r in results if r.label == f"{arm}/solution/broken/{args.catch}/solve.sh"), None
+                )
+                if negative is None:
+                    rows.append((arm, f"negative ({args.catch})", None, "FAIL"))
+                    all_ok = False
+                    continue
+                any_tier1_proof = True
+            else:
+                negative = auto_select_negative(results, arm)
+                if negative is None:
+                    rows.append(
+                        (arm, "negative (no fixture reaches tier 1 on this arm)", None, "SKIP")
+                    )
+                    continue
+                any_tier1_proof = True
+
+            catch_name = _catch_name_from_label(negative.label)
+            if negative.reward is None:
+                rows.append((arm, f"negative ({catch_name})", None, "FAIL"))
+                all_ok = False
+            else:
+                ok = negative.ok and negative.reward == 0.0
+                rows.append((arm, f"negative ({catch_name})", negative.reward, "PASS" if ok else "FAIL"))
+                all_ok = all_ok and ok
 
     print(f"grading-proof for {spec.id!r} -- {len(rows)} outcomes:")
     for arm, kind, reward, status in rows:

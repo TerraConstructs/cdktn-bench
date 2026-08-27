@@ -30,24 +30,24 @@
 # define attributes for externally managed GSIs in the
 # `aws_dynamodb_table` resource."
 #
-# REPRODUCED directly at authoring time (fully offline `terraform init` +
-# `validate` + `plan` against the filesystem-cached hashicorp/aws 6.58.0
-# provider, dummy credentials, no AWS API ever contacted): this exact
-# shape plans CLEAN with zero warnings, "Plan: 2 to add, 0 to change, 0 to
-# destroy". `terraform show -json`'s `planned_values` for
+# Under `terraform init` + `validate` + `plan` against the filesystem-
+# cached hashicorp/aws 6.58.0 provider, this exact shape plans CLEAN with
+# zero warnings, "Plan: 2 to add, 0 to change, 0 to destroy".
+# `terraform show -json`'s `planned_values` for
 # `aws_dynamodb_table.orders` has NO `global_secondary_index` key at all
 # (genuinely plan-time-unknown in this shape -- the field is entirely
 # externally managed); the GSI's own facts live on the separate
 # `aws_dynamodb_global_secondary_index.by_customer` resource instead, at
-# `.values.key_schema[*]` and `.values.projection[0]`. Running the real,
-# regenerated tests/static_tiers.sh against it end to end: tier-0's sole
-# remaining hcl_raw assert (table-hash-key-is-orderId) passes
+# `.values.key_schema[*]` and `.values.projection[0]`. Under the real,
+# regenerated tests/static_tiers.sh (which, like every hcl_raw run, needs
+# live AWS credentials): tier-0's sole remaining hcl_raw assert
+# (table-hash-key-is-orderId) passes
 # (gsi-projection-is-include/gsi-projects-exactly-status-and-total/
 # gsi-hash-key-is-customerId/gsi-range-key-is-createdAt no longer apply to
 # hcl_raw as of this fix -- see each assert's own description in the
 # spec), and tier-1's policy.rego -- shape-tolerant as of this fix --
 # resolves every GSI fact from the standalone resource via `table_gsis()`
-# and ALLOWs. Verified directly by running it: reward 1.0.
+# and ALLOWs, scoring reward 1.0.
 #
 # Note the table's own `attribute` set here contains ONLY orderId --
 # customerId/createdAt's `attribute_type` lives inside the standalone

@@ -30,10 +30,8 @@
 #
 # --- OFFLINE vs. LIVE ------------------------------------------------------
 # Default (LIVE unset/0): write the file, run the same tests/static_tiers.sh a
-# real trial's verifier runs. No AWS call of any kind.
-# LIVE=1: additionally export CDKTN_BENCH_LIVE=1 so the generator-owned
-# app/main.ts drops its dummy credentials and mock-STS endpoint, run a real
-# `cdktn deploy`, and assert the live oracle.
+# real trial's verifier runs.
+# LIVE=1: additionally run a real `cdktn deploy` and assert the live oracle.
 set -euo pipefail
 
 LIVE="${LIVE:-0}"
@@ -71,7 +69,6 @@ TS
 
 if [ "$LIVE" = "1" ]; then
   echo "== LIVE: real cdktn deploy against this account =="
-  export CDKTN_BENCH_LIVE=1
   npx tsc -p tsconfig.json
   # The positional argument is the STACK id -- app/main.ts constructs
   # `new ScenarioStack(app, "reports-archive", ...)`, i.e. the spec's

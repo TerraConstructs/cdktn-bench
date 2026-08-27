@@ -43,8 +43,7 @@ cdk.out.rev*/
 # `npx tsc -p tsconfig.json && node <emitted>.js` as their synth app command
 # (docs/ts-runtime-spike2-results.md), and neither tsconfig sets an outDir, so
 # the compiler emits .js/.d.ts NEXT TO the tracked sources. Listed file-by-file
-# rather than as a blanket `*.js` because arms/terraconstructs/environment/app/
-# mock-sts.js is a TRACKED source file living in the same directory.
+# rather than as a blanket `*.js` to stay narrow about what's a build byproduct.
 **/environment/workspace/lib/*.js
 **/environment/workspace/lib/*.d.ts
 **/environment/workspace/bin/*.d.ts

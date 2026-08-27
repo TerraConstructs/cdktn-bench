@@ -104,10 +104,10 @@ export class ScenarioStack extends AwsStack {
     super(scope, id, props);
 
     // Explicit availabilityZones: compute.Vpc's default AZ resolution
-    // creates an unmockable `data "aws_availability_zones"` lookup
-    // offline (this scenario's own header comment) -- literal AZs in this
-    // arm's pinned region (us-east-1, arms/terraconstructs/environment/
-    // app/main.ts) avoid it entirely.
+    // creates a `data "aws_availability_zones"` lookup, a live EC2 call
+    // the host gates' AWS stub (gates/aws_stub.py) does not answer --
+    // literal AZs in this arm's pinned region (us-east-1,
+    // arms/terraconstructs/environment/app/main.ts) avoid it entirely.
     const vpc = new compute.Vpc(this, "WorkerVpc", {
       availabilityZones: ["us-east-1a", "us-east-1b"],
       natGateways: 0,

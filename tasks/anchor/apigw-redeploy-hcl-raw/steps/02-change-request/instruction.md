@@ -38,9 +38,7 @@ complete; it is not part of your task.
 
 Author this as hand-written Terraform HCL (no modules). Deploy for real with `terraform apply`.
 
-You own only `main.tf` in this workspace -- write your entire solution there. Do not create, modify, or delete `provider.tf`: it is a pre-wired bootstrap file (app entrypoint / offline provider config) that synth/plan depends on and is not part of what you are being asked to write.
-
-Real deploy note: `provider.tf` (which you must not edit, see above) defaults to an offline fixture with dummy AWS credentials -- before running your REAL deploy command, export `TF_VAR_cdktn_bench_live=1` in your shell so `provider.tf` uses this environment's real ambient AWS credentials instead. This is a normal environment variable, not a change to `provider.tf` itself.
+You own only `main.tf` in this workspace -- write your entire solution there. Do not create, modify, or delete `provider.tf`: it is a pre-wired bootstrap file (app entrypoint / provider config) that synth/plan depends on and is not part of what you are being asked to write.
 
 IMPORTANT: Write your final answer to `/logs/agent/agent-output.txt`.
 

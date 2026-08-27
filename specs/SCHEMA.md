@@ -355,8 +355,10 @@ owned bootstrap file** alongside `entry_file` — `bin/app.ts` (awscdk,
 pre-existing), `provider.tf` (hcl_raw), `main.ts` (terraconstructs, the
 latter two added by this fix) — carrying config an agent's *normal, fully-
 expected* full rewrite of its own `entry_file` must never be able to
-delete (an offline-provider/dummy-credential fixture for the TF-shaped
-arms; the App/stack-instantiation wiring for all three). Before this fix,
+delete (the region/`default_tags` provider bootstrap for the TF-shaped
+arms — live AWS is the only trial mode, DECISIONS.md Amendment 32, so
+there is no credential fixture left to protect, only the bootstrap itself;
+the App/stack-instantiation wiring for all three). Before this fix,
 `hcl_raw`'s `entry_file` (`main.tf`) carried its own provider bootstrap
 inline, and `terraconstructs`' `entry_file` (`main.ts`) carried both the
 `App`/provider bootstrap AND the resource logic in one file — a normal
@@ -439,8 +441,8 @@ re-type-checks by construction and can never execute stale emitted JS. See
 | Arm | `entry_file` | Non-agent-owned bootstrap file | `artifact_path` | commands |
 |---|---|---|---|---|
 | `awscdk` | `lib/scenario-stack.ts` (class `ScenarioStack`, resource logic only) | `bin/app.ts` — `App`/`ScenarioStack` instantiation; the generator rewrites its import/instantiation once per scenario, never per trial | `cdk.out/ScenarioStack.template.json` | `build_command: npm run build`, `synth_command: npx cdk synth --no-lookups --quiet -o cdk.out` |
-| `hcl_raw` | `main.tf` (resource blocks ONLY — no `provider` block; see below) | `provider.tf` — the `terraform{}`/`provider "aws" {}` block + `skip_*`/dummy-credential fixture lines (byte-copied from `arms/hcl-raw/environment/workspace/provider.tf`, never per-scenario content) | `plan.json` | `synth_command` not used; `plan_command: terraform init && terraform validate && terraform plan -out=plan.tfplan && terraform show -json plan.tfplan > plan.json` |
-| `terraconstructs` | `lib/scenario-stack.ts` (class `ScenarioStack extends AwsStack`, resource logic only) | `main.ts` — `App`/`providerConfig` bootstrap (incl. the offline `skip_*`/dummy-credential fixture and the mock-STS `endpoints` pointer), imports and instantiates `ScenarioStack`; regenerated every run, mirroring `awscdk`'s `bin/app.ts` | `cdktf.out/stacks/<id>/plan.json` where `<id>` is the generator-assigned stack id, always equal to **`workspace_id`** (§0.1 — the AGENT-VISIBLE scenario name, which falls back to `id` when a spec declares none; this path is agent-visible in `preflight.sh` and in the agent's own `npx cdktn synth` output, and `Spec._terraconstructs_artifact_path_matches_workspace_identity` refuses a spec whose `artifact_path` disagrees with it) — **not** `cdk.tf.json`: `generator/gen.py::build_static_tiers_sh` always appends a real `terraform init && terraform plan && terraform show -json` step after `synth_command`, chdir'd into the synthesized stack's own directory, so this arm is graded in the same plan-JSON shape `hcl_raw` is (see §4.2) | `synth_command: npx cdktn synth`; `build_command` **must be unset** — gen.py always injects `npx tsc -p tsconfig.json` as an explicit first toolchain step with its own reward-0.0 branch (see the `build_command` note above §8.3) |
+| `hcl_raw` | `main.tf` (resource blocks ONLY — no `provider` block; see below) | `provider.tf` — the `terraform{}`/`provider "aws" {}` block, region + `default_tags` only, no credential fixture of any kind (live AWS is the only trial mode, DECISIONS.md Amendment 32; byte-copied from `arms/hcl-raw/environment/workspace/provider.tf`, never per-scenario content) | `plan.json` | `synth_command` not used; `plan_command: terraform init && terraform validate && terraform plan -out=plan.tfplan && terraform show -json plan.tfplan > plan.json` |
+| `terraconstructs` | `lib/scenario-stack.ts` (class `ScenarioStack extends AwsStack`, resource logic only) | `main.ts` — `App`/`providerConfig` bootstrap (`providerConfig: { region: "us-east-1" }` only — live AWS is the only trial mode, DECISIONS.md Amendment 32; no `skip_*`, no dummy credentials, no mock `endpoints` pointer), imports and instantiates `ScenarioStack`; regenerated every run, mirroring `awscdk`'s `bin/app.ts` | `cdktf.out/stacks/<id>/plan.json` where `<id>` is the generator-assigned stack id, always equal to **`workspace_id`** (§0.1 — the AGENT-VISIBLE scenario name, which falls back to `id` when a spec declares none; this path is agent-visible in `preflight.sh` and in the agent's own `npx cdktn synth` output, and `Spec._terraconstructs_artifact_path_matches_workspace_identity` refuses a spec whose `artifact_path` disagrees with it) — **not** `cdk.tf.json`: `generator/gen.py::build_static_tiers_sh` always appends a real `terraform init && terraform plan && terraform show -json` step after `synth_command`, chdir'd into the synthesized stack's own directory, so this arm is graded in the same plan-JSON shape `hcl_raw` is (see §4.2) | `synth_command: npx cdktn synth`; `build_command` **must be unset** — gen.py always injects `npx tsc -p tsconfig.json` as an explicit first toolchain step with its own reward-0.0 branch (see the `build_command` note above §8.3) |
 
 **`entry_file` vs. the non-agent-owned bootstrap file (finding G1, fixed
 2026-08-06):** every arm's workspace ships both. `entry_file` is what the
@@ -850,15 +852,17 @@ one fixture whose purpose is to be un-weakenable must not be hand-editable.
 `< 1.0` is **necessary but not sufficient**, and the gate enforces the second
 half too: the run must also have produced a *graded artifact* (a tier-0 summary
 in its output). `tests/static_tiers.sh` writes `0.0` for a broken toolchain as
-well as for a rejected solution — `TF-PLAN FAILED`, `MISSING ARTIFACT`, the
-mock-STS `tf-plan-mock-sts-unavailable` bail-out that script itself labels *"a
-run-invalidating test-infrastructure condition, NOT a bad solution"*. Counting
+well as for a rejected solution — `TF-PLAN FAILED`, `MISSING ARTIFACT`. Counting
 those as proof would make the one un-fakeable check pass vacuously. Observed
-for real (2026-08-20): a batch `make falsifiability` run reported `TF-PLAN
-FAILED` for the terraconstructs do-nothing fixture from mock-STS port
-contention between back-to-back fixtures, while the same fixture in isolation
-failed honestly on `security-group-uses-the-new-team-prefixed-name`. Such a run
-is now a loud FAIL telling the operator to re-run, not a quiet pass.
+for real (2026-08-20, under the mock-STS mechanism DECISIONS.md Amendment 32
+later removed): a batch `make falsifiability` run reported `TF-PLAN FAILED`
+for the terraconstructs do-nothing fixture from mock-STS port contention
+between back-to-back fixtures, while the same fixture in isolation failed
+honestly on `security-group-uses-the-new-team-prefixed-name`. Such a run is a
+loud FAIL telling the operator to re-run, not a quiet pass — the same
+un-fakeability requirement the `run_invalid`/`aws-unavailable` preflight
+(Amendment 32) now serves at the trial level: an infrastructure failure must
+void the row, never masquerade as a graded `0.0`.
 
 **Composition with `steps` (§2.6).** Allowed, and the two features occupy
 disjoint parts of the task dir: the seed lives in `environment/` (step-1
@@ -1097,13 +1101,20 @@ so a half-deployed seed is still torn down.
    generator later.
 7. **Any `workspace_seed` spec** whose enabled arm declares a `terraform plan`
    without `-refresh=false`. Measured, not predicted: with a state file present
-   the *offline* verifier's plan refreshes through `provider.tf`'s dummy
-   credentials and dies (`Refreshing state... [id=vpc-05c33a26cbf19bef8]` /
-   `PLAN FAILED`,
+   the verifier's plan refreshes through `provider.tf`'s credentials and dies
+   (`Refreshing state... [id=vpc-05c33a26cbf19bef8]` / `PLAN FAILED`,
    `jobs/rerun-named-resource-replacement/2026-08-25__01-43-17/named-resource-replacement-hcl-r__rtmpCyN/verifier/test-stdout.txt:42-46`),
-   scoring a **perfect** solution 0.0. Grading is unaffected: every
-   `tf_jsonpath` reads `$.planned_values` / `$.configuration`, which carry the
-   full desired end state of every resource — not a changeset.
+   scoring a **perfect** solution 0.0. That specific run predates DECISIONS.md
+   Amendment 32 (live AWS is the only trial mode) and refreshed through the
+   *dummy* credentials `provider.tf` then defaulted to; a trial-time verifier
+   now carries real, ambient credentials instead, but the requirement is
+   retained regardless, because the credential-free host gates
+   (`gates/oracle_falsifiability.py` et al.) run the identical
+   `static_tiers.sh` against `gates/aws_stub.py`, which answers exactly two
+   operations and cannot resolve an arbitrary refresh either. Grading is
+   unaffected: every `tf_jsonpath` reads `$.planned_values` /
+   `$.configuration`, which carry the full desired end state of every
+   resource — not a changeset.
 
    This validator reads `output_contract.plan_command`, which is **null on both
    cdk-shaped arms** — `terraconstructs`' `terraform plan` comes from a
@@ -1218,8 +1229,11 @@ spec is exempt (its header says so) and does not need taxonomy diversity.
   fixed marker `LIVE_ONLY_CONFIRMED_MARKER =
   "CDKTN_BENCH_LIVE_ONLY_CONFIRMED"`, mechanically earned (e.g. a two-plan
   diff proving a hash stayed frozen across revisions), not merely claimed
-  in a comment — this keeps `make ci`/`make falsifiability` fully offline
-  even for a scenario that declares a live-only catch.
+  in a comment — this keeps `make ci`/`make falsifiability` off a real AWS
+  account even for a scenario that declares a live-only catch. ("Offline"
+  here means *no real account*, not *no AWS calls*: since Amendment 32 the
+  toolchain always uses ambient credentials, and the gates supply them from
+  the loopback `gates/aws_stub.py`.)
 - `applies_to` (optional, default: all three enabled arms — 100% backward
   compatible with every pre-Slice-G spec): restricts which arms
   `gates/oracle_falsifiability.py` requires a
@@ -1432,7 +1446,7 @@ generation/review time instead of shipping silent.
      evaluates `data.cdktn_bench.<pkg>.not_verifiable` after `deny` and,
      whenever it's non-empty, tees the detail to
      `/logs/verifier/tier1-not-verifiable` — mirroring the existing
-     `tier1-unavailable`/`tf-plan-mock-sts-unavailable` non-silent-marker
+     `tier1-unavailable`/`aws-unavailable` non-silent-marker
      convention. This is **non-gating**: it never affects `tier1_status`
      or `/logs/verifier/reward.txt`, only whether the fact "this could not
      be checked" is ever recorded anywhere. `not_verifiable` is optional —
@@ -2037,9 +2051,11 @@ synth is deterministic, so that check is vacuous by construction and would
 silently hand the awscdk arm a free pass.
 
 `-refresh=false` on the TF arms for the same reason `build_static_tiers_sh`
-already uses it on a post-apply working tree: a refreshing plan re-contacts AWS
-through the arm's *offline* dummy-credential provider config and 403s, which
-would report `pending_changes` for a reason unrelated to convergence.
+already uses it on a post-apply working tree: a refreshing plan re-contacts
+AWS, and at the credential-free host gates (`gates/aws_stub.py`, the only
+credential-limited context left since DECISIONS.md Amendment 32) that 403s on
+anything beyond the two operations the stub answers, which would report
+`pending_changes` for a reason unrelated to convergence.
 
 **Three outcomes, mirroring `live_check`'s own contract**, written to
 `/logs/verifier/idempotence-result.json` (plus the raw command output in
@@ -2106,10 +2122,12 @@ would report `pending_changes` for a reason unrelated to convergence.
     `named-resource-replacement` runs returned on this arm *despite* an apply
     AWS itself confirmed. The probe is fixed; the re-probe is repointed at the
     absolute path and is now expected **never to fire**, retained because the
-    guarantee is the contract and the mechanism is cheap. Because the path is
-    identical in offline and live mode (`CDKTN_BENCH_LIVE` only strips dummy
-    credentials from `providerConfig`; the backend is installed either way), it
-    is also what makes §2.7.1's cross-arm seed handoff work.
+    guarantee is the contract and the mechanism is cheap. The path holds
+    regardless of credentials (`LocalBackend` is installed by `cdktn synth`
+    unconditionally, independent of what answers `providerConfig` — and since
+    DECISIONS.md Amendment 32 there is only one credential mode, live, so the
+    question does not even arise), which is also what makes §2.7.1's
+    cross-arm seed handoff work.
 
   - **Every arm, on a `workspace_seed.deploy` spec — the SEED MOVEMENT GUARD**
     (added 2026-08-25 with §2.7.1, finding H). The pre-flight probe above asks
@@ -2137,8 +2155,8 @@ would report `pending_changes` for a reason unrelated to convergence.
     covers that case.
 
   All mechanisms deliver the same guarantee, and it is the guarantee, not the
-  mechanism, that is the contract: **offline this tier is skipped with a
-  reason, never fake-passed, on all three arms.** See
+  mechanism, that is the contract: **with nothing deployed to check, this
+  tier is skipped with a reason, never fake-passed, on all three arms.** See
   `gen.py::IDEMPOTENCE_STATE_PROBE` / `IDEMPOTENCE_COMPLETION_MARKER`
   (the empty string in either map means "this arm uses the other mechanism").
 
@@ -2233,8 +2251,9 @@ tasks/<scenario-id>/
     hcl-raw/
         ...                        # same shape; environment/ byte-copy of arms/hcl-raw/environment/,
                                     # entry_file (main.tf) seeded resource-blocks-only; provider.tf
-                                    # (offline provider bootstrap, non-agent-owned) copied unmodified
-                                    # alongside it -- see §2.4, finding G1
+                                    # (bootstrap, non-agent-owned; live AWS is the only mode --
+                                    # DECISIONS.md Amendment 32) copied unmodified alongside it --
+                                    # see §2.4, finding G1
     terraconstructs/               # present iff arms.terraconstructs.enabled == true
         ...                        # same shape; environment/ byte-copy of arms/terraconstructs/environment/,
                                     # entry_file (lib/scenario-stack.ts) seeded resource-logic-only;
@@ -2332,7 +2351,8 @@ if the flat grouping was actually intended.
    > `specs/<id>.yaml` spec and the N arm tasks it generates. `anchor`
    > deploys almost nothing (one SSM parameter + two IAM roles) because it
    > exists only to satisfy aws-bench's requirement that every task have a
-   > member account — cdktn-bench itself grades offline. See
+   > member account — cdktn-bench grades the workspace artifact a plan or
+   > synth produces, not resources deployed into that account. See
    > `docs/adding-scenarios.md`'s own terminology note for more, and
    > `ROADMAP.md` M7 for when a second aws-bench scenario would become
    > necessary.

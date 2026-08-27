@@ -1,0 +1,126 @@
+<title>What aws-bench Actually Provides</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{--bg:#f5f7f9;--surface:#fff;--ink:#1a222c;--ink-2:#4a5561;--ink-3:#7a8591;--rule:#d9dee4;--accent:#0e6f6a;--accent-soft:#dcefed;--warn:#9a5b0b;--warn-soft:#f7ebd6;--bad:#a3282c;--bad-soft:#f6dedf;--good:#2f6b3a;--good-soft:#ddeede;--code-bg:#eef1f4}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--bg:#12171c;--surface:#1a2129;--ink:#e6eaee;--ink-2:#aab4be;--ink-3:#7d8893;--rule:#2c353f;--accent:#5cc3ba;--accent-soft:#173a38;--warn:#e2a54a;--warn-soft:#3a2a10;--bad:#ee8a8d;--bad-soft:#3d1c1e;--good:#8fcf9a;--good-soft:#1c3320;--code-bg:#0e1319}}
+:root[data-theme="dark"]{--bg:#12171c;--surface:#1a2129;--ink:#e6eaee;--ink-2:#aab4be;--ink-3:#7d8893;--rule:#2c353f;--accent:#5cc3ba;--accent-soft:#173a38;--warn:#e2a54a;--warn-soft:#3a2a10;--bad:#ee8a8d;--bad-soft:#3d1c1e;--good:#8fcf9a;--good-soft:#1c3320;--code-bg:#0e1319}
+body{background:var(--bg);color:var(--ink);font-family:"IBM Plex Sans",system-ui,sans-serif;font-size:16px;line-height:1.55;margin:0}
+main{max-width:82ch;margin:0 auto;padding:3rem 1.25rem 5rem}
+.eyebrow{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.75rem;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3)}
+h1{font-family:"Source Serif 4",Georgia,serif;font-weight:600;font-size:2.25rem;line-height:1.15;margin:.4rem 0 1rem;text-wrap:balance}
+h2{font-family:"Source Serif 4",Georgia,serif;font-weight:600;font-size:1.5rem;margin:3rem 0 .75rem}
+h3{font-size:1rem;font-weight:600;margin:1.5rem 0 .5rem}
+p{margin:0 0 1rem}.lede{font-size:1.15rem;color:var(--ink-2);font-family:"Source Serif 4",Georgia,serif}
+code{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.86em;background:var(--code-bg);padding:.05em .3em;border-radius:3px}
+pre{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.8rem;line-height:1.5;background:var(--code-bg);border:1px solid var(--rule);padding:.9rem 1rem;overflow-x:auto;margin:0 0 1rem}
+pre code{background:none;padding:0}
+.tbl{overflow-x:auto;margin:0 0 1rem}table{border-collapse:collapse;width:100%;font-size:.86rem}
+th{text-align:left;font-weight:600;font-size:.74rem;letter-spacing:.04em;text-transform:uppercase;color:var(--ink-3);border-bottom:1px solid var(--ink-3);padding:.4rem .6rem .4rem 0;vertical-align:bottom}
+td{border-bottom:1px solid var(--rule);padding:.5rem .6rem .5rem 0;vertical-align:top}
+.cite{font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.72rem;color:var(--ink-3);white-space:nowrap}
+.tag{display:inline-block;font-family:"IBM Plex Mono",ui-monospace,monospace;font-size:.7rem;padding:.1em .45em;border-radius:3px;white-space:nowrap}
+.add{background:var(--good-soft);color:var(--good)}.dup{background:var(--warn-soft);color:var(--warn)}.miss{background:var(--bad-soft);color:var(--bad)}.reuse{background:var(--accent-soft);color:var(--accent)}
+.callout{border-left:3px solid var(--accent);background:var(--surface);padding:.8rem 1rem;margin:1.25rem 0}
+.callout.warn{border-color:var(--warn)}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:.75rem;margin:1.5rem 0 0}
+.stat{background:var(--surface);border:1px solid var(--rule);padding:.75rem .9rem}
+.stat b{display:block;font-family:"Source Serif 4",Georgia,serif;font-size:1.5rem;font-weight:600;line-height:1.15}
+.stat span{font-size:.8rem;color:var(--ink-2)}
+ul,ol{padding-left:1.3rem;margin:0 0 1rem}li{margin-bottom:.35rem}
+.sources{font-size:.82rem;color:var(--ink-3);border-top:1px solid var(--rule);padding-top:1rem;margin-top:3rem}
+</style>
+<main>
+<div class="eyebrow">cdktn-bench · upstream investigation · 2026-08-27 · aws-bench 0.7.0 / harbor 0.9.0</div>
+<h1>What aws-bench Actually Provides</h1>
+<p class="lede">Upstream ships a contract, not oracles: a reward file, a role per phase, four scenario phases, and a per-account admission gate. Every oracle notion cdktn-bench uses — tiers, <code>live_check.py</code>, gating, idempotence, <code>run_invalid</code> — is a downstream construction inside the one slot upstream leaves free-form, <code>tests/test.sh</code>. That is the right place for it, and the one place the two disagree is how a rewardless trial is counted.</p>
+
+<div class="stats">
+<div class="stat"><b>0</b><span>tasks, scenarios or example oracles in the installed wheel — datasets are fetched from a separate repo via <code>registry.json</code>; nothing cached locally</span></div>
+<div class="stat"><b>1 file</b><span>is the entire grading contract: <code>/logs/verifier/reward.txt</code> (float) or <code>reward.json</code> (dict). <code>test.sh</code>'s exit code is ignored</span></div>
+<div class="stat"><b>0 hits</b><span>for <code>pass / fail_stale / not_verifiable / run_invalid</code> in aws-bench or harbor — that vocabulary is cdktn-bench's</span></div>
+<div class="stat"><b>admin</b><span>is what an undeclared <code>verifier_role_name</code> means — fallback to <code>OrganizationAccountAccessRole</code></span></div>
+</div>
+
+<h2>1 · Task anatomy and the reward contract</h2>
+<div class="tbl"><table>
+<tr><th>Piece</th><th>What it is</th><th>Cite</th></tr>
+<tr><td><code>task.toml</code></td><td>Harbor base (<code>[task] [verifier] [agent] [environment] [solution] [[steps]]</code>) + aws-bench's <code>[scenario]</code> (<code>scenario_id</code> required; <code>agent/verifier/pre_invoke/post_invoke_role_name</code>), <code>[concurrency] mode = read-only | mutating</code> (default <b>mutating</b>), <code>[pre_invoke] [post_invoke]</code> (timeout + env only)</td><td class="cite">AB/dataset/task_config.py:32-91</td></tr>
+<tr><td><code>tests/test.sh</code></td><td>Uploaded to <code>/tests</code>, <code>chmod +x</code> as root, run as the verifier user, stdout→<code>/logs/verifier/test-stdout.txt</code>. Exit code never checked.</td><td class="cite">HB/verifier/verifier.py:132-196</td></tr>
+<tr><td>Reward read</td><td><code>reward.json</code> → dict; else <code>reward.txt</code> → <code>{"reward": float}</code>; else <code>RewardFileNotFoundError</code>. Empty → <code>RewardFileEmptyError</code>; unparseable → <code>VerifierOutputParseError</code>.</td><td class="cite">HB/verifier/verifier.py:61-89, 209-218</td></tr>
+<tr><td><code>VerifierResult</code></td><td><code>rewards: dict[str, float|int] | None</code> — the whole model. No status, no outcome enum.</td><td class="cite">HB/models/verifier/result.py:4-5</td></tr>
+<tr><td>Verifier environment</td><td>SHARED (same container as the agent) is the default; aws-bench <b>forbids</b> SEPARATE because phase scripts live in the agent container.</td><td class="cite">AB/dataset/task_config.py:179-201</td></tr>
+<tr><td><code>pre_invoke/</code>, <code>post_invoke/</code></td><td>Discovered by file existence, credentialed per phase role. <code>pre_invoke.sh</code> must write <code>/logs/pre_invoke/placeholder.json</code>; its dir and logs are <code>rm -rf</code>'d before the agent runs.</td><td class="cite">AB/task/script_runner.py:11-18, 150-264</td></tr>
+<tr><td>Oracle agent</td><td><code>-a oracle</code>: a pseudo-agent that uploads <code>solution/</code> and runs <code>solve.sh</code>; non-zero exit recorded, not raised. aws-bench resolves <code>[solution.env]</code> <code>{{placeholders}}</code> only for it.</td><td class="cite">HB/agents/oracle.py:72-137 · AB/task/aws_trial.py:335-364</td></tr>
+</table></div>
+<div class="callout warn">Upstream doc/impl mismatch: the scaffold template says write <code>rewards.json</code> (plural); the reader looks for <code>reward.json</code>. <span class="cite">HB/cli/template-task/tests/test.sh:6 vs HB/verifier/verifier.py:209</span></div>
+
+<h2>2 · How upstream tasks grade live</h2>
+<p>There is no assertion library and no live-check contract. The framework's entire contribution is credential staging: <code>_staged_credentials(RoleType.VERIFIER)</code> assumes the phase role in every account tag, writes a per-tag <code>~/.aws/credentials</code> as the stage's user, blanks the raw <code>AWS_*</code> env so host creds cannot outrank it, sets <code>AWS_PROFILE</code> to the first tag, and deletes the file on exit. <code>test.sh</code> then calls boto3 or the CLI however it likes. <span class="cite">AB/task/aws_trial.py:166-225, 366-388</span></p>
+<ul>
+<li><b>Roles:</b> <code>RoleType = AGENT | VERIFIER | PRE_INVOKE | POST_INVOKE</code>, each mapped to a <code>[scenario].&lt;phase&gt;_role_name</code>. Undeclared → <code>OrganizationAccountAccessRole</code>. Every assume chains through the org role first; session names are <code>aws-bench-&lt;role&gt;-&lt;task&gt;-&lt;job&gt;</code>. <span class="cite">AB/task/aws_creds.py:52-71 · AB/utils/credentials_provider.py:337-400</span></li>
+<li><b>Placeholders:</b> <code>{{Export}}</code> / <code>{{TAG::Export}}</code> in <code>[verifier].env</code>, instruction and <code>[solution.env]</code>, fed by <code>config.exports</code> + pre-invoke's <code>placeholder.json</code>. <span class="cite">AB/task/aws_creds.py:35-49 · AB/task/aws_trial.py:299-321</span></li>
+<li><b>Outcome vocabulary:</b> a float, bucketed to <code>correct_response / no_response / wrong_response</code> — agent behaviour, not verifier trust. A verifier that could not determine anything has no way to say so. <span class="cite">AB/metrics/aggregation.py:73-79</span></li>
+<li><b>Timeouts:</b> verifier 600 s (→ <code>VerifierTimeoutError</code>), agent unbounded, phase scripts 600 s, build 600 s. Trial retries default 0, and reward-file errors are explicitly excluded from retry — a broken oracle fails loudly. <span class="cite">HB/models/job/config.py:217-232</span></li>
+<li><b>No eventual-consistency loop</b> in verification; the only poll helper is <code>wait_for_role</code> for IAM propagation on fresh accounts. <span class="cite">AB/utils/credentials_provider.py:402-449</span></li>
+<li><b>Two upstream oracle families</b> (README): introspection tasks scored by an LLM judge (rationale parsed from <code>reward-details.json</code>), and mutation tasks checked programmatically against live state then rolled back. <span class="cite">METADATA:91-94 · AB/metrics/run_data.py:75-128</span></li>
+</ul>
+<p><code>QALocalInvocationApplicationRole</code> / <code>…Admin</code> are not aws-bench constants — they are values this repo puts in <code>task.toml</code> and deploys from <code>scenarios/anchor</code>.</p>
+
+<h2>3 · Scenario lifecycle and what makes a task "live"</h2>
+<div class="tbl"><table>
+<tr><th>Mechanism</th><th>Behaviour</th><th>Cite</th></tr>
+<tr><td>Phases</td><td><code>DEPLOY · VERIFY · CLEANUP · RESET</code> — no INIT phase; <code>env init</code> is account provisioning + PRE_SETUP snapshot. Each phase = a dir, a script stem, a log dir. Default timeouts 600/120/300/600 s × multiplier.</td><td class="cite">AB/scenario/events.py:12-35 · config.py:101-121</td></tr>
+<tr><td>Scenario hash</td><td>SHA-256 over every file under the scenario dir; stamped as <code>aws-bench:scenario-sha</code> on the account at deploy. Any edit invalidates the baseline → <code>env setup</code> again.</td><td class="cite">AB/scenario/hashing.py:11-48</td></tr>
+<tr><td>Contamination</td><td>Organizations tag <code>aws-bench:contaminated</code> on the member account; checked per trial in <code>_prepare</code>, set when a reset fails, cleared on successful reset/cleanup.</td><td class="cite">AB/task/aws_trial.py:272-286 · AB/scenario/trial.py:887-928</td></tr>
+<tr><td>Reset</td><td><code>ConcurrencyMode.MUTATING</code> → post-trial <code>ScenarioTrial(RESET)</code>: optional <code>reset.sh</code> → infra diff/restore against the POST_SETUP snapshot → redeploy up to 3× if a stack had to be deleted → contamination reconciled. Failure is logged, never raised.</td><td class="cite">AB/task/aws_trial.py:103-146 · AB/scenario/trial.py:828-964</td></tr>
+<tr><td>Admission gate</td><td>One readers-writer gate per <code>scenario_id</code>, held pre-invoke through reset. Read-only co-run; mutating is exclusive; reader-preferring. The global <code>-n</code> caps the admitted set.</td><td class="cite">AB/task/queue.py:32-117</td></tr>
+<tr><td>Scenario-container creds</td><td>Different mechanism from trials: bind-mounted creds dir + <code>credential_process</code> per tag with a background refresh loop — never static keys in env.</td><td class="cite">AB/scenario/container.py:219-329</td></tr>
+</table></div>
+<p><b>Minimum for "live":</b> <code>[scenario].scenario_id</code>; <code>[concurrency].mode</code> (<code>mutating</code> = exclusive + reset; it is "a pure scheduling declaration — NOT tied to the task's IAM role"); optional phase roles (else admin); optional <code>pre_invoke.sh</code> that writes <code>placeholder.json</code>; an agent exposing <code>_extra_env</code> (else the trial is refused: it "would silently use host creds"); a buildable <code>environment/</code> and a SHARED verifier. <span class="cite">AB/dataset/task_config.py:32-66 · AB/task/aws_trial.py:328-333</span></p>
+
+<h2>4 · Multi-step</h2>
+<p>Harbor's <code>MultiStepTrial</code> is complete — sequential <code>[[steps]]</code> with per-step instruction/tests/solution, <code>min_reward</code> early abort, <code>FINAL</code> or <code>mean</code> aggregation, per-step verifier modes and timeouts. <span class="cite">HB/trial/multi_step.py:18-379</span> aws-bench refuses it at the factory: <code>NotImplementedError("per-step pre/post-invoke credentialing is undefined")</code>, so all AWS behaviour exists only on the single-step path. <span class="cite">AB/task/aws_trial.py:437-449</span></p>
+<p>cdktn-bench's <code>CdktnMultiStepTrial(MultiStepTrial, AwsBenchSingleStepTrial)</code> composes both by MRO and supplies exactly the missing piece — a per-step credentialed <code>steps/&lt;name&gt;/pre_invoke/pre_invoke.sh</code> reusing upstream's <code>ScriptRunner</code> and <code>_staged_credentials</code> — plus a <code>FINAL</code> default (Harbor's <code>mean</code> + <code>min_reward</code> abort can score "failed step 1, never ran step 2" above "ran both, failed step 2"). Ownership of every method is pinned by <code>test_trial_mro.py</code>. <span class="cite">CB/cdktn_bench/trial.py:93-272</span></p>
+
+<h2>5 · Results and the missing "invalid row"</h2>
+<p><code>result.json</code> carries <code>verifier_result.rewards</code>, <code>agent_result</code> (tokens, cost), <code>exception_info</code>, four timing spans, and <code>step_results</code>; turns and tool calls are derived from <code>agent/trajectory.json</code>. <span class="cite">HB/models/trial/result.py:69-129 · AB/metrics/run_data.py:302-399</span></p>
+<div class="callout warn"><b>Upstream has no invalid-row semantics.</b> <code>aggregate_basic</code> drops rewardless trials from <code>mean_reward</code>; <code>aggregate_detailed</code> still counts them in <code>accuracy</code>'s denominator as non-success; <code>has_exception</code> is a column that excludes nothing. A verifier cannot say "do not score this." <span class="cite">AB/metrics/aggregation.py:50-54, 167-181</span></div>
+
+<h2>6 · cdktn-bench vs upstream</h2>
+<p>How cdktn-bench realises <code>run_invalid</code> against a framework without the concept: the seed-receipt and AWS-unavailable gates <em>never write</em> <code>reward.txt</code>, so Harbor raises <code>RewardFileNotFoundError</code> and the trial lands with <code>exception_info</code> and no reward key — a construction on an upstream primitive, and safe from being retried away because that error is in the default retry exclusions. <span class="cite">tests/test.sh:39-46 · HB/models/job/config.py:226-232</span></p>
+<div class="tbl"><table>
+<tr><th>Concern</th><th>Upstream</th><th>cdktn-bench</th><th>Verdict</th></tr>
+<tr><td>Static tiers</td><td>Nothing; <code>test.sh</code> is free-form</td><td>Tier 0 jq / 0.5 JSONata / 1 OPA·cfn-guard with a <code>tier1_status</code> vocabulary; writes <code>reward.txt</code> exactly per contract</td><td><span class="tag add">addition</span></td></tr>
+<tr><td><code>live_check.py</code></td><td>No contract; creds staged, that's all</td><td>Named file, JSON result, <code>pass/fail_stale/not_verifiable</code> (+ <code>run_invalid</code> from <code>test.sh</code>), 10 s × 120 s poll loop, dual verifier/fixture mode, <code>aws</code> CLI not boto3</td><td><span class="tag add">addition</span></td></tr>
+<tr><td>Gating</td><td>None; <code>min_reward</code> only aborts later steps</td><td>Four sequential downgrade-only gates toggled by <code>SPEC_*_GATING</code> riding <code>[verifier].env</code></td><td><span class="tag add">addition</span></td></tr>
+<tr><td>Idempotence</td><td>Nothing</td><td><code>plan -detailed-exitcode</code>, three-valued, with a seed-movement guard (state lineage/serial vs receipt)</td><td><span class="tag add">addition</span></td></tr>
+<tr><td><code>run_invalid</code></td><td>Does not exist; nearest primitives are <code>exception_info</code> and <code>RewardFileNotFoundError</code></td><td>Never write <code>reward.txt</code></td><td><span class="tag add">addition</span> — but upstream metrics will count these rows as failures in <code>accuracy</code>; cdktn-bench must own aggregation</td></tr>
+<tr><td>Seed deploy</td><td><code>pre_invoke</code> is credentialed but leaves no proof; its logs are wiped before the agent</td><td>Same mechanism + a receipt at <code>/logs/seed-deploy-receipt.json</code> (outside the wiped paths) that the verifier refuses to grade without</td><td><span class="tag add">addition</span></td></tr>
+<tr><td>Multi-step</td><td>Harbor complete; aws-bench refuses</td><td><code>CdktnMultiStepTrial</code> supplies per-step credentialed pre-invoke</td><td><span class="tag add">new capability</span></td></tr>
+<tr><td>Account / creds</td><td>Full stack (roles, staging, org fallback, contamination, gate)</td><td>Unchanged; policy choice <code>pre_invoke_role_name = agent_role_name</code></td><td><span class="tag reuse">reused</span></td></tr>
+<tr><td>Reset</td><td>Post-trial <code>RESET</code> + <code>post_invoke</code> + contamination reconciliation</td><td>Inherited via MRO</td><td><span class="tag reuse">reused</span></td></tr>
+<tr><td>Retry loop</td><td><code>AwsBenchTrialQueue._execute_trial_with_retries</code> reads <code>AwsBenchTrial</code> as a module global</td><td>Hand-copied with one line changed; AST-equality drift test</td><td><span class="tag dup">reimplemented</span> — upstream API debt; a <code>trial_factory</code> parameter would delete it</td></tr>
+<tr><td>Job class</td><td><code>aws_bench.cli.jobs.AwsBenchJob</code> is a module global</td><td>Monkeypatched by <code>install_job_class</code></td><td><span class="tag dup">seam</span> — same debt</td></tr>
+</table></div>
+
+<h3>Upstream capability cdktn-bench does not use</h3>
+<div class="tbl"><table>
+<tr><th>Feature</th><th>Status</th></tr>
+<tr><td><code>reward.json</code> multi-key rewards <span class="cite">HB/verifier/verifier.py:76-89</span></td><td><span class="tag miss">missed</span> — the four gates AND-collapse into one float, then re-create per-tier detail in side files (<code>live_check-result.json</code>, <code>idempotence-result.json</code>). <code>{"static":1,"live":0,"idem":1}</code> would keep <em>why</em> a trial scored 0 in the first-class channel.</td></tr>
+<tr><td><code>verifier.import_path</code> → a Python <code>BaseVerifier</code> <span class="cite">HB/verifier/factory.py:15-63</span></td><td>Unused; the clean exit if <code>test.sh</code> gate composition keeps growing in bash.</td></tr>
+<tr><td><code>[[steps]].min_reward</code> early abort</td><td>Available, inherited, not visibly used.</td></tr>
+<tr><td><code>artifacts</code> / <code>ArtifactConfig</code></td><td>Side files ride <code>/logs/verifier</code> instead; works because the dir is downloaded wholesale.</td></tr>
+<tr><td><code>resource_management.verify</code> drift detection</td><td>Framework-internal (env verify/reset); not exposed to task oracles — know it exists before hand-writing account-level drift asserts.</td></tr>
+<tr><td>Separate verifier env · <code>MEAN</code> strategy · LLM-judge verifier</td><td>Deliberately rejected, with reasons recorded.</td></tr>
+</table></div>
+
+<h2>Judgement and follow-ups</h2>
+<p>cdktn-bench is a well-behaved downstream: it adds an oracle grammar in the one free-form slot and reuses the reward file, <code>ScriptRunner</code>, credential staging, placeholders, contamination, admission gate and reset verbatim. Three things worth acting on:</p>
+<ol>
+<li><b>Own the aggregation for rewardless rows.</b> Upstream's <code>accuracy</code> counts a <code>run_invalid</code> trial as a failure. Confirm <code>metrics/</code> and <code>gates/emit_result.py</code> never route through <code>aws_bench.metrics.aggregation</code> for headline numbers.</li>
+<li><b>Move gate detail into <code>reward.json</code>.</b> Keep <code>reward</code> as the AND-collapsed headline key for upstream compatibility and add <code>static</code>, <code>live</code>, <code>idempotence</code> keys alongside — no side-file parsing needed for per-tier analysis.</li>
+<li><b>Upstream PR: <code>trial_factory</code> on <code>AwsBenchTrialQueue</code> and an injectable job class.</b> Deletes <code>cdktn_bench/queue.py</code>'s copied loop and the monkeypatch, and removes the drift test's reason to exist.</li>
+</ol>
+
+<p class="sources">Sources: installed <code>aws_bench</code> 0.7.0 and <code>harbor</code> 0.9.0 under <code>.venv/lib/python3.14/site-packages</code> (paths abbreviated AB/ and HB/); <code>cdktn_bench/trial.py</code>, <code>cdktn_bench/queue.py</code>, <code>cdktn_bench/cli.py</code>; <code>tasks/anchor/named-resource-replacement-hcl-raw/tests/{test.sh,static_tiers.sh,live_check.py}</code>. Full 758-line cited report: scratchpad <code>aws-bench-oracles.md</code>.</p>
+</main>

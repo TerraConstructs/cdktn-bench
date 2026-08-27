@@ -74,8 +74,6 @@ ARM_BOILERPLATE = (
     # arms/awscdk/environment/workspace/lib/example-stack.ts, describing what
     # the generator does to the placeholder stack the arm image ships:
     "replaced by the generator",
-    # arms/hcl-raw/environment/workspace/provider.tf, on the live-mode env var:
-    "explicitly export",
 )
 
 
@@ -314,10 +312,10 @@ def test_arm_image_sources_name_no_scenario() -> None:
     comment there that names one scenario ships that name to all the others —
     and, worse, to that scenario's own agent.
 
-    Six arm files used to do exactly this (`arms/awscdk/environment/Dockerfile`
+    Five arm files used to do exactly this (`arms/awscdk/environment/Dockerfile`
     and `arms/terraconstructs/environment/Dockerfile` explaining why python3 is
     installed "for apigw-redeploy"; `arms/hcl-raw/.../provider.tf` ×3 lines;
-    `mock-sfn.py`, `mirror-src/main.tf` and the arm's own preflight stack), which
+    `mirror-src/main.tf` and the arm's own preflight stack), which
     put the string `redeploy` — this scenario's step-2 verb — inside the image
     of the very scenario it names, on all three arms, where it would have read
     as PROVEN BOILERPLATE to any allowlist-honesty check: it does appear under

@@ -5,12 +5,27 @@
 #
 # Reward contract (reused from tasks/anchor/smoke/tests/test.sh):
 # writes a bare float to /logs/verifier/reward.txt
-# (harbor/verifier/verifier.py::_parse_reward_text). No live AWS
-# calls -- verifier.live_check.enabled is always false in v1.
+# (harbor/verifier/verifier.py::_parse_reward_text).
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/_assert_lib.sh"
 mkdir -p /logs/verifier
+: "${AWS_DEFAULT_REGION:=us-east-1}"
+export AWS_DEFAULT_REGION
+rm -f /logs/verifier/aws-unavailable /logs/verifier/aws-unavailable.json
+if ! aws sts get-caller-identity >/dev/null 2>&1; then
+  {
+    echo "aws-unavailable: 'aws sts get-caller-identity' failed --"
+    echo "no working AWS credentials in this environment. This is a"
+    echo "run-invalidating test-infrastructure condition, NOT a bad"
+    echo "solution -- no toolchain command was ever attempted."
+  } | tee /logs/verifier/aws-unavailable
+  jq -n \
+    '{outcome: "run_invalid", status: "run_invalid", reason: "aws sts get-caller-identity failed -- no working AWS credentials in this environment"}' \
+    > /logs/verifier/aws-unavailable.json 2>/dev/null \
+    || echo '{"outcome":"run_invalid","status":"run_invalid","reason":"aws credentials unavailable"}' > /logs/verifier/aws-unavailable.json
+  exit 1
+fi
 
 cd /app/project
 
@@ -29,74 +44,18 @@ if ! ( npx cdktn synth ); then
 fi
 
 echo '== tf-plan: cd cdktf.out/stacks/ecs-swappiness && rm -rf .terraform .terraform.lock.hcl || exit 1
-node /app/project/mock-sts.js 17771 \
-  > /tmp/cdktn-bench-mock-sts-ecs-swappiness.log 2>&1 &
-MOCK_STS_PID=$!
-MOCK_STS_READY=0
-for _attempt in $(seq 1 50); do
-  if (exec 3<>"/dev/tcp/127.0.0.1/17771") 2>/dev/null; then
-    exec 3<&- 3>&- 2>/dev/null
-    MOCK_STS_READY=1
-    break
-  fi
-  sleep 0.1
-done
-if [ "$MOCK_STS_READY" != "1" ]; then
-  {
-    echo "mock-sts.js (pid $MOCK_STS_PID) never opened"
-    echo "127.0.0.1:17771 within 5s (EADDRINUSE from a"
-    echo "leftover process, or a slow bind under load -- see"
-    echo "/tmp/cdktn-bench-mock-sts-ecs-swappiness.log). This is a"
-    echo "run-invalidating test-infrastructure condition, NOT a bad"
-    echo "solution -- terraform plan was never attempted."
-  } | tee /logs/verifier/tf-plan-mock-sts-unavailable
-  kill "$MOCK_STS_PID" >/dev/null 2>&1 || true
-  wait "$MOCK_STS_PID" 2>/dev/null
-  cd /app/project || true
-  exit 1
-fi
 terraform init -input=false \
   && terraform plan -input=false -out=plan.tfplan \
   && terraform show -json plan.tfplan > plan.json
 TF_RC=$?
-kill "$MOCK_STS_PID" >/dev/null 2>&1 || true
-wait "$MOCK_STS_PID" 2>/dev/null
 cd /app/project || true
 exit "$TF_RC"
  =='
 if ! ( cd cdktf.out/stacks/ecs-swappiness && rm -rf .terraform .terraform.lock.hcl || exit 1
-node /app/project/mock-sts.js 17771 \
-  > /tmp/cdktn-bench-mock-sts-ecs-swappiness.log 2>&1 &
-MOCK_STS_PID=$!
-MOCK_STS_READY=0
-for _attempt in $(seq 1 50); do
-  if (exec 3<>"/dev/tcp/127.0.0.1/17771") 2>/dev/null; then
-    exec 3<&- 3>&- 2>/dev/null
-    MOCK_STS_READY=1
-    break
-  fi
-  sleep 0.1
-done
-if [ "$MOCK_STS_READY" != "1" ]; then
-  {
-    echo "mock-sts.js (pid $MOCK_STS_PID) never opened"
-    echo "127.0.0.1:17771 within 5s (EADDRINUSE from a"
-    echo "leftover process, or a slow bind under load -- see"
-    echo "/tmp/cdktn-bench-mock-sts-ecs-swappiness.log). This is a"
-    echo "run-invalidating test-infrastructure condition, NOT a bad"
-    echo "solution -- terraform plan was never attempted."
-  } | tee /logs/verifier/tf-plan-mock-sts-unavailable
-  kill "$MOCK_STS_PID" >/dev/null 2>&1 || true
-  wait "$MOCK_STS_PID" 2>/dev/null
-  cd /app/project || true
-  exit 1
-fi
 terraform init -input=false \
   && terraform plan -input=false -out=plan.tfplan \
   && terraform show -json plan.tfplan > plan.json
 TF_RC=$?
-kill "$MOCK_STS_PID" >/dev/null 2>&1 || true
-wait "$MOCK_STS_PID" 2>/dev/null
 cd /app/project || true
 exit "$TF_RC"
  ); then

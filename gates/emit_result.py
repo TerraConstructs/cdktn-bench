@@ -800,6 +800,73 @@ def read_step_summary(trial_dir: str | Path, task_dir: str | Path) -> dict[str, 
     }
 
 
+def _tokens_from_claude_code_stream(agent_dir: Path) -> dict[str, Any] | None:
+    """Recover token totals from ``agent/claude-code.txt`` (Claude Code's
+    ``--output-format stream-json`` transcript) when ``result.json`` carries
+    none.
+
+    Harbor's ``AgentContext`` token fields are filled only if its trajectory
+    conversion succeeds; a conversion that fails validation (observed:
+    ``steps[N].step_id: expected N+1, got N+2`` on a step-id gap) leaves every
+    field ``None`` while the transcript on disk is complete. The transcript's
+    terminal ``{"type": "result", ...}`` event carries the session totals
+    harbor itself reports — per-message ``usage`` entries are streaming
+    partials and must NOT be summed:
+
+      n_input_tokens  = usage.input_tokens + cache_read_input_tokens + cache_creation_input_tokens
+      n_cache_tokens  = usage.cache_read_input_tokens
+      n_output_tokens = usage.output_tokens
+      cost_usd        = total_cost_usd
+
+    Returns ``None`` when the transcript or its result event is absent.
+    """
+    path = Path(agent_dir) / "claude-code.txt"
+    if not path.is_file():
+        return None
+    result_event: dict[str, Any] | None = None
+    for line in path.read_text(errors="replace").splitlines():
+        line = line.strip()
+        if not line.startswith("{") or '"result"' not in line:
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if ev.get("type") == "result":
+            result_event = ev
+    if result_event is None or not isinstance(result_event.get("usage"), dict):
+        return None
+    u = result_event["usage"]
+    cached = int(u.get("cache_read_input_tokens") or 0)
+    return {
+        "n_input_tokens": int(u.get("input_tokens") or 0) + cached + int(u.get("cache_creation_input_tokens") or 0),
+        "n_cache_tokens": cached,
+        "n_output_tokens": int(u.get("output_tokens") or 0),
+        "cost_usd": result_event.get("total_cost_usd"),
+    }
+
+
+def _recover_tokens_from_transcripts(trial_dir: Path, out: dict[str, Any]) -> None:
+    """Fill ``None`` token fields in ``out`` from the on-disk transcript(s):
+    ``agent/`` for a single-step trial, the sum over ``steps/*/agent/`` for a
+    multi-step one. Records ``tokens_source = "claude-code-stream"`` so a row
+    built this way is distinguishable from one harbor priced itself."""
+    if out.get("n_output_tokens") is not None:
+        return
+    agent_dirs = [trial_dir / "agent"]
+    steps_dir = trial_dir / "steps"
+    if steps_dir.is_dir():
+        agent_dirs = [d / "agent" for d in sorted(steps_dir.iterdir()) if (d / "agent").is_dir()]
+    totals = [t for t in (_tokens_from_claude_code_stream(d) for d in agent_dirs) if t]
+    if not totals:
+        return
+    for key in ("n_input_tokens", "n_cache_tokens", "n_output_tokens"):
+        out[key] = sum(t[key] for t in totals)
+    costs = [t["cost_usd"] for t in totals if t.get("cost_usd") is not None]
+    out["cost_usd"] = sum(costs) if costs else out.get("cost_usd")
+    out["tokens_source"] = "claude-code-stream"
+
+
 def _extract_score_fields(trial_dir: Path) -> dict[str, Any]:
     """Best-effort reward/token/cost extraction from the harbor-level result.json.
 
@@ -846,6 +913,7 @@ def _extract_score_fields(trial_dir: Path) -> dict[str, Any]:
     else:
         out.update(_aggregate_step_tokens(data.get("step_results")))
 
+    _recover_tokens_from_transcripts(trial_dir, out)
     return out
 
 
