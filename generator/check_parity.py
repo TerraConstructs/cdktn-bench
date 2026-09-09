@@ -1,30 +1,22 @@
 #!/usr/bin/env python3
-"""generator/check_parity.py — independent re-verification of prompt parity
-(prereg §6, SCHEMA.md §8.2 point 2) across a generated scenario's arms.
+"""Independent re-verification of prompt parity across a scenario's arms.
 
-Unlike gen.py's own in-process self_check_parity (which runs immediately
-after writing files, in the same run that wrote them), this script re-reads
-the generated instruction.md files from disk on a *separate* invocation --
-it is the standalone CI-shaped check: run any time, against whatever is
-currently on disk, independent of whether gen.py was just run. It re-derives
-each arm's language_line from the spec (not from the file) to find the split
-point, then diffs the shared prefixes byte-for-byte.
+Parity rule (preregistration §6, SCHEMA.md §8.2 point 2): every enabled arm's
+prompt must be byte-identical up to its own per-arm language line, or one arm's
+agent is being told something another's is not.
 
-Usage:
-    uv run python generator/check_parity.py specs/_toy/toy-ssm-parameter.yaml
-    make parity SPEC=specs/_toy/toy-ssm-parameter.yaml
+Unlike gen.py's in-process ``self_check_parity``, this re-reads the generated
+instruction.md files from disk on a separate invocation, so it can run any time
+against whatever is on disk. It re-derives each arm's language_line from the
+spec to find the split point.
 
-Exit 0 + "PARITY OK" iff every enabled arm's instruction.md shares an
-identical prefix (everything before its own per-arm language line). Exit 1
-with a unified diff otherwise.
+Multi-step (SCHEMA.md §2.6): a spec with ``steps:`` has no root instruction.md;
+it has one prompt per step at ``steps/<name>/instruction.md``, and every check
+runs once per step. Parity is a WITHIN-step property — arms may carry different
+per-step language lines.
 
-Multi-step (SCHEMA.md §2.6, 2026-08-20): a spec with `steps:` has no root
-instruction.md -- it has one prompt PER STEP, at
-`steps/<name>/instruction.md`. Every check below then runs once per step,
-over that step's own file. Parity is a WITHIN-step property: arms may carry
-different per-step language lines, but everything before the language line
-must be byte-identical across arms for the same step, or one arm's agent is
-being told something another's is not.
+Usage: ``make parity SPEC=specs/foo.yaml``. Exit 0 + "PARITY OK", or exit 1
+with a unified diff.
 """
 
 from __future__ import annotations
@@ -53,22 +45,10 @@ def check_one_prompt(spec, arms, rel: str, step) -> int:
     one; it only selects which language line is expected at the split point.
     """
     # --- full-file re-derivation check -----------------------------------
-    # This is the load-bearing check: it re-renders each arm's prompt from
-    # the spec (build_instruction_md -- the exact same function gen.py used
-    # to write it) and requires the on-disk file to match BYTE-FOR-BYTE.
-    # Comparing only the shared prefix (below) leaves everything from the
-    # language line onward -- the language line itself, the trailer, any
-    # per-arm output_contract fence -- completely unchecked, which is exactly
-    # the gap a hand-inserted, arm-advantaging paragraph after the language
-    # line exploited (append an "AWS CDK HINT: use ssm.StringParameter..."
-    # paragraph to one arm's instruction.md and the old prefix-only check
-    # still reported "PARITY OK"). Since build_instruction_md is a pure
-    # function of (spec, arm, step) with no arm-specific free text ever
-    # entering it outside the declared shared_body/language_line/
-    # output_contract.json_fields fields, "file on disk == re-derived from
-    # spec" is a stronger, structural guarantee than "arms agree with each
-    # other": it also catches a generated file that drifted from ITS OWN spec
-    # (e.g. a stale regeneration), not just cross-arm divergence.
+    # The load-bearing check: requiring the whole file to equal
+    # build_instruction_md(spec, arm, step) also covers everything FROM the
+    # language line onward, where an arm-advantaging paragraph would hide and
+    # the shared-prefix check below cannot see.
     missing: list[Arm] = []
     mismatched: list[Arm] = []
     on_disk: dict[Arm, str] = {}
@@ -104,14 +84,10 @@ def check_one_prompt(spec, arms, rel: str, step) -> int:
         return 1
 
     # --- cross-arm shared-prefix check -------------------------------------
-    # Secondary/redundant given the full-file check above (since every
-    # on_disk[arm] is now known to equal build_instruction_md(spec, arm, step),
-    # and shared_body_resolved is arm-independent by construction), but
-    # kept as an explicit, human-readable assertion of prereg §6's actual
-    # requirement ("identical natural-language instruction body across
-    # arms") and as a second, independent code path against a future
-    # refactor of build_instruction_md that could silently break that
-    # invariant while still being self-consistent per-arm.
+    # Redundant given the full-file check, and kept as an independent code
+    # path: a build_instruction_md refactor can stay self-consistent per-arm
+    # while breaking preregistration §6's actual requirement, an identical
+    # natural-language instruction body across arms.
     prefixes: dict[Arm, str] = {}
     for arm in arms:
         lang_line = substitute_literals(step_language_line(spec, arm, step).strip(), spec)

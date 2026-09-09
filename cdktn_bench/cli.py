@@ -1,36 +1,15 @@
 """The ``cdktn-bench`` console script — one CLI for both task shapes.
 
-Design decision (memo §7 Q7, answered "route everything through the new CLI"):
-``cdktn-bench`` is a **superset** of ``aws-bench``, not a multi-step-only side
-door. A stepless task runs through the identical single-step path
-(``AwsBenchSingleStepTrial``); a ``[[steps]]`` task runs through
-``CdktnMultiStepTrial``. Gates and equipping therefore have exactly one command
-to reason about. ``aws-bench`` stays installed and importable and its own CLI is
-unchanged; ``scripts/run-bench.sh`` execs ``cdktn-bench`` as of DECISIONS.md
-Amendment 27 §7.
+``cdktn-bench`` is a superset of ``aws-bench``: every aws-bench flag works
+unchanged, a stepless task runs the identical single-step path, and a
+``[[steps]]`` task runs as a multi-step trial instead of being refused. It
+reuses upstream's own ``start`` command object rather than forking it, and
+reaches ``CdktnBenchJob`` through one guarded rebind of the module global
+``aws_bench.cli.jobs.AwsBenchJob`` (``install_job_class`` below) — the only
+injection point aws-bench and Harbor leave open.
 
-**How the commands are reused.** ``aws_bench.cli.jobs.start`` is ~500 lines of
-flag declarations, config-file loading, dataset resolution, preflight, ledger
-wiring, verification, and result printing. Forking it would fork all of that.
-Instead this module registers *the very same function object* on its own Typer
-app, so flag parity is total and permanent by construction.
-
-**The one seam.** ``start`` resolves its job class from the module global
-``AwsBenchJob`` in ``aws_bench.cli.jobs``, and neither aws-bench nor Harbor
-offers an injection point for it. ``install_job_class`` rebinds that one name
-before the app is built. Python resolves module globals at call time, so the
-rebind takes effect for every later ``start`` invocation.
-
-This is a rebind of an import binding, not a patched method — but it *is* a
-monkeypatch, so it is:
-
-- **guarded** — ``install_job_class`` refuses to run if the symbol is missing or
-  is not the class we expect (an upstream rename fails loudly at import instead
-  of silently running single-step-only jobs);
-- **idempotent** — re-installing the same class is a no-op;
-- **process-local** — importing ``aws_bench.cli.main`` never imports
-  ``cdktn_bench``, so the ``aws-bench`` console script is untouched;
-- **tested** — ``cdktn_bench/tests/test_cli_wiring.py``.
+Why the seam is shaped this way, and how it stays safe:
+See docs/runner.md#cli-seam.
 """
 
 from __future__ import annotations

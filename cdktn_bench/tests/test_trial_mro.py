@@ -34,7 +34,7 @@ def test_mro_is_exactly_the_documented_linearisation() -> None:
     )
 
 
-# (method, owning class) — the table in cdktn_bench/trial.py's docstring.
+# (method, owning class) — the table in docs/runner.md#trial-composition-mro.
 @pytest.mark.parametrize(
     ("method", "owner"),
     [

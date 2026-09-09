@@ -1,95 +1,23 @@
 #!/usr/bin/env python3
-"""generator/check_reference_paths.py — generator-time jsonpath-validity gate.
+"""Generator-time jsonpath-validity gate.
 
-Fixes the third part of benchmark-integrity finding G2 (2026-08-06):
-SCHEMA.md §4.2's "one tf_jsonpath covers both TF arms, only values differ,
-never path shape" claim was FALSE for plan-time-unknown attributes
-(`.planned_values...aws_iam_role_policy...values.policy` resolves to
-NOTHING at plan time whenever the policy's Resource references a
-provider-computed attribute like the created parameter's `.arn` -- see
-specs/SCHEMA.md §4.2's corrected note and
-specs/_toy/toy-ssm-parameter.yaml's own "G2 fix" comments for the full
-story). That dead path shipped silently because nothing ever resolved a
-tier-1 structural_assert against a REAL synthesized/planned artifact --
-tier-1 entries are never executed by the generated tests/static_tiers.sh
-(tier-1 is Rego/cfn-guard-graded), so a broken tf_jsonpath there was pure
-inert documentation, wrong in a way nothing would ever catch.
+For every `oracle.structural_assert` a spec declares -- tier "0" AND tier "1"
+alike -- resolve its declared path and op/expected against a REAL
+synthesized/planned artifact, produced by running the arm's real toolchain
+against a hand-authored, oracle-CORRECT reference fixture. Tier-1 paths are
+never executed by the generated tests/static_tiers.sh (tier 1 is
+Rego/cfn-guard-graded), so without this a broken `tf_jsonpath` there is inert
+documentation, wrong in a way nothing would ever catch.
 
-What this script does: for every `oracle.structural_assert` a spec declares
-(tier "0" AND tier "1" alike), resolve its declared path with its declared
-op/expected against a REAL synthesized/planned artifact, produced by
-running the arm's REAL toolchain (terraform/npm/node/cdk/cdktn -- whatever
-is on PATH, same host-toolchain assumption as gates/oracle_falsifiability.py)
-against a hand-authored, oracle-CORRECT reference fixture -- not the spec
-author's mental model of what the artifact looks like. This is exactly the
-check that would have caught policy-actions-read-only's old dead
-`.values.policy` tf_jsonpath before it shipped: op="in" against zero
-resolved nodes is False, so a real assert_check failure here, instead of
-silence.
+Exit 0 iff every declared structural_assert resolves and passes against its
+arm's reference fixture. Exit 3 iff every enabled arm reports NOT_AUTHORED (no
+fixture under generator/tests/fixtures/<spec-id>/) -- a distinct, non-zero code
+so callers can keep that case non-gating without treating it as a real PASS.
 
-It resolves every path through the SAME mechanism the real generated
-tests/static_tiers.sh uses for tier-0 (`generator/jsonpath_jq.py`'s jq
-compilation + `_assert_lib.sh`'s `assert_check` bash function) -- not a
-second, Python-side JSONPath evaluator (`oracles/lib/structural.py` uses
-`jsonpath_ng`, which cannot parse the `||`-OR'd filter syntax several tier-1
-CFN paths use at all -- see that module's own docstring). Reusing the real
-jq-compiled path means this check is checking the SAME code every trial
-actually runs, and sidesteps that parser gap entirely.
+Usage: `make check-paths SPEC=specs/_toy/toy-ssm-parameter.yaml`
 
-Fixtures: `generator/tests/fixtures/<spec-id>/<arm-dirname>/<entry_file>`
--- ONE hand-authored, oracle-CORRECT file per enabled arm, dropped in place
-of the ALREADY-GENERATED task's own entry_file (everything else --
-provider.tf/bin/app.ts/main.ts bootstrap, environment/ toolchain, tests/ --
-comes from the real generated task dir, so this exercises the exact same
-path a trial's verifier does, including this repo's own G1/G3 fixes to
-that toolchain). Optionally, `.../bad/<entry_file>` -- a fixture that
-deliberately VIOLATES one or more catches -- is used for an additional,
-best-effort cross-check: any op != "not_exists" that fails on the bad
-fixture (proving the path can tell good from bad) is reported but never
-required, since not every scenario will have one; but if declared, an
-op == "not_exists" assert that does NOT resolve a violation on the bad
-fixture is flagged (a not_exists check passing vacuously on a real correct
-artifact tells you nothing about whether it would ever catch a real
-violation -- this is the belt-and-suspenders half of the check).
-
-A spec with no `generator/tests/fixtures/<spec-id>/` directory yet reports
-NOT_AUTHORED (non-gating) -- mirrors gates/oracle_falsifiability.py's
-solve.sh convention; this script is meant to run standalone, long before a
-scenario's real solution/solve.sh exists (Slice D).
-
-Usage:
-    uv run python generator/check_reference_paths.py specs/_toy/toy-ssm-parameter.yaml
-    make check-paths SPEC=specs/_toy/toy-ssm-parameter.yaml
-
-Exit 0 iff every declared structural_assert resolves+passes (its own
-op/expected) against its arm's reference fixture, for every arm that has
-one authored. Exit 3 iff every enabled arm reports NOT_AUTHORED (no arm
-has a reference fixture yet under generator/tests/fixtures/<spec-id>/) --
-a DISTINCT, non-zero code from a real pass, added for the "check-paths is
-VACUOUS for every real scenario, yet `make ci` prints 'check-paths PASS'"
-finding (2026-08-06): before this, a spec with zero fixtures authored
-reported the exact same exit code (0) and the exact same PASS-shaped
-per-arm lines as a spec whose fixtures actually ran the real toolchain and
-resolved every path -- ci/run-ci.sh's summary table could not (and did
-not) tell the two apart. Callers that want NOT_AUTHORED to stay
-non-gating (this script's own long-documented convention -- Slice D simply
-hasn't authored a fixture yet) should treat rc==3 specially, not as a
-failure; see ci/run-ci.sh's own SKIP-status handling for the reference
-implementation. Requires the real arm toolchain (terraform, node/npm, jq)
-on PATH, and network the first time `npm ci` needs to populate
-node_modules for awscdk/terraconstructs fixtures -- same assumptions as
-gates/oracle_falsifiability.py; not wired into `make check`/test-gates for
-the same reason (mk/rails.mk's gate-preflight note).
-
-AWS access: this script runs CREDENTIAL-FREE, against
-`gates/aws_stub.py::running_stub()` -- started ONCE per invocation in
-main(), its env threaded into every toolchain subprocess below. Live AWS is
-the only trial mode (aws-access.html), so the generated
-tests/static_tiers.sh this script executes preflights `aws sts
-get-caller-identity` on both Terraform-shaped arms and voids the run
-without it; the stub answers that preflight, and it is what keeps this
-check from either failing on a credential-free host or silently planning
-against an operator's real account.
+`--seed` is brownfield seed-parity mode. Fixture layout, toolchain
+requirements, AWS access, seed parity: docs/gates.md#check-reference-paths
 """
 
 from __future__ import annotations
@@ -129,12 +57,12 @@ def _is_authored(fixture_dir: Path) -> bool:
 def _prepare_project(
     spec: Spec, arm: Arm, fixture_file: Path | None, tmp: Path, env: dict[str, str]
 ) -> Path:
-    """Build a scratch /app/project equivalent: a copy of the GENERATED
-    task's own environment/<workspace-subdir> (the exact tree the arm's own
-    Dockerfile COPYs into WORKDIR /app/project -- flattened, no
-    'workspace'/'app' prefix, matching real container layout) with the
-    fixture file dropped in at entry_file, plus that task's own tests/
-    (for its real, already-generated static_tiers.sh + _assert_lib.sh)."""
+    """Build a scratch /app/project equivalent: a copy of the GENERATED task's
+    own environment/<workspace-subdir> (the exact tree the arm's Dockerfile
+    COPYs into WORKDIR /app/project -- flattened, no 'workspace'/'app' prefix,
+    matching real container layout) with the fixture file dropped in at
+    entry_file, plus that task's own tests/ for its real, already-generated
+    static_tiers.sh and _assert_lib.sh."""
     task = task_dir(spec, arm)
     project = tmp / "project"
     shutil.copytree(task / "environment" / ARM_WORKSPACE_SUBDIR[arm], project)
@@ -143,8 +71,7 @@ def _prepare_project(
     entry_rel = per_arm.output_contract.entry_file
     # `fixture_file=None` is --seed mode: NO overlay at all. The project is the
     # generated task's workspace exactly as it stands, i.e. exactly what the
-    # agent opens on turn one -- which is the whole point of the seed gate
-    # (design memo §4.2: "the same procedure with the fixture overlay omitted").
+    # agent opens on turn one -- the whole point of the seed gate.
     if fixture_file is not None:
         dest = project / entry_rel
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -179,9 +106,9 @@ def _prepare_project(
     tests_dst.mkdir(exist_ok=True)
     shutil.copy2(task / "tests" / "_assert_lib.sh", tests_dst / "_assert_lib.sh")
     static_text = (task / "tests" / "static_tiers.sh").read_text()
-    # Path-patch the two absolute, in-container paths this script bakes in
-    # (same technique gates/oracle_falsifiability.py uses) so it runs
-    # correctly against this host-side scratch dir instead.
+    # Repoint the two absolute, in-container paths static_tiers.sh bakes in at
+    # this host-side scratch dir (same technique gates/oracle_falsifiability.py
+    # uses).
     static_text = static_text.replace("/app/project", str(project))
     logs_dir = tmp / "logs" / "verifier"
     logs_dir.mkdir(parents=True, exist_ok=True)
@@ -194,18 +121,16 @@ def _prepare_project(
 
 def _run_toolchain(project: Path, env: dict[str, str]) -> str:
     """Run the real, already-generated (and now path-patched)
-    tests/static_tiers.sh -- this is what actually builds/synths/plans the
-    fixture. Its own exit code is NOT a useful success/failure signal here:
-    a toolchain failure writes a reward and exits 0 exactly as a success
-    does, and on the Terraform-shaped arms a failed `aws sts
-    get-caller-identity` preflight exits early via the `run_invalid`
-    contract -- so no exit code distinguishes the cases this check cares
-    about. The reward.txt CONTENT is not the signal either (the toy spec's
-    tier-1 policy is still a Slice-D-pending stub, so tier1_status is always
-    SKIPPED_STUB regardless of the fixture's own correctness). The caller
-    determines toolchain success the same way static_tiers.sh's own next
-    step does: by checking whether the artifact file actually landed on
-    disk.
+    tests/static_tiers.sh -- what actually builds/synths/plans the fixture.
+
+    Its exit code is NOT a usable success signal: a toolchain failure writes a
+    reward and exits 0 exactly as a success does, and on the Terraform-shaped
+    arms a failed `aws sts get-caller-identity` preflight exits early via the
+    `run_invalid` contract. reward.txt's CONTENT is not the signal either -- a
+    scenario whose tier-1 policy is still a stub reports SKIPPED_STUB
+    regardless of the fixture's own correctness. The caller determines
+    toolchain success the way static_tiers.sh's own next step does: by checking
+    whether the artifact file landed on disk.
 
     `env`: the credential-free AWS environment from
     gates/aws_stub.py::running_stub(); it is what satisfies the preflight.
@@ -290,11 +215,11 @@ def check_arm(spec: Spec, arm: Arm, env: dict[str, str]) -> list[PathCheckResult
             label = f"{arm}/{a.name} (tier {a.tier})"
             results.append(PathCheckResult(label, ok, detail))
 
-        # Optional, best-effort bad-fixture differential check (informational
-        # for op != not_exists -- already implied by the good-fixture check
-        # above passing; the real value here is not_exists-op entries, whose
-        # good-fixture pass alone can't prove the path ever resolves to
-        # anything on a violating artifact).
+        # Optional, best-effort bad-fixture differential check. Informational
+        # for op != not_exists (already implied by the good-fixture check
+        # passing); the value is in not_exists entries, whose good-fixture pass
+        # alone cannot prove the path ever resolves to anything on a violating
+        # artifact.
         bad_fixture = fixture_dir / "bad" / entry_rel
         if bad_fixture.exists():
             with tempfile.TemporaryDirectory(prefix="check-paths-bad-") as tmp_bad_s:
@@ -340,25 +265,15 @@ def check_arm(spec: Spec, arm: Arm, env: dict[str, str]) -> list[PathCheckResult
 
 
 # ---------------------------------------------------------------------------
-# --seed mode: the BROWNFIELD seed-parity gate (SCHEMA.md §2.7)
+# --seed mode: the BROWNFIELD seed-parity gate (specs/SCHEMA.md §2.7)
 # ---------------------------------------------------------------------------
 #
-# What "the three seeds are equivalent" must and must not mean (design memo
-# §4.1). NOT resource-count or resource-type parity: the whole thesis of this
-# benchmark is that one L2 construct decomposes into N Terraform resources, so a
-# census check would fail every honest seed. Equivalence is defined
-# BEHAVIOURALLY, by declared facts:
-#
-#   1. every arm's seed synth/plans GREEN, with no overlay -- a workspace that
-#      doesn't is not "existing infrastructure", it is a generation failure;
-#   2. every `seed_assert` holds on every arm it declares applies_to, resolved
-#      through the SAME jq compiler + `_assert_lib.sh::assert_check` a real
-#      trial's tier-0 runs.
-#
-# The residual, human half is `workspace_seed.premise`: a mechanical gate can
-# prove "these three configurations satisfy the same declared facts", never
-# "these three describe the same system". That is exactly the status `oracle.
-# intent` already has, and the premise is reviewed the same way.
+# Seed equivalence is defined BEHAVIOURALLY, by declared facts: every arm's
+# seed synths/plans GREEN with no overlay, and every `seed_assert` holds on
+# every arm its `applies_to` names. It is explicitly NOT resource-count or
+# resource-type parity -- see docs/gates.md#check-reference-paths for why a
+# census check would fail every honest seed, and for the residual human half
+# (`workspace_seed.premise`) no mechanical gate can cover.
 
 
 def check_seed_arm(spec: Spec, arm: Arm, env: dict[str, str]) -> list[PathCheckResult]:
@@ -477,12 +392,11 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv[1:])
 
     spec = load_spec(args.spec_path)
-    # ONE stub for the whole invocation -- every arm's toolchain run shares
-    # it (the same lifecycle gates/grading_proof.py uses). The generated
-    # tests/static_tiers.sh this drives preflights `aws sts
-    # get-caller-identity` on the Terraform-shaped arms; the stub answers
-    # it, so the check needs no ambient credentials and can never reach a
-    # real account.
+    # ONE stub for the whole invocation; every arm's toolchain run shares it.
+    # The generated tests/static_tiers.sh this drives preflights `aws sts
+    # get-caller-identity` on the Terraform-shaped arms and the stub answers it,
+    # so the check needs no ambient credentials and can never reach a real
+    # account.
     with running_stub() as env:
         if args.seed:
             return run_seed_mode(spec, env)
@@ -504,12 +418,13 @@ def main(argv: list[str]) -> int:
             print(f"\ncheck-reference-paths FAILED for {spec.id!r}", file=sys.stderr)
             return 1
         if not any_authored:
-            # Distinct rc from a real pass -- see this module's own docstring
-            # ("Exit 3 iff...") for the finding this closes.
+            # Distinct rc from a real pass: a spec with zero fixtures authored
+            # must not print PASS-shaped lines ci/run-ci.sh cannot tell apart
+            # from a run that really resolved every path.
             print(
                 f"\ncheck-reference-paths: NOT_AUTHORED for {spec.id!r} -- no enabled "
                 "arm has a reference fixture yet under generator/tests/fixtures/ "
-                "(the G2 path-resolution proof has NOT actually run for this "
+                "(the reference-path resolution proof has NOT actually run for this "
                 "scenario; non-gating, but callers must not treat this the same "
                 "as a real PASS).",
                 file=sys.stderr,

@@ -74,6 +74,14 @@
 
 <header class="head">
   <div class="lbl">cdktn-bench · offline plan fixtures</div>
+  <p style="border:1px solid var(--void);border-left:6px solid var(--void);padding:.7rem 1rem;border-radius:4px;margin:0 0 1.2rem;font-size:.95rem">
+    <strong>Superseded, 2026-08-28.</strong> Amendment 32 made live AWS the only trial mode: both
+    workspace mocks were deleted, the provider blocks use ambient staged credentials, and the
+    only remaining stub is <code>gates/aws_stub.py</code>, a host-side two-route server on an
+    ephemeral port that the three credential-free gates start once per invocation. The compose
+    sidecar below is therefore not needed: there is nothing left in the trial path to mock.
+    Kept as the record of the problem and the design that was considered.
+  </p>
   <h1>The Mock Endpoint Problem</h1>
   <p class="lede">Two Terraform arms each ship their own loopback HTTP stub so an offline
   <code>terraform plan</code> can resolve. They work — but they live in the agent's workspace, they

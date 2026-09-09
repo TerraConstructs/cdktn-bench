@@ -1,26 +1,17 @@
 """CdktnTrialQueue — AwsBenchTrialQueue with the trial factory re-pointed.
 
-``AwsBenchTrialQueue`` owns two things: the per-scenario readers-writer
-admission gate (``_run_trial``) and the retry loop (``_execute_trial_with_retries``).
-We keep the gate verbatim by inheritance — it is the piece that guarantees one
-mutating trial per AWS account at a time, and nothing about multi-step changes
-it — and override only the retry loop, whose single cdktn-relevant line is
-which factory builds the trial:
+``AwsBenchTrialQueue``'s per-scenario admission gate (``_run_trial``) is kept
+verbatim by inheritance: it is what guarantees one mutating trial per AWS
+account at a time. Only ``_execute_trial_with_retries`` is overridden, and only
+to build a ``CdktnTrial`` (which dispatches on ``has_steps``) instead of an
+``AwsBenchTrial`` (which refuses ``[[steps]]``).
 
-    upstream:  trial = await AwsBenchTrial.create(trial_config)   # refuses [[steps]]
-    here:      trial = await CdktnTrial.create(trial_config)      # dispatches on has_steps
+The loop body below is a deliberate mirror of upstream's, so it is diffed
+against upstream's own normalized source by
+``cdktn_bench/tests/test_queue_drift.py`` — otherwise an aws-bench bump would
+leave this copy quietly running the previous release's retry semantics.
 
-Why an override rather than reuse: upstream reads ``AwsBenchTrial`` as a module
-global inside its own loop body (``aws_bench/task/queue.py``), and neither
-Harbor's ``TrialQueue`` nor ``AwsBenchTrialQueue`` exposes a factory hook. The
-alternatives were rebinding ``aws_bench.task.queue.AwsBenchTrial`` (a
-process-global mutation of upstream, invisible at the call site) or copying the
-whole queue. This override is the smallest honest seam; the loop body below is
-a deliberate mirror of upstream's, exercised by
-``cdktn_bench/tests/test_dispatch.py`` and — because a hand-mirrored copy that
-nothing compares against will silently keep running the previous release's retry
-semantics after an aws-bench bump — diffed against upstream's own normalized
-source by ``cdktn_bench/tests/test_queue_drift.py``.
+Why an override rather than a factory hook: See docs/runner.md#queue-override.
 """
 
 from __future__ import annotations
@@ -50,9 +41,9 @@ class CdktnTrialQueue(AwsBenchTrialQueue):
         """Run the retry loop, rebuilding ``CdktnTrial`` for each attempt.
 
         Mirrors ``AwsBenchTrialQueue._execute_trial_with_retries`` exactly apart
-        from the factory. NOTE (memo §6.8): a retry re-runs the *whole* trial,
-        which for a multi-step task means every agent invocation **and** every
-        per-step ``pre_invoke`` deploy — retry cost scales with step count.
+        from the factory. A retry re-runs the *whole* trial, so for a multi-step
+        task it repeats every agent invocation **and** every per-step
+        ``pre_invoke`` deploy — retry cost scales with step count.
         """
         for attempt in range(self._retry_config.max_retries + 1):
             trial = await self.trial_factory.create(trial_config)

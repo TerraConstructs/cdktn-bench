@@ -1,59 +1,21 @@
 """CdktnMultiStepTrial — Harbor's multi-step workload + aws-bench's AWS lifecycle.
 
-Seam A of ``docs/design/multistep-trial-investigation.md``: rather than build a
-multi-step engine (Harbor already ships a complete one at
-``harbor/trial/multi_step.py``) or vendor aws-bench's ~450 lines of STS /
-credential-file / account-reset code, compose the two by multiple inheritance.
+Composed by multiple inheritance rather than by building a second multi-step
+engine or vendoring aws-bench's AWS lifecycle code::
 
     class CdktnMultiStepTrial(MultiStepTrial, AwsBenchSingleStepTrial)
 
-C3 linearises that to::
+The MRO resolves the step engine to Harbor and every credentialed AWS phase to
+aws-bench. That resolution is a contract, asserted by
+``cdktn_bench/tests/test_trial_mro.py`` rather than assumed here.
 
-    CdktnMultiStepTrial -> MultiStepTrial -> AwsBenchSingleStepTrial
-                        -> SingleStepTrial -> Trial -> ABC -> object
+Beyond the MRO there are three deliberate overrides (``__init__``,
+``_recover_outputs``, ``_prepare_step``) and one scoring override
+(``_select_multi_step_reward``, defaulting to ``final`` rather than Harbor's
+``mean`` — DECISIONS.md Amendment 26). Each carries its own docstring below.
 
-which resolves each method to the class that should own it (asserted by
-``cdktn_bench/tests/test_trial_mro.py``, not merely asserted here):
-
-===============================  ==============================================
-Method                           Resolves to
-===============================  ==============================================
-``_run`` / ``_run_step*``        ``MultiStepTrial`` — the multi-step workload
-``run``                          ``AwsBenchSingleStepTrial`` — log context +
-                                 post-trial scenario reset
-``_prepare``                     ``AwsBenchSingleStepTrial`` — contamination
-                                 check, placeholder seed, task-level pre-invoke;
-                                 runs **once**, before all steps
-``_run_agent_phase``             ``AwsBenchSingleStepTrial`` — placeholder
-                                 substitution + staged agent creds, **per step**
-``_run_shared_verifier``         ``AwsBenchSingleStepTrial`` — staged verifier
-                                 creds, per step
-``_stop_agent_environment``      ``AwsBenchSingleStepTrial`` — post-invoke
-                                 teardown, once
-``_init_logger`` /
-``_setup_agent_environment``     ``AwsBenchSingleStepTrial``
-===============================  ==============================================
-
-Zero-argument ``super()`` inside the inherited aws-bench methods still resolves
-correctly, because it walks the *instance's* MRO, not the defining class's bases.
-
-Three deliberate overrides beyond the MRO:
-
-1. ``__init__`` — both ``SingleStepTrial.__init__`` and ``MultiStepTrial``'s
-   parent chain would run guards that contradict each other for a steps task
-   (``SingleStepTrial`` raises on ``has_steps``). We set the pre-``super()``
-   state both classes establish and then call ``Trial.__init__`` directly.
-2. ``_recover_outputs`` — the MRO would give us ``MultiStepTrial``'s, which
-   stops the environment inside the *cancel* path (a multi-minute post-invoke
-   reset that strands Ctrl-C). aws-bench deliberately defers that to
-   ``_finalize``; we re-assert that semantics.
-3. ``_prepare_step`` — the credentialed per-step harness hook (see
-   ``_run_step_pre_invoke``), which is the concrete answer to the
-   "per-step pre/post-invoke credentialing is undefined" objection upstream
-   raises when it refuses multi-step AWS tasks.
-
-Plus one scoring override: ``_select_multi_step_reward`` defaults to ``final``
-rather than Harbor's ``mean`` (DECISIONS.md Amendment 26 / memo §6.6).
+Full method-ownership table and the reason for each override:
+See docs/runner.md#trial-composition-mro.
 """
 
 from __future__ import annotations
@@ -85,11 +47,11 @@ from harbor.utils.scripts import discover_script
 __all__ = ["CDKTN_DEFAULT_MULTI_STEP_REWARD_STRATEGY", "CdktnMultiStepTrial", "CdktnTrial"]
 
 
-# DECISIONS.md Amendment 26 / memo §6.6. Harbor's own default is ``mean``,
-# which — combined with the ``min_reward`` abort — scores a trial that failed
-# step 1 and never ran step 2 as the mean of the ONE step it ran, potentially
-# ABOVE a trial that ran both and failed the second. For a green/not-green
-# benchmark the last step's verdict is the trial's verdict.
+# For a green/not-green benchmark the last step's verdict is the trial's
+# verdict (DECISIONS.md Amendment 26). Harbor's ``mean`` default, combined with
+# the ``min_reward`` abort, would score a trial that failed step 1 and never
+# ran step 2 as the mean of the ONE step it ran — potentially ABOVE a trial
+# that ran both and failed the second.
 CDKTN_DEFAULT_MULTI_STEP_REWARD_STRATEGY = MultiStepRewardStrategy.FINAL
 
 
@@ -212,8 +174,7 @@ class CdktnMultiStepTrial(MultiStepTrial, AwsBenchSingleStepTrial):
 
         The *role* is the task-level ``[scenario].pre_invoke_role_name`` and the
         timeout/env come from the task-level ``[pre_invoke]`` section: per-step
-        roles are deliberately deferred (memo §7 Q9) — one identity per task,
-        for now.
+        roles are deliberately deferred — one identity per task, for now.
 
         A failure is recorded on the ``StepResult`` rather than raised, matching
         how ``MultiStepTrial`` treats a failing ``setup.sh``: the step aborts,

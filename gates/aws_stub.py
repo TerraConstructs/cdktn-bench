@@ -1,25 +1,20 @@
 #!/usr/bin/env python3
 """Two-route AWS stub for credential-free host gates.
 
-Answers sts:GetCallerIdentity and states:ValidateStateMachineDefinition.
-Everything else -> 400 UnsupportedOperation, logged. Binds an ephemeral port
-by default and prints `PORT=<n>` on stdout once listening.
+Answers sts:GetCallerIdentity and states:ValidateStateMachineDefinition;
+everything else -> 400 UnsupportedOperation, logged. Binds an ephemeral port by
+default and prints `PORT=<n>` on stdout once listening.
 
-`running_stub()` (bottom of file) is the process-level lifecycle its three
-host consumers (gates/oracle_falsifiability.py, gates/grading_proof.py,
-generator/check_reference_paths.py) use: it starts
-this script as a subprocess ONCE per gate invocation, waits for its
-`PORT=<n>` announcement, and yields a full environment dict -- a copy of the
-gate's own `os.environ`, every inherited `AWS_*` variable dropped, and
-AWS_ENDPOINT_URL/AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_REGION set to
-the stub's port and fixed dummy values -- ready to pass as `env=` to every
-toolchain subprocess the gate runs (`terraform plan`, `cdktn synth`, and the
-generated `tests/static_tiers.sh`'s own `aws sts get-caller-identity`
-preflight, aws-access.html's design). This is the ONLY thing that makes
-those gates credential-free: with no override, terraform/cdktn/the aws CLI
-would otherwise reach for whatever `~/.aws/credentials` or `AWS_PROFILE` the
-operator's shell happens to have live, silently coupling gate correctness to
-one developer's machine state.
+`running_stub()` (bottom of file) is the process-level lifecycle its three host
+consumers (gates/oracle_falsifiability.py, gates/grading_proof.py,
+generator/check_reference_paths.py) use: it starts this script once per gate
+invocation and yields the environment every toolchain subprocess the gate runs
+must use. That is the only thing making those gates credential-free -- with no
+override, terraform/cdktn/the aws CLI reach for whatever `~/.aws/credentials`
+or `AWS_PROFILE` the operator's shell happens to have live, silently coupling
+gate correctness to one developer's machine state.
+
+See docs/gates.md#aws-stub.
 """
 from __future__ import annotations
 import contextlib, os, shutil, stat, subprocess, sys, tempfile, json
@@ -53,54 +48,51 @@ class H(BaseHTTPRequestHandler):
 
 _SCRIPT = Path(__file__).resolve()
 
-# Fixed, obviously-fake credentials (AWS's own documented example key --
-# never a real secret) -- every gate subprocess needs *some* static
-# credential pair present or the SDK/CLI/terraform provider falls through to
+# Fixed, obviously-fake credentials (AWS's own documented example key, never a
+# real secret). Every gate subprocess needs *some* static credential pair
+# present or the SDK/CLI/terraform provider falls through to
 # instance-metadata/SSO lookups before ever reaching AWS_ENDPOINT_URL.
 _DUMMY_ACCESS_KEY_ID = "AKIAIOSFODNN7EXAMPLE"
 _DUMMY_SECRET_ACCESS_KEY = "dummy-secret-key-not-real"  # noqa: S105
 _REGION = "us-east-1"
 
-# One-file PATH shim used only when `aws` is not already resolvable -- shells
-# out to the mise-managed CLI (CLAUDE.md: "aws CLI via mise, never brew").
-# The generated tests/static_tiers.sh preflight calls plain `aws`, so this is
-# the gate-side equivalent of `mise x aws@latest -- aws` for a script that
-# can't itself be edited to know about mise.
+# One-file PATH shim, used only when `aws` is not already resolvable. The
+# generated tests/static_tiers.sh preflight calls plain `aws`, so this is the
+# gate-side equivalent of the repo's `mise x aws@latest -- aws` rule for a
+# script that cannot itself be edited to know about mise.
 _AWS_SHIM = "#!/bin/sh\nexec mise x aws@latest -- aws \"$@\"\n"
 
 
 @contextlib.contextmanager
 def running_stub(account_id: str | None = None):
-    """Start this stub ONCE, yield a ready-to-use `env=` dict, tear down on
-    exit -- the whole credential-free lifecycle in one place so every gate
-    (and every test) shares one implementation instead of re-deriving it.
+    """Start this stub ONCE, yield a ready-to-use `env=` dict, tear down on exit.
 
     The yielded dict is a full copy of the calling process's own `os.environ`
-    (never a bare overlay -- a subprocess `env=` kwarg REPLACES the
-    environment rather than merging into it, so a partial dict would strip
-    PATH/HOME/etc from every toolchain subprocess) with:
+    (never a bare overlay -- a subprocess `env=` kwarg REPLACES the environment
+    rather than merging into it, so a partial dict would strip PATH/HOME/etc
+    from every toolchain subprocess) with:
 
-      * AWS_ENDPOINT_URL pointed at the freshly bound stub port
-      * AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION set to fixed
-        dummy values (verified: hashicorp/aws 6.58.0's bare provider block
-        and the `aws` CLI both honor AWS_ENDPOINT_URL for every request)
+      * AWS_ENDPOINT_URL pointed at the freshly bound stub port, and
+        AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_REGION set to fixed
+        dummy values. Both the aws CLI and the hashicorp/aws provider honor
+        AWS_ENDPOINT_URL for every request.
       * EVERY other inherited `AWS_*` variable dropped, so an operator's own
         ambient `~/.aws` state can never leak into a gate run. Scrubbing the
         whole namespace rather than a known list is the point: a
-        service-specific `AWS_ENDPOINT_URL_STS` outranks `AWS_ENDPOINT_URL`
-        in both the CLI and the provider, and
-        AWS_SHARED_CREDENTIALS_FILE / AWS_CONFIG_FILE / AWS_CA_BUNDLE /
-        AWS_PROFILE / AWS_SESSION_TOKEN each reach a real endpoint (or break
-        TLS) from a differently-configured machine.
+        service-specific `AWS_ENDPOINT_URL_STS` outranks `AWS_ENDPOINT_URL` in
+        both the CLI and the provider, and AWS_SHARED_CREDENTIALS_FILE /
+        AWS_CONFIG_FILE / AWS_CA_BUNDLE / AWS_PROFILE / AWS_SESSION_TOKEN each
+        reach a real endpoint (or break TLS) from a differently-configured
+        machine.
       * PATH prepended with a one-file `aws` shim IFF `aws` isn't already on
-        PATH (the generated static_tiers.sh preflight step shells out to
-        plain `aws`). The shim delegates to `mise x aws@latest -- aws`; with
-        neither `aws` nor `mise` resolvable this raises rather than yielding
-        an environment whose preflight is guaranteed to fail downstream as an
+        PATH (the generated static_tiers.sh preflight shells out to plain
+        `aws`). The shim delegates to `mise x aws@latest -- aws`; with neither
+        `aws` nor `mise` resolvable this raises rather than yielding an
+        environment whose preflight is guaranteed to fail downstream as an
         unexplained `reward=None`.
 
-    Torn down (subprocess killed, shim dir removed) on any exit, including
-    an exception raised inside the `with` block.
+    Torn down (subprocess killed, shim dir removed) on any exit, including an
+    exception raised inside the `with` block.
     """
     env = dict(os.environ)
     if account_id:

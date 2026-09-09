@@ -1,43 +1,20 @@
-"""gates/emit_result.py — Gate 3 of the three-gate integrity pattern.
+"""Gate 3 of the three-gate integrity pattern: validity class + score row.
 
 Wraps a trial with a validity class and **refuses to emit a score row for an
-invalid trial** — the closing move of the pattern
-(``docs/lex00-bench-diff.md`` §"emit-result.py ... Refuses to write a record
-for an invalid run rather than badging it").
-
-Validity is one of three mutually exclusive classes:
-
-- ``valid``          — audit gate (gates/audit.py) found toolchain evidence,
-                        and no infra-failure signal was detected in the
-                        trial's logs.
-- ``invalid-bypass``  — the trial completed but never invoked the arm's
-                        toolchain (gates/audit.py verdict). Not a scored
-                        failure of the arm — the trial never really tested it.
-- ``invalid-infra``   — an infrastructure failure (OOM, Docker-daemon
-                        unreachable, missing/invalid model-auth env var, ...)
-                        was detected in the trial's own **harness-owned**
-                        logs (never the agent's own output — see
-                        ``_LOG_CANDIDATES`` below), OR the audit gate found
-                        the arm's toolchain was invoked but never actually
-                        available to run (``audit_trial()["degraded"]`` —
-                        command-not-found/exit 127, or SIGKILLed/exit 137).
-                        Takes priority over a bypass verdict: a trial that
-                        never got to run because its container was
-                        OOM-killed didn't "choose" to bypass the toolchain,
-                        and neither did a trial whose `cdk synth` call hit
-                        `command not found` because the image never actually
-                        had the CDK CLI installed. Per DECISIONS.md "Memory
-                        floor for tsc-heavy arms": a tsc/cdk-synth OOM is
-                        infrastructure-invalid, never a scored CDK failure.
+invalid trial**. Validity is one of three mutually exclusive classes:
+``valid`` (the audit gate found toolchain evidence and no infra-failure
+signal), ``invalid-bypass`` (the trial completed but never invoked the arm's
+toolchain -- not a scored failure of the arm, the trial never tested it), and
+``invalid-infra`` (OOM, Docker daemon unreachable, bad model-auth env var, or
+a toolchain that was never available to run -- outranks a bypass verdict).
 
 Only ``valid`` trials get score/reward fields populated; invalid trials get
-``score_emitted: false`` and no score fields, by design — a caller that
-naively sums a job's rewards without checking ``validity_class`` first
-cannot silently pool invalid trials into a headline number.
+``score_emitted: false`` and no score fields, so a caller that naively sums a
+job's rewards without checking ``validity_class`` cannot silently pool them.
+Every record carries ``equipping_hash`` (gates/equipping.py) so results can
+never be pooled across a different instruction/skill/image equipping.
 
-Every emitted record carries ``equipping_hash`` (gates/equipping.py, owned by
-a companion module) so results can never be silently pooled across a
-different instruction/skill/image equipping.
+See docs/gates.md#emit-result.
 """
 
 from __future__ import annotations
@@ -89,23 +66,11 @@ _INFRA_SIGNS: list[tuple[str, re.Pattern[str]]] = [
     ),
 ]
 
-# Candidate log files, relative to the trial dir, per RECON.md/aws-bench-guide
-# §6's trial-dir layout. Scanned in order; every readable one is checked.
-#
-# Deliberately HARNESS-OWNED artifacts only — trial.log (Harbor/docker's own
-# lifecycle log), exception.txt (Harbor's own uncaught-exception dump), and
-# result.json (Harbor's structured TrialResult, not agent-authored text).
-# `agent/agent-output.txt` and `agent/claude-code.txt` are the AGENT'S OWN
-# output stream and must never be scanned here: an agent (or a task whose
-# instruction/legitimate tool output happens to mention a phrase like "out
-# of memory") could otherwise self-void its own trial by typing one of the
-# _INFRA_SIGNS phrases, and since invalid-infra outranks both valid and
-# invalid-bypass, that silently drops a genuine failure from the scored
-# denominator — see the "self-void / censoring vector" finding this
-# constant was narrowed to fix. If agent-authored evidence is ever needed
-# for infra detection, drive it off structured signals (container exit
-# code, docker error return codes, harbor exception type) instead of
-# free-text scanning of agent output, not by adding these files back here.
+# Candidate log files relative to the trial dir, scanned in order. HARNESS-OWNED
+# artifacts ONLY: adding the agent's own output streams
+# (`agent/agent-output.txt`, `agent/claude-code.txt`) lets an agent self-void
+# its trial by typing an _INFRA_SIGNS phrase, dropping a genuine failure out of
+# the scored denominator. See docs/gates.md#emit-result.
 _LOG_CANDIDATES = [
     "trial.log",
     "exception.txt",
@@ -115,24 +80,13 @@ _LOG_CANDIDATES = [
 
 # --- multi-step trial-dir layout -------------------------------------------
 #
-# A multi-step trial (cdktn_bench.trial.CdktnMultiStepTrial, running Harbor's
-# harbor/trial/multi_step.py engine) RELOCATES the per-phase output dirs after
-# every step: `agent/`, `verifier/` and `artifacts/` are moved into
-# `steps/<name>/` (`MultiStepTrial._archive_step_outputs`). So at the end of a
-# multi-step trial the trial dir has NO top-level `agent/` or `verifier/` at
-# all -- every reader below that hardcoded those paths would silently report
-# "absent" for a trial that produced full evidence.
-#
-# The three harness-owned logs `classify_infra_failure` scans (`trial.log`,
-# `exception.txt`, `result.json`) are NOT relocated: they are written by the
-# trial itself at trial level, once. That reader therefore needs no change --
-# and must not gain one, since `_LOG_CANDIDATES` was deliberately narrowed to
-# harness-owned artifacts (see its own comment: the self-void vector).
-#
-# Every helper below follows the same shape, which is what keeps a single-step
-# trial dir byte-identical: look at the top-level path FIRST and return exactly
-# what the pre-multi-step code returned if it is there; only fall back to
-# `steps/<name>/...` when it is not.
+# A multi-step trial moves `agent/`, `verifier/` and `artifacts/` into
+# `steps/<name>/` after every step, so its trial dir has no top-level `agent/`
+# or `verifier/` at all. Every helper below therefore checks the top-level path
+# FIRST and falls back to `steps/<name>/...` only when it is absent, which is
+# what keeps a single-step trial dir on its original path.
+# `classify_infra_failure` needs no fallback: its logs are written once at trial
+# level and never relocated. See docs/gates.md#emit-result.
 
 
 def _step_verifier_dirs(trial_dir: str | Path) -> list[Path]:
@@ -191,14 +145,14 @@ def _unverified_scoring_step(trial_dir: str | Path) -> str | None:
     ``result.json`` cannot be read -- i.e. ``None`` means "no reason to
     distrust the usual evidence lookup".
 
-    This exists because ``_create_step_dirs`` makes ``steps/<name>/verifier/``
-    **before** the step runs and ``_archive_step_outputs`` runs even when
-    ``_prepare_step`` raised, so a step that died in its ``pre_invoke`` leaves a
-    real-but-EMPTY verifier dir behind. A first-hit-wins scan over the step dirs
-    therefore skips straight past it into step N-1's evidence and attributes an
-    earlier step's tier verdict to the trial -- for ``tier1_not_verifiable``,
-    that is a required published-row field being filled from a step that was
-    never scored. See ``_verifier_evidence_dirs``.
+    Harbor's ``_create_step_dirs`` makes ``steps/<name>/verifier/`` BEFORE the
+    step runs and ``_archive_step_outputs`` runs even when ``_prepare_step``
+    raised, so a step that died in its ``pre_invoke`` leaves a real-but-EMPTY
+    verifier dir behind. A first-hit-wins scan over the step dirs would skip
+    past it into step N-1's evidence and attribute an earlier step's tier
+    verdict to the trial -- for ``tier1_not_verifiable``, a required
+    published-row field filled from a step that was never scored. See
+    ``_verifier_evidence_dirs``.
 
     An aborted last step whose ``step_name`` is missing or not a string yields
     ``""``, which matches no step dir: "the scoring step aborted and we cannot
@@ -271,15 +225,13 @@ def read_tier1_not_verifiable(trial_dir: str | Path) -> tuple[bool, str | None]:
     trial's plan (`generator/gen.py::build_static_tiers_sh`; the rule
     contract itself is `specs/SCHEMA.md` §4.2.1's option-3 bullet).
 
-    Residual finding (2026-08-06): the marker was written but consumed by
-    nothing, so a trial whose tier-1 action-allowlist was never actually
-    checkable from plan JSON (an entirely normal, idiomatic Terraform
-    pattern -- referencing another resource's provider-computed output,
-    per §4.2.1) was indistinguishable in the published data from one that
-    WAS checked and passed: an identical wildcard-IAM violation scores 0.0
-    on `awscdk` (cfn-guard has no plan-time-unknown gap -- CFN synth is
-    always fully static) but 1.0 on the TF arms, with nothing in the row
-    itself to show why. This closes the read side.
+    Without this flag, a trial whose tier-1 action-allowlist was never
+    actually checkable from plan JSON -- an entirely normal, idiomatic
+    Terraform pattern: referencing another resource's provider-computed
+    output -- is indistinguishable in the published data from one that WAS
+    checked and passed. An identical wildcard-IAM violation scores 0.0 on
+    `awscdk` (cfn-guard has no plan-time-unknown gap; CFN synth is always
+    fully static) but 1.0 on the TF arms, with nothing in the row to show why.
 
     Host-side path is `<trial_dir>/verifier/tier1-not-verifiable`
     (`harbor/models/trial/paths.py`: `verifier_dir = trial_dir /
@@ -292,7 +244,7 @@ def read_tier1_not_verifiable(trial_dir: str | Path) -> tuple[bool, str | None]:
     (already human-readable -- written by `build_static_tiers_sh`) when
     the file exists and is non-empty, else ``None``.
 
-    Multi-step (2026-08-20, task #14): the marker is relocated to
+    Multi-step: the marker is relocated to
     `<trial_dir>/steps/<name>/verifier/tier1-not-verifiable`. Steps are
     searched in REVERSE execution order and the first hit wins, because the
     published reward comes from the LAST step under the cdktn default
@@ -321,38 +273,30 @@ def read_tier1_not_verifiable(trial_dir: str | Path) -> tuple[bool, str | None]:
     return False, None
 
 
-# `  PASS [name]` / `  FAIL [name]: ...` -- generator/gen.py's
-# `_assert_lib.sh::assert_check()` (build_static_tiers_sh, ~line 839-844)
-# echoes exactly this shape for every tier-"0" structural_assert it runs,
-# to the verifier's own stdout -- captured by Harbor at
-# `<trial_dir>/verifier/test-stdout.txt` (docs/aws-bench-guide.md §6's
-# documented trial-dir layout: "verifier/ test-stdout.txt, test-stderr.txt,
-# reward.json, reward.txt, reward-details.json"). `[^\]]+` (not `.+`)
-# because an assert name is generator-enforced kebab-case
-# (specs/SCHEMA.md §4.2: "unique within the spec", no `]` possible) --
-# using a non-greedy `.+?` would work too but this is both correct and
-# cheaper.
+# `  PASS [name]` / `  FAIL [name]: ...` -- the shape generator/gen.py's
+# `_assert_lib.sh::assert_check()` echoes for every tier-"0" structural_assert,
+# captured by Harbor at `<trial_dir>/verifier/test-stdout.txt`. `[^\]]+` is safe
+# because an assert name is generator-enforced kebab-case (specs/SCHEMA.md §4.2
+# structural_asserts) and so contains no `]`.
 _TIER0_ASSERT_LINE_RE = re.compile(r"^\s*(PASS|FAIL)\s*\[([^\]]+)\]", re.MULTILINE)
 
 # `== summary: tier0_pass=$tier0_pass tier1_status=$tier1_status ==` --
-# generator/gen.py::build_static_tiers_sh's template, always the last thing
-# echoed before the reward is written (unless a toolchain step failed
-# first and `exit 0`'d out of the script before this line ever runs -- in
-# that case tier1_status is correctly reported as absent below, not
-# guessed).
+# generator/gen.py::build_static_tiers_sh's template, the last thing echoed
+# before the reward is written. A toolchain step that failed first `exit 0`s
+# before this line runs, in which case tier1_status is reported absent below
+# rather than guessed.
 _TIER1_SUMMARY_RE = re.compile(r"tier1_status=(\S+)")
 
 
 def read_tier_evidence(trial_dir: str | Path) -> dict[str, Any] | None:
     """Read per-assert tier-0 PASS/FAIL evidence + the bundled tier-1
     verdict from `<trial_dir>/verifier/test-stdout.txt`, for the per-catch
-    tier-attribution table (docs/iac-abstraction-aws-bench-plan.md Phase 2
-    item 3 / prereg §4's "per-tier catch attribution ... at what cost").
+    tier-attribution table (docs/prereg-iac-abstraction-benchmark.md's
+    "per-tier catch attribution ... at what cost").
 
-    Two different granularities, and this function is honest about which
-    is which -- there is no third option available from the current
-    oracle design (see specs/SCHEMA.md §4.2 / generator/gen.py's own
-    tier-1 blocks):
+    Two different granularities, and this function is honest about which is
+    which -- there is no third option available from the current oracle design
+    (specs/SCHEMA.md §4.2 structural_asserts; generator/gen.py's tier-1 block):
 
     - **tier-0 is per-catch-real**: each tier-"0" `structural_assert` is
       independently invoked and independently echoes its own PASS/FAIL
@@ -364,10 +308,10 @@ def read_tier_evidence(trial_dir: str | Path) -> dict[str, Any] | None:
       call over the whole policy file (generator/gen.py's tier1_block),
       producing exactly one `tier1_status` for the WHOLE bundle -- there
       is no per-tier-1-assert breakdown to read, because the oracle itself
-      never computes one (the tier-1 assert *names* are compiled into a
-      bash `#`-comment for human readability, never echoed to stdout at
-      runtime -- verified directly against build_static_tiers_sh's own
-      f-string construction of `tier1_comment`). A tier-attribution table
+      never computes one -- the tier-1 assert *names* are compiled into a
+      bash `#`-comment for human readability (build_static_tiers_sh's
+      `tier1_comment`) and never echoed to stdout at runtime. A
+      tier-attribution table
       built from this data can therefore report "which tier-0 catch" a
       trial died on, or "the tier-1 bundle as a whole", but never "which
       individual tier-1 catch" -- callers (metrics/tokens_to_green.py)
@@ -379,7 +323,7 @@ def read_tier_evidence(trial_dir: str | Path) -> dict[str, Any] | None:
     exists but a toolchain step failed before tier-0/1 ever ran" (the
     latter yields ``{"tier0": {}, "tier1_status": None}``, not ``None``).
 
-    Multi-step (2026-08-20, task #14): `verifier/` is relocated to
+    Multi-step: `verifier/` is relocated to
     `steps/<name>/verifier/`. Same reverse-order, first-hit-wins rule as
     `read_tier1_not_verifiable` and for the same reason -- the tier
     attribution must describe the verification that produced the published
@@ -408,9 +352,8 @@ def read_tier_evidence(trial_dir: str | Path) -> dict[str, Any] | None:
     tier0: dict[str, str] = {}
     for m in _TIER0_ASSERT_LINE_RE.finditer(text):
         status, name = m.group(1), m.group(2)
-        # Last occurrence wins -- generator/gen.py enforces assert-name
-        # uniqueness within a spec, so in practice each name is only ever
-        # echoed once per run; this is just defensive, not load-bearing.
+        # Last occurrence wins. Defensive only: generator/gen.py enforces
+        # assert-name uniqueness, so each name is echoed once per run.
         tier0[name] = status
 
     tier1_status: str | None = None
@@ -424,15 +367,13 @@ def read_tier_evidence(trial_dir: str | Path) -> dict[str, Any] | None:
 def extract_n_llm_calls(trial_dir: str | Path) -> int | None:
     """Count LLM calls from `<trial_dir>/agent/trajectory.json`, mirroring
     `aws_bench/metrics/run_data.py::_llm_usage_from_trajectory`'s own
-    `n_llm_calls` accumulation exactly (upstream source, verified against
-    the pinned `aws-bench` clone): for every step with `source == "agent"`,
-    add `step.llm_call_count` when it's an int, else add 1 iff `step.metrics`
-    is present, else add 0. Needed for `iterations-to-green`
-    (docs/iac-abstraction-aws-bench-plan.md Phase 2 item 3 / prereg §4) --
-    `result.json`'s `agent_result` never carries this field itself
-    (verified: only `cost_usd`/`n_input_tokens`/`n_output_tokens`/
-    `n_cache_tokens` do -- `_extract_score_fields` above), only the
-    trajectory does.
+    `n_llm_calls` accumulation exactly: for every step with
+    `source == "agent"`, add `step.llm_call_count` when it's an int, else add 1
+    iff `step.metrics` is present, else add 0. Needed for the pre-registered
+    `iterations-to-green` metric (docs/prereg-iac-abstraction-benchmark.md).
+    `result.json`'s `agent_result` never carries this field -- only
+    `cost_usd`/`n_input_tokens`/`n_output_tokens`/`n_cache_tokens`
+    (`_extract_score_fields` above) -- so only the trajectory has it.
 
     Deliberately dict-``.get``-only (no ATIF/harbor model import), same
     defensive posture as `_extract_score_fields`'s own docstring explains:
@@ -440,11 +381,10 @@ def extract_n_llm_calls(trial_dir: str | Path) -> int | None:
 
     Returns ``None`` -- NOT ``0`` -- when the trajectory file is absent,
     unreadable, malformed JSON, or has no top-level `steps` list at all:
-    "unknown" and "zero" are different claims (residual finding,
-    2026-08-06: "a SUCCESSFUL trial with an unreadable trajectory enters
-    iterations_to_green_km as an EVENT at time 0.0" -- one unparseable
-    trajectory used to silently drag a whole cell's iterations quartile to
-    zero). ``0`` is returned ONLY for a genuinely-parsed trajectory whose
+    "unknown" and "zero" are different claims: a ``0`` here would enter
+    ``iterations_to_green_km`` as an event at time 0.0, and one unparseable
+    trajectory drags a whole cell's iterations quartile to zero. ``0`` is
+    returned ONLY for a genuinely-parsed trajectory whose
     `steps` list is a real list (however short) but contains no
     agent-source step with either signal -- e.g. every synthetic
     gates/tests fixture trajectory, which is hand-authored for audit-gate
@@ -452,9 +392,10 @@ def extract_n_llm_calls(trial_dir: str | Path) -> int | None:
     IS a real, known answer ("this trajectory really made zero countable
     LLM calls"), not a missing one.
 
-    Multi-step (2026-08-20, task #14): `agent/trajectory.json` is relocated to
-    `steps/<name>/agent/trajectory.json`, one per step, each covering that
-    step ALONE (a fresh agent session per step -- DECISIONS.md Amendment 26).
+    Multi-step: `agent/trajectory.json` is relocated to
+    `steps/<name>/agent/trajectory.json`, one per step, each covering that step
+    ALONE -- a fresh agent session per step (multi-step scenarios, DECISIONS.md
+    Amendment 26).
     The trial's `n_llm_calls` is the CUMULATIVE sum across steps, matching the
     cumulative definition Amendment 26 pre-registers for tokens-to-green: a
     two-step trial's iterations-to-green is what it cost end to end, not what
@@ -533,14 +474,14 @@ def resolve_split_group(spec_id: str | None) -> str:
     """``generator/split.py::spec_group``, resolved to the schema's
     three-value enum (``"train"|"holdout"|"unclassified"``) required on
     every published result row (``metrics/result_schema.json``'s
-    ``split_group``, added 2026-08-06: "the train/holdout split is
-    unenforceable at the layer that matters -- the published number").
+    ``split_group``). Without it on the row, the train/holdout split is
+    unenforceable at the layer that matters -- the published number.
 
     ``spec_id`` here is the SPEC id (e.g. ``"apigw-openapi"`` --
     ``generator/gen.py``'s ``Spec.id`` / ``specs/<id>.yaml``'s filename
     stem, what ``specs/split.yaml`` actually keys on), which is NOT the
     same string as this schema's own ``scenario``/``task`` row fields
-    (those name the aws-bench SCENARIO, always ``"anchor"`` in v1, and the
+    (those name the aws-bench SCENARIO shard, ``"anchor"`` or ``"anchor-k"``, and the
     Harbor task name respectively) -- callers must pass it explicitly
     (``build_result_record``/``to_result_row``'s own ``spec_id=`` kwarg,
     or ``--spec-id`` on this module's CLI), not derive it from either.
@@ -560,18 +501,14 @@ def resolve_split_group(spec_id: str | None) -> str:
 
 
 def read_budget(jobs_dir: str | Path | None) -> tuple[int | None, int | None]:
-    """Read ``<jobs_dir>/budget.json`` (``scripts/run-bench.sh``'s own
-    output — see that script's header for the "MAX_ITERS = 8 feedback
-    cycles or MAX_TOKENS per trajectory, whichever first" budget-cap
-    contract) and return ``(max_iters, max_tokens)``.
+    """Read ``<jobs_dir>/budget.json`` (``scripts/run-bench.sh``'s own output;
+    that script's header carries the "MAX_ITERS feedback cycles or MAX_TOKENS
+    per trajectory, whichever first" budget-cap contract) and return
+    ``(max_iters, max_tokens)``.
 
-    Fixes the "MAX_TOKENS is inert" finding (2026-08-06): ``run-bench.sh``
-    already asserted budget.json "is the value gates/emit_result.py /
-    metrics/tokens_to_green.py actually read", but before this function
-    nothing in the repo ever opened the file at all — every emitted row's
-    ``censored`` came out ``False`` regardless of budget, and
-    ``n_budget_censored`` was structurally always 0. This is the read
-    side; ``main()``'s ``--jobs-dir`` flag below is the call site.
+    This is the ONLY reader of budget.json. Without it every emitted row's
+    ``censored`` is ``False`` regardless of budget and ``n_budget_censored`` is
+    structurally always 0. ``main()``'s ``--jobs-dir`` flag is the call site.
 
     Returns ``(None, None)`` if ``jobs_dir`` is falsy, the file doesn't
     exist, isn't valid JSON, isn't a JSON object, or a key is JSON
@@ -622,11 +559,10 @@ def _coerce_reward(rewards: Any) -> float | None:
     (``harbor/models/verifier/result.py``), read by upstream aws-bench as
     ``rewards.get("reward")``, falling back to the first numeric value if
     the ``"reward"`` key itself is absent (``aws_bench/metrics/run_data.py``
-    ``TrialData.reward``, lines ~465-470). Mirrored here so a real Harbor
-    ``result.json`` — not just the hand-authored scalar fixtures this
-    function used to be proven against — maps to a schema-valid numeric
-    ``reward``. A bare scalar (defensive fallback for any non-dict shape a
-    future/older producer might still emit) is coerced the same way.
+    ``TrialData.reward``). Mirrored here so a real Harbor ``result.json`` maps
+    to a schema-valid numeric ``reward``. A bare scalar -- defensive fallback
+    for any non-dict shape a future/older producer might emit -- is coerced the
+    same way.
     """
     if isinstance(rewards, dict):
         n = _as_number(rewards.get("reward"))
@@ -674,10 +610,10 @@ def _step_token_breakdown(step_results: Any) -> list[dict[str, Any]]:
     """Per-step token/cost rows, in ``result.json`` order.
 
     The trial-level totals `_aggregate_step_tokens` produces are the SUM of
-    these; this keeps the addends visible so a cumulative tokens-to-green
-    (DECISIONS.md Amendment 26: "cumulative sum of per-step agent output
-    tokens up to and including the step at which the trial's final oracle
-    first passes") can be computed downstream without re-reading result.json.
+    these; keeping the addends visible lets a cumulative tokens-to-green be
+    computed downstream without re-reading result.json (DECISIONS.md
+    Amendment 26 defines it as the cumulative sum of per-step agent output
+    tokens up to and including the step at which the final oracle first passes).
     """
     rows: list[dict[str, Any]] = []
     if not isinstance(step_results, list):
@@ -709,11 +645,10 @@ def _count_failed_steps(step_results: Any) -> int:
     """Steps that started and died, by Harbor's own abort predicate.
 
     ``_step_aborted_unverified`` is that predicate
-    (``MultiStepTrial._should_stop_after_step``, verbatim). Kept identical on
-    purpose — this number's job is to say "Harbor would have aborted here", so
-    any drift from that predicate would make it lie. A step with BOTH an
-    exception and a verifier_result does not count: Harbor keeps going, and the
-    step carries a real score.
+    (``MultiStepTrial._should_stop_after_step``, verbatim). This number's job is
+    to say "Harbor would have aborted here", so any drift from that predicate
+    makes it lie. A step with BOTH an exception and a verifier_result does not
+    count: Harbor keeps going, and the step carries a real score.
     """
     if not isinstance(step_results, list):
         return 0
@@ -743,8 +678,8 @@ def _declared_step_names(task_dir: str | Path) -> list[str] | None:
 def read_step_summary(trial_dir: str | Path, task_dir: str | Path) -> dict[str, Any] | None:
     """Per-step diagnostics for a multi-step trial, or ``None`` if single-step.
 
-    Closes the gap memo §6.7 names: Harbor's ``min_reward`` green gate aborts
-    the remaining steps by RETURNING, recording the failure on the
+    Harbor's ``min_reward`` green gate aborts the remaining steps by
+    RETURNING, recording the failure on the
     ``StepResult`` and never on ``TrialResult.exception_info``. So a trial that
     ran half its steps and stopped looks, to every top-level reader, exactly
     like a clean trial -- including this gate's own validity classification.
@@ -753,12 +688,11 @@ def read_step_summary(trial_dir: str | Path, task_dir: str | Path) -> dict[str, 
 
     Counting is subtle enough to spell out, because the obvious reading is
     wrong. Harbor appends the ``StepResult`` BEFORE running the step
-    (``harbor/trial/multi_step.py``: ``step_result = StepResult(...)`` /
-    ``step_results.append(step_result)``, then ``_run_step``), so
-    ``len(step_results)`` counts steps *started*, not steps *finished* — a step
-    that died in ``_prepare_step`` (a harness ``pre_invoke`` deploy that failed)
-    is still in the list. Hence ``n_started``, not the ``n_completed`` this
-    once returned: when the failing step is the LAST declared one — exactly
+    (``harbor/trial/multi_step.py``), so ``len(step_results)`` counts steps
+    *started*, not steps *finished* -- a step that died in ``_prepare_step`` (a
+    harness ``pre_invoke`` deploy that failed) is still in the list. Hence
+    ``n_started``, never ``n_completed``: when the failing step is the LAST
+    declared one -- exactly
     where the design puts the harness deploy of the prior step's work —
     ``n_started == n_declared`` and a purely arithmetic ``aborted_early`` would
     read ``False`` for a trial whose final step never ran an agent.
@@ -806,7 +740,7 @@ def _tokens_from_claude_code_stream(agent_dir: Path) -> dict[str, Any] | None:
     none.
 
     Harbor's ``AgentContext`` token fields are filled only if its trajectory
-    conversion succeeds; a conversion that fails validation (observed:
+    conversion succeeds; a conversion that fails validation (e.g.
     ``steps[N].step_id: expected N+1, got N+2`` on a step-id gap) leaves every
     field ``None`` while the transcript on disk is complete. The transcript's
     terminal ``{"type": "result", ...}`` event carries the session totals
@@ -957,12 +891,11 @@ def build_result_record(
         reason = f"could not audit trial (treated as infra failure): {audit_error}"
         infra = {"kind": "audit-unavailable", "file": None, "match": audit_error}
     elif audit.get("degraded"):
-        # The audit gate positionally matched the arm's toolchain (the agent
-        # DID try it — this is not a bypass) but every matched call's own
-        # observation shows the tool was never actually available to run
-        # (command-not-found/exit 127, or SIGKILLed/exit 137). That is a
-        # degraded arm, not an agent choice — route it to invalid-infra, not
-        # invalid-bypass, even though no log-file infra signal fired.
+        # The audit gate matched the arm's toolchain (the agent DID try it, so
+        # not a bypass) but every matched call shows the tool was never
+        # available to run: exit 127 command-not-found, or exit 137 SIGKILL.
+        # A degraded arm, not an agent choice -- invalid-infra, even though no
+        # log-file infra signal fired.
         validity_class = INVALID_INFRA
         reason = audit["reason"]
         infra = {
@@ -980,11 +913,11 @@ def build_result_record(
     try:
         equipping_hash: str | None = compute_equipping_hash(task_dir, image_ref, extra_cfg or {})
         equipping_hash_error = None
-    # ValueError added 2026-08-20 (§2.7): compute_equipping_hash now refuses a
-    # caller-supplied `workspace_seed_sha256` that contradicts the one this
-    # task.toml declares. Recorded like every other equipping-input failure --
-    # `equipping_hash: null` + an error string -- so a contradictory brownfield
-    # seed never masquerades as "gate didn't run", and never as a valid hash.
+    # ValueError: compute_equipping_hash refuses a caller-supplied
+    # `workspace_seed_sha256` contradicting the one task.toml declares
+    # (brownfield seeds, specs/SCHEMA.md §2.7). Recorded like every other
+    # equipping-input failure, so a contradictory seed never masquerades as
+    # "gate didn't run" and never as a valid hash.
     except (FileNotFoundError, TypeError, ValueError) as exc:
         equipping_hash = None
         equipping_hash_error = str(exc)
@@ -1009,25 +942,21 @@ def build_result_record(
         # audited as genuine.
         "tier1_not_verifiable": tier1_not_verifiable,
         "tier1_not_verifiable_detail": tier1_not_verifiable_detail,
-        # Per-catch tier-attribution evidence (see read_tier_evidence's own
-        # docstring for the tier-0-real / tier-1-bundle-only caveat). Also
-        # attached regardless of validity_class -- a bypassed/infra-invalid
-        # trial's verifier may still have left evidence behind from a PRIOR
-        # invocation of tests/static_tiers.sh in the same container, and
-        # this being present/absent is itself diagnostic.
+        # Per-catch tier-attribution evidence (read_tier_evidence's docstring
+        # has the tier-0-real / tier-1-bundle-only caveat). Attached regardless
+        # of validity_class: a bypassed/infra-invalid trial's verifier may still
+        # have left evidence from a prior static_tiers.sh run in the same
+        # container, and its presence is itself diagnostic.
         "tier_evidence": tier_evidence,
     }
     if equipping_hash_error is not None:
         record["equipping_hash_error"] = equipping_hash_error
 
-    # Multi-step only (task #14). Attached regardless of validity_class -- an
-    # aborted or infra-invalid multi-step trial is exactly when "how far did it
-    # get" matters most -- but NEVER attached for a single-step trial, so every
-    # existing single-step record keeps its byte-identical shape. The published
-    # schema row (to_result_row / metrics/result_schema.json, which sets
-    # additionalProperties: false) is deliberately NOT extended here: the row's
-    # shape is pre-registered and a multi-step-specific field would be a
-    # schema-version bump, not a gate change.
+    # Multi-step only, attached regardless of validity_class -- an aborted or
+    # infra-invalid trial is when "how far did it get" matters most. The
+    # published row (metrics/result_schema.json, additionalProperties: false) is
+    # deliberately NOT extended: its shape is pre-registered, so a multi-step
+    # field would be a schema-version bump.
     step_summary = read_step_summary(trial_dir, task_dir)
     if step_summary is not None:
         record["steps"] = step_summary
@@ -1065,13 +994,11 @@ def to_result_row(
     """Map a ``build_result_record()`` record + run config into a
     ``metrics/result_schema.json``-shaped published result row.
 
-    This is the schema's producer: nothing before this function turned a
-    gate-emitted record into something ``metrics/validate_result.py`` could
-    actually check, so ``result_schema.json`` only ever validated a
-    hand-authored example — the exact "silently absent from all published
-    result JSONs because nothing enforced it" gap the schema's own
-    description names. ``metrics/emit_fixture_rows.py`` exercises this
-    function against the gate fixtures and validates the output.
+    This is the schema's only producer: without it ``result_schema.json``
+    validates nothing but a hand-authored example, and a required field can be
+    silently absent from every published result JSON.
+    ``metrics/emit_fixture_rows.py`` exercises this function against the gate
+    fixtures and validates the output.
 
     Only ``valid`` records carry meaningful reward/token fields
     (``score_emitted`` is False otherwise, per ``build_result_record``'s
@@ -1080,29 +1007,25 @@ def to_result_row(
     ``validity_reason`` is set; callers must read ``validity_class`` first,
     exactly as the schema's own field description says.
 
-    ``censored`` (docs/iac-abstraction-aws-bench-plan.md Phase 2 item 2 /
-    prereg §4's budget cap): pass an explicit ``True``/``False`` when the
-    caller already knows it (e.g. from a job-level budget-tracking pass).
-    Leaving it ``None`` (the default) triggers **auto-detection** from
-    ``max_iters``/``max_tokens`` — mirrors ``scripts/run-bench.sh``'s
-    ``budget.json`` ("MAX_ITERS = 8 feedback cycles or MAX_TOKENS per
-    trajectory, whichever first"): a trial that did NOT reach reward 1.0
-    and either met/exceeded ``max_tokens`` (by ``tokens_total``) or
-    met/exceeded ``max_iters`` (by ``record["n_llm_calls"]``, when known)
-    is censored=True; everything else defaults to False. Passing neither
-    ``max_iters`` nor ``max_tokens`` (both ``None``, the default) makes
-    auto-detection a no-op — ``censored`` comes out ``False`` exactly like
-    this function's previous hardcoded default, so every existing caller
-    keeps its prior behavior unchanged.
+    ``censored`` (the pre-registered budget cap,
+    docs/prereg-iac-abstraction-benchmark.md): pass an explicit
+    ``True``/``False`` when the caller already knows it, e.g. from a job-level
+    budget-tracking pass. Leaving it ``None`` (the default) triggers
+    auto-detection from ``max_iters``/``max_tokens``, mirroring
+    ``scripts/run-bench.sh``'s ``budget.json`` contract of "MAX_ITERS feedback
+    cycles or MAX_TOKENS per trajectory, whichever first": a trial that did NOT
+    reach reward 1.0 and met/exceeded either ``max_tokens`` (by
+    ``tokens_total``) or ``max_iters`` (by ``record["n_llm_calls"]``, when
+    known) is censored=True. Passing neither makes auto-detection a no-op and
+    ``censored`` comes out ``False``.
 
-    ``spec_id`` (2026-08-06 fix, prereg §7.1 / DECISIONS.md Amendment 10):
-    the spec id (``"apigw-openapi"``, NOT the ``scenario``/``task`` schema
-    fields' aws-bench meanings — see ``resolve_split_group``'s own
-    docstring) used to resolve the schema-REQUIRED ``split_group`` field.
-    Omitting it does not skip the field (it cannot — the schema requires
-    it on every row) — it resolves to ``"unclassified"`` instead, so a
-    caller that forgets to pass it gets an honestly-labeled row, not a
-    silently train/holdout-mislabeled one.
+    ``spec_id``: the spec id (``"apigw-openapi"``), NOT the
+    ``scenario``/``task`` schema fields' aws-bench meanings -- see
+    ``resolve_split_group``. Used to resolve the schema-REQUIRED
+    ``split_group`` field. Omitting it cannot skip that field (the schema
+    requires it on every row); it resolves to ``"unclassified"`` instead, so a
+    caller that forgets gets an honestly-labeled row, not a silently
+    train/holdout-mislabeled one.
     """
     if record.get("equipping_hash") is None:
         raise ValueError(
@@ -1140,26 +1063,20 @@ def to_result_row(
         "tokens_total": tokens_total,
         "reward": reward,
         "censored": censored,
-        # Residual finding (2026-08-06): REQUIRED, defaulting False when
-        # build_result_record() found no `verifier/tier1-not-verifiable`
-        # marker -- schema-required-with-default-false semantics, same
-        # shape as `censored` above (always emitted by this producer, no
-        # JSON-Schema `default` keyword needed since the row is never
-        # missing it). See read_tier1_not_verifiable()'s own docstring for
-        # why this must never be silently absent: it is the only signal
-        # distinguishing "tier-1 was checked and passed" from "tier-1 was
-        # never actually checkable" in the published data.
+        # Schema-REQUIRED, defaulting False when no `verifier/tier1-not-
+        # verifiable` marker was found. Always emitted, like `censored` above:
+        # it is the only signal distinguishing "tier-1 was checked and passed"
+        # from "tier-1 was never actually checkable" in the published data
+        # (read_tier1_not_verifiable).
         "tier1_not_verifiable": bool(record.get("tier1_not_verifiable", False)),
     }
     if scenario is not None:
         row["scenario"] = scenario
-    # spec_id (2026-08-06 fix): the BENCHMARK scenario id, distinct from
-    # the aws-bench `scenario` field above (always "anchor" in this repo --
-    # see result_schema.json's own field descriptions for why `scenario`
-    # cannot be used for per-benchmark-scenario grouping). Persisted on the
-    # row itself, not just consumed transiently for split_group above, so
-    # downstream tools (metrics/tokens_to_green.py) can group/attribute by
-    # it without re-deriving it.
+    # The BENCHMARK scenario id, distinct from the aws-bench `scenario` field
+    # above (an "anchor"/"anchor-k" shard shared by many specs, so unusable
+    # for per-scenario grouping).
+    # Persisted on the row, not just consumed for split_group, so downstream
+    # tools (metrics/tokens_to_green.py) can group by it without re-deriving.
     if spec_id is not None:
         row["spec_id"] = spec_id
     if task is not None:
@@ -1197,17 +1114,14 @@ def main(argv: list[str] | None = None) -> int:
         help="JSON object of extra equipping config (model, harness flags, ...). Default: '{}'.",
     )
     parser.add_argument("--out", default=None, help="Also write the JSON record to this path.")
-    # --- schema-row emission (2026-08-06 fix: "MAX_TOKENS is inert and
-    # budget.json has no reader" + "split_group is unenforceable at the
-    # layer that matters") -- optional; a row is emitted (via
-    # to_result_row, validated shape) only when --model/--harness/
-    # --oracle-version are all given, in addition to the raw record this
-    # CLI already always prints. ------------------------------------------
+    # --- schema-row emission: optional. A row is emitted (via to_result_row,
+    # validated shape) only when --model/--harness/--oracle-version are all
+    # given, in addition to the raw record this CLI always prints. ----------
     parser.add_argument("--model", default=None, help="If set (with --harness/--oracle-version), also emit a metrics/result_schema.json row.")
     parser.add_argument("--harness", default=None, choices=["empty", "tuned"])
     parser.add_argument("--oracle-version", default=None)
     parser.add_argument("--spec-id", default=None, help="Spec id (e.g. 'apigw-openapi') for split_group resolution (generator/split.py) -- NOT the --scenario/--task values below.")
-    parser.add_argument("--scenario", default=None, help="Row's 'scenario' field (aws-bench scenario id, e.g. 'anchor').")
+    parser.add_argument("--scenario", default=None, help="Row's 'scenario' field (aws-bench scenario id, e.g. 'anchor' or 'anchor-2').")
     parser.add_argument("--task", default=None, help="Row's 'task' field (task.toml [task].name).")
     parser.add_argument("--trial-id", default=None)
     parser.add_argument("--job-id", default=None)
