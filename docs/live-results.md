@@ -214,3 +214,22 @@ trials read-only on `anchor`, 3 min 14 s wall, zero exceptions.
 
 The broken `jsonata-expression-correctness` fixture, run live from the host in
 the hcl-raw image, scored `fail_stale` on both CheckBudget threshold cases.
+
+## Amendment 38 promotion run — 2026-09-10 (foreground-only agent commands)
+
+`jobs/amend38-promotion/2026-09-10__00-41-59`; claude-sonnet-5, k=1, one
+mutating trial on `anchor-3`, 55 min 05 s wall including a 9 min 51 s reset.
+
+| scenario | arm | shard | reward | output tok | turns | cost $ | live_check | idempotence |
+|---|---|---|---:|---:|---:|---:|:---:|:---:|
+| named-resource-replacement | terraconstructs | anchor-3 | 1.0 | 16,796 | 47 | 0.97 | pass | converged |
+
+No command was moved to the background. The agent's own 10 min deploy
+timeout returned in the foreground (`Exit code 143 Command timed out after
+10m 0s`); it then ran the deploy under `nohup`, polled the log inside its
+turn, read `Still destroying... 15m05s elapsed`, added `createBeforeDestroy`
+and redeployed to `Apply complete`. The first attempt
+(`jobs/amend38-promotion/2026-09-09__23-57-37`) is `invalid-infra`: Harbor's
+`FORCE_AUTO_BACKGROUND_TASKS`/`ENABLE_BACKGROUND_TASKS` are not read by Claude
+Code 2.1.266, so the deploy was still backgrounded at 900 s and killed at turn
+end.

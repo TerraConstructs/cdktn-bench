@@ -575,12 +575,27 @@ joins the M7 cases forcing a **second aws-bench scenario** — and is arguably t
 most compelling of them, since a whole task family depends on it rather than a
 single scenario.
 
-### Pre-registered test of Amendment 29 (physical identity not load-bearing)
-**** — deploy the same stack twice into one
-account/region. Fixed physical names collide and fail; generated names pass.
-Arm-neutral, cheap, and it makes the Amendment 29 tenet falsifiable rather than
-assumed. If it does not separate the shapes, that amendment's premise is weaker
-than claimed.
+### M10 — one Rego engine for every tier; evaluate `microsoft/regorus`
+
+After the day-2 work. Two decisions, one independent of the other:
+
+* **Tier 0 is translated to Rego, compiled from the same spec YAML.** Today
+  the generator compiles a spec's JSONPath asserts into jq and the three-valued
+  outcome lives in `_assert_lib.sh`; tier 1 is already Rego with an explicit
+  `not_verifiable` rule set. Compiling tier 0 to Rego from the same YAML keeps
+  one assert source and removes the bash between the spec and the verdict. The
+  risk is operator parity (`set_eq`, `absent_or_eq`, `not_regex`, unresolvable
+  paths): each operator gets a fixture that must produce the identical
+  three-valued outcome on both compilers before the jq path is removed.
+* **Evaluate `microsoft/regorus`** (Rust Rego, OPA 1.2 compliant, the engine
+  behind `@aws/cloudformation-validate`): can it run the existing policy set
+  written against OPA 1.19 unchanged, can stateful Rust builtins replace the
+  `hcl2json` + locals-aggregation shell, and is the verifier image smaller and
+  faster for it. The evaluation runs the whole `oracles/rego*` suite and the
+  grading-proof fixtures under both engines; any divergence is a finding, not
+  a migration step. `@aws/cloudformation-validate` itself stays out of the
+  bench design — the awscdk arm's bundled validate plugin is an arm capability
+  the bench never blocks (M8).
 
 ### Pre-registered test of Amendment 29 (physical identity not load-bearing)
 
@@ -759,20 +774,41 @@ and the disarmed shape.
 2. ~~Scenario split (M7)~~ — Amendment 33, ACCEPTED.
 3. ~~Drop tier 0.5~~ — Amendment 34, ACCEPTED (live `TestState` check).
 4. **Rebalance the corpus toward day-2 / brownfield.** Every greenfield spec
-   stays in the corpus; results are reported per form (greenfield, multi-step,
-   brownfield, pre-configured account) and never pooled. Mechanize the form
-   label: `scenario_form` in `metrics/result_schema.json`, derived by
-   `gates/emit_result.py` from the task, grouped by `metrics/tokens_to_green.py`.
-5. Before the first full battery: §5b.1 bounded retry on transient AWS errors;
-   `grading-proof` accepting an observed live-tier catch as proof of
-   gradeability (unblocks `lambda-alias-tracks-unpublished-latest`, which is
-   red in `make ci` today because it declares no tier-1 catch and the gate
-   requires one); a distinct verifier outcome for "agent ended its turn with
-   its deploy still running" (seen once, Amendment 33 promotion run).
+   stays in the corpus; results are reported per form and never pooled. The
+   form label is mechanical: Amendment 36 (`scenario_form` REQUIRED on every
+   row, first dimension of `cell_key`, composite `…-brownfield` labels,
+   mixed directories refuse a combined headline). Still to author:
+   `caller-identity-arn-as-principal` (static, tier 0),
+   `apigwv2-route-settings-zero-vs-unset` (live, mutating; terraconstructs
+   disabled), `ecr-repo-destroy-force-delete` (needs the teardown tier).
+   `lambda-function-url-partner-scoped-invoke` is dropped.
+5. Before the first full battery, in this order:
+   * ~~§5b.1 bounded retry on transient AWS errors~~ — Amendment 35, DRAFT
+     until one observed retry succeeds.
+   * ~~Agent commands in the foreground~~ — Amendment 38, ACCEPTED 2026-09-10 (a
+     deploy longer than 120 s completes inside one foreground Bash call. This
+     replaces the "distinct verifier outcome for a deploy left running"
+     idea: with backgrounding off the condition cannot recur.
+   * Node 22 floor on the awscdk and terraconstructs images (aws-cdk-lib and
+     cdk-terrain raised theirs; cdk-terrain's base image is
+     `bookworm-slim-node22`, open-constructs/cdk-terrain PR #394):
+     `node:22.23.2-bookworm-slim` digest-pinned, smoke environment synced,
+     `make build-arms`, one smoke trial.
+   * Teardown tier — Amendment 37: `verifier.teardown {enabled, gating}`,
+     requires a live check, generator-injected per-arm destroy, outcomes
+     clean / destroy_failed / not_verifiable, runs after the live check and
+     idempotence, final step only, fail-closed, framework reset unchanged.
+     Promote on one mutating spec.
+   * `grading-proof` accepting an observed live-tier catch as proof of
+     gradeability — Amendment 39 (unblocks
+     `lambda-alias-tracks-unpublished-latest`, red in `make ci` because it
+     declares no tier-1 catch and a tier-1 rule there is vacuous on awscdk).
 6. Comment clean-up continues as part of every change (rules in CLAUDE.md
    "Comments"); remaining hot spots are `generator/gen.py` bodies, the
    emitted template strings, hand-authored `solve.sh` files, `arms/*/README.md`,
    `scripts/run-bench.sh` and `oracles/rego*`.
+7. After the day-2 work: M10 (tier 0 compiled to Rego from the same YAML;
+   `microsoft/regorus` evaluated against the existing policy set).
 
 ## 7. Open decisions
 

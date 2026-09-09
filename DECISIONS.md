@@ -7697,9 +7697,32 @@ headline number, at any n, in any estimator.
 * **No spec field and no generator behaviour change.** The form is read from
   the emitted task dir.
 
-## Amendment 38 (2026-09-09) — agent commands run in the foreground; deploying is toolchain evidence — DRAFT
+## Amendment 38 (2026-09-09) — agent commands run in the foreground; deploying is toolchain evidence — **ACCEPTED 2026-09-10**
 
-**Status: DRAFT.** In code; promotion needs the live trial described below.
+**Status: ACCEPTED.** The second promotion attempt met the criterion under
+"What promotes this".
+
+**Promotion run** (`jobs/amend38-promotion/2026-09-10__00-41-59`;
+claude-sonnet-5, k=1, `named-resource-replacement` terraconstructs on
+anchor-3, 55 min 05 s wall including a 9 min 51 s reset):
+
+| reward | output tok | turns | cost $ | agent | live_check | idempotence | reset |
+|---:|---:|---:|---:|---:|:---:|:---:|:---:|
+| 1.0 | 16,796 | 47 | 0.97 | 42 min | pass | converged | ok |
+
+No tool result in the transcript reports a command moved to the background.
+The agent's first `cdktn deploy` ran under a 10 min timeout it chose itself and
+came back as `Exit code 143 Command timed out after 10m 0s` — a foreground
+return, from a call that ran far past 120 s. The agent then ran the deploy
+under `nohup` and polled its log within the turn, read `Still destroying...
+15m05s elapsed` on the old security group, diagnosed the destroy-first
+ordering, added `createBeforeDestroy`, redeployed, and got `Apply complete!
+Resources: 1 added, 1 changed, 1 destroyed`. That is the scenario's pitfall
+being paid for in tokens, which is the measurement; the harness no longer
+stands between the agent and the deploy's outcome.
+
+The first attempt (`2026-09-09__23-57-37`, `invalid-infra`) is what corrected
+the environment variables above.
 
 ### The finding
 
@@ -7739,10 +7762,21 @@ win the merge:
 
 | variable | value | effect |
 | --- | --- | --- |
-| `FORCE_AUTO_BACKGROUND_TASKS` | `0` | a slow command is never moved to the background |
-| `ENABLE_BACKGROUND_TASKS` | `0` | the agent cannot start one either |
-| `BASH_DEFAULT_TIMEOUT_MS` | `900000` | a Bash call may run 15 min before it is killed, instead of 2 |
-| `BASH_MAX_TIMEOUT_MS` | `1800000` | the agent may ask for up to 30 min, inside the 3600 s agent phase |
+| `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` | `1` | no command is moved to the background, on timeout or by the agent |
+| `BASH_DEFAULT_TIMEOUT_MS` | `1800000` | a Bash call may run 30 min before it is killed, instead of 2 |
+| `BASH_MAX_TIMEOUT_MS` | `3000000` | the agent may ask for up to 50 min, inside the 3600 s agent phase |
+
+The switch is the one Claude Code 2.1.266 reads. Harbor's own
+`FORCE_AUTO_BACKGROUND_TASKS` / `ENABLE_BACKGROUND_TASKS` are not read by that
+version at all, which the first promotion attempt showed: with them set to `0`
+and a 15 min timeout, the deploy was still moved to the background at 900 s and
+killed at turn end (`jobs/amend38-promotion/2026-09-09__23-57-37`, also
+`invalid-infra`). The 30 min default is set by the scenario that exposed all
+of this: a destroy-first security-group replacement retries `DependencyViolation`
+for terraform's 15 min delete timeout before it fails, and the agent needs that
+failure back in the same call to fix the ordering — the passing terraconstructs
+trial of Amendment 32's run learned it from a "Still destroying... 09m39s"
+poll and then added `createBeforeDestroy`.
 
 A deploy now blocks its Bash call until it finishes, which is what a
 tokens-to-green measurement wants: the turn that deploys is the turn that
@@ -7765,8 +7799,9 @@ the one occurrence is the record.
 ### What promotes this
 
 A mutating trial, agent on the default Bash timeout, whose deploy runs longer
-than 120 s inside one foreground Bash call and returns to the agent, followed by
-a `live_check` `pass`. First candidate: `named-resource-replacement`
+than 120 s inside one foreground Bash call and returns to the agent — no tool
+result in the transcript says a command was moved to the background — followed
+by a `live_check` `pass`. First candidate: `named-resource-replacement`
 terraconstructs, the arm and scenario of the killed deploy.
 
 ### What this does NOT change

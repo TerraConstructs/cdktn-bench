@@ -272,12 +272,14 @@ fi
 # the CLI in print mode, where the turn ends when the model stops and every
 # background task is killed with it, so a deploy moved to the background can
 # never be awaited. Agent commands therefore run in the foreground, with a
-# Bash timeout long enough for a real deploy (Claude Code's default is 120 s;
-# a deploy here takes minutes) inside the 3600 s agent phase. DECISIONS.md
-# Amendment 38, foreground-only agent commands. These come after Harbor's own
-# env in the merge, so they win.
-ARGS+=(--ae "FORCE_AUTO_BACKGROUND_TASKS=0" --ae "ENABLE_BACKGROUND_TASKS=0")
-ARGS+=(--ae "BASH_DEFAULT_TIMEOUT_MS=900000" --ae "BASH_MAX_TIMEOUT_MS=1800000")
+# Bash timeout long enough for a real deploy: Claude Code's default is 120 s,
+# and a destroy-first security-group replacement retries for terraform's
+# 15 min delete timeout before it fails. Both fit the 3600 s agent phase.
+# CLAUDE_CODE_DISABLE_BACKGROUND_TASKS is the switch the CLI reads (2.1.266);
+# Harbor's FORCE_AUTO_BACKGROUND_TASKS/ENABLE_BACKGROUND_TASKS are not read
+# by it. DECISIONS.md Amendment 38, foreground-only agent commands.
+ARGS+=(--ae "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1")
+ARGS+=(--ae "BASH_DEFAULT_TIMEOUT_MS=1800000" --ae "BASH_MAX_TIMEOUT_MS=3000000")
 # bash 3.2 (macOS system bash) treats "${EXTRA[@]}" on a genuinely empty
 # array as an unbound-variable error under `set -u`; guard with a length
 # check instead of relying on the bash-4.4+ ${arr[@]:-} safe-expansion.
