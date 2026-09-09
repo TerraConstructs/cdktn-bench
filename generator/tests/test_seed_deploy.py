@@ -1,34 +1,23 @@
 """generator/tests/test_seed_deploy.py -- the BROWNFIELD SEED DEPLOY contract
-(specs/SCHEMA.md §2.7.1, docs/design/single-step-seed-deploy.md,
-DECISIONS.md Amendment 31 -- the design doc calls it 29; 29 and 30 were
-already taken).
+(specs/SCHEMA.md §2.7.1, DECISIONS.md Amendment 31 "a brownfield seed must
+really be deployed", docs/design/single-step-seed-deploy.md).
 
-`workspace_seed.premise` told the agent its workspace "is already deployed in
-this account" and nothing deployed it. On a REPLACEMENT trap that is not a
-cosmetic gap: `tests/live_check.py`'s discriminating assertion ("fail if the
-OLD security group survives") is satisfied VACUOUSLY on an empty account, so
-the live oracle reported `pass` while proving nothing, and three published rows
-were voided (docs/brownfield-seed-not-deployed.md).
-
-So the single most important test in this file is
+`workspace_seed.premise` tells the agent its workspace "is already deployed in
+this account". On a REPLACEMENT trap an undeployed seed satisfies
+`tests/live_check.py`'s discriminating assertion ("fail if the OLD security
+group survives") VACUOUSLY, so the live oracle reports `pass` while proving
+nothing (docs/brownfield-seed-not-deployed.md). Hence the load-bearing
 `test_the_vacuity_case_is_caught_mechanically`: the seed's own live assert,
 compiled and executed exactly as a real trial executes it, must FAIL against an
-empty account. Everything else here exists to make sure that assert is emitted,
-is reachable, and cannot be dropped by accident.
-
-Three kinds of test, deliberately in one file because they are one contract:
+empty account. The rest keeps that assert emitted, reachable and undroppable:
 
   1. **Emission**, read off the REAL generated task dirs and off the emitters.
-  2. **Validators** -- one test per hard error, each from a one-line spec
-     mutation of the real spec, so they stay valid as the schema evolves (the
-     same discipline test_multistep_emission.py's `_spec_with_deploy_prior`
-     uses).
-  3. **Execution**, running the emitted `assert_check` calls in a real bash
-     against checked-in AWS CLI response fixtures.
+  2. **Validators** -- one test per hard error, each a one-line mutation of the
+     real spec, so they stay valid as the schema evolves.
+  3. **Execution**, the emitted `assert_check` calls run in a real bash against
+     checked-in AWS CLI response fixtures.
 
-Offline and toolchain-free: no docker, no AWS, no npm. `bash` and `jq` are
-assumed present -- the two tools the generated proof itself needs, and both are
-already assumed by this repo's own agent-container baseline contract.
+Offline and toolchain-free: no docker, no AWS, no npm; `bash` and `jq` only.
 """
 
 from __future__ import annotations
@@ -74,11 +63,10 @@ ARMS = ("awscdk", "hcl_raw", "terraconstructs")
 def _seed_deploying_specs() -> list:
     """Every spec in the corpus that declares `workspace_seed.deploy`.
 
-    DISCOVERED, never listed. Both repo-level biconditionals below used to
-    hard-code "exactly `named-resource-replacement`'s three arms", which was
-    true on the day the mechanism landed and became a false failure the moment
-    a SECOND brownfield spec was authored -- reporting a correct new scenario
-    as a regression in the old one. Deriving the expected set from specs/ keeps
+    DISCOVERED, never listed. A hard-coded expected set ("exactly
+    `named-resource-replacement`'s three arms") turns the authoring of a SECOND
+    brownfield spec into a false failure, reporting a correct new scenario as a
+    regression in the old one. Deriving the expected set from specs/ keeps
     the biconditional exactly as strict (a task that ships one half without the
     other still fails) while letting the corpus grow.
     """
@@ -200,9 +188,9 @@ def test_one_assert_check_per_declared_live_assert(spec: Spec) -> None:
         assert len(calls) == len(seed.deploy.live_asserts)
         for a in seed.deploy.live_asserts:
             assert any(line.startswith(f"assert_check {a.name} ") for line in calls)
-        # Each one three-valued (finding m4): rc 2 = could not resolve, rc 1 =
-        # contradicted. Collapsing them made a malformed AWS response read as
-        # "the account does not hold the seed".
+        # Each one three-valued: rc 2 = could not resolve, rc 1 =
+        # contradicted. Collapsed into one code, a malformed AWS response reads
+        # as "the account does not hold the seed".
         assert body.count("|| rc=$?") == len(seed.deploy.live_asserts)
         assert "unresolvable=$((unresolvable + 1))" in body
 
@@ -282,13 +270,13 @@ def test_a_spec_without_deploy_emits_no_pre_invoke_and_no_toml_keys(
     # And the directory is actively REMOVED, not merely not-created. Run the
     # real generate_arm against a COPY of the real (already seeded) task dir,
     # with gen.TASKS_DIR redirected -- task_dir() reads that module global at
-    # call time, so this exercises the shipped code path without touching the
+    # call time, so this exercises the real code path without touching the
     # repo's own tasks/.
     import gen as gen_module
 
     root = tmp_path / "tasks"
     live = task_dir(spec, "hcl_raw")
-    shutil.copytree(live, root / "anchor" / live.name)
+    shutil.copytree(live, root / live.parent.name / live.name)
     monkeypatch.setattr(gen_module, "TASKS_DIR", root)
     assert (task_dir(greenfield_seed, "hcl_raw") / "pre_invoke").is_dir()
     generate_arm(greenfield_seed, "hcl_raw")
@@ -515,11 +503,11 @@ def test_the_vacuity_case_is_caught_mechanically(spec: Spec) -> None:
         "would be allowed to start (docs/brownfield-seed-not-deployed.md)"
     )
 
-    # FINDING B, the OTHER direction. Two groups with the SAME name (legal:
-    # EC2 group names are unique per-VPC, and this assert's `aws` call filters
-    # account-wide on Name=group-name) must also contradict it. See
-    # test_set_eq_collapses_duplicates_and_eq_cannot for the executed proof
-    # that the op this used to use could NOT see that case.
+    # The OTHER direction. Two groups with the SAME name (legal: EC2 group
+    # names are unique per-VPC, and this assert's `aws` call filters
+    # account-wide on Name=group-name) must also contradict it.
+    # test_set_eq_collapses_duplicates_and_eq_cannot is the executed proof that
+    # a set-comparison op cannot see that case.
     duplicated = _run_assert_check(
         a.name, jq_filter, a.op, a.expected,
         FIXTURES / "describe-security-groups-duplicate-vpcs.json",
@@ -587,8 +575,7 @@ def test_the_vacuity_case_is_caught_mechanically(spec: Spec) -> None:
 def test_the_endpoint_attachment_assert_is_exact_not_substring(
     spec: Spec, fixture: str, expect_pass: bool, why: str
 ) -> None:
-    """THE OTHER half of the vacuity proof, which had ZERO execution coverage
-    until finding M2 (adversarial review, 2026-08-25).
+    """THE OTHER half of the vacuity proof, executed rather than asserted.
 
     `old-group-is-live` proves the group exists. `endpoint-holds-the-old-group`
     is the one that proves the trap is ARMED -- the interface endpoint's ENI
@@ -613,12 +600,12 @@ def test_the_endpoint_attachment_assert_is_exact_not_substring(
 
 
 def test_the_old_substring_semantics_would_still_have_passed_the_m2_case() -> None:
-    """The regression itself, kept executable.
+    """The trap itself, kept executable.
 
-    `contains` is unchanged -- it is SHARED with tier-0 and its substring
-    behaviour on strings is deliberate there (see ASSERT_LIB_SH's own table).
-    What changed is that a `SeedLiveAssert` may no longer rely on it for an
-    exact-membership claim. This test pins WHY, so a future author who
+    `contains` stays SHARED with tier-0, where its substring behaviour on
+    strings is deliberate (see ASSERT_LIB_SH's own table). A `SeedLiveAssert`
+    may not rely on it for an exact-membership claim. This test pins WHY, so an
+    author who
     "simplifies" the spec back to `contains` sees the trap spelled out in a
     failing assertion rather than rediscovering it in a live run.
     """
@@ -657,8 +644,8 @@ def test_the_old_substring_semantics_would_still_have_passed_the_m2_case() -> No
     ],
 )
 def test_set_eq_collapses_duplicates_and_eq_cannot(fixture: str, jsonpath: str) -> None:
-    """FINDING B's premise, executed -- the justification for the rule, kept
-    alive beside the rule (the discipline finding M1 established).
+    """The premise of the count-pinning rule, executed -- the justification
+    kept alive beside the rule it justifies.
 
     `set_eq`'s compiled filter is `... | unique | sort` on both sides
     (gen.py::ASSERT_LIB_SH), so N nodes carrying the SAME value collapse to one
@@ -667,7 +654,7 @@ def test_set_eq_collapses_duplicates_and_eq_cannot(fixture: str, jsonpath: str) 
     value, so the multiplicity survives into the verdict.
 
     If the first assertion ever goes red, `set_eq` stopped running `unique` and
-    finding B's rationale (and the spec comment that cites it) must be
+    the count-pinning rationale (and the spec comment that cites it) must be
     re-derived rather than trusted.
     """
     if shutil.which("jq") is None:  # pragma: no cover - jq is assumed
@@ -690,7 +677,7 @@ def test_set_eq_collapses_duplicates_and_eq_cannot(fixture: str, jsonpath: str) 
 
 
 def test_every_shipped_live_assert_pins_the_count_it_expects(spec: Spec) -> None:
-    """The positive half of finding B, on the REAL spec.
+    """The positive half of the count-pinning rule, on the REAL spec.
 
     Not a blanket ban on `set_eq` -- SCHEMA.md still allows it for a genuinely
     multi-valued claim. What this pins is that THIS spec's asserts, both of
@@ -725,12 +712,11 @@ def test_every_live_assert_compiles_to_the_expected_jq(spec: Spec) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 4. FALSIFIABILITY of the live proof itself (finding M1, adversarial review
-#    2026-08-25). min_length=1 counts asserts; it does not make them capable of
-#    failing. Three of SCHEMA.md §4.2's nine ops PASS on zero resolved nodes,
-#    so a spec could declare a deploy whose ENTIRE live proof was satisfied by
-#    a completely empty account -- exactly the inert configuration this
-#    mechanism exists to make unexpressible.
+# 4. FALSIFIABILITY of the live proof itself. min_length=1 counts asserts; it
+#    does not make them capable of failing. Three of SCHEMA.md §4.2's nine ops
+#    PASS on zero resolved nodes, so without this rule a spec can declare a
+#    deploy whose ENTIRE live proof is satisfied by a completely empty account
+#    -- the inert configuration this mechanism exists to make unexpressible.
 # ---------------------------------------------------------------------------
 
 _VACUOUS_OPS = ("not_exists", "absent_or_eq", "not_regex")
@@ -791,9 +777,8 @@ def test_set_eq_with_an_empty_expected_is_rejected_for_the_same_reason() -> None
     """`set_eq: []` is "the account holds none of these" -- true on []. Same
     vacuity, reached through an op that is otherwise legal."""
     raw = _raw()
-    # Both shipped asserts moved to `eq` (finding B), so the set_eq rule now
-    # needs the op set explicitly -- the rule is about the op/expected PAIR and
-    # this mutation has to build that pair rather than inherit half of it.
+    # The rule is about the op/expected PAIR, so this mutation sets both
+    # rather than inheriting half of it from the real spec's `eq` asserts.
     raw["workspace_seed"]["deploy"]["live_asserts"][0]["op"] = "set_eq"
     raw["workspace_seed"]["deploy"]["live_asserts"][0]["expected"] = []
     with pytest.raises(ValueError, match="EMPTY `expected`"):
@@ -810,14 +795,10 @@ def test_every_shipped_live_assert_uses_a_falsifiable_op(spec: Spec) -> None:
             assert a.expected, f"{a.name}: set_eq with an empty expected"
 
 
-# ---- 4b. FALSIFIABILITY, the PATH half (finding A, adversarial review round
-#      3, 2026-08-25, REPRODUCED). Rejecting the three vacuous OPS did not make
-#      the live proof falsifiable: SeedLiveAssert imposed no shape rule on
-#      `jsonpath` at all, and a path that resolves to the CONTAINER rather than
-#      descending INTO it hands even `exists` one node on an empty account. The
-#      code comment and SCHEMA.md then asserted the stronger, still-false
-#      property as fact -- which is finding M1's OWN shape, reintroduced by
-#      M1's fix.
+# ---- 4b. FALSIFIABILITY, the PATH half. Rejecting the vacuous OPS is not
+#      enough on its own: a `jsonpath` that resolves to the CONTAINER rather
+#      than descending INTO it hands even `exists` one node on an empty
+#      account, so SeedLiveAssert must impose a shape rule on the path too.
 
 
 def test_a_container_path_really_does_pass_on_an_empty_account() -> None:
@@ -856,7 +837,7 @@ def test_a_container_path_really_does_pass_on_an_empty_account() -> None:
 
 def test_a_container_path_live_assert_is_not_expressible() -> None:
     """One mutation: keep a falsifiable OP, use a container PATH. The load must
-    RAISE -- before finding A this was accepted, emitted, and reported
+    RAISE -- without the path rule this shape is accepted, emitted, and reports
     `seed_deployed` against an empty account."""
     raw = _raw()
     a = raw["workspace_seed"]["deploy"]["live_asserts"][0]
@@ -923,7 +904,7 @@ def test_every_shipped_live_assert_iterates_a_collection(spec: Spec) -> None:
 
 
 def test_gating_false_is_rejected_like_enabled_false() -> None:
-    """Finding m1. `gating` is FALSE BY DEFAULT, so this is the "spend with no
+    """`gating` is FALSE BY DEFAULT, so this is the "spend with no
     measurement" an author reaches by omission rather than by decision: the
     live oracle's verdict never reaches reward.txt without it."""
     raw = _raw()
@@ -933,10 +914,10 @@ def test_gating_false_is_rejected_like_enabled_false() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 5. FAIL CLOSED WHEN THE SCRIPT NEVER RAN (finding M3). aws_trial.py:303 is a
-#    bare `if self.task.has_phase_script(ScriptType.PRE_INVOKE):` with no else
-#    and no logging, and has_phase_script is pure file existence -- so a task
-#    tree that lost pre_invoke/ skipped every anti-vacuity layer in silence.
+# 5. FAIL CLOSED WHEN THE SCRIPT NEVER RAN. aws_trial.py:303 is a bare
+#    `if self.task.has_phase_script(ScriptType.PRE_INVOKE):` with no else and
+#    no logging, and has_phase_script is pure file existence -- so a task tree
+#    that loses pre_invoke/ skips every anti-vacuity layer in silence.
 # ---------------------------------------------------------------------------
 
 
@@ -1136,17 +1117,16 @@ def test_the_seed_script_writes_the_receipt_the_verifier_reads(spec: Spec) -> No
 
 
 # ---------------------------------------------------------------------------
-# 6. `-refresh=false` ON THE EMITTED BYTES (finding M4, adversarial review
-#    2026-08-25). Spec._brownfield_plan_must_not_refresh reads
-#    output_contract.plan_command and `continue`s when it is empty -- which it
-#    is on BOTH cdk-shaped arms. terraconstructs' `terraform plan` comes from a
-#    HARDCODED generator template, so the validator was green while proving
-#    nothing for that arm, and the guarantee was actually held by an unrelated
-#    coupling (live_check.enabled) the validator does not check.
+# 6. `-refresh=false` ON THE EMITTED BYTES. Spec._brownfield_plan_must_not_
+#    refresh reads output_contract.plan_command and `continue`s when it is
+#    empty -- which it is on BOTH cdk-shaped arms. terraconstructs' `terraform
+#    plan` comes from a HARDCODED generator template, so the spec-level
+#    validator proves nothing for that arm and only these byte-level tests
+#    cover it.
 # ---------------------------------------------------------------------------
 
-# THE PLAN SUBCOMMAND, not the literal two words (finding G, adversarial review
-# round 3, 2026-08-25). Kept byte-identical to spec_model._TF_PLAN_RE, and
+# THE PLAN SUBCOMMAND, not the literal two words. Kept byte-identical to
+# spec_model._TF_PLAN_RE, and
 # `test_the_two_plan_matchers_are_the_same_rule` asserts that: the validator
 # speaks for the spec FIELD, this speaks for the emitted BYTES, and the emitted
 # bytes are the only cover for the arms whose plan command the spec never
@@ -1155,13 +1135,13 @@ _TF_PLAN = re.compile(r"\bterraform\b(?:\s+-\S+)*\s+plan\b")
 
 
 def _brownfield_specs() -> list[Path]:
-    """Every shipped spec whose loaded model carries a `workspace_seed`.
+    """Every spec in the corpus whose loaded model carries a `workspace_seed`.
 
-    FINDING m4's emitted-bytes test took the module `spec` fixture, i.e.
-    named-resource-replacement and nothing else, so a SECOND brownfield spec --
-    and this change explicitly unblocks four of them -- would have shipped with
-    no emitted-bytes assertion at all. The generator half is unconditional, so
-    that was coverage narrowness rather than a live hole; this closes it by
+    DISCOVERED, never listed. Taking the module `spec` fixture instead would
+    scope the emitted-bytes tests to named-resource-replacement alone, so every
+    later brownfield spec would carry no emitted-bytes assertion at all. The
+    generator half is unconditional, so that is coverage narrowness rather than
+    a live hole; this closes it by
     construction instead of by remembering.
     """
     out = []
@@ -1211,7 +1191,7 @@ def test_there_is_at_least_one_brownfield_spec_to_check() -> None:
 
 
 def test_the_two_plan_matchers_are_the_same_rule() -> None:
-    """Finding G. `Spec._brownfield_plan_must_not_refresh` reads the spec FIELD
+    """`Spec._brownfield_plan_must_not_refresh` reads the spec FIELD
     and this file reads the emitted BYTES. They are two halves of one guarantee
     and a drift between them reopens the hole from whichever side was left
     behind."""
@@ -1261,13 +1241,13 @@ def test_every_emitted_terraform_plan_of_a_brownfield_spec_is_refresh_free(
 
 
 def test_a_chdir_style_plan_is_not_exempt_from_the_refresh_rule() -> None:
-    """FINDING G's own case, at the validator.
+    """The chdir case, at the validator.
 
     `terraform -chdir=. plan -input=false ...` is an ordinary, documented
-    invocation. The rule used to be the literal substring "terraform plan", so
-    this form passed spec load in silence and gen.py spliced it verbatim into
-    hcl_raw's static_tiers.sh -- every hcl-raw brownfield trial 0.0 before the
-    agent was judged.
+    invocation. Matched as the literal substring "terraform plan" it passes
+    spec load in silence and gen.py splices it verbatim into hcl_raw's
+    static_tiers.sh -- every hcl-raw brownfield trial 0.0 before the agent is
+    judged.
     """
     raw = _raw()
     oc = raw["instruction"]["per_arm"]["hcl_raw"]["output_contract"]
@@ -1324,20 +1304,18 @@ def test_the_refresh_flag_no_longer_depends_on_live_check_alone(
         for ln in lines:
             assert "-refresh=false" in ln, (
                 f"{arm}: a brownfield spec emitted a REFRESHING plan because "
-                "live_check is disabled -- the exact coupling finding M4 named"
+                "live_check is disabled -- a coupling that is not the rule"
             )
 
 
 # ---------------------------------------------------------------------------
-# 6b. THE SEED PROOF, EXECUTED END TO END in a sandbox (findings D, F and H,
-#     adversarial review round 3, 2026-08-25).
+# 6b. THE SEED PROOF, EXECUTED END TO END in a sandbox.
 #
-#     The three findings are three different ways the shipped script told the
-#     operator something that was not true, and all three are only visible by
-#     RUNNING it: a definitive CloudFormation absence reported as "could not
-#     verify" (D), a missing proof library reported as "the account is wrong"
-#     (F), and a receipt that could not tell the agent's deployment from the
-#     harness's (H). So this section executes the REAL emitted bytes against
+#     Three ways the emitted script can tell the operator something untrue are
+#     visible only by RUNNING it: a definitive CloudFormation absence reported
+#     as "could not verify", a missing proof library reported as "the account
+#     is wrong", and a receipt that cannot tell the agent's deployment from the
+#     harness's. So this section executes the REAL emitted bytes against
 #     stubbed `aws`/toolchain binaries, with only the absolute container paths
 #     moved -- the same discipline `_run_test_sh_gate` uses one section above.
 # ---------------------------------------------------------------------------
@@ -1523,8 +1501,8 @@ def test_the_sandbox_reaches_seed_deployed_on_every_arm(tmp_path: Path) -> None:
         assert proof == {"outcome": "seed_deployed"}, f"{arm}: {proof}\n{out}"
         receipt = json.loads((box["logs"] / "seed-deploy-receipt.json").read_text())
         assert receipt["outcome"] == "seed_deployed"
-        # FINDING H: the receipt must carry the identity of the state this run
-        # deployed, or the idempotence tier cannot tell it from the agent's.
+        # The receipt must carry the identity of the state THIS run deployed,
+        # or the idempotence tier cannot tell it from the agent's.
         assert receipt["state_identity"], f"{arm}: receipt has no state_identity"
         if arm == "awscdk":
             assert receipt["state_identity"] == (
@@ -1741,17 +1719,16 @@ def test_a_missing_jq_is_unverifiable_and_never_reaches_the_account(
 
 
 # ---------------------------------------------------------------------------
-# 6c. THE IDEMPOTENCE TIER'S SEED MOVEMENT GUARD (finding H, adversarial review
-#     round 3, 2026-08-25).
+# 6c. THE IDEMPOTENCE TIER'S SEED MOVEMENT GUARD.
 #
+#     A brownfield seed writes deploy state before the agent's first token, so
 #     `build_idempotence_block`'s state probe -- "nothing was applied (no
-#     deploy state at ...)" -- was a LIVE guard until this mechanism started
-#     writing that exact file before the agent's first token. After that a
-#     `converged` verdict no longer distinguished "the agent deployed and
-#     converged" from "the agent did nothing and the SEED is still converged":
-#     a do-nothing agent INHERITS the harness's convergence, silently. These
-#     tests execute the shipped tests/test.sh with only its absolute container
-#     paths moved.
+#     deploy state at ...)" -- can no longer carry the guard on its own: a
+#     `converged` verdict must distinguish "the agent deployed and converged"
+#     from "the agent did nothing and the SEED is still converged", or a
+#     do-nothing agent INHERITS the harness's convergence silently. These tests
+#     execute the real tests/test.sh with only its absolute container paths
+#     moved.
 # ---------------------------------------------------------------------------
 
 _AGENT_MOVED_STATE_JSON = '{"version": 4, "lineage": "1f3c0a5e-seed", "serial": 9}'
@@ -2079,8 +2056,7 @@ def test_the_receipt_writer_and_the_idempotence_reader_share_one_jq_program(
 
 
 # ---------------------------------------------------------------------------
-# 7. Three-valued assert_check (finding m4) and the tier-0 callers it must not
-#    disturb.
+# 7. Three-valued assert_check, and the tier-0 callers it must not disturb.
 # ---------------------------------------------------------------------------
 
 
@@ -2172,7 +2148,7 @@ def test_tier0_still_treats_an_unresolvable_assert_as_a_failure(
 
 
 # ---------------------------------------------------------------------------
-# 8. What the script leaves behind (finding m2) and who it runs as (finding m3)
+# 8. What the script leaves behind, and who it runs as
 # ---------------------------------------------------------------------------
 
 

@@ -1,0 +1,30 @@
+schema_version = "1.0"
+
+[scenario]
+name = "anchor-3"
+description = "Near-empty anchor scenario: one zero-cost SSM parameter plus the three standard QA roles. It binds a member account for live trials; cdktn-bench tasks build and verify their own infrastructure in that account, so the scenario itself stays minimal and cheap to deploy and reset."
+account_tags = ["PRIMARY"]
+regions = ["us-east-1"]
+
+[environment]
+build_timeout_sec = 600.0
+cpus = 2
+# 2048 OOM-killed ts-node/tsc during deploy (exit 137) — the CDK-synth-OOM
+# infra-failure class DECISIONS.md/chant-bench-diff warned about. colima VM
+# carries 6GiB; 4096 leaves headroom for the daemon.
+memory_mb = 4096
+
+[deploy]
+timeout_sec = 900.0
+
+[verify]
+timeout_sec = 120.0
+
+[cleanup]
+timeout_sec = 600.0
+
+[reset]
+timeout_sec = 300.0
+
+# No [[quotas]] entries: an SSM String parameter and three IAM roles need no
+# service-quota increase.

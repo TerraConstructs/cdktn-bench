@@ -181,3 +181,20 @@ battery — n=2 per arm is still directional for tokens, solid for reward.
 trajectory-conversion failure, see Amendment 32 "What the run CORRECTED");
 values are from the transcript's terminal `result` event via
 `gates/emit_result.py`'s `claude-code-stream` fallback.
+
+## Amendment 33 promotion run — 2026-09-09 (sharded scenarios, N = 4)
+
+`jobs/amend33-promotion/2026-09-09__19-09-38`; claude-sonnet-5, k=1, `-n 4`,
+`max_turns=100`. Four trials, zero exceptions, three concurrent resets on three
+accounts, 21 min wall for the whole run.
+
+| scenario | arm | shard | reward | output tok | turns | cost $ | live_check | idempotence |
+|---|---|---|---:|---:|---:|---:|:---:|:---:|
+| ecs-swappiness (read-only) | awscdk | anchor | 1.0 | 3,850 | 13 | 0.21 | — | — |
+| named-resource-replacement | awscdk | anchor-1 | 1.0 | 2,506 | 10 | 0.12 | pass | converged |
+| named-resource-replacement | hcl_raw | anchor-2 | 1.0 | 3,383 | 8 | 0.12 | pass | converged |
+| named-resource-replacement | terraconstructs | anchor-3 | **0.0** | 5,588 | 23 | 0.32 | fail_stale | not_verifiable |
+
+The terraconstructs 0.0 is an agent failure: it ended its turn to "wait for
+the background deploy", so the apply still held the Terraform state lock when
+the verifier ran. Turn counts here are the transcript's `num_turns`.

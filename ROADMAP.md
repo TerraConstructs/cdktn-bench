@@ -312,13 +312,61 @@ the next model generation — which is itself a finding worth tracking.
 
 ### M7 — split the aws-bench scenario (throughput, isolation, hash blast radius)
 
-**Today: one scenario, `anchor`, and all 45 tasks hardcode `scenario_id = "anchor"`.**
+**Status: DONE — sharded at N = 4, `env setup` green on all four shards, Amendment 33
+ACCEPTED 2026-09-09 on its first promotion run.** `generator/shards.toml` holds the single `shard_count` knob; `make shards`
+materializes `scenarios/anchor-1..3` from the *tracked* files of
+`scenarios/anchor` plus the registry's `scenarios[]`; `generator/gen.py` stamps
+`scenario_id` per task and places it under `tasks/<scenario_id>/`, relocating
+hand-authored `solve.sh`/`live_check.py` when a task changes shard; both
+`check-shard-drift` and `check-scenario-artifacts` stand in `make check`. Rule
+and rationale: `specs/SCHEMA.md` §8.3, `DECISIONS.md` Amendment 33 (DRAFT).
+
+The three shard accounts were created by hand, not by `env init`: aws-bench
+derives a new account's root email from the management account's domain
+(`<scenario>-<tag>-<timestamp>@<domain>`), and that domain is a public mail
+provider, so the generated addresses would belong to whoever registered them.
+Hand-created accounts use plus-addresses the owner controls, sit in the
+`cdktn-anchor` OU and carry the `aws-bench:scenario = anchor-k/PRIMARY` tag
+that makes `env init` reuse them.
+
+| shard | account | holds |
+|---|---|---|
+| anchor | 886312446417 | read-only specs + smoke |
+| anchor-1 | 182715287880 | mutating, one arm per spec |
+| anchor-2 | 218484443800 | mutating, one arm per spec |
+| anchor-3 | 015454941261 | mutating, one arm per spec |
+
+Owner steps that remain (env lifecycle is `aws-bench`, not the fork; only
+`run` needs `cdktn-bench`):
+
+```sh
+export TMPDIR=$HOME/.awsbench-tmp && mkdir -p "$TMPDIR"   # colima: /var/folders is not shared
+aws-vault exec --no-session tcons-mgmt -- uv run aws-bench env init \
+  --env-name cdktn-anchor --registry-path ./local-registry.json \
+  -d cdktn-bench-anchor@0.1.0 --n-concurrent 4 --wait-for-quotas
+aws-vault exec --no-session tcons-mgmt -- uv run aws-bench env setup \
+  --env-name cdktn-anchor --registry-path ./local-registry.json \
+  -d cdktn-bench-anchor@0.1.0
+```
+
+Check before step 2: the Organizations account quota (default 10; closed
+accounts count against it for 90 days) and that the role-protection SCP is
+attached at **OU** level so the new accounts inherit it. `env setup` must be
+re-run for shard 0 too — deleting `node_modules`/`cdk.out`/`dist` moves
+`anchor`'s own source hash.
+
+**Today: one scenario, `anchor`, and every task resolves to `scenario_id = "anchor"`
+because `shard_count = 1`.**
 That is a framework-*sanctioned* degenerate use, not a mistake: aws-bench
 hard-requires a member account per task (`_staged_credentials` raises on an empty
-`account_mapping`, `aws_trial.py:183-186`) while cdktn-bench grades ~100 %
-offline, so anchor exists to satisfy that precondition at ~$0. It deploys one
-SSM parameter plus two IAM roles; median deploy ~230 s against upstream's
-10-30 min. **There is no amortization argument for or against splitting** — the
+`account_mapping`, `aws_trial.py:183-186`). Every trial runs against that live
+account (Amendment 32: live AWS is the only trial mode) but the tasks build their
+own infra, so anchor's *deployed footprint* is deliberately near-empty: one SSM
+parameter plus two IAM roles, median deploy ~230 s against upstream's 10-30 min.
+The corpus-level intent is the opposite of offline grading: live validation,
+day-2 operations and brownfield are what the hypothesis is about, and the
+greenfield-static majority of today's corpus is the imbalance M7 and the
+rebalance below correct. **There is no amortization argument for or against splitting** — the
 framework has no per-scenario AWS cost accounting anyway (the only `cost_usd` in
 the codebase is LLM tokens, `metrics/run_data.py:326-397`).
 
@@ -390,11 +438,11 @@ Runner, queue and credential staging need no code change.
 tree (`node_modules`, `cdk.out`, `dist` out of `scenarios/anchor/`), which
 removes most spurious baseline invalidation and 218 MB of I/O per reset.
 
-**Note:** no DECISIONS entry has ever weighed one-scenario vs many — it is
-asserted as a premise in `scenarios/anchor/README.md`, `scenario.toml`,
-`local-registry.json` and `SCHEMA.md` §8.3, never argued. A split needs a
-pre-registered amendment, not just a code change, because `scenario_id` is part
-of task identity.
+**Note:** one-scenario vs many was asserted as a premise in
+`scenarios/anchor/README.md`, `scenario.toml`, `local-registry.json` and
+`SCHEMA.md` §8.3 and never argued, until **Amendment 33 (DRAFT)** weighed it.
+`scenario_id` is part of task identity, so raising `shard_count` is that
+amendment's promotion, not a bare code change.
 
 ---
 

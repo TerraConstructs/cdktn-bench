@@ -35,7 +35,7 @@
     "oracle_version": {
       "type": "string",
       "minLength": 1,
-      "description": "Identifies exactly which oracle tier stack (Rego/cfn-guard/Tier-0.5 jsonata-python rules, docs/iac-abstraction-aws-bench-plan.md Phase 2) graded this trial, e.g. a git rev or oracle package version. Required so a later oracle fix never gets silently pooled with results graded under the old rules."
+      "description": "Identifies exactly which oracle tier stack (structural asserts, Rego/cfn-guard rules, and any hand-authored live check, docs/iac-abstraction-aws-bench-plan.md Phase 2) graded this trial, e.g. a git rev or oracle package version. Required so a later oracle fix never gets silently pooled with results graded under the old rules."
     },
     "arm": {
       "type": "string",
@@ -99,12 +99,12 @@
     "scenario": {
       "type": "string",
       "minLength": 1,
-      "description": "Scenario id (scenarios/<id>/scenario.toml [scenario].name) -- the aws-bench AWS scenario, e.g. \"anchor\". In this repo every task lives under the single \"anchor\" AWS scenario, so this field is CONSTANT across the whole benchmark and MUST NOT be used to group/attribute results by benchmark scenario (sfn-jsonata vs. apigw-openapi, ...) -- see spec_id for that."
+      "description": "Scenario id (scenarios/<id>/scenario.toml [scenario].name) -- the aws-bench scenario SHARD (\"anchor\", or \"anchor-k\" -- generator/shards.py), each shared by many benchmark scenarios, so it must never be used to group/attribute results by benchmark scenario (sfn-jsonata vs. apigw-openapi, ...); use spec_id for that."
     },
     "spec_id": {
       "type": "string",
       "minLength": 1,
-      "description": "REQUIRED-in-spirit (not schema-required, to keep old rows valid): the cdktn-bench BENCHMARK spec id (specs/<spec_id>.yaml, e.g. \"apigw-openapi\", \"sfn-jsonata\") this trial's task was generated from -- generator/gen.py::task_dir()'s own `<spec-id>-<arm>` naming convention. Distinct from `scenario` (always \"anchor\", the aws-bench AWS scenario every task in this repo shares) and from `task` (task.toml's own id). This is the field downstream per-scenario grouping (metrics/tokens_to_green.py::build_tier_attribution, _group_by_scenario/by_scenario/scenario_coverage) and prereg §7's paired-by-scenario analysis MUST key on -- `scenario` degenerates to one group (\"anchor\") for every benchmark row and cannot support that decomposition. Populated by gates/emit_result.py::to_result_row from its own `spec_id=` kwarg (already resolved there for split_group)."
+      "description": "REQUIRED-in-spirit (not schema-required, to keep old rows valid): the cdktn-bench BENCHMARK spec id (specs/<spec_id>.yaml, e.g. \"apigw-openapi\", \"sfn-jsonata\") this trial's task was generated from -- generator/gen.py::task_dir()'s own `<spec-id>-<arm>` naming convention. Distinct from `scenario` (the aws-bench scenario shard, \"anchor\" or \"anchor-k\", which many benchmark scenarios share) and from `task` (task.toml's own id). This is the field downstream per-scenario grouping (metrics/tokens_to_green.py::build_tier_attribution, _group_by_scenario/by_scenario/scenario_coverage) and prereg §7's paired-by-scenario analysis MUST key on -- `scenario` names a shard many benchmark scenarios share, so it collapses them into a few degenerate groups and cannot support that decomposition. Populated by gates/emit_result.py::to_result_row from its own `spec_id=` kwarg (already resolved there for split_group)."
     },
     "task": {
       "type": "string",

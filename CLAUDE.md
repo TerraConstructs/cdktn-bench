@@ -113,8 +113,8 @@ Full rules: `docs/adding-scenarios.md` §1 item 3a. The short form:
 ## Live runs (quick reference)
 
 - Credentials: `aws-vault exec --no-session tcons-mgmt -- …` (management account;
-  the runner assumes `OrganizationAccountAccessRole` into the dedicated account
-  `886312446417`). Keychain may prompt — an operator must unlock it.
+  the runner assumes `OrganizationAccountAccessRole` into the four shard accounts,
+  see the shard note below). Keychain may prompt — an operator must unlock it.
 - The `aws` CLI is run via **mise**, never brew: `mise x aws@latest -- aws …`.
 - colima needs `TMPDIR=$HOME/.awsbench-tmp` (bind mounts under `/var/folders`
   aren't shared into the VM); the `docker compose` plugin must be installed.
@@ -123,14 +123,18 @@ Full rules: `docs/adding-scenarios.md` §1 item 3a. The short form:
 - Mutating tasks trigger the framework reset (~8.5 min) automatically — do **not**
   hand-write teardown (Amendments 17/18); `scenarios/anchor/reset/reset.sh` was
   removed as redundant.
-- After changing anything under `scenarios/anchor/**`, re-run `env setup` or
-  resets fail with a scenario-source-hash mismatch. **Currently outstanding:**
-  Amendment 25 changed that tree, so `env setup` MUST be re-run before the next
-  live run. Arm images also need `make build-arms`, which moves the equipping
-  hash — expected, and what that hash exists to record.
-- **Amendments 26/27 (multi-step), 28 (brownfield), and 32 (live-only AWS
-  access) are ACCEPTED** (32 promoted 2026-08-28 by
-  `jobs/amend32-promotion`). Rows produced under them are publishable within
+- The bench runs on four scenario shards (`anchor`, `anchor-1..3`), one member
+  account each, all in OU `cdktn-anchor`; read-only specs and smoke live on
+  `anchor`, each mutating spec's three arms on three different shards
+  (`generator/shards.toml`, DECISIONS.md Amendment 33). After changing anything
+  under `scenarios/anchor/**`, run `make shards` and re-run `env setup` for all
+  shards, or resets fail with a scenario-source-hash mismatch. Arm images need
+  `make build-arms` after `arms/**` changes, which moves the equipping hash.
+- **Amendments 26/27 (multi-step), 28 (brownfield), 32 (live-only AWS
+  access), 33 (four scenario shards) and 34 (tier 0.5 retired; the
+  `sfn-jsonata` JSONata check is a live `states:TestState` call from the
+  verifier) are ACCEPTED** (promotion runs under `jobs/amend3*-promotion`).
+  Rows produced under them are publishable within
   their own stratum. Any new amendment that changes the harness re-enters
   DRAFT until its own first live run.
 - Mutating scenarios run the agent as **`QALocalInvocationApplicationAdmin`**

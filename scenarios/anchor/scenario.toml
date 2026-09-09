@@ -2,7 +2,7 @@ schema_version = "1.0"
 
 [scenario]
 name = "anchor"
-description = "Near-empty anchor scenario (build plan Phase 0, mismatch M1): one trivial, zero-cost SSM parameter plus the three standard QA roles. Its only job is to satisfy aws-bench's real-AWS-account precondition (env init / env setup / env cleanup) cheaply and once; every cdktn-bench task grades offline inside its own agent container."
+description = "Near-empty anchor scenario: one zero-cost SSM parameter plus the three standard QA roles. It binds a member account for live trials; cdktn-bench tasks build and verify their own infrastructure in that account, so the scenario itself stays minimal and cheap to deploy and reset."
 account_tags = ["PRIMARY"]
 regions = ["us-east-1"]
 

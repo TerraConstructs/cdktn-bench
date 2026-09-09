@@ -1,71 +1,40 @@
-# Slice B — integrity rails: equipping hash + published-result schema
+# Integrity rails: equipping hash + published-result schema
 # (gates/equipping.py, metrics/result_schema.json, metrics/validate_result.py).
-# Lands in `make check` via the root Makefile's `-include mk/*.mk` + CHECKS
-# variable — see Makefile's own comment on why slice targets don't touch it
-# directly.
+# Auto-included by the root Makefile (`-include mk/*.mk`); these targets are
+# declared here, never in the root Makefile.
 
 .PHONY: check-result-schema test-gates
 
-# NOTE on wiring: the root Makefile's `check: $(CHECKS)` line is parsed
-# *before* its own `-include mk/*.mk` (which is the last line of that file),
-# and GNU Make expands a rule's prerequisite list immediately at the point
-# the rule is parsed — not deferred to build time (unlike variable refs
-# inside a recipe body, which *are* deferred). So `CHECKS +=` appended here
-# is too late to land in that prerequisite list; verified empirically (a
-# minimal repro of the same include order silently drops the appended
-# prerequisite). Keeping the `+=` anyway for documentation/consistency with
-# the slice convention the root Makefile's own comment describes, but the
-# line below — a second, recipe-less `check: ...` stanza — is what actually
-# wires these into `make check`: GNU Make unions prerequisites across
-# multiple single-colon rule stanzas for the same target as long as at most
-# one of them carries a recipe (root's does, this one doesn't), and that
-# union isn't subject to the immediate-expansion trap since it's evaluated
-# as its own rule line, not as a reference to $(CHECKS). (Double-colon rules
-# were the other option the root Makefile's comment names, but GNU Make
-# rejects mixing `:`/`::` for the same target, and root already committed to
-# `:`.)
+# WIRING: a `CHECKS +=` here does NOT reach `make check`. GNU Make expands a
+# rule's prerequisite list at parse time, and the root Makefile's
+# `check: $(CHECKS)` is parsed before its trailing `-include mk/*.mk`. The
+# recipe-less `check: ...` stanza below is what actually wires these in: Make
+# unions prerequisites across single-colon stanzas for one target as long as at
+# most one carries a recipe (root's does, this one doesn't). Every mk/*.mk
+# target that must run in `make check` needs both lines. Mixing `::` with the
+# root's `:` is rejected by Make, so that is not an option.
 CHECKS += check-result-schema test-gates
 
 check: check-result-schema test-gates
 
-# Real check, not a vacuous "the validator ran": validates the checked-in
-# example result row against metrics/result_schema.json, so a schema change
-# that breaks a previously-valid row (or a schema that's gone malformed)
-# fails `make check`. Then goes further and proves the schema has an actual
-# PRODUCER: metrics/emit_fixture_rows.py runs Gates 2+3
-# (gates.emit_result.build_result_record + to_result_row) against the real
-# gates/tests fixtures and validates THOSE rows too — so a gate-emitted
-# record round-trips through the schema, not just a hand-authored example
-# (the chant-bench "nothing enforced it" gap this schema's description
-# names).
+# Two things, so this is not a vacuous "the validator ran": the checked-in
+# example row must validate against metrics/result_schema.json, AND the schema
+# must have a real PRODUCER — metrics/emit_fixture_rows.py runs Gates 2+3
+# (gates.emit_result.build_result_record + to_result_row) over the gates/tests
+# fixtures and validates those rows too. A schema change that breaks either
+# fails `make check`.
 check-result-schema:
 	@echo "==> validating metrics/examples against metrics/result_schema.json"
 	uv run python metrics/validate_result.py metrics/examples/valid-result.json
 	@echo "==> validating gate-emitted rows (metrics/emit_fixture_rows.py) against metrics/result_schema.json"
 	uv run python metrics/emit_fixture_rows.py
 
-# Hash determinism/sensitivity (gates/test_equipping.py) + schema round-trip
-# (metrics/test_validate_result.py) — the pytest suite backing this slice.
-# ALSO runs oracles/ + generator/ (benchmark-integrity review finding
-# "mk/rails.mk:51 -- make check's test-gates never runs the 75 oracles/ +
-# generator/ tests", 2026-08-06): before this fix, `make check` never ran
-# either suite at all -- including the tier05_jsonata regression tests
-# guarding the materialize()-container-fallback fix (this same review
-# round) -- so a regression there could land and stay green in `make check`
-# forever. ALSO runs test/ (2026-08-06 fix, same orphaned-code pattern:
-# test/test_run_bench_wrapper.py's MAX_ITERS/MAX_TOKENS --dry-run coverage
-# and test/test_resolve_claude_token.py had ZERO coverage from `make
-# check`/`make ci`/either ci.yml job -- pure Python + bash --dry-run, no
-# toolchain needed, so it fits the policy-only job's graceful-degradation
-# floor same as the other four). All five suites pass together as of this
-# fix.
-# cdktn_bench/ added 2026-08-20 (task #14): the multi-step trial extension
-# (cdktn_bench/tests/ -- MRO composition, [[steps]] dispatch, the per-step
-# credentialed pre_invoke hook, the "final" reward default, and the
-# multi-step task-dir layout contract). Same reasoning as the four suites
-# above: pure Python, no docker/AWS/toolchain, so it belongs in the offline
-# floor. Note it is collected as the INSTALLED package (pyproject flipped to
-# package = true, uv installs it editable), not via a sys.path shim.
+# The offline test floor: every suite that needs only Python (no docker, no
+# AWS, no terraform/node toolchain) runs here, so `make check` and the
+# policy-only CI job cover them. A suite left out of this list has no gating
+# call site at all and can regress green forever — add new offline suites here.
+# cdktn_bench/ is collected as the INSTALLED package (pyproject `package =
+# true`, uv installs it editable), not through a sys.path shim.
 test-gates:
 	@echo "==> pytest: gates/ metrics/ oracles/ generator/ test/ cdktn_bench/"
 	uv run pytest gates metrics oracles generator test cdktn_bench -q
@@ -74,10 +43,10 @@ test-gates:
 #
 # `make seed-parity SPEC=specs/named-resource-replacement.yaml`
 #
-# Task #15 / DECISIONS.md Amendment 28. A brownfield scenario ships a
-# hand-authored `workspace_seed` body per arm AS that arm's entry_file, so the
-# agent opens working configuration rather than an empty skeleton. Two things
-# then need proving that nothing else in this repo proves:
+# DECISIONS.md Amendment 28. A brownfield scenario ships a hand-authored
+# `workspace_seed` body per arm AS that arm's entry_file, so the agent opens
+# working configuration rather than an empty skeleton. Two things then need
+# proving that nothing else in this repo proves:
 #
 #   1. THE SEED IS GREEN. Every arm's generated, un-overlaid workspace must
 #      build/synth/plan with that arm's REAL toolchain. A seed that doesn't is
@@ -93,9 +62,9 @@ test-gates:
 #      `_assert_lib.sh::assert_check` bash function a real trial's tier-0 runs.
 #
 # Implemented as a MODE of generator/check_reference_paths.py rather than a new
-# gate, because that script already does exactly this job for the post-agent
-# artifact (drop a fixture at entry_file, run the real toolchain, resolve
-# declared paths). --seed is the same procedure with the overlay omitted.
+# gate: that script already drops a fixture at entry_file, runs the real
+# toolchain and resolves declared paths. --seed is the same procedure with the
+# overlay omitted.
 #
 # Exit-code convention matches its sibling checks: 0 pass, 1 fail, 3 =
 # NOT_AUTHORED (this spec declares no workspace_seed, i.e. it is greenfield) so
@@ -112,22 +81,19 @@ seed-parity:
 
 # --- Gate 1 (preflight) wiring ----------------------------------------------
 #
-# gates/preflight.py's run_preflight() was orphaned: nothing in the repo
-# called it (the root Makefile's own `preflight` target is an independent
-# hand-rolled shell loop that never imports/invokes it). This target actually
-# calls the Python gate's CLI, one invocation per arm, so its JSON report
-# (machine-readable `reason` classification: image-not-found,
+# This target is the call site for gates/preflight.py's CLI, one invocation per
+# arm (the root Makefile's own `preflight` target is an independent shell loop
+# that never invokes the Python gate). Keeping it called is what keeps that
+# gate's JSON `reason` classification — image-not-found,
 # docker-daemon-unreachable, oom-killed, entrypoint-not-found,
-# preflight-script-failed, ...) is real, exercised code, not dead weight.
+# preflight-script-failed — exercised code rather than dead weight.
 #
-# Deliberately NOT added to CHECKS / `make check` — same reasoning as the
-# root Makefile's own `preflight` target: it requires the arm images to
-# already be built (`make build-arms`), which `make check` must not assume.
-# Gate 1 is a PRE-JOB check gating whether an arm's trials should even run,
-# not a per-trial verdict — it has no result_schema.json validity_class of
-# its own (see that schema's `validity_class` description) because a
-# preflight failure blocks an entire arm's trials before any task/trial/
-# equipping context exists to attach a schema row to. Run it with
+# NOT in CHECKS / `make check`: it requires the arm images to already be built
+# (`make build-arms`), which `make check` must not assume. Gate 1 is a PRE-JOB
+# check gating whether an arm's trials should run at all, not a per-trial
+# verdict, so it has no result_schema.json validity_class of its own — a
+# preflight failure blocks an arm before any task/trial/equipping context
+# exists to attach a row to. Run it with
 # `make gate-preflight` (all arms) or `make gate-preflight ARM=awscdk` (one).
 .PHONY: gate-preflight
 
@@ -153,18 +119,23 @@ gate-preflight:
 # Default matches scripts/run-bench.sh's own default.
 MODEL ?= claude-sonnet-5
 
+# --path is shard 0's task dir on purpose: `smoke` is hand-authored, read-only
+# and always lives under tasks/anchor (generator/shards.py puts every read-only
+# task on shard 0). At shard_count > 1 this still smoke-tests shard 0 only — a
+# plumbing check, not a corpus run.
+#
 # Runs one live trial of tasks/anchor/smoke against scenarios/anchor via
 # scripts/run-bench.sh, i.e. the registry-free local-path form documented in
 # local-registry.md ("Equivalent local-path form").
 #
-# REQUIRES, neither of which this repo/slice provisions:
+# REQUIRES, neither of which this repo provisions:
 #   - A real AWS account with scenarios/anchor already deployed into it
 #     (`aws-bench env init` + `env setup` against --env-name cdktn-anchor —
 #     see local-registry.md steps 1-2). Without that, `cdktn-bench run` fails
 #     at the environment-lookup step before ever invoking the agent.
-#     (run-bench.sh execs `cdktn-bench`, not `aws-bench`, as of DECISIONS.md
-#     Amendment 27 — a superset CLI, same flags; `env init`/`env setup` are
-#     the same command objects under either name.)
+#     (run-bench.sh execs `cdktn-bench`, not `aws-bench` — DECISIONS.md
+#     Amendment 27's superset CLI, same flags; `env init`/`env setup` are the
+#     same command objects under either name.)
 #   - A real Claude Code credential: either $CLAUDE_CODE_OAUTH_TOKEN, a
 #     token file at $AWS_BENCH_CLAUDE_TOKEN_FILE (default ~/.anthropic — an
 #     operator-created convention, not a verified `claude setup-token`
@@ -174,13 +145,11 @@ MODEL ?= claude-sonnet-5
 #     (fake-token-only) coverage of that logic. run-bench.sh warns on
 #     stderr (without hard-failing) if neither ends up resolved.
 #
-# This target makes a real, billed Claude Code API call and touches a real
-# AWS account. It is deliberately NOT invoked by `make check` (not added to
-# CHECKS) or by any other target in this repo — do not run it as part of
-# verifying this slice's wiring; the token/model plumbing itself is proven
-# offline by `uv run pytest test/`, which exercises scripts/run-bench.sh's
-# argument assembly via its own --dry-run mode plus source-level evidence in
-# gates/RECON.md.
+# This target makes a real, billed Claude Code API call and touches a real AWS
+# account. It is NOT in CHECKS and no other target invokes it — do not run it to
+# verify wiring; the token/model plumbing is proven offline by
+# `uv run pytest test/`, which exercises scripts/run-bench.sh's argument
+# assembly through its own --dry-run mode.
 run-smoke:
 	MODEL=$(MODEL) ./scripts/run-bench.sh \
 		--scenario-path ./scenarios --path ./tasks/anchor \

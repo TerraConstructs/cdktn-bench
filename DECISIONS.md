@@ -7252,3 +7252,154 @@ One read-only and one mutating live trial per arm (`ecs-swappiness`,
 `named-resource-replacement`), with zero `mock-`/`cdktn_bench_live` strings in
 any agent trajectory and no `InvalidClientTokenId` in the agent phase. Met
 2026-08-27 — see the status block at the top of this amendment.
+
+---
+
+## Amendment 33 (2026-09-09) — M7: shard the aws-bench scenario — **ACCEPTED 2026-09-09**
+
+**Status: ACCEPTED (promoted 2026-09-09, the day it was registered).** The
+mechanism landed at `shard_count = 1` (byte-identical regeneration), the knob
+was raised to 4, the three shard accounts were created, `env setup` deployed
+all four shards, and the promotion run below met the criterion under "What
+promotes this" on its first attempt.
+
+**Promotion run** (`jobs/amend33-promotion/2026-09-09__19-09-38`;
+claude-sonnet-5, k=1, `-n 4`, `max_turns=100`; 4 trials, 0 exceptions,
+20 min 59 s wall):
+
+| trial | shard / account | reward | output tok | turns | cost $ | agent s | live_check | idempotence | reset |
+|---|---|---:|---:|---:|---:|---:|:---:|:---:|:---:|
+| ecs-swappiness (read-only) awscdk | anchor / 886312446417 | 1.0 | 3,850 | 13 | 0.21 | 73 | — | — | none |
+| named-resource-replacement awscdk | anchor-1 / 182715287880 | 1.0 | 2,506 | 10 | 0.12 | 112 | pass | converged | ok, 10 min 01 s |
+| named-resource-replacement hcl_raw | anchor-2 / 218484443800 | 1.0 | 3,383 | 8 | 0.12 | 71 | pass | converged | ok, 10 min 28 s |
+| named-resource-replacement terraconstructs | anchor-3 / 015454941261 | **0.0** | 5,588 | 23 | 0.32 | 235 | fail_stale | not_verifiable | ok, 10 min 18 s |
+
+The three mutating arms started within one minute of each other (19:09-19:10)
+and their resets overlapped (19:17-19:35), which is the concurrency the split
+buys: under one scenario the same three trials would have serialized behind
+three ~10 min resets. The read-only trial ran and finished on `anchor` while
+the mutating shards were busy.
+
+**The 0.0 row is an agent failure, not a shard defect.** The terraconstructs
+agent started its deploy, then ended its turn with "I'll wait for the
+background deploy task notification or the scheduled wakeup before
+continuing." A harness trial ends when the agent's turn ends, so the apply was
+still holding the Terraform state lock when the verifier ran (`TF-PLAN
+FAILED` on the lock, `live_check` `fail_stale`, seed identity unmoved). The
+row is valid and scores 0.0 for the reason the oracle states. It is also a
+finding worth its own hypothesis: an agent that treats a deploy as a
+background job it can await later has misjudged the harness's turn semantics,
+and that misjudgement is paid in tokens-to-green.
+
+### The finding
+
+**One aws-bench scenario is one AWS member account, by construction.**
+`ScenarioInfo.account_tags` must hold exactly one entry
+(`aws_bench/scenario/config.py:51-54`), and `ensure_scenario_accounts` tags each
+account `aws-bench:scenario = <scenario>/<account_tag>`, reusing an account only
+when that tag names the same scenario (`account_management/manager.py:43-45,245`).
+Two scenarios cannot share an account, and a second `account_tag` on one
+scenario buys nothing. So "how many scenarios" *is* "how many accounts", and
+three separate properties of this benchmark are pinned to that number:
+
+1. **Throughput.** `_ScenarioAdmissionGate` is keyed only by `scenario_id`
+   (`aws_bench/task/queue.py:115`) and is held across the trial *and* its reset.
+   Five mutating specs × 3 arms × ~8.5 min reset run strictly serially no matter
+   what `-n` says. The gate is reader-preferring, so read-only trials can also
+   park a waiting mutating one indefinitely.
+2. **Contamination blast radius.** A failed reset tags the account
+   (`manager.py:308-317`) and every later trial whose scenario maps to it is
+   refused (`task/aws_trial.py:272-286`). With one scenario, one bad mutating
+   trial hard-stops all 51 tasks.
+3. **Hash blast radius.** `compute_scenario_hash` SHA256s every non-symlink file
+   under the scenario dir (`scenario/hashing.py:32-44`), ignoring only
+   `.DS_Store`/`Thumbs.db` — not `.gitignore`. Today that is 218 MB / ~8,291
+   files, 8,254 of them an untracked `node_modules`. Any `npm install` or synth
+   silently invalidates the POST_SETUP baseline and is re-hashed on every reset.
+   Hashing does not cross scenarios — but with one scenario, "within a scenario"
+   means everything, so that isolation is worth zero.
+
+None of this was ever weighed here: one scenario was asserted as a premise in
+`scenarios/anchor/README.md`, `scenario.toml`, `local-registry.json` and
+`SCHEMA.md` §8.3.
+
+### The decision
+
+**`generator/shards.toml` carries one integer, `shard_count = N`, and it is the
+only place N is written.** `generator/shards.py` turns it into names and
+assignments; nothing else in the repo may hardcode a scenario name.
+
+**Naming.** Shard 0 is `anchor` — the existing account, which keeps its
+`env init`/`env setup`; renaming it would orphan an already-tagged account.
+Shard k ≥ 1 is `anchor-k`, materialized by `make shards` from the **tracked**
+files of `scenarios/anchor` (never `node_modules`/`cdk.out`/`dist`), differing
+only in `scenario.toml`'s `name` and README's first heading.
+
+**The shard rule.** Read-only tasks all run on shard 0 (they co-run under the
+reader-preferring lock; extra accounts buy them nothing). Mutating tasks are
+spread over shards 1..N-1, offset by a digest of `spec.id`, so that at N ≥ 4 one
+spec's three arms never share a shard. The assignment is a pure function of
+`(spec.id, arm)` — no iteration order, no mtimes. At N = 1 everything is
+`anchor`.
+
+**`scenario_id` and the task's parent directory under `tasks/` always agree** —
+`aws-bench-datasets`' registry generator reads the path, aws-bench reads the
+field, and a disagreement binds a task to a scenario nobody deployed.
+
+**Recommended N = 4:** one read-only shard plus three mutating shards, so a
+mutating spec's three arms run concurrently and its 3 × 8.5 min of reset happens
+in parallel rather than in series. Alternative **N = 2** — one read-only, one
+mutating shard — costs one extra account and fixes only the contamination
+radius: mutating arms still serialize behind each other, so it buys none of the
+throughput that is M7's headline reason. N = 4 costs 3 extra member accounts
+against an Organizations quota that defaults to 10 (closed accounts count for 90
+days) and 3 extra near-empty deployed footprints (one SSM parameter + IAM roles
+each, ~$0 standing spend); its real cost is 4 × `cdk bootstrap` at `env setup`
+and 4 trees to keep hash-clean.
+
+### Owner decision points
+
+1. **N** — 4 recommended, 2 the cheaper alternative above. *Decided: 4.*
+2. **Organizations account quota** — check headroom before creating accounts;
+   closed accounts still count for 90 days. *Checked: 3 of 10 used before,
+   6 after.*
+3. **The role-protection SCP must be attached at OU level**, so new accounts
+   inherit it. aws-bench attaches the region SCP itself; this one it does not.
+   *Verified attached to OU `cdktn-anchor`.*
+4. **Root email of new accounts.** aws-bench mints
+   `<scenario>-<tag>-<timestamp>@<management-account domain>`; when that domain
+   is a public mail provider the address is claimable by anyone, which is a
+   root-takeover path. *Resolved by creating the accounts by hand with
+   owner-controlled plus-addresses and the `aws-bench:scenario` tag, so
+   `env init` reuses them instead of creating.*
+5. **Cost** — N near-empty footprints, N bootstraps, N scenario trees to keep
+   free of build artifacts.
+
+### What promotes this
+
+One live run in which:
+
+* **one mutating spec's three arms are observed running concurrently on three
+  different shards, and all three resets succeed** — the property N ≥ 4 is
+  bought for, and the one that cannot be proven offline; and
+* **one read-only trial completes on shard 0 in the same run** — proving the
+  read-only/mutating split does not strand shard 0 behind a mutating lock.
+
+Evidence to capture: each trial's `scenario`, its account id, overlapping
+start/end timestamps across the three arms, and three clean reset outcomes.
+
+### What this does NOT change
+
+* **No prior row is protected.** `scenario_id` is part of task identity, so
+  sharded rows are a new stratum — but no full benchmark has run, so nothing is
+  being invalidated. This amendment deliberately claims no continuity with
+  earlier rows and does not need to.
+* **Runner, queue and credential staging need no code change** — the split is
+  entirely registry + `scenario_id`.
+* **No assert or Rego may hardcode an account id** — a plan on shard k carries
+  shard k's account. Unchanged here.
+* **Grading, oracles, arms, prompts and the equipping hash are untouched.** At
+  `shard_count = 1` the generated tree is byte-identical, which is what makes
+  this amendment's code landing separable from its decision.
+
+---

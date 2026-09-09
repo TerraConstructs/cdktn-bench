@@ -1,43 +1,23 @@
 #!/usr/bin/env python3
-"""generator/gen.py — expand one intent spec into the full generated layout.
+"""Expand one intent spec into the full generated layout.
 
-Contract: ../specs/SCHEMA.md §8. Reads one YAML file under ../specs/,
-validates it against spec_model.Spec, and (re)writes:
-
-    tasks/<id>/{awscdk,hcl-raw,terraconstructs}/
-        task.toml, instruction.md, environment/, tests/, solution/ (stub only)
-    oracles/<id>/intent.md
-    oracles/rego/<id>/policy.rego        (stub only if missing)
-    oracles/cfn-guard/<id>/policy.guard  (stub only if missing; awscdk tier-1
-                                          engine "cfn_guard" only)
-    oracles/rego-cfn/<id>/policy.rego    (stub only if missing; awscdk tier-1
-                                          engine "rego" only -- CFN-shaped
-                                          Rego, see specs/SCHEMA.md §4.5)
-
-It also COPIES (never writes) one shared, hand-authored library into a task's
-tests/ when the spec asks for it:
-
-    oracles/rego/lib/hcl_traversal.rego -> tasks/<id>/<arm>/tests/
-        for `oracle.hcl_traversal: true` (specs/SCHEMA.md §4.6), on BOTH
-        TF-shaped arms -- they are graded by the one oracles/rego/<id>/
-        policy.rego, so both need the library it imports. The `_hcl` MERGE
-        that library reads is emitted for hcl_raw ONLY (terraconstructs has
-        no .tf files); see build_static_tiers_sh's `hcl_lib`/`hcl_merge`
-        comment for the executed false fail that distinction cost.
+Contract: ../specs/SCHEMA.md §8; the per-path map, the copied shared libraries
+and the exact idempotence rules are in docs/generator.md "gen.py output".
+Reads one YAML file under ../specs/, validates it against spec_model.Spec, and
+(re)writes tasks/<scenario_id>/<id>-<arm>/ plus this spec's oracles/ tree
+(<scenario_id> is the aws-bench shard generator/shards.py assigns).
 
 Usage:
     uv run python generator/gen.py specs/_toy/toy-ssm-parameter.yaml
     make gen SPEC=specs/_toy/toy-ssm-parameter.yaml
 
 Idempotent: rerunning against an unchanged spec reproduces byte-identical
-output (except an unfilled task.toml UUID would otherwise force cross-run
-identity churn — the generator reuses an existing task.toml's [metadata].id
-rather than minting a new uuid4 each run; SCHEMA.md §8.2 point 4).
-Destructive-safe: every path this script writes under solution/ is written
-ONLY if it does not already exist — an already-authored solution/solve.sh is
-never touched. Everything else it writes IS overwritten wholesale on every
-run (environment/, instruction.md, task.toml, tests/), because those are
-fully spec-derived and must never drift from the spec by hand-editing
+output (an existing task.toml's [metadata].id is reused rather than minting a
+new uuid4, so identity does not churn across runs; SCHEMA.md §8.2 point 4).
+Destructive-safe: every path written under solution/ is written ONLY if it does
+not already exist, so an authored solution/solve.sh is never touched. Everything
+else -- environment/, instruction.md, task.toml, tests/ -- is overwritten
+wholesale every run: it is fully spec-derived and must never drift by hand-edit
 (SCHEMA.md §0: "hand-editing generated output is a bug").
 """
 
@@ -64,6 +44,7 @@ from spec_model import Arm, Spec, Step, load_spec  # noqa: E402
 from oracles.emit import emit_oracles  # noqa: E402
 from gates.equipping import _discover_equipping_files  # noqa: E402
 from split import spec_group  # noqa: E402
+from shards import shard_for  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ARMS_DIR = REPO_ROOT / "arms"
@@ -76,25 +57,36 @@ ARM_DIRNAME: dict[Arm, str] = {
     "hcl_raw": "hcl-raw",
     "terraconstructs": "terraconstructs",
 }
-# Every v1 generated task uses the anchor scenario (build_task_toml's
-# `[scenario] scenario_id = "anchor"` -- no spec field chooses this, it is
-# a v1-wide constant; see docs/iac-abstraction-aws-bench-plan.md Phase 1).
-# task_dir() below keeps the on-disk layout in sync with that constant:
-# aws-bench-datasets' own registry generator
-# (aws_bench/scripts/update_registry.py) derives a "scenario" from the
-# PARENT directory name under tasks/ (`tasks/<scenario_name>/<task_name>/`)
-# and looks up `scenarios/<scenario_name>/` alongside it -- so a layout of
-# `tasks/<spec.id>/<arm>/` (what this generator used to emit) makes every
-# spec.id look like an unregistered scenario with no scenarios/ dir, not a
-# task of the anchor scenario. `tasks/anchor/<spec.id>-<arm-dirname>/`
-# matches the registry generator's own directory-derivation contract AND
-# the north-star example task layout
-# (aws-bench-datasets/tasks/compute-and-data/create-eks-cluster/).
-SCENARIO_ID = "anchor"
+# A task's aws-bench scenario is its PARENT DIRECTORY under tasks/:
+# aws-bench-datasets' registry generator (aws_bench/scripts/update_registry.py)
+# derives the scenario from `tasks/<scenario>/<task>/` and expects
+# `scenarios/<scenario>/` alongside it, so the emitted `[scenario] scenario_id`
+# and the on-disk path must always name the same shard or the task binds to a
+# scenario with no deployed account. generator/shards.py owns which shard that
+# is (DECISIONS.md Amendment 33, sharding the aws-bench scenario across
+# accounts); at shard_count = 1 it is always "anchor".
+
+
+def scenario_id_for(spec: Spec, arm: Arm) -> str:
+    return shard_for(spec, arm)
 
 
 def task_dir(spec: Spec, arm: Arm) -> Path:
-    return TASKS_DIR / SCENARIO_ID / f"{spec.id}-{ARM_DIRNAME[arm]}"
+    return TASKS_DIR / scenario_id_for(spec, arm) / f"{spec.id}-{ARM_DIRNAME[arm]}"
+
+
+def stale_task_dirs(spec: Spec, arm: Arm) -> list[Path]:
+    """This (spec, arm) task's directories under a shard it no longer belongs
+    to. Raising generator/shards.toml's shard_count moves tasks between
+    scenarios; a copy left under the old shard is a task bound to an account
+    no trial resets, so generate() sweeps them (carrying their hand-authored
+    files to the new shard first -- see sweep_stale_task_dirs)."""
+    current = task_dir(spec, arm)
+    return sorted(
+        p
+        for p in TASKS_DIR.glob(f"*/{spec.id}-{ARM_DIRNAME[arm]}")
+        if p.is_dir() and p != current
+    )
 # spec field name -> the subdirectory of environment/ that each arm's
 # Dockerfile COPYs into WORKDIR /app/project (see each arm's own Dockerfile;
 # hcl-raw's was added alongside this generator — see arms/hcl-raw/README.md
@@ -112,16 +104,10 @@ ARM_MEMORY_MB: dict[Arm, int] = {
     "terraconstructs": 4096,
 }
 
-# terraconstructs' TypeScript compile gate, injected UNCONDITIONALLY by
-# build_static_tiers_sh (never read from a spec's own
-# `output_contract.build_command`) -- see that function's own
-# `arm == "terraconstructs"` build block for the full rationale, and
-# docs/ts-runtime-spike2-results.md "Landing plan" item 1. Byte-identical to
-# the first half of the chained app string in
-# arms/terraconstructs/environment/app/cdktf.json
-# (`"npx tsc -p tsconfig.json && node main.js"`) on purpose: the graded
-# toolchain step and the synth-time recompile must be the SAME compile, or
-# the two can disagree about what "it builds" means.
+# terraconstructs' compile gate, injected unconditionally by
+# build_static_tiers_sh and byte-identical to the first half of the chained app
+# string in arms/terraconstructs/environment/app/cdktf.json: the graded
+# toolchain step and the synth-time recompile must be the SAME compile.
 TERRACONSTRUCTS_BUILD_COMMAND = "npx tsc -p tsconfig.json"
 
 CANARY = (
@@ -131,9 +117,9 @@ CANARY = (
 TRAILER = "IMPORTANT: Write your final answer to `/logs/agent/agent-output.txt`."
 STUB_MARKER = "GENERATOR-STUB"
 # The sentinel build_solve_sh_stub() bakes into an UN-authored solve.sh.
-# gates/oracle_falsifiability.py imports this (it used to carry its own copy of
-# the literal) so the generator and the gate can never disagree about what
-# "still a stub, not a real reference solution" means.
+# gates/oracle_falsifiability.py imports it from here so the generator and the
+# gate can never disagree about what "still a stub, not a real reference
+# solution" means.
 SOLVE_STUB_MARKER = "is not yet authored (Slice D)"
 
 
@@ -160,11 +146,10 @@ def shared_body_resolved(spec: Spec, step: Step | None = None) -> str:
 # The non-agent-owned bootstrap file each arm's workspace carries alongside
 # output_contract.entry_file -- byte-copied/regenerated every run but NEVER
 # the file a normal agent solution is expected to (fully) rewrite. Threaded
-# into instruction.md via ownership_note() below (benchmark-integrity
-# finding G1: an agent that fully rewrites its OWN entry_file, normal
-# behavior, must never be able to lose the other file's provider bootstrap --
-# see hcl_raw_main_tf()/terraconstructs_main_ts()'s own docstrings for the
-# failure this fixes).
+# into instruction.md via ownership_note() below: an agent that fully rewrites
+# its OWN entry_file, normal behavior, must never be able to lose the other
+# file's provider bootstrap -- see hcl_raw_main_tf()/terraconstructs_main_ts()'s
+# own docstrings.
 ARM_BOOTSTRAP_FILE: dict[Arm, str] = {
     "awscdk": "bin/app.ts",
     "hcl_raw": "provider.tf",
@@ -320,9 +305,9 @@ def shared_prefix(instruction_text: str, language_line: str) -> str:
 # skeleton is the first file the agent opens. Their one-line header therefore
 # uses `spec.workspace_header()` (SCHEMA.md §0.1), never `spec.title`: a
 # scenario title describes the whole arc, and on a multi-step spec that arc is
-# step 2's intent. This is not hypothetical -- `spec.title` here once shipped
-# "…modify, re-deploy (day-2 iteration)" into the step-1 agent's own main.tf
-# (DECISIONS.md Amendment 27 §5.1). Pinned by
+# step 2's intent: `spec.title` here leaks "…modify, re-deploy (day-2
+# iteration)" into the step-1 agent's own main.tf (DECISIONS.md Amendment 27
+# §5.1, "no later step's intent on an earlier step's prompt surface"). Pinned by
 # generator/tests/test_multistep_emission.py::
 # test_skeletons_use_workspace_title_not_title.
 # ---------------------------------------------------------------------------
@@ -331,22 +316,19 @@ def shared_prefix(instruction_text: str, language_line: str) -> str:
 # ---------------------------------------------------------------------------
 # §0.1 AGENT-VISIBLE PROVENANCE STAMPS
 #
-# Every generated file under `environment/` used to open with
-# "Generated skeleton -- generator/gen.py, from specs/<spec.id>.yaml" and close
-# with "(`make gen SPEC=specs/<spec.id>.yaml`)". `environment/` is COPY'd into
-# the agent image, so those two lines put the OPERATOR-FACING scenario id --
-# which is allowed to name the pitfall -- in front of the agent on turn one, on
-# every arm. For `apigw-redeploy` that is literally step 2's verb, printed
-# twice at the top of the first file a step-1 agent opens.
+# `environment/` is COPY'd into the agent image, so a provenance stamp in a file
+# under it is prompt surface. A stamp must therefore cite NO scenario: a
+# "from specs/<spec.id>.yaml" line puts the OPERATOR-FACING scenario id -- which
+# is allowed to name the pitfall -- in front of the agent on turn one, on every
+# arm (for `apigw-redeploy` that is literally step 2's verb, at the top of the
+# first file a step-1 agent opens).
 #
-# The fix is not to rewrite the citation with `workspace_id` (that would name a
-# spec file which does not exist, and lie to the next maintainer). It is to
-# stop citing the scenario at all: these lines address a BENCH MAINTAINER, and
-# a maintainer holding the repo does not need the file name spelled out --
-# `make gen` with no SPEC= prints its own usage (mk/gen.mk:23). Uniform across
-# every scenario and every arm, so the stamp carries exactly zero scenario
-# information rather than "a little, but only for some scenarios" (which would
-# itself signal that this scenario has something to hide).
+# Rewriting the citation with `workspace_id` is not the fix -- it would name a
+# spec file that does not exist. The stamp addresses a BENCH MAINTAINER, who
+# holds the repo and does not need the file name spelled out (`make gen` with no
+# SPEC= prints its own usage). It is uniform across every scenario and arm, so
+# it carries exactly zero scenario information rather than "a little, but only
+# for some scenarios", which would itself signal something to hide.
 #
 # The scenario id is still recorded where it belongs: `task.toml [metadata]`,
 # host-side, never uploaded to the agent's container.
@@ -375,9 +357,9 @@ def seed_entry_body(spec: Spec, arm: Arm) -> str | None:
     per-arm structural contract each arm's bootstrap file depends on is checked
     HERE, at generation time, instead of failing later as an opaque `tsc` or
     `terraform validate` error inside a gate. The provider-block rule for
-    hcl_raw is finding G1's invariant restated: `provider.tf` owns the provider
-    bootstrap, and a second `provider "aws"` block in `main.tf` is a duplicate
-    the plan rejects.
+    The hcl_raw rule restates the ownership invariant: `provider.tf` owns the
+    provider bootstrap, and a second `provider "aws"` block in `main.tf` is a
+    duplicate the plan rejects.
     """
     if spec.workspace_seed is None:
         return None
@@ -478,14 +460,11 @@ def awscdk_bin_app_ts(spec: Spec) -> str:
 def hcl_raw_main_tf(spec: Spec) -> str:
     """The hcl_raw arm's output_contract.entry_file -- resource blocks ONLY.
 
-    Finding G1 (benchmark-integrity review, fixed 2026-08-06): the provider
-    bootstrap must not live at the top of THIS file. Since main.tf is
-    entry_file, a normal agent solution that fully rewrites it from scratch
-    (entirely reasonable -- the instruction never mentions the bootstrap, and
-    there's no reason hand-written HCL should preserve boilerplate it didn't
-    author) deletes the bootstrap along with it, and `terraform plan` then
-    fails for a reason unrelated to the solution -- scoring an
-    otherwise-CORRECT solution 0.0.
+    The provider bootstrap must NOT live at the top of this file. main.tf is
+    entry_file, and a normal agent solution that rewrites it from scratch --
+    entirely reasonable, since the instruction never mentions the bootstrap --
+    would delete the bootstrap with it, so `terraform plan` fails for a reason
+    unrelated to the solution and an otherwise-CORRECT answer scores 0.0.
 
     So the provider bootstrap lives in the separate, pre-seeded provider.tf
     (see hcl_raw's own write_environment() branch below and
@@ -521,18 +500,15 @@ def terraconstructs_main_ts(spec: Spec) -> str:
     which is). Regenerated every run (like awscdk_bin_app_ts()'s bin/app.ts)
     but never agent-owned.
 
-    Finding G1 (benchmark-integrity review, fixed 2026-08-06): this file
-    used to ALSO define the `ScenarioStack` class body AND be entry_file at
-    the same time. A normal agent solution that fully rewrites its own
-    entry_file (entirely reasonable behavior) then silently deleted this
-    providerConfig block along with it, and `terraform plan` failed with no
-    provider configured. Fix: the stack's resource logic now lives in a
-    SEPARATE file, terraconstructs_stack_skeleton() below
-    (lib/scenario-stack.ts, mirroring awscdk's bin/app.ts /
-    lib/scenario-stack.ts split -- see the entry_rel assert in
-    write_environment()'s terraconstructs branch), and THIS file -- App +
-    providerConfig only -- is what write_environment() regenerates every
-    run without ever treating it as entry_file.
+    This file must never ALSO define the `ScenarioStack` class body: as
+    entry_file it would be rewritten wholesale by a normal agent solution,
+    taking this providerConfig block with it, and `terraform plan` would fail
+    with no provider configured. The stack's resource logic lives in a SEPARATE
+    file, terraconstructs_stack_skeleton() below (lib/scenario-stack.ts,
+    mirroring awscdk's bin/app.ts / lib/scenario-stack.ts split -- see the
+    entry_rel assert in write_environment()'s terraconstructs branch). THIS
+    file -- App + providerConfig only -- is regenerated every run and never
+    treated as entry_file.
 
     Live AWS is the only trial mode (aws-access.html): providerConfig
     carries only `region`, so the AWS provider always falls through to its
@@ -769,28 +745,21 @@ def _ignore_build_artifacts(_dir: str, names: list[str]) -> set[str]:
 # Dockerfile COPY coverage — docs/design/poisoned-workspace-design.md §9-B1
 # ---------------------------------------------------------------------------
 #
-# THE BUG THIS SECTION FIXES: write_environment() byte-copies the arm's
-# `environment/` into the task and then writes extra files into the task's
-# workspace dir (spec `seeded_files`, §2.5 — e.g. apigw-openapi's
-# `openapi/widgets-api.json` and `lambda/placeholder.zip`). But the task's
-# Dockerfile was a verbatim copy of the ARM's Dockerfile, and every arm
-# Dockerfile COPYs only the NAMED arm-level paths it knows about
-# (`COPY workspace/provider.tf ./provider.tf`, ...). A generator-written
-# workspace file therefore existed in the build CONTEXT and on the host — where
-# gates/oracle_falsifiability.py copies the workspace tree directly and so saw
-# it — but was NEVER inside the agent's container, even though instruction.md
-# told the agent to read it. Fixed by patching the generated Dockerfile (the
-# same mechanism that already patches preflight.sh) with one COPY per
-# uncovered workspace file.
+# THE RULE: every workspace file the generator writes (spec `seeded_files`,
+# §2.5) must be COPYed into the agent's image. An arm Dockerfile COPYs only the
+# NAMED arm-level paths it knows about, so the generator patches the task's
+# Dockerfile — the same mechanism that patches preflight.sh — with one COPY per
+# uncovered workspace file. Without it a file instruction.md tells the agent to
+# read exists in the build CONTEXT and on the host (where
+# gates/oracle_falsifiability.py reads the workspace tree directly) but never
+# inside the agent's container.
 #
-# Deliberately NOT `COPY workspace/ ./`: the named-COPY discipline is a design
-# choice each arm Dockerfile documents (arms/hcl-raw/environment/Dockerfile's
-# "Workspace scaffold" comment, arms/*/README.md "Generated-task workspace
-# split") — it keeps the image contract explicit and keeps npm-install layer
-# caching intact. The generator names each file too.
+# Named COPYs, never `COPY workspace/ ./`: the named-COPY discipline each arm
+# Dockerfile documents (arms/*/README.md "Generated-task workspace split")
+# keeps the image contract explicit and npm-install layer caching intact.
 #
-# ADD is parsed alongside COPY for completeness: no arm uses it today, but one
-# that did would otherwise look "uncovered" here and get a duplicate COPY.
+# ADD is parsed alongside COPY so an arm using it would not look "uncovered"
+# here and collect a duplicate COPY.
 _CONTEXT_COPY_INSTRUCTIONS = {"COPY", "ADD"}
 
 
@@ -1016,7 +985,7 @@ def write_environment(spec: Spec, arm: Arm, dest: Path) -> None:
         (workspace / entry_rel).write_text(hcl_raw_main_tf(spec))
         # provider.tf itself is NOT rewritten here -- it's byte-copied by the
         # copytree above from arms/hcl-raw/environment/workspace/provider.tf
-        # and never per-scenario content (finding G1).
+        # and is never per-scenario content.
     elif arm == "terraconstructs":
         assert entry_rel == "lib/scenario-stack.ts", (
             f"terraconstructs output_contract.entry_file must be "
@@ -1162,15 +1131,28 @@ def verification_explanation(spec: Spec, arm: Arm) -> str:
                 f"by {test_sh_where}"
             )
         )
-        live_note = (
-            "Live AWS calls ARE part of this scenario (verifier.live_check.enabled "
-            f"is true -- {module_where}, hand-authored). Real "
-            "resources are deployed/modified/re-deployed by the AGENT during the "
-            f"agent phase; {runner_where}, makes "
-            "read-only/behavioral live AWS calls (curl the deployed API, "
-            "apigateway describe calls) to confirm the modification actually "
-            f"served, {gating_note}"
-        )
+        if spec.verifier.live_check.concurrency_mode == "mutating":
+            live_note = (
+                "Live AWS calls ARE part of this scenario (verifier.live_check.enabled "
+                f"is true -- {module_where}, hand-authored). Real "
+                "resources are deployed/modified/re-deployed by the AGENT during the "
+                f"agent phase; {runner_where}, makes "
+                "read-only/behavioral live AWS calls (curl the deployed API, "
+                "apigateway describe calls) to confirm the modification actually "
+                f"served, {gating_note}"
+            )
+        else:
+            # Read-only live check: the agent deploys nothing and the check
+            # itself calls only evaluating AWS APIs that create no resources,
+            # so the account is unchanged by this trial (SCHEMA.md §5).
+            live_note = (
+                "Live AWS calls ARE part of this scenario (verifier.live_check.enabled "
+                f"is true -- {module_where}, hand-authored), but NOTHING is deployed: "
+                "the agent authors only, and "
+                f"{runner_where}, makes evaluating AWS calls that create no "
+                "resources, to check behaviour no static tier can read off the "
+                f"synthesized artifact, {gating_note}"
+            )
     else:
         live_note = "No live AWS calls in v1 (verifier.live_check.enabled is false for this scenario)."
     # Multi-step (SCHEMA.md §2.6): there is one static_tiers.sh PER STEP, under
@@ -1247,12 +1229,9 @@ def workspace_seed_sha256(spec: Spec) -> str | None:
 def build_task_toml(spec: Spec, arm: Arm, task_uuid: str) -> str:
     per_arm = getattr(spec.instruction.per_arm, arm)
     live = spec.verifier.live_check
-    # Slice G (apigw-redeploy, 2026-08-06; docs/slice-g-recon.md gap 2):
-    # spec-driven agent_role_name / concurrency mode, replacing the
-    # previously hardcoded literals. `None` (every pre-Slice-G spec, and any
-    # future live_check.enabled=false spec) reproduces the OLD hardcoded
-    # values byte-for-byte -- this branch is a strict superset, not a
-    # behavior change, for every spec that doesn't opt in.
+    # agent_role_name and concurrency mode are spec-driven. `None` -- any spec
+    # that does not opt in, i.e. every live_check.enabled=false spec -- falls
+    # back to the default literals, so this branch is a strict superset.
     agent_role_name = live.agent_role_name or "QALocalInvocationApplicationRole"
     concurrency_mode = live.concurrency_mode or "read-only"
     # BROWNFIELD SEED DEPLOY (SCHEMA.md §2.7.1). Both blocks are emitted ONLY
@@ -1279,13 +1258,12 @@ def build_task_toml(spec: Spec, arm: Arm, task_uuid: str) -> str:
         if seed_deploy is not None
         else []
     )
-    # FAIL-CLOSED AT VERIFY TIME (finding M3, adversarial review 2026-08-25).
-    # Emitted by the SAME `seed_deploy is not None` branch that makes
-    # generate_arm() write pre_invoke/pre_invoke.sh, so task.toml and the
-    # pre_invoke/ directory are armed together or not at all -- and
+    # FAIL-CLOSED AT VERIFY TIME. Emitted by the SAME `seed_deploy is not None`
+    # branch that makes generate_arm() write pre_invoke/pre_invoke.sh, so
+    # task.toml and the pre_invoke/ directory are armed together or not at all;
     # generator/tests/test_seed_deploy.py asserts that BICONDITIONAL over every
-    # task dir in the repo, because "the file is missing and nothing notices"
-    # is exactly the failure this key exists to convert into a loud one.
+    # task dir in the repo, because "the file is missing and nothing notices" is
+    # exactly the failure this key converts into a loud one.
     seed_required_env: list[str] = (
         [f'{SEED_DEPLOY_REQUIRED_ENV_KEY} = "true"'] if seed_deploy is not None else []
     )
@@ -1320,7 +1298,20 @@ def build_task_toml(spec: Spec, arm: Arm, task_uuid: str) -> str:
         if seed_deploy is not None and not spec.is_multi_step()
         else []
     )
-    if concurrency_mode == "read-only":
+    if concurrency_mode == "read-only" and live.enabled:
+        # A live check is not by itself a mutation: an evaluate-only AWS API
+        # (stepfunctions test-state) creates nothing, so this trial still
+        # leaves the account as it found it and still needs no post-trial
+        # reset (specs/SCHEMA.md §5, spec_model.LiveCheck.concurrency_mode).
+        concurrency_comment = (
+            "# Static-tier verifier plus a READ-ONLY live check: the agent never\n"
+            "# deploys, and tests/live_check.py calls only evaluating AWS APIs that\n"
+            "# create nothing, so no AWS mutation happens in agent, verifier,\n"
+            "# pre_invoke, or post_invoke and read-only trials of this scenario can\n"
+            "# co-run (verifier.live_check.enabled is true and\n"
+            "# verifier.live_check.concurrency_mode is read-only -- specs/SCHEMA.md §5)."
+        )
+    elif concurrency_mode == "read-only":
         concurrency_comment = (
             "# Static-tier verifier only (synth/plan, no deploy); no AWS mutation\n"
             "# happens in agent, verifier, pre_invoke, or post_invoke, so read-only\n"
@@ -1358,12 +1349,11 @@ def build_task_toml(spec: Spec, arm: Arm, task_uuid: str) -> str:
     # stays byte-identical (`workspace_title` is forbidden there).
     # Host-side reporting only; nothing uploads [metadata] to the agent.
     #
-    # The comment above the key is FORM-SPECIFIC, and the multi-step wording is
-    # frozen byte-for-byte as Amendment 27 shipped it. Generalising it to cover
-    # both forms moved three already-published `apigw-redeploy` task.toml files
-    # for no reason other than prose -- a regeneration diff on a task dir that
-    # nobody changed is exactly the noise the byte-identity guarantee exists to
-    # prevent. So each form gets its own accurate wording instead.
+    # The comment above the key is FORM-SPECIFIC and each form's wording is
+    # frozen byte-for-byte. One wording covering both forms would rewrite
+    # already-published task.toml files for prose alone -- a regeneration diff
+    # on a task dir nobody changed is the noise the byte-identity guarantee
+    # exists to prevent.
     if spec.is_multi_step():
         scenario_title_comment = [
             "# The WHOLE-ARC scenario title. [task] description deliberately",
@@ -1434,10 +1424,11 @@ def build_task_toml(spec: Spec, arm: Arm, task_uuid: str) -> str:
         # are pushed at their own phases -- harbor/trial/trial.py uploads no
         # task file), so this is defence in depth, not a live leak. It is done
         # anyway because task.toml is the LAST generator-stamped copy of the
-        # whole arc left inside the task dir, and Amendment 27 §5.1's lesson is
-        # precisely that "it's only metadata" is how the arc got into the
-        # agent's own main.tf. The full title is not lost -- it is kept below
-        # in [metadata] scenario_title, which is host-side reporting only.
+        # whole arc left inside the task dir, and by Amendment 27 §5.1 ("no
+        # later step's intent on an earlier step's prompt surface") "it's only
+        # metadata" is exactly how an arc reaches the agent's own main.tf. The
+        # full title is kept below in [metadata] scenario_title, host-side
+        # reporting only.
         # The same applies to a BROWNFIELD spec, whose `title` names the change
         # (and usually the trapped property with it) -- Amendment 28 §3.3.
         # A plain single-step greenfield spec has no `workspace_title` and
@@ -1453,9 +1444,12 @@ def build_task_toml(spec: Spec, arm: Arm, task_uuid: str) -> str:
         "authors = []",
         "keywords = []",
         "",
+        # scenario_id and this task's parent directory under tasks/ must name
+        # the same shard (see scenario_id_for/task_dir above), or aws-bench
+        # resolves the task to a scenario it never deployed.
         "# --- aws-bench extension --- which scenario this task uses",
         "[scenario]",
-        'scenario_id = "anchor"',
+        f"scenario_id = {toml_str(scenario_id_for(spec, arm))}",
         f"agent_role_name = {toml_str(agent_role_name)}",
         *seed_pre_invoke_role,
         "",
@@ -1575,11 +1569,10 @@ def build_task_toml(spec: Spec, arm: Arm, task_uuid: str) -> str:
     ] + build_steps_toml(spec, live)
     rendered = "\n".join(lines)
 
-    # THE KNOB THAT ACTUALLY DIVERGES THE TWO USERS (finding m3, adversarial
-    # review 2026-08-25). generate_arm()'s Dockerfile `USER` guard was
-    # documented as protecting against "the seed deploy and the agent running
-    # as different users" -- which a Dockerfile `USER` cannot cause, since both
-    # execs take the image default. `[agent] user` can, and does:
+    # THE KNOB THAT ACTUALLY DIVERGES THE TWO USERS. A Dockerfile `USER` cannot
+    # make the seed deploy and the agent run as different users -- both execs
+    # take the image default, and generate_arm()'s USER guard protects something
+    # else (see its own comment). `[agent] user` can, and does:
     # aws_trial.py::_staged_credentials writes ~/.aws/credentials as
     # `self.task.config.agent.user` (aws_trial.py:196) while ScriptRunner.run
     # execs the phase script with NO `user=` argument at all
@@ -1588,11 +1581,11 @@ def build_task_toml(spec: Spec, arm: Arm, task_uuid: str) -> str:
     # in pre_invoke.sh is unauthenticated, and the deploy fails for a reason
     # that has nothing to do with the scenario.
     #
-    # No code path in this generator emits `[agent] user` today, so this is a
-    # trip-wire, not a filter -- it exists so that the day one is added, a
-    # seed-deploying spec fails at GENERATION time instead of at 30 minutes and
-    # one real AWS account per trial. Asserted on the RENDERED bytes rather
-    # than on the intent, because the rendered bytes are what aws-bench parses.
+    # No code path in this generator emits `[agent] user`, so this is a
+    # trip-wire, not a filter: the day one is added, a seed-deploying spec fails
+    # at GENERATION time instead of at 30 minutes and one real AWS account per
+    # trial. Asserted on the RENDERED bytes, because those are what aws-bench
+    # parses.
     if seed_deploy is not None:
         assert_no_agent_user_for_seed_deploy(rendered, spec.id, arm)
     return rendered
@@ -1602,10 +1595,10 @@ def assert_no_agent_user_for_seed_deploy(rendered: str, spec_id: str, arm: str) 
     """Raise if a seed-deploying task.toml carries `[agent] user`.
 
     Split out of build_task_toml so it can be EXERCISED by a test against a
-    crafted task.toml body -- no generator code path emits the key today, so a
-    test that only ever calls build_task_toml could never reach this branch and
-    the guard would be a comment claiming a property nothing checks (which is
-    finding M1's own shape). generator/tests/test_seed_deploy.py calls both.
+    crafted task.toml body: no generator code path emits the key, so a test that
+    only calls build_task_toml could never reach this branch and the guard would
+    be a comment claiming a property nothing checks.
+    generator/tests/test_seed_deploy.py calls both.
     """
     agent_section = re.search(r"^\[agent\]$(.*?)(?=^\[|\Z)", rendered, re.M | re.S)
     offending = [
@@ -2246,7 +2239,7 @@ def build_static_tiers_sh(spec: Spec, arm: Arm, step: Step | None = None) -> str
     #     a `cdktn synth` that died for some unrelated reason. Two arms are
     #     being compared; "which layer caught it" is part of the measurement.
     #   - defence in depth against the stale-JS hazard. `noEmitOnError: true`
-    #     means a failing compile never overwrites a previously-good main.js,
+    #     means a failing compile never overwrites a good main.js,
     #     so if the compile were ever removed from the app string (or `cdktn
     #     synth` were invoked in some path that bypasses it), a broken
     #     solution could synth exit-0 from stale emitted JS and score as
@@ -2291,47 +2284,31 @@ def build_static_tiers_sh(spec: Spec, arm: Arm, step: Step | None = None) -> str
     # against the *same* artifact shape.
     if arm == "terraconstructs":
         stack_dir = f"cdktf.out/stacks/{spec.workspace_identity()}"
-        # -refresh=false whenever this spec's own working tree can
-        # legitimately arrive here already REAL-applied (B3 fix,
-        # DECISIONS.md Slice G amendment) -- `verifier.live_check.enabled`
-        # is the only spec-level signal for that (only `apigw-redeploy`
-        # sets it true today). A leftover terraform.tfstate names a real
-        # REST API/Lambda/IAM role; a default (refreshing) `terraform plan`
-        # re-contacts AWS to reconcile it, which is slow and can drift from
-        # what this run's own apply is about to produce -- a PERFECT
-        # solution would fail this tier for a reason unrelated to its own
-        # correctness. Gated
-        # (not unconditional) so every OTHER spec's generated
-        # tests/static_tiers.sh is a byte-for-byte no-op change (matches
-        # the same "confirmed no diff for any live_check.enabled=false
-        # spec" verification convention Amendment 12/13 already used for
-        # this spec's other generator changes) -- their working trees never
-        # carry prior state to begin with, so the flag would be harmless
-        # there too, just unnecessary text.
-        # BROWNFIELD TOO (finding M4, adversarial review 2026-08-25).
-        # Spec._brownfield_plan_must_not_refresh validates
-        # `output_contract.plan_command` -- and `continue`s when it is empty.
-        # It is empty on BOTH cdk-shaped arms: this arm's `terraform plan` is
-        # generated HERE, from this hardcoded template, never from the spec
-        # field. So on terraconstructs that validator was green while proving
-        # nothing, and the guarantee was actually held by an unrelated
-        # coupling -- `live_check.enabled` -- that the validator never checks.
-        # A brownfield spec with live_check disabled would have silently lost
-        # the flag on this arm and scored a PERFECT solution 0.0: the seed is
-        # already deployed, so a refreshing plan re-contacts AWS to reconcile
-        # every seeded resource -- slow, and able to report pending changes
-        # for a reason unrelated to the agent's own correctness.
+        # -refresh=false whenever this spec's own working tree can legitimately
+        # arrive here already REAL-applied. A leftover terraform.tfstate names a
+        # real REST API/Lambda/IAM role; a default (refreshing) `terraform plan`
+        # re-contacts AWS to reconcile it, which is slow and can drift from what
+        # this run's own apply is about to produce -- a PERFECT solution would
+        # fail this tier for a reason unrelated to its own correctness.
         #
-        # `workspace_seed is not None` is the honest condition for the same
-        # reason Spec._brownfield_plan_must_not_refresh uses it: a brownfield
-        # agent is asked to roll its own change out, so its own apply produces
-        # the state file whether or not a seed was deployed for it. The two
-        # conditions are OR'd rather than one replacing the other because
-        # apigw-redeploy is live-check-enabled and greenfield.
+        # TWO conditions, OR'd, because neither covers the other:
+        #   live_check.enabled -- the spec-level signal that a trial applies for
+        #     real (apigw-redeploy is live-check-enabled and greenfield).
+        #   workspace_seed is not None -- a brownfield agent is asked to roll its
+        #     own change out, so its own apply produces the state file whether or
+        #     not a seed was deployed for it. Spec._brownfield_plan_must_not_
+        #     refresh cannot stand in for this here: it validates
+        #     `output_contract.plan_command` and `continue`s when that is empty,
+        #     and it IS empty on both cdk-shaped arms, because this arm's
+        #     `terraform plan` is generated HERE, from this template, never from
+        #     the spec field.
         #
-        # What this fix is worth is pinned by an EXECUTED, arm-parametrised
-        # test that reads the SHIPPED bytes of tests/static_tiers.sh and
-        # tests/test.sh -- generator/tests/test_seed_deploy.py::
+        # Gated rather than unconditional so every other spec's generated
+        # tests/static_tiers.sh is byte-identical without the flag; their working
+        # trees never carry prior state, so it would be harmless but pointless
+        # text there. What the flag is worth is pinned by an EXECUTED,
+        # arm-parametrised test over the EMITTED bytes --
+        # generator/tests/test_seed_deploy.py::
         # test_every_emitted_terraform_plan_of_a_brownfield_spec_is_refresh_free
         # -- not by this comment and not by the spec-field validator alone.
         refresh_flag = (
@@ -2374,25 +2351,15 @@ def build_static_tiers_sh(spec: Spec, arm: Arm, step: Step | None = None) -> str
         # `( ... )` makes `!` negate the compound command's overall exit
         # status instead, which is what "fail this step if any part of the
         # chain fails" actually requires.
-        # The preview echo used to interpolate `command` directly into a
-        # double-quoted string ('echo "== {label}: {command} =="'). That was
-        # safe only as long as every command was single-line and contained
-        # no literal `"` -- true of every step until terraconstructs'
-        # tf-plan step started needing embedded double-quoted variable
-        # references (`"$TF_RC"`) and multiple newlines (init/plan/show
-        # chained together, see above). Interpolated raw, those `"`
-        # characters prematurely close/reopen
-        # the outer double-quoted echo argument, turning `>`/`>>` sequences
-        # that were meant to stay literal text into REAL shell redirections
-        # once they land outside a quote context -- a preview-only echo line
-        # was silently able to corrupt files or diverge from the real `if !
-        # ( {command} )` execution a few lines below. `shlex.quote` wraps
-        # the whole preview string in single quotes (escaping any embedded
-        # single quotes), which is safe for arbitrary literal content
-        # including embedded double quotes and newlines, at the cost of not
-        # expanding `$VAR` in the preview text -- an acceptable trade since
-        # this echo is a human-readable label, not the command that actually
-        # runs (that's the unmodified `{command}` on the very next line).
+        # The preview echo goes through `shlex.quote`, never raw interpolation
+        # into a double-quoted string. A command carrying a literal `"` or a
+        # newline -- terraconstructs' tf-plan step has both (`"$TF_RC"`, and
+        # init/plan/show chained) -- would otherwise close the outer echo
+        # argument and turn `>`/`>>` meant as literal text into REAL
+        # redirections, letting a human-readable label corrupt files or diverge
+        # from the `if ! ( {command} )` execution below. The cost is that `$VAR`
+        # is not expanded in the preview, which is acceptable: the command that
+        # actually runs is the unmodified `{command}` on the very next line.
         step_blocks.append(
             f"echo {shlex.quote(f'== {label}: {command} ==')}\n"
             f"if ! ( {command} ); then\n"
@@ -2411,42 +2378,24 @@ def build_static_tiers_sh(spec: Spec, arm: Arm, step: Step | None = None) -> str
         + (", ".join(tier1_names) if tier1_names else "(none)")
     )
 
-    # HAS_TIER1_ASSERTS is a compile-time (generation-time) constant baked
-    # into the script, not a runtime bash computation, since tier1_names is
-    # already known here. It distinguishes two different reasons tier-1
-    # might not run a real check, which used to be conflated into a single
-    # "SKIPPED" status that the final reward gate treated as a pass either
-    # way:
+    # HAS_TIER1_ASSERTS is a generation-time constant baked into the script,
+    # not a runtime bash computation, since tier1_names is already known here.
+    # It keeps three different reasons tier-1 ran no real check apart, which a
+    # single non-gating "SKIPPED" status would conflate:
     #   - SKIPPED_NO_ASSERTS: this scenario has no tier-"1" structural_asserts
     #     at all -- legitimately nothing to run, always non-gating.
     #   - SKIPPED_STUB: the policy file is still a generator scaffold
-    #     (is_stub_policy) -- Slice D hasn't hand-authored it yet. Previously
-    #     this was treated as non-gating (comment now stale -- see
-    #     "SKIPPED_STUB is graded as a pass" in DECISIONS.md): the final `[
-    #     "$tier1_status" != "FAIL" ]` gate scored SKIPPED_STUB as a pass, so
-    #     a scenario whose tier-1 policy the wildcard-resource/write-action
-    #     catches live in (e.g. the toy spec's
-    #     policy-resource-scoped-not-wildcard/policy-actions-read-only) would
-    #     award full reward to a solution that violates both, purely because
-    #     Slice D hadn't hand-authored the policy yet -- identical shape to
-    #     the TOOL_MISSING bug below, just triggered by an un-authored
-    #     policy instead of a missing tool. SKIPPED_STUB is now ALSO a hard
-    #     failure once HAS_TIER1_ASSERTS is true (see the final reward gate
-    #     below), with its own /logs/verifier/tier1-unauthored marker so
-    #     it's distinguishable in the logs from both a real policy FAIL and
-    #     TOOL_MISSING's tier1-unavailable.
+    #     (is_stub_policy), i.e. nobody has hand-authored this scenario's
+    #     Rego/cfn-guard yet. A HARD FAILURE once HAS_TIER1_ASSERTS is true (see
+    #     the final reward gate below), with its own
+    #     /logs/verifier/tier1-unauthored marker: grading it as a pass would
+    #     award full reward to a solution that violates every catch the
+    #     un-authored policy is supposed to hold.
     #   - TOOL_MISSING: this scenario DOES declare tier-1 asserts, but the
-    #     grading tool isn't on PATH in this image. That is a broken/
-    #     incomplete arm image, not "nothing to check" -- previously this
-    #     also produced tier1_status="SKIPPED", which the final `[
-    #     "$tier1_status" != "FAIL" ]` gate then scored as a pass, so a
-    #     scenario with real tier-1 asserts (e.g. the toy spec's
-    #     policy-resource-scoped-not-wildcard) would award full reward to
-    #     ANY solution -- including ones that violate the tier-1 policy --
-    #     purely because the tool was absent. TOOL_MISSING is now a hard
-    #     failure (see the final reward gate below) and also writes a
-    #     dedicated /logs/verifier/tier1-unavailable marker so this is
-    #     distinguishable from a real policy FAIL in the logs.
+    #     grading tool is not on PATH in this image -- a broken/incomplete arm
+    #     image, not "nothing to check". Also a hard failure, with a dedicated
+    #     /logs/verifier/tier1-unavailable marker, so it stays distinguishable
+    #     from a real policy FAIL in the logs.
     has_tier1_asserts = "true" if tier1_names else "false"
 
     # Which engine grades tier-1 here. The TF-shaped arms are always OPA/Rego
@@ -2809,7 +2758,7 @@ def build_static_tiers_sh(spec: Spec, arm: Arm, step: Step | None = None) -> str
 
     # Live AWS is the only trial mode (aws-access.html): this arm's toolchain
     # (terraform init/plan, or cdktn synth's own STS/partition data sources)
-    # needs REAL ambient AWS credentials, staged by aws-bench before this
+    # needs REAL ambient AWS credentials, staged by aws-bench ahead of this
     # container's pre_invoke/verifier phases run -- neither TF-shaped arm's
     # bootstrap file carries an offline fixture. A missing/broken
     # credential chain here is test INFRASTRUCTURE failing, not a bad
@@ -2823,9 +2772,18 @@ def build_static_tiers_sh(spec: Spec, arm: Arm, step: Step | None = None) -> str
     # that marker, before any gating block can turn this into a 0.0, so the
     # trial ends with no reward file at all and harbor's own
     # RewardFileNotFoundError reports it INVALID -- the same run_invalid
-    # contract test.sh's SPEC_SEED_DEPLOY_REQUIRED guard uses. awscdk needs no
-    # equivalent: its synth/tier-0/tier-1 chain makes no AWS call
-    # (`cdk synth --no-lookups`).
+    # contract test.sh's SPEC_SEED_DEPLOY_REQUIRED guard uses.
+    #
+    # The rule is ARM-INDEPENDENT: every arm whose verifier reaches AWS at all
+    # preflights. A TF-shaped arm always does, through its toolchain. An
+    # awscdk arm's synth/tier-0/tier-1 chain does not (`cdk synth
+    # --no-lookups`) -- but a live check does, so a spec that enables one
+    # arms this on awscdk too. Without it, the identical credential fault
+    # that VOIDS an hcl_raw row would reach live_check.py as an api-error and
+    # test.sh's gating block would publish it as reward 0.0: the same
+    # infrastructure fault scored as an agent failure on one arm of a
+    # scenario and as no result on another, which biases every cross-arm
+    # comparison the scenario exists to make.
     #
     # REGION comes first. The staged credentials file carries credential keys
     # only (aws_bench/utils/credentials_provider.py), no arm Dockerfile sets
@@ -2834,8 +2792,9 @@ def build_static_tiers_sh(spec: Spec, arm: Arm, step: Step | None = None) -> str
     # void every row, perfect solutions included. Same two lines build_test_sh
     # and build_pre_invoke_sh carry, for the same measured reason; `:=` so a
     # region the harness DOES inject always wins.
+    live_here = spec.verifier.live_check if step is None else step_live_check(spec, step)
     aws_preflight = ""
-    if arm in ("hcl_raw", "terraconstructs"):
+    if arm in ("hcl_raw", "terraconstructs") or live_here.enabled:
         aws_preflight = textwrap.dedent(
             """\
             : "${AWS_DEFAULT_REGION:=us-east-1}"
@@ -2977,30 +2936,20 @@ IDEMPOTENCE_STATE_VANISHED_MARKER = "IDEMPOTENCE_STATE_VANISHED:"
 # scenario's operator-facing id names its own pitfall.
 IDEMPOTENCE_COMMAND: dict[Arm, str] = {
     "hcl_raw": "terraform plan -input=false -refresh=false -detailed-exitcode",
-    # RE-PROBED AFTER SYNTH (verifier note, 2026-08-20; PATH CORRECTED
-    # 2026-08-25, docs/design/single-step-seed-deploy.md §4.3). The re-probe was
-    # written believing this arm's state lived at
-    # cdktf.out/stacks/<id>/terraform.tfstate -- i.e. INSIDE the directory
-    # `cdktn synth` rewrites -- so a synth that cleaned that directory would
-    # leave the plan with NO state, and an offline-shaped stateless plan exits 2,
-    # which the block below would record as a genuine `pending_changes` verdict.
-    #
-    # The premise was wrong, and the correction matters more than the mechanism.
-    # cdktn's `TerraformStack` installs a `LocalBackend` for any stack that
-    # declares no backend of its own (packages/cdktn/src/terraform-stack.ts:
-    # 340-341), and that backend's default path is
+    # RE-PROBED AFTER SYNTH, at the ABSOLUTE state path (see
+    # docs/design/single-step-seed-deploy.md §4.3). This arm's state is NOT
+    # under cdktf.out/: cdktn's `TerraformStack` installs a `LocalBackend` for
+    # any stack that declares no backend of its own
+    # (packages/cdktn/src/terraform-stack.ts), whose default path is
     # `path.join(process.cwd(), \`terraform.${stackId}.tfstate\`)`
-    # (packages/cdktn/src/backends/local-backend.ts:23) -- an ABSOLUTE path baked
-    # into cdk.tf.json at synth time. Corroborated by a real synthesized
-    # cdk.tf.json from this repo's own jobs directory (jobs/claude-sonnet-5/
-    # 2026-08-20__17-16-22/apigw-redeploy-terraconstructs__W2J5uiF):
-    # {"backend": {"local": {"path": "/app/project/terraform.hello-version-api.tfstate"}}}.
+    # (packages/cdktn/src/backends/local-backend.ts) -- an ABSOLUTE path baked
+    # into cdk.tf.json at synth time, outside the directory `cdktn synth`
+    # rewrites.
     #
-    # So the state file is NOT inside the directory synth rewrites, and this
-    # branch is now expected NEVER to fire. It is retained anyway, repointed at
-    # the absolute path: the guarantee ("terraform is never believed about a
-    # state file that vanished") is the contract, and the mechanism being cheap
-    # is not a reason to drop the belt.
+    # So this branch is expected never to fire. It is kept because the contract
+    # is that terraform is never believed about a state file that vanished: a
+    # stateless plan exits 2, which the block below would otherwise record as a
+    # genuine `pending_changes` verdict.
     "terraconstructs": (
         # `npx cdktn synth` always produces the live provider config (Live AWS
         # is the only trial mode -- aws-access.html; terraconstructs_main_ts's
@@ -3040,16 +2989,13 @@ IDEMPOTENCE_PENDING_RC: dict[Arm, int] = {
 # as a genuine `pending_changes` verdict).
 IDEMPOTENCE_STATE_PROBE: dict[Arm, str] = {
     "hcl_raw": "terraform.tfstate",
-    # CORRECTED 2026-08-25 (docs/design/single-step-seed-deploy.md §4.3). This
-    # was "cdktf.out/stacks/__WORKSPACE_ID__/terraform.tfstate", which no
-    # terraconstructs run has ever produced: cdktn's default LocalBackend path
-    # is path.join(process.cwd(), `terraform.${stackId}.tfstate`), i.e.
-    # /app/project/terraform.<workspace_id>.tfstate. The wrong path is the
-    # ENTIRE reason both live brownfield runs reported `not_verifiable` on this
-    # arm despite an apply that AWS itself confirmed ("Apply complete!
-    # Resources: 6 added", SG + endpoint present in the account) -- the probe
-    # failed, not the deploy. Still workspace-root-RELATIVE, as this dict's
-    # docstring says: build_idempotence_block prefixes /app/project/.
+    # terraconstructs state is terraform.<workspace_id>.tfstate at the workspace
+    # root, never under cdktf.out/: cdktn's default LocalBackend path is
+    # path.join(process.cwd(), `terraform.${stackId}.tfstate`)
+    # (docs/design/single-step-seed-deploy.md §4.3). A wrong path here makes the
+    # probe -- not the deploy -- fail, and reports `not_verifiable` for an apply
+    # AWS itself confirmed. Workspace-root-RELATIVE, as this dict's docstring
+    # says: build_idempotence_block prefixes /app/project/.
     "terraconstructs": "terraform.__WORKSPACE_ID__.tfstate",
     # awscdk keeps NO local state -- `cdk diff` reads the deployed CFN stack, so
     # "never deployed / no credentials" is not a question any local file can
@@ -3091,23 +3037,18 @@ IDEMPOTENCE_COMPLETION_MARKER: dict[Arm, str] = {
 
 
 def build_idempotence_seed_movement_guard(arm: Arm, probe: str, *, indent: str) -> str:
-    """The idempotence tier's SEED MOVEMENT guard (finding H, adversarial
-    review round 3, 2026-08-25). Emitted only for a spec that declares
-    `workspace_seed.deploy`.
+    """The idempotence tier's SEED MOVEMENT guard. Emitted only for a spec that
+    declares `workspace_seed.deploy`.
 
-    THE DEFECT. `build_idempotence_block`'s state probe -- "nothing was applied
-    (no deploy state at /app/project/<probe>)" -- was a LIVE guard: an agent
-    that applied nothing left no state, the probe fired, and the tier reported
-    `not_verifiable`. `workspace_seed.deploy` writes that exact file (and, on
-    awscdk, creates that exact stack) BEFORE the agent's first token, so on a
-    brownfield spec the probe can never fire again. A `converged` verdict
-    stopped distinguishing "the agent deployed and converged" from "the agent
-    did nothing and the SEED is still converged" -- the do-nothing agent
-    INHERITS the harness's convergence, silently, with nothing recording that
-    the guard had been disarmed. Wrong output, no error, indistinguishable from
-    a legitimate result: this repo's signature failure mode, produced by a fix.
+    WHAT IT REPLACES. `build_idempotence_block`'s state probe -- "nothing was
+    applied (no deploy state at /app/project/<probe>)" -- cannot fire on a
+    brownfield spec: `workspace_seed.deploy` writes that exact file (and, on
+    awscdk, creates that exact stack) before the agent's first token. Without
+    this guard a `converged` verdict no longer distinguishes "the agent deployed
+    and converged" from "the agent did nothing and the SEED is still converged":
+    the do-nothing agent inherits the harness's convergence, silently.
 
-    THE REPLACEMENT. `pre_invoke.sh` stamps the identity of the state IT
+    THE MECHANISM. `pre_invoke.sh` stamps the identity of the state IT
     deployed into `/logs/seed-deploy-receipt.json` (`state_identity`, see
     SEED_STATE_IDENTITY_JQ). This guard re-reads the identity of the state that
     is there NOW and requires it to have MOVED. Unchanged means the agent
@@ -3161,8 +3102,8 @@ def build_idempotence_seed_movement_guard(arm: Arm, probe: str, *, indent: str) 
         # But abstaining SILENTLY is the repo's signature failure mode -- the
         # guard simply does not fire, `idem_reason` keeps whatever preceded it,
         # and the operator cannot distinguish "the guard ran and the state had
-        # moved" from "the guard never got an answer" (round-3 review). The
-        # verdict stays deliberately unchanged; only the record is added.
+        # moved" from "the guard never got an answer". The verdict stays
+        # deliberately unchanged; only the record is added.
         unreadable = "\n".join(
             [
                 'elif [ -z "$now_identity" ]; then',
@@ -3196,14 +3137,12 @@ def build_idempotence_seed_movement_guard(arm: Arm, probe: str, *, indent: str) 
     body += [
         f"elif {moved_test}; then",
         '  idem_outcome="not_verifiable"',
-        # CLAIM ONLY WHAT WAS ESTABLISHED (round-3 review). This branch used to
-        # say "the agent applied nothing", which the guard does NOT establish --
-        # and which is probably FALSE in this scenario's own central trap case:
-        # a rename that forces destroy-then-create and dies on
-        # `DependencyViolation` did plenty of work and still moved no serial.
-        # What is established is exactly that the identity did not move, so the
-        # tier cannot separate the agent's deployment from the seed's. Same
-        # verdict, honest reason.
+        # CLAIM ONLY WHAT WAS ESTABLISHED. "The agent applied nothing" is not
+        # established here, and is probably FALSE in this scenario's central
+        # trap case: a rename that forces destroy-then-create and dies on
+        # `DependencyViolation` does plenty of work and still moves no serial.
+        # What IS established is that the identity did not move, so the tier
+        # cannot separate the agent's deployment from the seed's.
         '  idem_reason="the deployed state identity is still EXACTLY the one the '
         "harness seeded before the agent's first token ($seed_identity unchanged). "
         "That may mean the agent applied nothing, or that its apply failed without "
@@ -3226,9 +3165,8 @@ def build_idempotence_block(spec: Spec, arm: Arm) -> str:
     `tests/test.sh` bytes. §2.7/§5.1's regression guarantee is that a spec which
     does not opt in generates byte-identically to before this feature existed.
     """
-    # "" replaces the template's own placeholder LINE with an empty line, which
-    # is exactly the blank line that stood there before this feature -- i.e.
-    # byte-identical output for every non-opted-in spec.
+    # "" replaces the template's own placeholder LINE with an empty line, so a
+    # spec that does not opt in emits byte-identical tests/test.sh.
     if not spec.verifier.idempotence.enabled:
         return ""
     wid = spec.workspace_identity()
@@ -3260,12 +3198,11 @@ def build_idempotence_block(spec: Spec, arm: Arm) -> str:
             f'real pending-changes verdict."',
         ]
         if movement_guard:
-            # THE PROBE ABOVE IS A TAUTOLOGY ON A SEEDED SPEC (finding H): the
-            # seed's own pre_invoke.sh writes that exact file before the agent's
-            # first token, so `[ ! -s ... ]` can never be true again here. It is
-            # KEPT rather than deleted -- it still speaks for a seed that
-            # vanished mid-trial -- and the else branch below is what carries
-            # the signal it used to carry.
+            # THE PROBE ABOVE IS A TAUTOLOGY ON A SEEDED SPEC: the seed's own
+            # pre_invoke.sh writes that exact file before the agent's first
+            # token, so `[ ! -s ... ]` can never be true here. It is KEPT --
+            # it still speaks for a seed that vanished mid-trial -- and the
+            # else branch below is what carries the signal.
             lines += ["  else", movement_guard]
         lines += ["  fi"]
         probe_block = "\n".join(lines)
@@ -3391,71 +3328,38 @@ def build_idempotence_block(spec: Spec, arm: Arm) -> str:
 
 
 def build_test_sh(spec: Spec, arm: Arm) -> str:
-    # verifier.live_check.enabled is a per-spec bool (relaxed from
-    # Literal[False] by Slice G -- LiveCheck's own docstring in
-    # spec_model.py); every pre-Slice-G spec still sets it false, so this
-    # is still the "never run" branch for them, but it is now a real
-    # runtime branch for apigw-redeploy, not a permanently-dead one.
+    # Runtime-gated on SPEC_LIVE_CHECK_ENABLED, from this task's own
+    # `[verifier] env` (build_task_toml). That is the ONLY condition: a second,
+    # runner-supplied env var would be unsatisfiable by construction, and
+    # nothing but the spec's own verifier.live_check.enabled should decide
+    # whether live_check.py runs. task.toml's `[verifier] env` does reach this
+    # script's process environment -- harbor/verifier/verifier.py::verify merges
+    # and resolves it before `environment.exec`.
     #
-    # Finding G3 fix (benchmark-integrity review, 2026-08-07): this used
-    # to gate on SPEC_LIVE_CHECK_ENABLED (from this task's own
-    # `[verifier] env`, see build_task_toml) AND a second,
-    # nothing-ever-sets CDKTN_BENCH_LIVE_CHECK runner env var -- the
-    # second condition was unsatisfiable by construction (confirmed:
-    # `grep -rn CDKTN_BENCH_LIVE_CHECK` across this repo only ever matched
-    # generated copies of this exact file, gen.py, SCHEMA.md and docs --
-    # no runner/scenario/CI path ever exported it), so live_check.py could
-    # never run in a real trial regardless of SPEC_LIVE_CHECK_ENABLED.
-    # Dropped: SPEC_LIVE_CHECK_ENABLED alone already encodes this spec's
-    # intent (it is only ever "true" for a scenario whose
-    # verifier.live_check.enabled is true, i.e. exactly the scenarios that
-    # should run this). CONFIRMED for real (not "best-effort", see
-    # build_task_toml's now-updated comment) against aws-bench's own
-    # source (harbor/verifier/verifier.py's `verify()`: `merged_env = {
-    # **self.task.config.verifier.env, ... }`, `env = resolve_env_vars(
-    # merged_env)`, then `self.environment.exec(command=command, env=env)`
-    # -- task.toml's `[verifier] env` genuinely reaches this script's own
-    # process environment).
-    # GATING fix (fix-round-3, DECISIONS.md Slice G amendment): when this
-    # scenario's task.toml ALSO sets SPEC_LIVE_CHECK_GATING=true
-    # (verifier.live_check.gating, build_task_toml above), live_check.py's
-    # own JSON `.outcome` is folded into reward.txt -- AND semantics: final
-    # reward is 1.0 iff the static tiers already say 1.0 AND live_check.py
-    # reports outcome "pass". Both "not_verifiable" and "fail_stale"
-    # downgrade to 0.0, fail-closed (a live check that could not be run, or
-    # that observed staleness, must never silently pass a trial). Still a
-    # single static template (like the rest of this function) -- the whole
-    # branch is runtime-gated on env vars task.toml sets per spec, so every
-    # pre-Slice-G spec (both vars unset) and apigw-redeploy's own static
-    # tier prove-step (SPEC_LIVE_CHECK_GATING unset there) generate this
-    # exact same text and take the old, non-gating path at runtime.
+    # GATING: when task.toml also sets SPEC_LIVE_CHECK_GATING=true
+    # (verifier.live_check.gating), live_check.py's own JSON `.outcome` is
+    # folded into reward.txt -- AND semantics: 1.0 iff the static tiers already
+    # say 1.0 AND the outcome is "pass". "not_verifiable" and "fail_stale" both
+    # downgrade to 0.0, fail-closed: a live check that could not run, or that
+    # observed staleness, must never silently pass a trial. Still one static
+    # template -- both branches are runtime-gated on env vars, so a spec with
+    # neither var set generates this same text and takes the non-gating path.
     #
-    # Finding G2 fix (benchmark-integrity review, fix-round-3, 2026-08-07):
-    # `python3` is now installed in every arm image (see
-    # arms/{awscdk,terraconstructs}/environment/Dockerfile's own
-    # fix-round-3 comment; arms/hcl-raw already had it), closing the hole
-    # this exists to guard. Kept anyway, belt-and-suspenders, because a
-    # silent regression here (image rebuilt without python3) would
-    # otherwise be indistinguishable from a genuine "no live API found"
-    # verdict:
-    #   1. live_check.py's stdout and stderr no longer share
-    #      live_check-result.json -- stderr goes to its own
-    #      live_check-stderr.log, so a crash/traceback can never corrupt
-    #      (or masquerade as) the JSON outcome file.
-    #   2. The interpreter's own exit code is captured BEFORE gating reads
-    #      the result file. A nonzero exit (127 = python3 missing entirely;
-    #      any other nonzero = live_check.py itself crashed) overwrites
-    #      whatever landed in live_check-result.json with an explicit
-    #      `{"outcome": "run_invalid", ...}` marker -- a THIRD bucket,
-    #      distinct from both "pass" and the legitimate-verdict
-    #      "not_verifiable"/"fail_stale" outcomes live_check.py itself can
-    #      report on a clean run. Gating still fails closed on it (any
-    #      outcome != "pass" downgrades reward to 0.0), so behavior is
-    #      unchanged when gating is on -- this only changes what the
-    #      failure is diagnosed as, so a reviewer reading
-    #      live_check-result.json post-hoc sees "the interpreter/script
-    #      itself broke" rather than a misleading "verifier legitimately
-    #      couldn't find the API".
+    # The interpreter is guarded even though python3 is installed in every arm
+    # image, because a silent regression (an image rebuilt without it) must not
+    # be indistinguishable from a genuine "no live API found" verdict:
+    #   1. live_check.py's stdout and stderr go to separate files, so a
+    #      crash/traceback can never corrupt (or masquerade as) the JSON
+    #      outcome file.
+    #   2. The interpreter's exit code is captured BEFORE gating reads the
+    #      result file. Any nonzero (127 = python3 missing; anything else =
+    #      live_check.py itself crashed) overwrites live_check-result.json with
+    #      an explicit `{"outcome": "run_invalid", ...}` -- a THIRD bucket,
+    #      distinct from "pass" and from the legitimate
+    #      "not_verifiable"/"fail_stale" verdicts. Gating still fails closed on
+    #      it; this only changes what the failure is diagnosed as, so a reviewer
+    #      reads "the interpreter/script broke" rather than "the verifier
+    #      legitimately couldn't find the API".
     return textwrap.dedent(
         """\
         #!/usr/bin/env bash
@@ -3598,6 +3502,22 @@ def build_test_sh(spec: Spec, arm: Arm) -> str:
               > /logs/verifier/live_check-result.json
           fi
 
+          # A live_check.py still carrying the generator stub's payload
+          # (`"status": "not_implemented"`) proves the hand-authored oracle
+          # this spec declares never reached the container. It prints no
+          # `outcome`, so the gating block below would read "not_verifiable"
+          # and score EVERY solution 0.0, correct ones included. Same rule as
+          # _assert_lib.sh's is_stub_policy: a missing oracle VOIDS the row,
+          # it never grades it. No reward file is written, so harbor's own
+          # RewardFileNotFoundError reports the trial INVALID.
+          if [ "$(jq -r '.status // ""' /logs/verifier/live_check-result.json 2>/dev/null)" = "not_implemented" ]; then
+            echo "GENERATOR STUB: tests/live_check.py is the inert generator stub, not this spec's" >&2
+            echo "hand-authored live oracle. REFUSING TO GRADE: no reward file is written, so this" >&2
+            echo "trial reports as INVALID rather than as a score." >&2
+            rm -f /logs/verifier/reward.txt
+            exit 1
+          fi
+
           if [ "${SPEC_LIVE_CHECK_GATING:-false}" = "true" ]; then
             live_outcome="$(jq -r '.outcome // "not_verifiable"' /logs/verifier/live_check-result.json 2>/dev/null)"
             if [ -z "$live_outcome" ]; then
@@ -3615,48 +3535,6 @@ def build_test_sh(spec: Spec, arm: Arm) -> str:
         """
     ).replace("__IDEMPOTENCE_BLOCK__", build_idempotence_block(spec, arm)).replace(
         "__SEED_RECEIPT__", SEED_DEPLOY_RECEIPT_PATH
-    )
-
-
-def build_tier05_host_readme(spec: Spec, arm: Arm) -> str:
-    """Emitted only when spec.oracle.tier05_jsonata is set -- see
-    DECISIONS.md "Tier-0.5 runs host-side, non-gating" for why this is a
-    doc pointer at a host-side command rather than a step inside
-    static_tiers.sh: no arm image ships Python/jsonata-python (installing
-    it in three separate Docker images to run a check that only exists for
-    ASL-embedded-expression scenarios -- not every scenario -- was judged
-    not worth the image-size/build-time cost vs. running it host-side,
-    post-hoc, from this repo's own uv environment, which already has
-    jsonata-python via oracles/lib/tier05_jsonata.py's own test suite).
-    Previously there was no pointer to this at all in a generated task
-    dir -- a scenario could declare tier05_jsonata and nothing in the
-    generated output would ever say how (or whether) it gets checked."""
-    per_arm = getattr(spec.instruction.per_arm, arm)
-    artifact = per_arm.output_contract.artifact_path
-    return textwrap.dedent(
-        f"""\
-        # Tier-0.5 (embedded-expression JSONata) — {spec.id} ({arm})
-
-        This scenario declares `oracle.tier05_jsonata` (specs/{spec.id}.yaml).
-        Generated -- generator/gen.py. Do not hand-edit; regenerate instead.
-
-        Tier-0.5 does NOT run inside `tests/static_tiers.sh` and does NOT
-        affect `/logs/verifier/reward.txt` in v1 -- it is non-gating, the
-        same as `tests/live_check.py` (SCHEMA.md §5's precedent). See
-        DECISIONS.md "Tier-0.5 runs host-side, non-gating" for why: no arm
-        image ships Python/jsonata-python.
-
-        Run it AFTER `tests/static_tiers.sh` has produced this arm's
-        artifact (`{artifact}`), from the repo root, in this repo's own
-        `uv` environment (not inside the arm container):
-
-            uv run python -m oracles.lib.tier05_jsonata \\
-                /app/project/{artifact} specs/{spec.id}.yaml
-
-        Exit 0 iff every declared case in `oracle.tier05_jsonata.cases`
-        passed; writes `/logs/verifier/tier05-result.json` if
-        `/logs/verifier/` exists (observational only, never gating).
-        """
     )
 
 
@@ -3768,12 +3646,9 @@ def build_step_pre_invoke_sh(spec: Spec, arm: Arm, step: Step) -> str:
 # --------------------------------------------------------------------------
 
 # ANTI-VACUITY LAYER 2: "the deploy exited 0" is not the same claim as "there is
-# converged state the next phase can use". The terraconstructs arm's first live
-# run is the worked example -- `cdktn deploy` printed "Apply complete!
-# Resources: 6 added", AWS itself held the SG and the endpoint, and the harness
-# still had no state file where it was looking (that was a wrong PATH, see
-# IDEMPOTENCE_STATE_PROBE above; but a toolchain that genuinely half-applies
-# would look identical from the exit code alone).
+# converged state the next phase can use". A toolchain that half-applies, and a
+# probe pointed at the wrong state path (see IDEMPOTENCE_STATE_PROBE above),
+# both look identical to success from the exit code alone.
 #
 # PER-ARM because the three arms keep converged state in three different places,
 # and only one of them is a local file the agent's own toolchain will re-read:
@@ -3805,21 +3680,20 @@ def build_step_pre_invoke_sh(spec: Spec, arm: Arm, step: Step) -> str:
 #
 # Indentation is LITERAL in-container indentation -- these strings are spliced
 # into build_seed_pre_invoke_sh's already-dedented template at column 0.
-# The seed-deploy RECEIPT (finding M3, adversarial review 2026-08-25). Written
-# by pre_invoke/pre_invoke.sh on the success path only; READ by tests/test.sh,
+# The seed-deploy RECEIPT. Written by
+# pre_invoke/pre_invoke.sh on the success path only; READ by tests/test.sh,
 # which refuses to grade a trial whose task.toml declares
 # SPEC_SEED_DEPLOY_REQUIRED=true and finds no receipt here.
 #
 # WHY THIS PATH AND NOT /logs/pre_invoke/seed-proof.json: ScriptRunner removes
 # /pre_invoke and /logs/pre_invoke for PRE_INVOKE specifically
 # (aws_bench/task/script_runner.py, step 7) BEFORE the agent phase, so the
-# proof file the operator reads in <trial_dir>/pre_invoke/ no longer exists in
+# proof file the operator reads in <trial_dir>/pre_invoke/ does not exist in
 # the container by verification time. /logs is created by ScriptRunner itself
 # (step 2, `mkdir -p /logs/pre_invoke`, as root), is not removed by step 7, and
 # is visible to the verifier because a shared verifier environment is the only
 # one aws-bench supports for a phase-script task
-# (aws_bench/dataset/task_config.py::_validate_layout). Verified against that
-# source; not invented.
+# (aws_bench/dataset/task_config.py::_validate_layout).
 #
 # ONE constant, two emitters, so the writer and the reader cannot drift.
 SEED_DEPLOY_RECEIPT_PATH = "/logs/seed-deploy-receipt.json"
@@ -3837,15 +3711,14 @@ SEED_DEPLOY_REQUIRED_ENV_KEY = "SPEC_SEED_DEPLOY_REQUIRED"
 #
 # ONE constant, TWO emitters -- pre_invoke.sh stamps it into the receipt and
 # tests/test.sh's idempotence tier re-reads it -- so the writer and the reader
-# cannot drift apart. Finding H, adversarial review round 3, 2026-08-25:
-# `build_idempotence_block`'s "nothing was applied (no deploy state at ...)"
-# probe became a TAUTOLOGY the moment a seed deploy started writing that exact
-# file before the agent's first token. A `converged` verdict then no longer
-# distinguished "the agent deployed and converged" from "the agent did nothing
-# and the SEED is still converged" -- a live guard silently turned into a free
-# pass, which is this repo's signature failure mode.
+# cannot drift apart. It exists because `build_idempotence_block`'s "nothing was
+# applied (no deploy state at ...)" probe is a TAUTOLOGY on a seeded spec: the
+# seed deploy writes that exact file before the agent's first token, so a
+# `converged` verdict alone cannot distinguish "the agent deployed and
+# converged" from "the agent did nothing and the SEED is still converged" -- a
+# live guard turned into a free pass, this repo's signature failure mode.
 #
-# WHY THESE FIELDS, and not `serial` alone (the suggested fix):
+# WHY THESE FIELDS, and not `serial` alone:
 #
 #   TF arms -- `lineage` + `serial`. `serial` alone is a counter that
 #   RESTARTS at 0/1 whenever the state is recreated from scratch (`rm
@@ -3885,8 +3758,8 @@ SEED_STATE_IDENTITY_JQ: dict[Arm, str] = {
 # into build_seed_pre_invoke_sh's already-dedented template at column 0.
 #
 # Each block must, in order: prove the arm's deploy state is present and usable
-# (ANTI-VACUITY LAYER 2), and set `seed_state_identity` to the identity above
-# (finding H) so the receipt can carry it.
+# (ANTI-VACUITY LAYER 2), and set `seed_state_identity` to the identity above so
+# the receipt can carry it.
 SEED_STATE_PROOF: dict[Arm, str] = {
     "awscdk": (
         "if ! aws cloudformation describe-stacks --stack-name ScenarioStack "
@@ -3944,7 +3817,7 @@ SEED_STATE_PROOF: dict[Arm, str] = {
     ),
 }
 
-# The `seed_state_identity=` line each state proof ends with (finding H). The
+# The `seed_state_identity=` line each state proof ends with. The
 # SOURCE differs per arm -- a local state file on the TF arms, the
 # describe-stacks response this proof already fetched on awscdk -- but the jq
 # program is SEED_STATE_IDENTITY_JQ's, verbatim, in both this writer and
@@ -3958,7 +3831,7 @@ SEED_STATE_IDENTITY_SOURCE: dict[Arm, str] = {
 
 def build_seed_state_identity_block(arm: Arm) -> str:
     """The tail of every SEED_STATE_PROOF: stamp the seed's state identity into
-    a shell variable the receipt then carries (finding H).
+    a shell variable the receipt then carries.
 
     Written at LITERAL column 0, like the proof it is spliced into. Fails
     LOUDLY (seed_unverifiable, 3) rather than defaulting: an empty identity in
@@ -3983,7 +3856,7 @@ def build_seed_state_identity_block(arm: Arm) -> str:
 
 
 def build_seed_pre_invoke_sh(spec: Spec, arm: Arm) -> str:
-    """`tasks/anchor/<id>-<arm>/pre_invoke/pre_invoke.sh` -- deploy the
+    """`tasks/<scenario_id>/<id>-<arm>/pre_invoke/pre_invoke.sh` -- deploy the
     brownfield seed for real, then PROVE it landed (SCHEMA.md §2.7.1).
 
     Run by ``aws_bench/task/aws_trial.py::AwsBenchSingleStepTrial._prepare``
@@ -4051,16 +3924,15 @@ def build_seed_pre_invoke_sh(spec: Spec, arm: Arm) -> str:
     # to get wrong at emission time.
     assert_blocks: list[str] = []
     for index, a in enumerate(seed.deploy.live_asserts, start=1):
-        # UNDER /logs/pre_invoke/, NOT /tmp (finding m2, adversarial review
-        # 2026-08-25). ScriptRunner's step-7 cleanup removes /pre_invoke and
-        # /logs/pre_invoke and NOTHING ELSE, so anything this proof drops in
-        # /tmp survives into the container the agent then works in. These files
-        # are raw `aws` responses describing the seed the agent is supposed to
-        # discover for itself. Under /logs/pre_invoke/ they are deleted before
-        # the agent's first token AND downloaded to <trial_dir>/pre_invoke/
-        # first (ScriptRunner step 4 runs before step 5's exit-code check), so
-        # a failed seed hands the operator the exact bytes that contradicted
-        # it -- strictly better than the old location on both counts.
+        # UNDER /logs/pre_invoke/, NEVER /tmp. ScriptRunner's step-7 cleanup
+        # removes /pre_invoke and /logs/pre_invoke and NOTHING ELSE, so anything
+        # this proof drops in /tmp survives into the container the agent then
+        # works in -- and these files are raw `aws` responses describing the
+        # seed the agent is supposed to discover for itself. Under
+        # /logs/pre_invoke/ they are deleted before the agent's first token AND
+        # downloaded to <trial_dir>/pre_invoke/ first (ScriptRunner step 4 runs
+        # before step 5's exit-code check), so a failed seed still hands the
+        # operator the exact bytes that contradicted it.
         out = f"/logs/pre_invoke/seed-{index:02d}.json"
         err = f"/logs/pre_invoke/seed-{index:02d}.err"
         argv = " ".join(shlex.quote(t) for t in a.aws)
@@ -4084,15 +3956,13 @@ def build_seed_pre_invoke_sh(spec: Spec, arm: Arm) -> str:
                     f'  fail seed_unverifiable "aws call for [{a.name}] failed: '
                     f'$(head -c 400 {err})" 3',
                     "fi",
-                    # THREE-VALUED, not `|| failures=$((...))` (finding m4,
-                    # adversarial review 2026-08-25). assert_check now returns
-                    # 2 for "the query could not be resolved at all" and 1 for
-                    # "resolved and contradicted"; folding both into one
-                    # counter told the operator "the account does not hold the
+                    # THREE-VALUED, never `|| failures=$((...))`. assert_check
+                    # returns 2 for "the query could not be resolved at all" and
+                    # 1 for "resolved and contradicted"; folding both into one
+                    # counter tells the operator "the account does not hold the
                     # seed this workspace describes" when the truthful verdict
-                    # was seed_unverifiable. `|| rc=$?` (never a bare `rc=$?`
-                    # on its own line) keeps this safe under any future
-                    # `set -e`.
+                    # is seed_unverifiable. `|| rc=$?` (never a bare `rc=$?` on
+                    # its own line) keeps this safe under any future `set -e`.
                     "rc=0",
                     "assert_check "
                     + shlex.quote(a.name)
@@ -4103,14 +3973,13 @@ def build_seed_pre_invoke_sh(spec: Spec, arm: Arm) -> str:
                     + " "
                     + shlex.quote(json.dumps(a.expected))
                     + f" {out} || rc=$?",
-                    # ANY rc OUTSIDE {0,1,2} IS UNRESOLVABLE, not contradicted
-                    # (finding F, round 3). This used to be `elif rc -ne 0`,
-                    # which swept 126/127 (`assert_check` not found or not
-                    # executable) and every future rc into the CONTRADICTED
-                    # bucket and made the script announce that a real AWS
-                    # account was wrong. _assert_lib.sh's contract defines
-                    # exactly three codes; anything else is the harness, not
-                    # the account.
+                    # ANY rc OUTSIDE {0,1,2} IS UNRESOLVABLE, not contradicted.
+                    # An `elif rc -ne 0` here would sweep 126/127 (`assert_check`
+                    # not found or not executable) and every future rc into the
+                    # CONTRADICTED bucket, making the script announce that a real
+                    # AWS account is wrong. _assert_lib.sh's contract defines
+                    # exactly three codes; anything else is the harness, not the
+                    # account.
                     'if [ "$rc" -eq 0 ]; then',
                     "  :",
                     'elif [ "$rc" -eq 1 ]; then',
@@ -4474,14 +4343,10 @@ def build_seed_unchanged_solve_sh(spec: Spec, arm: Arm, entry_file: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-# NOTE: gen.py used to have its own build_rego_stub()/build_cfn_guard_stub()
-# here, racing with oracles/emit.py's _render_rego_skeleton()/
-# _render_guard_skeleton() on the same `if not path.exists()` guard -- two
-# writers of the same file, each unaware of the other, so whichever one
-# happened to run first "won" permanently and the other's content (including
-# gen.py's own STUB_MARKER) was never written. oracles/emit.py is now the
-# SOLE writer (see generate_oracles() below) -- see oracles/emit.py's own
-# skeleton renderers for the current stub content.
+# oracles/emit.py is the SOLE writer of policy.rego/policy.guard skeletons (see
+# generate_oracles() below); this file must never grow its own stub renderer.
+# Two writers guarding the same `if not path.exists()` means whichever runs
+# first wins permanently and the other's content is never written.
 
 
 # ---------------------------------------------------------------------------
@@ -4494,9 +4359,9 @@ def make_executable(path: Path) -> None:
     path.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-# Every filename generate_arm writes into a `tests/` directory. Used to tell
-# "a stale generated file this run must clean up" from "hand-authored material
-# a shape change would silently destroy" -- see write_multi_step_layout().
+# Every filename generate_arm writes into a `tests/` directory. Tells "a stale
+# generated file this run must clean up" apart from "hand-authored material a
+# shape change would silently destroy" -- see write_multi_step_layout().
 _GENERATED_TESTS_FILES = (
     "_assert_lib.sh",
     "static_tiers.sh",
@@ -4511,9 +4376,12 @@ _GENERATED_TESTS_FILES = (
     # the stale copy removed rather than left behind claiming a grader the
     # emitted script no longer loads.
     "hcl_traversal.rego",
-    "TIER05.md",
     "README.md",
 )
+
+# `tests/` filenames this emitter never writes. Swept on every regeneration so
+# a task dir cannot keep claiming an oracle the emitted scripts no longer run.
+_RETIRED_TESTS_FILES = ("TIER05.md",)
 
 
 def write_tests_dir(spec: Spec, arm: Arm, tests_dir: Path, step: Step | None = None) -> None:
@@ -4531,15 +4399,28 @@ def write_tests_dir(spec: Spec, arm: Arm, tests_dir: Path, step: Step | None = N
     (tests_dir / "_assert_lib.sh").write_text(ASSERT_LIB_SH)
     (tests_dir / "static_tiers.sh").write_text(build_static_tiers_sh(spec, arm, step))
     (tests_dir / "test.sh").write_text(build_test_sh(spec, arm))
-    # live_check.py: destructive-safe (like solution/solve.sh, SCHEMA.md
-    # §8.2 point 8) iff the spec declares it hand_authored -- Slice G
-    # (apigw-redeploy, 2026-08-06; docs/slice-g-recon.md gap 5). Every
-    # pre-Slice-G spec has hand_authored=False (the only legal value when
-    # live_check.enabled=False), so this preserves the old
-    # always-overwrite-the-stub behavior byte-for-byte for them.
+    # live_check.py is destructive-safe (like solution/solve.sh, SCHEMA.md
+    # §8.2 point 8) iff the spec declares it hand_authored. hand_authored=False
+    # is the only legal value when live_check.enabled=False, and those specs
+    # keep the always-overwrite-the-stub behavior.
     live_check_path = tests_dir / "live_check.py"
     written = ["_assert_lib.sh", "static_tiers.sh", "test.sh"]
     if step is None or live.enabled:
+        if live.enabled and live.hand_authored and not live_check_path.exists():
+            # Falling through would write build_live_check_py's STUB, whose
+            # stdout carries no `outcome` key at all: test.sh reads that as
+            # "not_verifiable" and, under gating, scores every solution on
+            # this arm 0.0 -- correct ones included, silently, with exit 0
+            # everywhere. A declared hand-authored oracle that is not on disk
+            # is a generation-time error, not a file to invent.
+            raise RuntimeError(
+                f"{live_check_path}: specs/{spec.id}.yaml declares "
+                "`verifier.live_check.hand_authored: true` with the check "
+                f"enabled, but no live_check.py exists for arm {arm!r}. Copy "
+                "the byte-identical file from an already-generated arm's "
+                "tests/ directory (it must be identical across arms) before "
+                "regenerating; the generator refuses to substitute its stub."
+            )
         if not (live.hand_authored and live_check_path.exists()):
             live_check_path.write_text(build_live_check_py(spec, arm))
         written.append("live_check.py")
@@ -4573,11 +4454,14 @@ def write_tests_dir(spec: Spec, arm: Arm, tests_dir: Path, step: Step | None = N
     for f in written:
         make_executable(tests_dir / f)
 
-    tier05_readme = tests_dir / "TIER05.md"
-    if spec.oracle.tier05_jsonata is not None:
-        tier05_readme.write_text(build_tier05_host_readme(spec, arm))
-    elif tier05_readme.exists():
-        tier05_readme.unlink()
+    # A file this emitter no longer owns must not survive a regeneration:
+    # tests/ is read as this oracle's own material by test.sh and by every
+    # human reading a task dir, so `make gen` is the only thing allowed to
+    # decide what is in it.
+    for name in _RETIRED_TESTS_FILES:
+        stale = tests_dir / name
+        if stale.exists():
+            stale.unlink()
 
     # tier-1 policy files, copied into the task dir so it is self-contained
     # (registry-style dataset consumption fetches only this task's own path,
@@ -4609,7 +4493,7 @@ def write_tests_dir(spec: Spec, arm: Arm, tests_dir: Path, step: Step | None = N
     # ignore it -- but leaving it behind makes the task dir claim a grader it
     # no longer uses. Both names are in _GENERATED_TESTS_FILES (generator-owned,
     # never hand-authored inside tests/), so removing the unselected one is
-    # safe. No-op for every existing task, which only ever had the one file.
+    # safe.
     stale = tests_dir / ("policy.rego" if copied_name == "policy.guard" else "policy.guard")
     if stale.exists():
         stale.unlink()
@@ -4669,7 +4553,7 @@ def _clear_generated_tests_files(spec: Spec, tests_dir: Path) -> None:
             f"(tasks/.../steps/<name>/tests/live_check.py) — the generator will not "
             "delete hand-authored content for you."
         )
-    for name in _GENERATED_TESTS_FILES:
+    for name in _GENERATED_TESTS_FILES + _RETIRED_TESTS_FILES:
         path = tests_dir / name
         if path.exists():
             path.unlink()
@@ -4690,6 +4574,67 @@ def _is_hand_authored_step_file(spec: Spec, path: Path) -> bool:
     else:
         return False
     return sentinel not in path.read_text(errors="ignore")
+
+
+def hand_authored_task_files(spec: Spec, root: Path) -> list[Path]:
+    """Every destructive-safe file under a task dir (CLAUDE.md, specs/SCHEMA.md
+    §8.2 point 8): `solution/**/solve.sh` and, when the spec declares
+    `verifier.live_check.hand_authored`, `tests/live_check.py` -- each with its
+    per-step `steps/<name>/…` equivalent. `solution/broken/seed-unchanged/
+    solve.sh` is excluded: that one fixture is generator-owned and rewritten on
+    every run (SCHEMA.md §2.7).
+
+    Unlike _is_hand_authored_step_file this ignores the stub sentinel: a caller
+    that is about to delete the directory must carry a stub across too, or the
+    author loses the file the next run would otherwise have left alone.
+    """
+    seed_unchanged = f"solution/broken/{SEED_UNCHANGED_FIXTURE}/solve.sh"
+    keep: list[Path] = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root).as_posix()
+        if rel == seed_unchanged:
+            continue
+        if path.name == "solve.sh" and (
+            rel.startswith("solution/")
+            or fnmatch.fnmatch(rel, "steps/*/solution/*")
+        ):
+            keep.append(path)
+        elif (
+            path.name == "live_check.py"
+            and spec.verifier.live_check.hand_authored
+            and (rel == "tests/live_check.py"
+                 or fnmatch.fnmatch(rel, "steps/*/tests/live_check.py"))
+        ):
+            keep.append(path)
+    return keep
+
+
+def relocate_hand_authored(spec: Spec, arm: Arm, stale_dir: Path) -> None:
+    """Move a moved-off task's hand-authored files to the shard it now belongs
+    to, before generate()'s sweep deletes the old directory.
+
+    Raising generator/shards.toml's shard_count relocates a task; the generator
+    is destructive-safe for `solution/**/solve.sh` and a hand-authored
+    `live_check.py` (CLAUDE.md, specs/SCHEMA.md §8.2 point 8), so a shard move
+    must carry them, never delete them. Moving happens BEFORE generation, so
+    generate_arm's own `if not path.exists()` guards then leave them alone. A
+    file already present at the destination is a hard error: choosing a winner
+    silently would discard one author's work.
+    """
+    dest_root = task_dir(spec, arm)
+    for path in hand_authored_task_files(spec, stale_dir):
+        dest = dest_root / path.relative_to(stale_dir)
+        if dest.exists():
+            raise RuntimeError(
+                f"{path}: hand-authored file left under a shard {spec.id} has "
+                f"moved off, but {dest} already exists. gen.py will not choose "
+                "between two versions -- delete or merge one, then re-run the "
+                "generator."
+            )
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(path), str(dest))
 
 
 def write_multi_step_layout(spec: Spec, arm: Arm, arm_dir: Path) -> None:
@@ -4802,7 +4747,7 @@ def generate_arm(spec: Spec, arm: Arm) -> Path:
         # behind: Harbor dispatches on `[[steps]]` in task.toml, but a stale
         # steps/*/instruction.md would still be folded into the equipping hash
         # only if the root instruction.md were missing -- and, more simply, it
-        # is dead answer-key-adjacent material in a shipped task dir.
+        # is dead answer-key-adjacent material in a published task dir.
         stale_steps = arm_dir / "steps"
         if stale_steps.exists():
             shutil.rmtree(stale_steps)
@@ -4869,21 +4814,15 @@ def generate_arm(spec: Spec, arm: Arm) -> Path:
         # IDEMPOTENCE_COMMAND uses -- never a second, forked copy.
         (pre_invoke_dir / "_assert_lib.sh").write_text(ASSERT_LIB_SH)
 
-        # LOAD-BEARING ASSERTION, not a tidiness check -- but RESTATED
-        # 2026-08-25 (finding m3, adversarial review), because the reason
-        # written here first was wrong and a wrong reason is worse than none.
+        # LOAD-BEARING ASSERTION, not a tidiness check. It does NOT guard
+        # against the seed deploy and the agent running as different users: a
+        # Dockerfile `USER` sets the image default and BOTH execs take it
+        # (ScriptRunner.run passes no `user=` at all), so a `USER` line moves
+        # them together and ownership still matches. The knob that genuinely
+        # diverges the two is task.toml's `[agent] user`, guarded in
+        # build_task_toml().
         #
-        # WHAT IT USED TO SAY: "the seed deploy runs as the container's default
-        # user and the AGENT runs as this one; if they differ the agent's apply
-        # hits EACCES". That cannot happen. A Dockerfile `USER` sets the
-        # image's default user, and BOTH execs take the environment default --
-        # ScriptRunner.run passes no `user=` at all
-        # (aws_bench/task/script_runner.py) and the agent phase takes the same
-        # default -- so a `USER` line moves them TOGETHER and ownership still
-        # matches. The guard hard-errored on an input that is not the failure
-        # it described.
-        #
-        # WHAT IT ACTUALLY GUARDS: ScriptRunner prepares this phase as ROOT --
+        # WHAT THIS GUARDS: ScriptRunner prepares this phase as ROOT --
         # `mkdir -p /logs/pre_invoke` and the entry script's `chmod +x` are
         # both `user="root"` execs (step 2) -- and then runs the script as the
         # environment's default user. Under a non-root `USER`, that script
@@ -4892,11 +4831,6 @@ def generate_arm(spec: Spec, arm: Arm) -> Path:
         # and the trial dies as ScriptResultFileNotFoundError with no verdict
         # anywhere -- the operator gets an exit code and nothing that says the
         # seed was the problem.
-        #
-        # The OTHER knob -- the one that genuinely diverges the two users -- is
-        # task.toml's `[agent] user`, which aws_trial.py::_staged_credentials
-        # writes ~/.aws/credentials as while ScriptRunner execs with no user at
-        # all. That is guarded in build_task_toml(), not here.
         dockerfile = ARMS_DIR / ARM_DIRNAME[arm] / "environment" / "Dockerfile"
         if dockerfile.is_file():
             user_lines = [
@@ -4935,15 +4869,12 @@ def generate_oracles(spec: Spec) -> None:
     oracles/<id>/intent.md, oracles/rego/<id>/policy.rego, and this spec's
     awscdk-side bundle (oracles/cfn-guard/<id>/policy.guard by default, or
     oracles/rego-cfn/<id>/policy.rego when `oracle.awscdk_tier1_engine:
-    rego` -- specs/SCHEMA.md §4.5). gen.py previously had its own
-    build_rego_stub()/build_cfn_guard_stub() writing the same paths behind
-    the same `if not exists` guard as emit.py's renderers -- two unaware
-    writers racing on one file each, so whichever one happened to run first
-    against a given scenario "won" permanently (including which one's
-    GENERATOR-STUB marker text ended up on disk, which is what
-    is_stub_policy() in the generated tests/_assert_lib.sh keys off of).
-    Calling emit_oracles() here makes it the single owner, matching its own
-    module docstring's stated contract."""
+    rego` -- specs/SCHEMA.md §4.5). This module must never render those files
+    itself: two writers behind the same `if not exists` guard means whichever
+    runs first against a given scenario wins permanently, including whose
+    GENERATOR-STUB marker text lands on disk -- which is what is_stub_policy()
+    in the generated tests/_assert_lib.sh keys off. Calling emit_oracles() here
+    keeps it the single owner, matching its own module docstring."""
     emit_oracles(spec.model_dump(mode="json"), root=REPO_ROOT)
 
 
@@ -4954,8 +4885,7 @@ def generate_oracles(spec: Spec) -> None:
 # attribute references another resource's provider-computed output. A tier-0
 # assert can use this same shape safely (tier-0 asserts are only ever
 # authored for attributes that stay statically known, per §4.2.1's
-# "Authoring rule going forward"); this check is scoped to tier-"1" only,
-# matching finding 2c's own ask.
+# "Authoring rule going forward"); this check is scoped to tier-"1" only.
 _PLAN_TIME_VALUE_PATH_RE = re.compile(r"planned_values.*\.values\.")
 
 # Coarse, generation-time heuristic for "does this policy.rego define a
@@ -4971,25 +4901,19 @@ _NOT_VERIFIABLE_RULE_RE = re.compile(r"\bnot_verifiable\b\s*(contains\b|\[|:=)")
 
 
 def check_not_verifiable_coverage(spec: Spec) -> list[str]:
-    """Residual-findings fix (2026-08-06), finding 2c: warn at generation
-    time when a spec declares a tier-"1" structural_assert whose
-    `tf_jsonpath` reads a plan-time-unknown-prone `.planned_values...
-    values.<attr>` path (specs/SCHEMA.md §4.2.1) but the scenario's
-    `oracles/rego/<id>/policy.rego` defines no `not_verifiable` rule at all
-    -- the exact "silently skipped, nothing records it" shape the residual
-    finding this fix closes was named for (see
-    oracles/rego/toy-ssm-parameter/policy.rego's own `not_verifiable`
-    fix-header comment for the worked example this generalizes).
+    """Warn at generation time when a spec declares a tier-"1" structural_assert
+    whose `tf_jsonpath` reads a plan-time-unknown-prone
+    `.planned_values...values.<attr>` path (specs/SCHEMA.md §4.2.1) while the
+    scenario's `oracles/rego/<id>/policy.rego` defines no `not_verifiable` rule
+    -- the "silently skipped, nothing records it" shape §4.2.1 forbids
+    (oracles/rego/toy-ssm-parameter/policy.rego is the worked example).
 
-    Non-fatal by design: a missing `not_verifiable` rule is not itself
-    proof of a bug (`applies_to: [awscdk]`-only tier-1 asserts, or ones
-    whose relevant attribute genuinely stays plan-time-known, never need
-    one), so this returns warnings for the caller to print rather than
-    raising -- `make gen`/`make check` must not start hard-failing on
-    already-shipped scenarios whose hand-authored policy predates this
-    check. Returns one message per affected assert; empty list means clean
-    (either no such tier-1 asserts, or the policy already defines the
-    rule).
+    Non-fatal by design: a missing `not_verifiable` rule is not itself proof of
+    a bug (`applies_to: [awscdk]`-only tier-1 asserts, or ones whose attribute
+    stays plan-time-known, never need one), so this returns warnings for the
+    caller to print rather than raising -- `make gen`/`make check` must not
+    hard-fail on a shipped scenario whose hand-authored policy has none.
+    Returns one message per affected assert; empty means clean.
     """
     flagged = [
         a
@@ -5037,8 +4961,8 @@ def self_check_parity(spec: Spec, generated: dict[Arm, Path]) -> None:
     own immediate self-check so a generation run never silently produces a
     parity-broken tree.
 
-    Extended to steps (2026-08-20): the check runs PER STEP, over that step's
-    own prompt file. Parity is a within-step property -- arms may legitimately
+    The check runs PER STEP, over that step's own prompt file. Parity is a
+    within-step property -- arms may legitimately
     carry different per-step language lines (SCHEMA.md §2.6), but everything
     before the language line must still be byte-identical across arms for the
     SAME step, or one arm's agent is being told something another's is not.
@@ -5140,7 +5064,7 @@ TOY_SPECS_DIR = REPO_ROOT / "specs" / "_toy"
 def update_local_registry(spec: Spec, generated: dict[Arm, Path]) -> None:
     """Add/refresh this spec's generated tasks in local-registry.json so
     they are reachable via aws-bench's registry/dataset mode (`-d`), not
-    just local-path mode (`-p tasks/anchor/<id>-<arm>`).
+    just local-path mode (`-p tasks/<scenario_id>/<id>-<arm>`).
     aws_bench/scripts/update_registry.py derives task names/paths straight
     from `tasks/<scenario>/` on disk; this mirrors that shape by hand for
     the local (non-published) registry file this repo keeps at the root.
@@ -5168,47 +5092,73 @@ def update_local_registry(spec: Spec, generated: dict[Arm, Path]) -> None:
     LOCAL_REGISTRY_PATH.write_text(json.dumps(data, indent=2) + "\n")
 
 
+def sweep_stale_task_dirs(spec: Spec) -> list[Path]:
+    """Remove this spec's task dirs left under a shard it has moved off.
+
+    Raising generator/shards.toml's shard_count relocates tasks; a copy left
+    behind is a task bound to an account no trial resets. Runs BEFORE any
+    generation so the relocated hand-authored files are in place when
+    generate_arm's `if not path.exists()` guards look for them.
+    """
+    swept: list[Path] = []
+    enabled = spec.arms.enabled_arms()
+    for arm in ARM_DIRNAME:
+        for stale in stale_task_dirs(spec, arm):
+            # The holdout-equipping guard runs on the evidence before the
+            # rmtree destroys it, the same way it does for a task dir that
+            # write_environment() is about to wipe.
+            enforce_no_holdout_equipping(spec, {arm: stale})
+            # Hand-authored files move with the task; only generator-owned
+            # content is deleted. A disabled arm has no new task dir to move
+            # into, so its stale copy is torn down exactly as the disabled-arm
+            # teardown in generate() tears down its current one.
+            if arm in enabled:
+                relocate_hand_authored(spec, arm, stale)
+            shutil.rmtree(stale)
+            swept.append(stale)
+            # A shard dir with no tasks left is a tasks/<name>/ with no
+            # scenarios/<name>/ beside it -- the path-vs-field disagreement
+            # aws-bench-datasets' registry generator trips over (DECISIONS.md
+            # Amendment 33).
+            if stale.parent != TASKS_DIR and not any(stale.parent.iterdir()):
+                stale.parent.rmdir()
+    return swept
+
+
 def generate(spec_path: Path) -> dict[Arm, Path]:
     spec = load_spec(spec_path)
     generate_oracles(spec)
     for warning in check_not_verifiable_coverage(spec):
         print(f"WARNING: {warning}", file=sys.stderr)
 
-    # Pre-generation holdout-equipping check (finding, 2026-08-06: "The
-    # holdout guard misses the only two placements that actually equip an
-    # agent"): generate_arm() -> write_environment() unconditionally does
-    # `shutil.rmtree(dest); shutil.copytree(...)` on `<task>/environment`
-    # -- exactly the directory each arm's Dockerfile COPYs into
-    # /app/project, i.e. the natural place to ship a tuned skill -- BEFORE
-    # the enforcement call that used to be the only one (at the bottom of
-    # this function). A skill hand-placed under an already-generated
-    # task's `environment/skills/...` was therefore silently DELETED by
-    # this exact regeneration before the guard ever got a chance to see
-    # it: `make gen` exited 0, no error, and the equipping material was
-    # just gone. Scanning the CURRENT on-disk task directories (as they
-    # stand before any write happens below) closes that -- a holdout
-    # scenario with equipping material already sitting in `environment/`
-    # now fails LOUDLY, before that evidence is destroyed, instead of
-    # having it silently wiped.
+    # Pre-generation holdout-equipping check, scanning the CURRENT on-disk task
+    # directories before any write below. generate_arm() -> write_environment()
+    # does an unconditional `shutil.rmtree(dest); shutil.copytree(...)` on
+    # `<task>/environment` -- the directory each arm's Dockerfile COPYs into
+    # /app/project, i.e. the natural place to ship a tuned skill. A
+    # post-generation check alone would therefore see nothing: the evidence is
+    # destroyed by the regeneration itself, `make gen` exits 0, and a holdout
+    # scenario's equipping material is silently gone. This one fails LOUDLY
+    # while the material still exists.
     existing_dirs: dict[Arm, Path] = {
         arm: task_dir(spec, arm) for arm in spec.arms.enabled_arms() if task_dir(spec, arm).exists()
     }
     enforce_no_holdout_equipping(spec, existing_dirs)
+    sweep_stale_task_dirs(spec)
 
     generated: dict[Arm, Path] = {}
     for arm in spec.arms.enabled_arms():
         generated[arm] = generate_arm(spec, arm)
-    # tear down a previously-generated but now-disabled terraconstructs dir
+    # tear down a generated but now-disabled terraconstructs dir
     if not spec.arms.terraconstructs.enabled:
         stale = task_dir(spec, "terraconstructs")
         if stale.exists():
             shutil.rmtree(stale)
     self_check_parity(spec, generated)
-    # Post-generation check too (this is the ONLY call before this fix):
-    # generate_arm()/write_environment() only ever wipes `environment/`,
-    # so equipping material placed elsewhere under the task dir (task
-    # root, tests/, solution/) is untouched by that wipe and still needs
-    # to be caught here, after generation, the same way it always was.
+    # Post-generation check as well: generate_arm()/write_environment() only
+    # wipes `environment/`, so equipping material placed elsewhere under the
+    # task dir (task root, tests/, solution/) survives that wipe and is caught
+    # here instead.
     enforce_no_holdout_equipping(spec, generated)
     # specs/_toy/* are explicitly "NOT A BENCHMARK SCENARIO... never
     # register this under a real dataset" (see the toy spec's own file

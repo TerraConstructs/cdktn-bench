@@ -84,6 +84,24 @@ versus the host terraform/node/npm/jq toolchain (everything else). A failed
 `make build-arms` in the pre-flight step is now fatal (a real FAIL row), not a
 swallowed stderr warning.
 
+`check-shard-drift.sh` and `check-scenario-artifacts.sh` (M7, `../mk/shards.mk`,
+DECISIONS.md Amendment 33) are two more shard guards; only the first is in
+`make check`. The first runs `generator/shards.py --check`:
+`scenarios/anchor-1 … anchor-(N-1)` must be exact name-rewrites of
+`scenarios/anchor`, `local-registry.json`'s `scenarios` array must list shards
+`0..N-1`, and every enabled arm's task must sit under exactly the shard the
+rule assigns it — all for the `shard_count` in `generator/shards.toml`
+(regenerate with `make shards` for scenarios and `make gen-all` for tasks; a
+trivial pass at `shard_count = 1`). The second fails if `node_modules`,
+`cdk.out*`, `dist`, or `*.tsbuildinfo` exist on disk under `scenarios/**`: aws-bench's
+`compute_scenario_hash` digests every file under a scenario dir and ignores
+`.gitignore`, so any of them silently invalidates the POST_SETUP baseline and is
+re-hashed on every reset. It fails on any developer machine that has run
+`npm install` there, and its only fix — deleting that output — moves the
+scenario source hash and needs an owner-run `aws-bench env setup`. It is
+therefore reachable only as `make check-scenario-artifacts`; wire it into
+`make check` in the same change that lands the cleanup.
+
 `check-smoke-drift.sh` (Slice A/D) is a narrower, standing guard — `tasks/anchor/smoke/`
 must stay a byte-copy of `../arms/awscdk/environment/` — that `make check` (and
 therefore `make ci`) runs on every invocation, independent of any per-spec loop.

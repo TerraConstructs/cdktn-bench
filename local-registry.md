@@ -71,6 +71,10 @@ Note the `--path` caveat from the guide: it does **not** recurse, so it must poi
 directory whose *immediate* children are task dirs — `./tasks/anchor` (whose only child
 is `smoke/`), not `./tasks`.
 
+`./tasks/anchor` is shard 0 only. At `generator/shards.toml` `shard_count` > 1 the
+mutating tasks live under `./tasks/anchor-1 … anchor-(N-1)` and need one `--path` per
+shard, or registry mode (`-d`).
+
 ## Format uncertainties for the verifier to check
 
 1. **Local registry paths resolve relative to the process CWD, not to

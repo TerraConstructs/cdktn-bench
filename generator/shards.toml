@@ -1,0 +1,15 @@
+# The ONE shard-count knob for the aws-bench scenario (DECISIONS.md
+# Amendment 33; docs/generator.md "Scenario shards").
+#
+# aws-bench binds one scenario to exactly one AWS member account, so N here is
+# how many member accounts the benchmark uses. shard_count = 1 is the unsharded
+# layout: one scenario named "anchor" and no anchor-k directory on disk.
+#
+# Raising it is an OWNER action with AWS consequences, in this order:
+#   1. edit shard_count here
+#   2. make shards          (materializes scenarios/anchor-1..N-1 + registry)
+#   3. make gen-all         (rewrites every task's scenario_id and task path)
+#   4. aws-bench env init --n-concurrent N --wait-for-quotas, then env setup
+# Steps 1-3 are repo-local; step 4 creates real member accounts and is the only
+# step this repo cannot perform for you.
+shard_count = 4
