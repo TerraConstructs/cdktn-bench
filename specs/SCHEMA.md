@@ -374,8 +374,8 @@ the corrected per-arm `entry_file`/bootstrap-file split, and
 ### 2.2 `placeholders` (optional, default `[]`)
 
 Three resolution modes, matching `aws-bench-datasets-guide.md` §1's three
-`{{token}}` shapes, narrowed to what a fully-offline static-tier task
-actually needs:
+`{{token}}` shapes, narrowed to what a task whose oracle is static tiers plus
+an optional live check actually needs:
 
 | `source` | Resolved | Use case |
 |---|---|---|
@@ -2268,10 +2268,10 @@ if the flat grouping was actually intended.
    particular never to seed starter files into the agent's workspace (that
    happens at Docker-image-build time via `environment/`, per the CONTEXT
    constraint that starter files "ship in the arm's Docker image, not via
-   S3" — the same reasoning extends to "not via pre_invoke" for a fully
-   offline task, since pre_invoke and the agent run in different containers
-   and only share the `/logs/pre_invoke/placeholder.json` → `{{token}}`
-   channel).
+   S3" — the same reasoning extends to "not via pre_invoke" for a task
+   without a workspace seed, since pre_invoke and the agent run in different
+   containers and only share the `/logs/pre_invoke/placeholder.json` →
+   `{{token}}` channel).
 7. `oracles/<id>/intent.md` is `oracle.intent` verbatim (§8.1).
    `oracles/rego/<id>/policy.rego` and this spec's awscdk-side bundle
    (`oracles/cfn-guard/<id>/policy.guard`, or `oracles/rego-cfn/<id>/policy.rego`
