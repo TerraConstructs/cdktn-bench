@@ -21,12 +21,13 @@ from harbor.trial.multi_step import MultiStepTrial
 from harbor.trial.single_step import SingleStepTrial
 from harbor.trial.trial import Trial
 
-from cdktn_bench.trial import CdktnMultiStepTrial
+from cdktn_bench.trial import CdktnMultiStepTrial, TransientResetRetryMixin
 
 
 def test_mro_is_exactly_the_documented_linearisation() -> None:
-    assert CdktnMultiStepTrial.__mro__[:5] == (
+    assert CdktnMultiStepTrial.__mro__[:6] == (
         CdktnMultiStepTrial,
+        TransientResetRetryMixin,
         MultiStepTrial,
         AwsBenchSingleStepTrial,
         SingleStepTrial,
@@ -56,7 +57,8 @@ def test_mro_is_exactly_the_documented_linearisation() -> None:
         ("_init_logger", AwsBenchSingleStepTrial),
         ("_staged_credentials", AwsBenchSingleStepTrial),
         ("_run_phase_script", AwsBenchSingleStepTrial),
-        ("_reset_scenario_account", AwsBenchSingleStepTrial),
+        # the post-trial reset, wrapped in a transient-only retry
+        ("_reset_scenario_account", TransientResetRetryMixin),
         # our own deliberate overrides
         ("__init__", CdktnMultiStepTrial),
         ("_recover_outputs", CdktnMultiStepTrial),

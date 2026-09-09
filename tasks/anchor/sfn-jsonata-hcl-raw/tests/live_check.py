@@ -16,20 +16,24 @@ static_tiers.sh produces exactly one of them.
 OUTCOME CONTRACT (SCHEMA.md §5, gating): a JSON object on stdout whose
 `outcome` is "pass" (every case matched), "fail_stale" (a verdict about the
 agent's artifact) or "not_verifiable" (the check could not run at all -- never
-a statement about the solution). tests/test.sh downgrades reward to 0.0 for
-anything but "pass", so `reason` and `not_verifiable_kind` are what keep an
-infrastructure failure legible as one.
+a statement about the solution). tests/test.sh VOIDS the row for an
+unanswered check ("transient-exhausted", "api-error") -- no reward file, trial
+INVALID -- and scores 0.0 for anything else that is not "pass", so `reason` and
+`not_verifiable_kind` are what keep an infrastructure failure legible as one.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import subprocess
+import os
 import sys
 import time
 from pathlib import Path
 from typing import Any, Callable
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _live_lib import TransientExhausted, run_aws  # noqa: E402
 
 SCENARIO = "sfn-jsonata"
 
@@ -135,7 +139,6 @@ MAX_NEXT_HOPS = 5
 # live-check spec gets (gen.py's [verifier] timeout_sec).
 CALL_TIMEOUT_S = 60
 TOTAL_DEADLINE_S = 480
-THROTTLE_RETRY_SLEEP_S = 5
 
 
 class NotVerifiable(RuntimeError):
@@ -144,7 +147,7 @@ class NotVerifiable(RuntimeError):
     `kind` is the machine-readable category an operator triages on:
     "no-artifact", "no-state-machine", "undecodable-definition",
     "plan-unknown-definition", "aws-cli-unavailable", "access-denied",
-    "throttled", "api-error".
+    "transient-exhausted", "api-error".
     """
 
     def __init__(self, kind: str, message: str) -> None:
@@ -341,8 +344,10 @@ def deep_equal(observed: Any, expected: Any) -> bool:
 
 
 # Stderr markers that name a defect in the SUBMITTED DEFINITION rather than a
-# fault in the infrastructure. Checked after the credential and throttling
-# markers, so an AccessDeniedException naming a state still triages as access.
+# fault in the infrastructure. Checked after the credential marker, so an
+# AccessDeniedException naming a state still triages as access. Throttling and
+# timeouts never reach here: tests/_live_lib.py retries them and raises
+# TransientExhausted only once its budget is spent.
 _DEFINITION_FAULT_MARKERS: tuple[str, ...] = (
     "validationexception",
     "invaliddefinition",
@@ -357,8 +362,6 @@ def _classify_cli_failure(stderr: str) -> tuple[str, str]:
     lowered = text.lower()
     if "accessdenied" in lowered or "not authorized" in lowered:
         return "access-denied", text
-    if "throttl" in lowered or "toomanyrequests" in lowered or "rate exceeded" in lowered:
-        return "throttled", text
     if any(marker in lowered for marker in _DEFINITION_FAULT_MARKERS):
         return "invalid-definition", text
     return "api-error", text
@@ -381,13 +384,13 @@ def call_test_state(
     or Choice accepts and is the one that returns `inspectionData.variables`,
     the assigned-variable half of a chained case's input.
 
-    Retried ONCE and only on throttling -- a TestState answer does not change
-    over time, so any other retry would just be a slower same answer. A
+    Retry is delegated whole to tests/_live_lib.py, which retries only the
+    transient class -- a TestState answer does not change over time, so
+    re-asking after any resolved refusal would just be a slower same answer. A
     failure that names the definition raises DefinitionRejected instead of
     NotVerifiable: it is the solution that was refused, not the service that
     was unreachable."""
     args = [
-        "aws",
         "stepfunctions",
         "test-state",
         "--definition",
@@ -398,42 +401,29 @@ def call_test_state(
         json.dumps(payload),
         "--inspection-level",
         inspection_level,
-        "--output",
-        "json",
     ] + (["--variables", variables] if variables else [])
-    for attempt in (1, 2):
+    try:
+        rc, stdout, stderr = run_aws(args, timeout=CALL_TIMEOUT_S)
+    except TransientExhausted as exc:
+        raise NotVerifiable(exc.kind, str(exc)) from exc
+    if rc == 0:
         try:
-            proc = subprocess.run(
-                args, capture_output=True, text=True, timeout=CALL_TIMEOUT_S
-            )
-        except FileNotFoundError as exc:
-            raise NotVerifiable("aws-cli-unavailable", f"aws: {exc}") from exc
-        except (subprocess.SubprocessError, OSError) as exc:
+            return json.loads(stdout)
+        except json.JSONDecodeError as exc:
             raise NotVerifiable(
-                "api-error", f"aws stepfunctions test-state: {exc}"
+                "api-error",
+                f"unparseable TestState response for {state_name!r}: {exc}",
             ) from exc
-        if proc.returncode == 0:
-            try:
-                return json.loads(proc.stdout)
-            except json.JSONDecodeError as exc:
-                raise NotVerifiable(
-                    "api-error",
-                    f"unparseable TestState response for {state_name!r}: {exc}",
-                ) from exc
-        kind, detail = _classify_cli_failure(proc.stderr)
-        if kind == "throttled" and attempt == 1:
-            time.sleep(THROTTLE_RETRY_SLEEP_S)
-            continue
-        if kind == "invalid-definition":
-            raise DefinitionRejected(
-                f"Step Functions refused the submitted definition while "
-                f"evaluating state {state_name!r}: {detail}"
-            )
-        raise NotVerifiable(
-            kind, f"aws stepfunctions test-state --state-name {state_name}: {detail}"
+    if rc == 127:
+        raise NotVerifiable("aws-cli-unavailable", stderr.strip())
+    kind, detail = _classify_cli_failure(stderr)
+    if kind == "invalid-definition":
+        raise DefinitionRejected(
+            f"Step Functions refused the submitted definition while "
+            f"evaluating state {state_name!r}: {detail}"
         )
     raise NotVerifiable(
-        "throttled", f"TestState stayed throttled for state {state_name!r}"
+        kind, f"aws stepfunctions test-state --state-name {state_name}: {detail}"
     )
 
 

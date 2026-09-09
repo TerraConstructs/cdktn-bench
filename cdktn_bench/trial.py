@@ -20,15 +20,24 @@ See docs/runner.md#trial-composition-mro.
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import time
+
 from aws_bench.account_management.manager import AccountManager
 from aws_bench.dataset.models import RoleType, ScriptType
 from aws_bench.dataset.task_config import AwsBenchTask
+from aws_bench.exceptions import OperationCancelled
+from aws_bench.scenario.events import ScenarioPhase
+from aws_bench.scenario.job_config import ScenarioTrialConfig
+from aws_bench.scenario.trial import ScenarioTrial
 from aws_bench.task.aws_creds import resolve_env_with_creds
 from aws_bench.task.aws_trial import (
     PLACEHOLDER_OUTPUT_FILE_NAME,
     AwsBenchSingleStepTrial,
 )
 from aws_bench.task.script_runner import ScriptRunner
+from aws_bench.utils.credentials_provider import CredentialProvider
 from aws_bench.utils.placeholders import update_placeholder_values
 from harbor.models.task.config import MultiStepRewardStrategy, StepConfig
 from harbor.models.task.task import Task
@@ -44,7 +53,22 @@ from harbor.trial.multi_step import MultiStepTrial
 from harbor.trial.trial import Trial
 from harbor.utils.scripts import discover_script
 
-__all__ = ["CDKTN_DEFAULT_MULTI_STEP_REWARD_STRATEGY", "CdktnMultiStepTrial", "CdktnTrial"]
+from cdktn_bench.aws_transient import (
+    MAX_RESET_ATTEMPTS,
+    MAX_RESET_RETRY_WALL_S,
+    TRANSIENT,
+    classify,
+    reset_backoff_delays,
+)
+
+__all__ = [
+    "CDKTN_DEFAULT_MULTI_STEP_REWARD_STRATEGY",
+    "RESET_TRIAL_NAME_PREFIX",
+    "CdktnMultiStepTrial",
+    "CdktnSingleStepTrial",
+    "CdktnTrial",
+    "TransientResetRetryMixin",
+]
 
 
 # For a green/not-green benchmark the last step's verdict is the trial's
@@ -55,7 +79,137 @@ __all__ = ["CDKTN_DEFAULT_MULTI_STEP_REWARD_STRATEGY", "CdktnMultiStepTrial", "C
 CDKTN_DEFAULT_MULTI_STEP_REWARD_STRATEGY = MultiStepRewardStrategy.FINAL
 
 
-class CdktnMultiStepTrial(MultiStepTrial, AwsBenchSingleStepTrial):
+# Every post-trial reset artifact directory starts with this; a retry appends
+# its attempt number. Tools that must tell reset artifacts apart from agent
+# trials (metrics/extract_signals.py) match the prefix, not the bare name.
+RESET_TRIAL_NAME_PREFIX = "scenario-reset"
+
+# Which of upstream's two failure endings one reset pass reached. Only a
+# reported failure flags the account; a pass that raised may not have.
+RESET_RAISED = "raised"
+RESET_REPORTED = "reported"
+
+
+class TransientResetRetryMixin:
+    """Retry a post-trial account reset that AWS never actually answered.
+
+    A reset whose failure text carries a transient signature — a read/connect
+    timeout, a connection reset, throttling, a 5xx — is re-run with bounded
+    backoff before the outcome is accepted. A RESOLVED failure (AccessDenied, a
+    stack that cannot be deleted, anything the service answered) is never
+    retried: re-asking holds the scenario's exclusive gate for minutes to reach
+    the same answer.
+
+    Contamination semantics are upstream's, untouched. aws-bench flags the
+    account inside each reset pass (``ScenarioTrial._apply_contamination_tags``
+    marks on failure and clears on success), so a retry that succeeds clears
+    the flag its predecessor set, and a reset that genuinely fails leaves the
+    account flagged exactly as it does today.
+
+    Mixed in ahead of ``AwsBenchSingleStepTrial`` so its
+    ``_reset_scenario_account`` is the one ``run()`` reaches.
+    """
+
+    async def _reset_scenario_account(self) -> None:
+        """aws-bench's post-trial reset, wrapped in a transient-only retry.
+
+        The budget is attempts AND wall clock measured across whole attempts:
+        a reset pass is minutes long, so a clock that counted only the sleeps
+        between attempts would bound nothing an operator waits on.
+
+        Never raises: a reset must not fail a finished benchmark. Only
+        cancellation propagates, out of the attempt itself.
+        """
+        delays = reset_backoff_delays()
+        started = time.monotonic()
+        kind, failure = RESET_REPORTED, "no reset attempt was made"
+        for attempt in range(1, MAX_RESET_ATTEMPTS + 1):
+            outcome = await self._attempt_scenario_reset(attempt)
+            if outcome is None:
+                return
+            kind, failure = outcome
+            verdict = classify(failure)
+            delay = next(delays, None)
+            final = (
+                verdict != TRANSIENT
+                or delay is None
+                or (time.monotonic() - started) + delay > MAX_RESET_RETRY_WALL_S
+            )
+            # The last attempt's reason is the only account of the failure an
+            # operator running at WARNING ever sees, so it is logged at ERROR.
+            self.logger.log(
+                logging.ERROR if final else logging.INFO,
+                "Post-trial reset attempt %d/%d for %s failed, classified %s: %s",
+                attempt,
+                MAX_RESET_ATTEMPTS,
+                self.config.scenario_id,
+                verdict,
+                failure,
+            )
+            if final:
+                break
+            await asyncio.sleep(delay)
+
+        # Upstream's two distinct endings, kept distinct. Contamination tags are
+        # applied INSIDE a reset pass, so a pass that raised before that point
+        # left the account UNflagged: telling the operator it is flagged would
+        # be false, and the exception text would be the only thing that says so.
+        if kind == RESET_RAISED:
+            self.logger.error(
+                "Post-trial reset raised for %s: %s", self.config.scenario_id, failure
+            )
+            return
+        self.logger.error(
+            "Post-trial reset did not restore %s; the account is flagged "
+            "contaminated and later trials will be refused. Run "
+            "'aws-bench env cleanup' to clean it and clear the flag.",
+            self.config.scenario_id,
+        )
+
+    async def _attempt_scenario_reset(self, attempt: int) -> tuple[str, str] | None:
+        """One reset pass: ``None`` on success, else ``(kind, failure text)``.
+
+        ``kind`` separates a pass that RAISED from one that reported failure,
+        because only the second flags the account.
+
+        Attempt 1 keeps upstream's ``scenario-reset`` trial name, so the
+        artifacts land in the ``<trial_dir>/scenario-reset/`` directory every
+        existing tool reads; a retry gets its own name rather than overwriting
+        the evidence of why the first attempt failed. Every name starts with
+        ``RESET_TRIAL_NAME_PREFIX``, which is what tools distinguishing reset
+        artifacts from agent trials must match on.
+        """
+        reset_config = ScenarioTrialConfig(
+            scenario=self.config.scenario,
+            output_dir=self.paths.trial_dir,
+            trial_name=(
+                RESET_TRIAL_NAME_PREFIX
+                if attempt == 1
+                else f"{RESET_TRIAL_NAME_PREFIX}-retry-{attempt}"
+            ),
+            account_mapping=self.config.account_mapping,
+            timeout_multiplier=self.config.timeout_multiplier,
+        )
+        try:
+            trial = await ScenarioTrial.create(reset_config, CredentialProvider.get())
+            reset_result = await trial.run(ScenarioPhase.RESET)
+        except (asyncio.CancelledError, OperationCancelled):
+            raise
+        except Exception as exc:  # noqa: BLE001 — reset must not fail a finished benchmark
+            return RESET_RAISED, f"{type(exc).__name__}: {exc}"
+        if reset_result.success:
+            return None
+        info = reset_result.exception_info
+        if info is None:
+            return RESET_REPORTED, f"reset reported failure with exit code {reset_result.exit_code}"
+        return RESET_REPORTED, f"{info.exception_type}: {info.exception_message}"
+
+
+class CdktnSingleStepTrial(TransientResetRetryMixin, AwsBenchSingleStepTrial):
+    """Upstream's single-step AWS trial with the reset retry, and nothing else."""
+
+
+class CdktnMultiStepTrial(TransientResetRetryMixin, MultiStepTrial, AwsBenchSingleStepTrial):
     """Multi-step AWS trial: Harbor's step engine under aws-bench's AWS lifecycle."""
 
     def __init__(self, config: TrialConfig, *, _task: Task | None = None) -> None:
@@ -259,10 +413,10 @@ def validate_multi_step_layout(task: AwsBenchTask) -> None:
 class CdktnTrial:
     """Factory: dispatch on ``task.has_steps``.
 
-    A stepless task takes the **untouched** upstream path and returns an
-    ``AwsBenchSingleStepTrial``; a ``[[steps]]`` task — which upstream's own
-    ``AwsBenchTrial.create`` refuses outright with ``NotImplementedError`` —
-    returns a ``CdktnMultiStepTrial``.
+    A stepless task returns a ``CdktnSingleStepTrial`` — upstream's own
+    single-step trial plus the transient reset retry, and nothing else; a
+    ``[[steps]]`` task — which upstream's own ``AwsBenchTrial.create`` refuses
+    outright with ``NotImplementedError`` — returns a ``CdktnMultiStepTrial``.
     """
 
     @classmethod
@@ -274,4 +428,4 @@ class CdktnTrial:
         if task.has_steps:
             validate_multi_step_layout(task)
             return CdktnMultiStepTrial(config, _task=task)
-        return AwsBenchSingleStepTrial(config, _task=task)
+        return CdktnSingleStepTrial(config, _task=task)

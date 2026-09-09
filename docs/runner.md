@@ -14,8 +14,11 @@ parsing, export collection, contamination checks — is inherited by import,
 never vendored or copied.
 
 - `cdktn_bench.trial` — `CdktnMultiStepTrial` (Harbor's `MultiStepTrial`
-  workload plus aws-bench's AWS lifecycle, composed by MRO) and `CdktnTrial`,
-  the factory that dispatches on `task.has_steps`.
+  workload plus aws-bench's AWS lifecycle, composed by MRO), the
+  `TransientResetRetryMixin` both concrete trials carry, and `CdktnTrial`, the
+  factory that dispatches on `task.has_steps`.
+- `cdktn_bench.aws_transient` — the TRANSIENT/RESOLVED classification and the
+  reset backoff bounds.
 - `cdktn_bench.queue` — `CdktnTrialQueue`, `AwsBenchTrialQueue` with the trial
   factory re-pointed at `CdktnTrial`.
 - `cdktn_bench.job` — `CdktnBenchJob`, `AwsBenchJob` with the queue re-pointed
@@ -29,8 +32,9 @@ seam) and `DECISIONS.md` Amendment 26.
 ## CLI seam
 
 `cdktn-bench` is a superset of `aws-bench`, not a multi-step-only side door: a
-stepless task runs the identical single-step path (`AwsBenchSingleStepTrial`),
-a `[[steps]]` task runs `CdktnMultiStepTrial`. Gates and equipping therefore
+stepless task runs the identical single-step path (`CdktnSingleStepTrial`,
+which is `AwsBenchSingleStepTrial` plus the reset retry below and nothing
+else), a `[[steps]]` task runs `CdktnMultiStepTrial`. Gates and equipping therefore
 have exactly one command to reason about. `aws-bench` stays installed,
 importable, and unchanged; `scripts/run-bench.sh` execs `cdktn-bench`
 (DECISIONS.md Amendment 27 §7).
@@ -61,12 +65,15 @@ Rather than build a multi-step engine (Harbor ships one at
 credential-file / account-reset code, the two are composed by multiple
 inheritance:
 
-    class CdktnMultiStepTrial(MultiStepTrial, AwsBenchSingleStepTrial)
+    class CdktnMultiStepTrial(
+        TransientResetRetryMixin, MultiStepTrial, AwsBenchSingleStepTrial
+    )
 
 C3 linearises that to:
 
-    CdktnMultiStepTrial -> MultiStepTrial -> AwsBenchSingleStepTrial
-                        -> SingleStepTrial -> Trial -> ABC -> object
+    CdktnMultiStepTrial -> TransientResetRetryMixin -> MultiStepTrial
+                        -> AwsBenchSingleStepTrial -> SingleStepTrial
+                        -> Trial -> ABC -> object
 
 which resolves each method to the class that should own it. The table is
 asserted by `cdktn_bench/tests/test_trial_mro.py`, not merely documented here:
@@ -80,6 +87,7 @@ asserted by `cdktn_bench/tests/test_trial_mro.py`, not merely documented here:
 | `_run_shared_verifier` | `AwsBenchSingleStepTrial` — staged verifier creds, per step |
 | `_stop_agent_environment` | `AwsBenchSingleStepTrial` — post-invoke teardown, once |
 | `_init_logger` / `_setup_agent_environment` | `AwsBenchSingleStepTrial` |
+| `_reset_scenario_account` | `TransientResetRetryMixin` — the reset retry below |
 
 Zero-argument `super()` inside the inherited aws-bench methods still resolves
 correctly, because it walks the *instance's* MRO, not the defining class's
@@ -102,6 +110,50 @@ Three deliberate overrides beyond the MRO:
 
 Plus one scoring override: `_select_multi_step_reward` defaults to `final`
 rather than Harbor's `mean` (DECISIONS.md Amendment 26).
+
+## Post-trial reset retry
+
+`TransientResetRetryMixin` is mixed in ahead of `AwsBenchSingleStepTrial` on
+both concrete trials — `CdktnSingleStepTrial` (a stepless task) and
+`CdktnMultiStepTrial` — so a stepless task now runs upstream's single-step
+path plus this one override and nothing else.
+
+The rule: **a reset that AWS never answered is re-run; a reset AWS refused is
+not.** The failure text is classified by `cdktn_bench/aws_transient.py` —
+TRANSIENT (read/connect timeout, connection reset, throttling, 5xx) or RESOLVED
+(`AccessDenied`, a stack that cannot be deleted, anything the service actually
+answered). A timeout the HARNESS imposed — `PhaseTimeoutError` for a reset
+phase, a stack-deletion deadline — is RESOLVED, matched on the exception type:
+it is a deterministic verdict, and re-running it spends another 7-13 minute
+reset pass to earn the identical answer.
+
+Only TRANSIENT is retried, at most `MAX_RESET_ATTEMPTS` times and only while
+`MAX_RESET_RETRY_WALL_S` of budget is left — a clock that starts before attempt
+1 and counts each attempt's own duration, because a reset pass is minutes long
+and counting only the sleeps between attempts would bound nothing an operator
+waits on. The honest bound on added delay is therefore one budget plus the pass
+already running when it runs out.
+
+Every attempt logs its classification: INFO while retrying, ERROR for the last
+one, so an operator at the default level still learns why the reset was given
+up on. A pass that RAISED ends at upstream's `Post-trial reset raised` error,
+not at the contamination message — tags are applied inside a pass, so a pass
+that raised before that point left the account unflagged and claiming otherwise
+would be false.
+
+Contamination is upstream's and is not re-implemented: aws-bench flags the
+account inside each reset pass (`ScenarioTrial._apply_contamination_tags` marks
+on failure, clears on success), so a retry that succeeds clears the flag its
+predecessor set, and a reset that reports failure ends at the same
+operator-facing error as before. Attempt 1 keeps upstream's `scenario-reset`
+trial name so its artifacts land where every existing tool reads them; a retry
+appends its attempt number rather than overwriting the evidence. Both names
+start with `RESET_TRIAL_NAME_PREFIX`, which is what `metrics/extract_signals.py`
+matches to keep reset artifacts out of the per-trial rows.
+
+Asserted by `cdktn_bench/tests/test_reset_retry.py`; the classifier is held
+identical to the container-side `tests/_live_lib.py` table by
+`cdktn_bench/tests/test_transient_classifier.py`.
 
 ## Queue override
 

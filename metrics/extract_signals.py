@@ -28,6 +28,13 @@ ESCAPE = {
 }
 MUTATORS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 
+# Post-trial reset artifacts sit beside the agent trials and are not trials:
+# cdktn_bench.trial names them `scenario-reset` and, per retry,
+# `scenario-reset-retry-N` (RESET_TRIAL_NAME_PREFIX there). Match the PREFIX --
+# walking one prints a row with no arm and reports the reset's own exception as
+# an INFRA-FAIL against a task that never failed.
+RESET_DIR_PREFIX = "scenario-reset"
+
 
 ARMS = ("terraconstructs", "hcl-raw", "awscdk")
 
@@ -131,7 +138,7 @@ def main(job_dirs):
             if not os.path.isdir(d) or not os.path.exists(rj):
                 continue
             name = os.path.basename(d)
-            if name.endswith("scenario-reset"):
+            if name.startswith(RESET_DIR_PREFIX) or name.endswith(RESET_DIR_PREFIX):
                 continue
             arm = arm_of(name)
             res = json.load(open(rj))

@@ -1916,6 +1916,39 @@ verifier:
   SEPARATE, always-gating call shape independent of this flag — see that
   module's own docstring.
 
+**Transient AWS failures.** A hand-authored `live_check.py` must run every
+`aws` call through `tests/_live_lib.py`'s `run_aws`, which the generator emits
+next to it in the same `tests/` directory and which is byte-identical in every
+arm. It splits a failed call in two:
+
+| class | examples | treatment |
+| --- | --- | --- |
+| TRANSIENT | client-side read/connect timeout, connection reset, `Throttling` / `ThrottlingException` / `RequestLimitExceeded` / `TooManyRequests` / `SlowDown`, `ServiceUnavailable` / `InternalError` / 5xx | retried with bounded exponential backoff plus jitter; raises `TransientExhausted` once the budget is spent |
+| RESOLVED | `AccessDenied`, `ValidationException`, `NoSuchBucket`, `ResourceNotFoundException`, no credentials, no `aws` binary | returned to the caller unretried, mapped exactly as that oracle maps it today |
+
+The budget is bounded three ways — at most `MAX_ATTEMPTS` attempts AND at most
+`MAX_TOTAL_WALL_S` of wall clock per call, and at most
+`MAX_PROCESS_RETRY_WALL_S` of RETRYING summed across every call one
+`live_check.py` process makes, whichever binds first. The process-wide bound is
+the one that matters: an oracle makes several sequential calls, so per-call
+bounds alone would let a fat oracle outlive the 900s `[verifier]` timeout and
+destroy the row instead of reporting it. Only retry cost is charged to it, so a
+check that legitimately polls for minutes still gets its retries. Retrying a
+RESOLVED failure is forbidden — it spends the verifier's clock re-collecting the
+same answer — and no timeout marker may be broad enough to match a
+harness-imposed deadline, which is a deterministic verdict. Enforced by
+`generator/tests/test_live_lib.py`.
+
+A `TransientExhausted` becomes `outcome: "not_verifiable"` with
+`not_verifiable_kind: "transient-exhausted"`, and the generated `tests/test.sh`
+**voids the row rather than scoring it**: for that kind and for `"api-error"` it
+writes no `reward.txt` and exits 1, so harbor's `RewardFileNotFoundError`
+reports the trial INVALID — the same contract as the `aws-unavailable` marker.
+AWS never answered, so the row is neither a right nor a wrong solution, and a
+regional throttle must not land in tokens-to-green as an agent failure. Every
+other `not_verifiable` kind is a statement about the account and still gates to
+0.0.
+
 ### 5.1 `verifier.idempotence` (optional, default disabled)
 
 ```yaml

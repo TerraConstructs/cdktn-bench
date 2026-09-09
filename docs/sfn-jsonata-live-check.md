@@ -67,8 +67,10 @@ and a hand-written `{"grandTotal": N}` literal would score the variable form
 - `not_verifiable` -- the check could not be run at all: no artifact, no state
   machine in it, a definition that is not a decodable JSON string, a definition
   that is `(known after apply)` in this plan, no `aws` CLI, no credentials,
-  `AccessDenied`, throttling, or any other API error. Never a statement about
-  the solution.
+  `AccessDenied`, any other API error, or a transient failure (timeout,
+  throttle, 5xx) that outlived `tests/_live_lib.py`'s bounded retry --
+  `not_verifiable_kind: "transient-exhausted"`. Never a statement about the
+  solution.
 
 `tests/test.sh` downgrades reward to 0.0 for anything that is not `pass`,
 because an unverifiable claim must not silently earn reward; `reason` and
@@ -90,5 +92,7 @@ Matching this repo's convention (see `named-resource-replacement`'s own
 
 One TestState call per case, plus one per chained case's source state, and no
 polling. TestState is synchronous and its answer does not converge over time, so
-a retry buys nothing except against throttling, which is the one retry the file
-implements.
+a retry buys nothing except against the transient class -- timeouts, throttles
+and 5xx. That retry is not implemented here: every call goes through the
+generated `tests/_live_lib.py`, whose bounded budget (4 attempts, 90s of wall
+clock) is shared by every live check in the corpus.

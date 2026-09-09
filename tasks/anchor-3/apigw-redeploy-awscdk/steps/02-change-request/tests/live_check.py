@@ -89,7 +89,8 @@ Two call shapes:
   / "not_verifiable", see main()'s own inline comment) to stdout
   (redirected by test.sh to /logs/verifier/live_check-result.json).
   GATING for this scenario (see above) -- test.sh downgrades reward.txt to
-  0.0 whenever `outcome` is not "pass".
+  0.0 whenever `outcome` is not "pass", except that an unanswered check
+  ("transient-exhausted") voids the row instead of scoring it.
 
   Fixture-invoked (solution/solve.sh, solution/broken/*/solve.sh; LIVE=1
   only): `python3 live_check.py --api-url "$API_URL" --expect {ok,stale}
@@ -104,13 +105,16 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
+import os
 import sys
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _live_lib import TransientExhausted, run_aws  # noqa: E402
 
 # Finding 1: 60s was NOT enough margin (two of three arms needed exactly
 # 60s in the reviewer's own measurement: hcl-raw 200 at t=30s; awscdk and
@@ -285,23 +289,29 @@ def _discover_api_url_from_agent_output() -> str | None:
 
 
 def _discover_api_url_from_aws_cli() -> str | None:
+    """The deployed stage URL, or None when AWS answered and there is no such API.
+
+    Both calls go through the shared transient-retry runner, so a timed-out or
+    throttled discovery raises TransientExhausted for main() to report as
+    not_verifiable rather than collapsing into the same None as a genuine
+    "no API named this exists"."""
+    rc, apis_raw, _ = run_aws(["apigateway", "get-rest-apis"])
+    if rc != 0:
+        return None
     try:
-        apis_raw = subprocess.run(
-            ["aws", "apigateway", "get-rest-apis", "--output", "json"],
-            capture_output=True, text=True, timeout=30, check=True,
-        ).stdout
         apis = json.loads(apis_raw).get("items", [])
         match = next((a for a in apis if a.get("name") == REST_API_NAME), None)
         if match is None:
             return None
         api_id = match["id"]
-        region_raw = subprocess.run(
-            ["aws", "configure", "get", "region"], capture_output=True, text=True, timeout=10,
-        ).stdout.strip()
-        region = region_raw or "us-east-1"
-        return f"https://{api_id}.execute-api.{region}.amazonaws.com/{STAGE_NAME}/"
-    except (subprocess.SubprocessError, OSError, json.JSONDecodeError, KeyError):
+    except (json.JSONDecodeError, AttributeError, KeyError, TypeError):
         return None
+    # An unset region is not an error here: exit non-zero with empty stdout is
+    # how `aws configure get` reports "not set", and the bench is pinned to one
+    # region anyway.
+    _, region_raw, _ = run_aws(["configure", "get", "region"], output_json=False)
+    region = region_raw.strip() or "us-east-1"
+    return f"https://{api_id}.execute-api.{region}.amazonaws.com/{STAGE_NAME}/"
 
 
 def main() -> int:
@@ -343,15 +353,36 @@ def main() -> int:
     #   "not_verifiable" -- no deployed API could be discovered at all (no
     #                        /logs/agent/agent-output.json api_url field,
     #                        and no REST API named apigw-redeploy-api found
-    #                        via `aws apigateway get-rest-apis`). Fails
+    #                        via `aws apigateway get-rest-apis`), or AWS
+    #                        never answered the discovery call within
+    #                        tests/_live_lib.py's retry budget
+    #                        (`not_verifiable_kind` says which). Fails
     #                        closed, same as "fail_stale" below -- an
     #                        unverifiable claim must never silently earn
     #                        reward.
-    api_url = _discover_api_url_from_agent_output() or _discover_api_url_from_aws_cli()
+    try:
+        api_url = _discover_api_url_from_agent_output() or _discover_api_url_from_aws_cli()
+    except TransientExhausted as exc:
+        # AWS never answered the discovery call. Reported as its own kind so an
+        # outage stays distinguishable from "no API was ever deployed"; both
+        # fail closed.
+        json.dump(
+            {
+                "outcome": "not_verifiable",
+                "not_verifiable_kind": exc.kind,
+                "pass": False,
+                "note": str(exc),
+                "info": LIVE_CHECK_RESULT_NOTE,
+            },
+            sys.stdout,
+            indent=2,
+        )
+        return 0
     if api_url is None:
         json.dump(
             {
                 "outcome": "not_verifiable",
+                "not_verifiable_kind": "no-api-discovered",
                 "pass": False,
                 "note": "could not discover a deployed API (no /logs/agent/agent-output.json "
                 f"api_url field, and no REST API named {REST_API_NAME!r} found via "

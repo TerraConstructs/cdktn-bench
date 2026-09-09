@@ -7525,6 +7525,103 @@ Evidence to capture: both `reward.txt` values and both
 * **`make falsifiability`/`make grading-proof` stay credential-free** — the
   live tier is not runnable host-side and the gate does not pretend otherwise.
 
+## Amendment 35 (2026-09-09) — bounded retry on transient AWS errors — DRAFT
+
+**Status: DRAFT.** In code and docs; promotion needs an observed retry (below).
+
+### The finding
+
+**A single unanswered AWS call was scored as an agent result.** A brownfield
+trial of `named-resource-replacement` deployed the requested rename correctly —
+seed `seed_deployed`, idempotence `converged`, the renamed security group
+present in the account on a direct scan afterwards — and scored **0.0**, because
+one `aws ec2 describe-security-groups` inside the live check timed out. Every
+hand-authored live check mapped any unrecognised non-zero `aws` exit to
+`not_verifiable`, and fail-closed gating turns `not_verifiable` into 0.0. The
+same class hit the harness the same day: `Read timeout on endpoint URL: "None"`
+failed three resets, each of which succeeded on an unchanged retry against an
+unchanged account, and a failed reset flags the shard account contaminated.
+
+The three-valued outcome contract already separates "I could not tell" from "it
+is wrong". What was missing is that one timed-out call jumped straight to a
+verdict without ever asking again.
+
+### The decision
+
+**A failure that never reached a decision is retried; a failure AWS answered is
+not.** One classification, two implementations, held identical by a drift test:
+
+| class | signatures | treatment |
+| --- | --- | --- |
+| TRANSIENT | client read/connect timeout, connection reset/aborted, `Throttling`, `ThrottlingException`, `RequestLimitExceeded`, `TooManyRequests`, `SlowDown`, `ServiceUnavailable`, `InternalError`, 5xx | retried, bounded exponential backoff with upward-only jitter |
+| RESOLVED | `AccessDenied`, `ValidationException`, `NoSuchBucket`, `ResourceNotFoundException`, no credentials, no region, no `aws` binary | never retried; mapped exactly as before |
+
+* **Live checks** call `tests/_live_lib.py::run_aws`, generated into every
+  task's `tests/` beside `_assert_lib.sh` and byte-identical across arms.
+  Budget: at most 4 attempts AND at most 90s of wall clock per call, and at
+  most 240s of retrying summed across every call one check process makes,
+  whichever binds first, against a 900s `[verifier]` timeout. Exhaustion raises `TransientExhausted`,
+  which every live check maps to `outcome: "not_verifiable"` with
+  `not_verifiable_kind: "transient-exhausted"`; `test.sh` then voids the row
+  (no `reward.txt`, exit 1) instead of scoring it 0.0.
+* **The post-trial reset** goes through `TransientResetRetryMixin` in
+  `cdktn_bench/trial.py`, carried by both concrete trials — so a stepless task
+  now runs upstream's single-step path plus this one override. Budget: at most
+  3 attempts and a real wall-clock bound that counts each attempt's own
+  duration, not only the sleeps between them. Each attempt logs its
+  classification; the last one, and a reset that raised, log at ERROR.
+* **`sfn-jsonata`'s one-retry throttle branch is deleted**, and its
+  `not_verifiable_kind` of `"throttled"` becomes `"transient-exhausted"`: one
+  retry policy for the corpus, not one per oracle.
+
+### Why fail-closed is preserved
+
+* **Exhaustion never earns reward.** `transient-exhausted` and `api-error`
+  VOID the row (no reward file, trial INVALID); every other non-`pass` outcome
+  still scores 0.0. The change makes an oracle stricter about its own
+  uncertainty, never looser about correctness: nothing that would have scored
+  0.0 for being *wrong* can now score 1.0.
+* **RESOLVED is never retried.** A refusal, a validation error or a missing
+  resource is an answer; re-asking would only spend the verifier's clock, and
+  for the reset would hold the shard's exclusive gate to reach the same result.
+* **Contamination semantics are untouched for a real failure.** aws-bench flags
+  the account inside each reset pass and clears it on success, so a retry that
+  succeeds clears the flag its predecessor set, and a reset that genuinely
+  fails ends at the identical operator-facing error. Attempt 1 keeps upstream's
+  `scenario-reset` trial name and output directory.
+* **Both budgets are bounded by attempts AND by real wall clock** — the live
+  check's across the whole process, the reset's across whole attempts — so no
+  retry can turn a fast failure into a verifier timeout or hold a scenario
+  shard past its job: a new way to lose a trial.
+
+### What promotes this
+
+A live trial in which at least one TRANSIENT retry is logged **and succeeds**:
+
+* a live check whose `live_check-stderr.log` carries a `_live_lib: TRANSIENT
+  failure ... retrying` line and whose `live_check-result.json` then reports
+  `pass`; or
+* a post-trial reset whose job log carries `classified transient` on an attempt
+  followed by a later attempt that restores the account with no contamination
+  flag set.
+
+Absent a natural occurrence in one full corpus run, a fault-injected run — an
+`aws` shim failing the first call with `Read timeout on endpoint URL`, and a
+reset stubbed to raise the same once — is acceptable evidence, recorded as such.
+
+### What this does NOT change
+
+* **No published row is invalidated.** Every previously published result was
+  produced without retries; a retry can only convert a 0.0 that was never a
+  verdict, never alter one that was.
+* **No outcome value is added.** `pass` / `fail_stale` / `not_verifiable` /
+  `run_invalid` are unchanged; only `not_verifiable_kind` gains a value, and
+  two of its values now route to the pre-existing void-the-row path.
+* **No spec field, no schema change, no arm branch.** The helper is generated,
+  so every arm's copy is identical by construction.
+* **`make falsifiability` / `make grading-proof` stay credential-free** — they
+  run `tests/static_tiers.sh`, which never reaches a live check.
+
 ## Amendment 36 (2026-09-09) — `scenario_form` is a REQUIRED row field and the first dimension of `cell_key` — ACCEPTED
 
 **Status: ACCEPTED.** Enforced in code and covered by tests; no live run is

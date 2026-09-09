@@ -48,10 +48,15 @@ OUTCOME CONTRACT (SCHEMA.md §5, gating): a JSON object on stdout with an
     "fail_stale"     -- the account contradicts at least one of them (this is a
                         real, legitimate verdict about the agent's work);
     "not_verifiable" -- the check could not be run (no `aws` CLI, no
-                        credentials, an API error). Fail-closed: the generated
-                        tests/test.sh downgrades reward to 0.0 for anything that
-                        is not "pass", and an unverifiable claim must never
-                        silently earn reward.
+                        credentials, an API error, or a transient AWS failure
+                        that outlived tests/_live_lib.py's bounded retry --
+                        `not_verifiable_kind` says which). Fail-closed: an
+                        unanswered check ("transient-exhausted", "api-error")
+                        VOIDS the row -- the generated tests/test.sh writes no
+                        reward file at all, so harbor reports the trial INVALID
+                        -- and every other outcome that is not "pass" scores
+                        0.0. An unverifiable claim never earns reward, and an
+                        outage is never scored as a wrong solution.
 
 TWO CALL SHAPES, matching this repo's existing convention (see
 apigw-redeploy's own live_check.py):
@@ -71,10 +76,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
+import os
 import sys
 import time
 from typing import Any
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _live_lib import TransientExhausted, run_aws  # noqa: E402
 
 OLD_GROUP_NAME = "internal-services-ssm-endpoint"
 NEW_GROUP_NAME = "platform-internal-services-ssm-endpoint"
@@ -93,18 +101,18 @@ class AwsUnavailable(RuntimeError):
 
 
 def _aws(*args: str) -> Any:
-    try:
-        proc = subprocess.run(
-            ["aws", *args, "--output", "json"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-            check=True,
+    """One read of the account through the shared transient-retry runner.
+
+    A TRANSIENT failure is retried inside run_aws and only surfaces here, as
+    TransientExhausted, once its budget is spent; every RESOLVED failure is
+    AwsUnavailable exactly as before -- neither is ever a verdict."""
+    rc, stdout, stderr = run_aws(list(args))
+    if rc != 0:
+        raise AwsUnavailable(
+            f"aws {' '.join(args)}: exit {rc}: {stderr.strip()[:400]}"
         )
-    except (subprocess.SubprocessError, OSError) as exc:
-        raise AwsUnavailable(f"aws {' '.join(args)}: {exc}") from exc
     try:
-        return json.loads(proc.stdout)
+        return json.loads(stdout)
     except json.JSONDecodeError as exc:
         raise AwsUnavailable(f"aws {' '.join(args)}: unparseable output") from exc
 
@@ -198,9 +206,17 @@ def poll() -> dict:
     while True:
         try:
             last = observe()
+        except TransientExhausted as exc:
+            return {
+                "outcome": "not_verifiable",
+                "not_verifiable_kind": exc.kind,
+                "reason": str(exc),
+                "failures": [],
+            }
         except AwsUnavailable as exc:
             return {
                 "outcome": "not_verifiable",
+                "not_verifiable_kind": "api-error",
                 "reason": str(exc),
                 "failures": [],
             }

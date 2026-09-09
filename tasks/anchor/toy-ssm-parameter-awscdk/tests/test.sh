@@ -138,11 +138,49 @@ if [ "${SPEC_LIVE_CHECK_ENABLED:-false}" = "true" ] \
       > /logs/verifier/live_check-result.json
   fi
 
+  # A live_check.py still carrying the generator stub's payload
+  # (`"status": "not_implemented"`) proves the hand-authored oracle
+  # this spec declares never reached the container. It prints no
+  # `outcome`, so the gating block below would read "not_verifiable"
+  # and score EVERY solution 0.0, correct ones included. Same rule as
+  # _assert_lib.sh's is_stub_policy: a missing oracle VOIDS the row,
+  # it never grades it. No reward file is written, so harbor's own
+  # RewardFileNotFoundError reports the trial INVALID.
+  if [ "$(jq -r '.status // ""' /logs/verifier/live_check-result.json 2>/dev/null)" = "not_implemented" ]; then
+    echo "GENERATOR STUB: tests/live_check.py is the inert generator stub, not this spec's" >&2
+    echo "hand-authored live oracle. REFUSING TO GRADE: no reward file is written, so this" >&2
+    echo "trial reports as INVALID rather than as a score." >&2
+    rm -f /logs/verifier/reward.txt
+    exit 1
+  fi
+
   if [ "${SPEC_LIVE_CHECK_GATING:-false}" = "true" ]; then
     live_outcome="$(jq -r '.outcome // "not_verifiable"' /logs/verifier/live_check-result.json 2>/dev/null)"
     if [ -z "$live_outcome" ]; then
       live_outcome="not_verifiable"
     fi
+    live_kind="$(jq -r '.not_verifiable_kind // ""' /logs/verifier/live_check-result.json 2>/dev/null)"
+
+    # AWS NEVER ANSWERED => THE ROW IS VOID, NOT A ZERO. Same rule as
+    # the aws-unavailable marker above: "transient-exhausted" (every
+    # attempt at a call timed out or was throttled) and "api-error"
+    # (the call itself could not be made -- no credentials, no CLI, an
+    # API refusal) are test-INFRASTRUCTURE failures, indistinguishable
+    # from a wrong solution once written as 0.0. Refuse to grade
+    # instead: no reward file, so harbor's RewardFileNotFoundError
+    # reports the trial INVALID and a regional throttle stays out of
+    # tokens-to-green. Every OTHER not_verifiable kind is a statement
+    # about the account and still gates to 0.0 below.
+    case "$live_outcome:$live_kind" in
+      not_verifiable:transient-exhausted|not_verifiable:api-error)
+        echo "LIVE CHECK UNANSWERED ($live_kind): AWS never answered -- see" >&2
+        echo "/logs/verifier/live_check-result.json. REFUSING TO GRADE: no reward" >&2
+        echo "file is written, so this trial reports as INVALID rather than as a score." >&2
+        rm -f /logs/verifier/reward.txt
+        exit 1
+        ;;
+    esac
+
     if [ "$live_outcome" != "pass" ]; then
       echo "GATING: live_check.py outcome was '$live_outcome' (not 'pass') -- downgrading reward to 0.0" >&2
       echo "0.0" > /logs/verifier/reward.txt

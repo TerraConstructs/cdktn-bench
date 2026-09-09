@@ -63,10 +63,16 @@ OUTCOME CONTRACT (SCHEMA.md §5, gating): a JSON object on stdout with an
                         account telling us something true, not a failure to read
                         it;
     "not_verifiable" -- the check could not be run at all (no `aws` CLI, no
-                        credentials, a throttle, an unparseable response).
-                        Fail-closed: the generated tests/test.sh downgrades
-                        reward to 0.0 for anything that is not "pass", and an
-                        unverifiable claim must never silently earn reward.
+                        credentials, an unparseable response, or a transient
+                        AWS failure that outlived tests/_live_lib.py's bounded
+                        retry -- `not_verifiable_kind` says which).
+                        Fail-closed: an unanswered check
+                        ("transient-exhausted", "api-error") VOIDS the row --
+                        the generated tests/test.sh writes no reward file, so
+                        harbor reports the trial INVALID -- and every other
+                        outcome that is not "pass" scores 0.0. An unverifiable
+                        claim never earns reward, and an outage is never scored
+                        as a wrong solution.
 
 TWO CALL SHAPES, matching this repo's convention:
   * verifier-invoked, no args -- prints the JSON, always exits 0. The exit code
@@ -86,10 +92,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
+import os
 import sys
 import time
 from typing import Any
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _live_lib import TransientExhausted, run_aws  # noqa: E402
 
 FUNCTION_NAME = "cdktn-bench-quote-service"
 ENV_KEY = "QUOTE_CURRENCY"
@@ -116,27 +125,21 @@ class ResourceMissing(RuntimeError):
 
 
 def _aws(*args: str) -> Any:
-    try:
-        proc = subprocess.run(
-            ["aws", *args, "--output", "json"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-    except (subprocess.SubprocessError, OSError) as exc:
-        raise AwsUnavailable(f"aws {' '.join(args)}: {exc}") from exc
-    if proc.returncode != 0:
-        stderr = (proc.stderr or "").strip()
+    rc, stdout, stderr_raw = run_aws(list(args))
+    if rc != 0:
+        stderr = (stderr_raw or "").strip()
         # THE ONE CLASSIFICATION THAT MATTERS. Every other non-zero exit --
-        # NoCredentialsError, NoRegionError, throttling, a broken CLI -- means
-        # "we could not ask", and reporting that as `fail_stale` would score an
-        # agent 0.0 for a harness fault. ResourceNotFoundException means "we
-        # asked and the answer is: it is gone", which is a verdict.
+        # NoCredentialsError, NoRegionError, a broken CLI -- means "we could
+        # not ask", and reporting that as `fail_stale` would score an agent 0.0
+        # for a harness fault. ResourceNotFoundException means "we asked and
+        # the answer is: it is gone", which is a verdict. A transient failure
+        # never reaches here at all: run_aws retries it and raises
+        # TransientExhausted only once the budget is spent.
         if "ResourceNotFoundException" in stderr:
             raise ResourceMissing(f"aws {' '.join(args)}: {stderr}")
-        raise AwsUnavailable(f"aws {' '.join(args)}: exit {proc.returncode}: {stderr}")
+        raise AwsUnavailable(f"aws {' '.join(args)}: exit {rc}: {stderr}")
     try:
-        return json.loads(proc.stdout)
+        return json.loads(stdout)
     except json.JSONDecodeError as exc:
         raise AwsUnavailable(f"aws {' '.join(args)}: unparseable output") from exc
 
@@ -231,8 +234,20 @@ def poll() -> dict:
     while True:
         try:
             last = observe()
+        except TransientExhausted as exc:
+            return {
+                "outcome": "not_verifiable",
+                "not_verifiable_kind": exc.kind,
+                "reason": str(exc),
+                "failures": [],
+            }
         except AwsUnavailable as exc:
-            return {"outcome": "not_verifiable", "reason": str(exc), "failures": []}
+            return {
+                "outcome": "not_verifiable",
+                "not_verifiable_kind": "api-error",
+                "reason": str(exc),
+                "failures": [],
+            }
         if last["outcome"] == "pass" or time.monotonic() >= deadline:
             last["polled_for_s"] = None if last["outcome"] == "pass" else POLL_TIMEOUT_S
             return last

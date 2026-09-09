@@ -20,6 +20,7 @@ from cdktn_bench.queue import CdktnTrialQueue
 from cdktn_bench.tests.conftest import make_trial_config
 from cdktn_bench.trial import (
     CdktnMultiStepTrial,
+    CdktnSingleStepTrial,
     CdktnTrial,
     validate_multi_step_layout,
 )
@@ -48,18 +49,26 @@ def test_steps_task_dispatches_to_cdktn_multi_step_trial(
     ]
 
 
-def test_stepless_task_falls_through_to_the_untouched_aws_bench_path(
+def test_stepless_task_keeps_the_upstream_single_step_path(
     singlestep_task_dir: Path, tmp_path: Path, no_account_manager: None
 ) -> None:
-    """Exactly ``AwsBenchSingleStepTrial`` — not a cdktn subclass of it.
+    """``AwsBenchSingleStepTrial`` behaviour, with exactly one override on top.
 
-    cdktn-bench adds multi-step; it must not quietly re-route the single-step
-    path through new code, because every existing generated task and every
-    result already published came through the upstream one.
+    cdktn-bench adds multi-step and a transient-only retry of the post-trial
+    reset; it must not otherwise re-route the single-step path through new
+    code, because every existing generated task and every result already
+    published came through the upstream one. The override set is asserted, not
+    described: anything else appearing in the subclass is a silent divergence.
     """
     trial = _create(singlestep_task_dir, tmp_path, "ss")
-    assert type(trial) is AwsBenchSingleStepTrial
+    assert type(trial) is CdktnSingleStepTrial
+    assert isinstance(trial, AwsBenchSingleStepTrial)
     assert not trial.task.has_steps
+    own = {n for n in vars(CdktnSingleStepTrial) if not n.startswith("_")}
+    assert own == set()
+    assert CdktnSingleStepTrial._reset_scenario_account.__qualname__.startswith(
+        "TransientResetRetryMixin."
+    )
 
 
 def test_upstream_still_refuses_multi_step(multistep_task_dir: Path, tmp_path: Path) -> None:

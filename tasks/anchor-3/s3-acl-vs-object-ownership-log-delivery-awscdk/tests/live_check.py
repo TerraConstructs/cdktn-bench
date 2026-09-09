@@ -72,9 +72,14 @@ OUTCOME CONTRACT (SCHEMA.md §5, gating): a JSON object on stdout with an
     "fail_stale"     -- the account contradicts at least one of them (a real,
                         legitimate verdict about the agent's work);
     "not_verifiable" -- the check could not be RUN (no `aws` CLI, no
-                        credentials, an API error that is not an answer).
-                        Fail-closed: tests/test.sh downgrades reward to 0.0 for
-                        anything that is not "pass".
+                        credentials, an API error that is not an answer, or a
+                        transient AWS failure that outlived tests/_live_lib.py's
+                        bounded retry -- `not_verifiable_kind` says which).
+                        Fail-closed: an unanswered check
+                        ("transient-exhausted", "api-error") VOIDS the row --
+                        tests/test.sh writes no reward file, so harbor reports
+                        the trial INVALID -- and every other outcome that is
+                        not "pass" scores 0.0.
 
 TWO CALL SHAPES, matching this repo's convention:
   * verifier-invoked, no args -- prints the JSON, always exits 0. The exit code
@@ -93,11 +98,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
-import subprocess
 import sys
 import time
 from typing import Any
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _live_lib import TransientExhausted, run_aws  # noqa: E402
 
 SOURCE_BUCKET = "cdktn-bench-application-storage-app-data"
 DESTINATION_BUCKET = "cdktn-bench-application-storage-access-logs"
@@ -149,35 +157,29 @@ class AwsAbsent(RuntimeError):
         self.code = code
 
 
-def _aws_raw(args: list[str]) -> subprocess.CompletedProcess:
-    try:
-        return subprocess.run(
-            ["aws", *args, "--output", "json"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-    except (subprocess.SubprocessError, OSError) as exc:
-        raise AwsUnavailable(f"aws {' '.join(args)}: {exc}") from exc
+def _aws_raw(args: list[str]) -> tuple[int, str, str]:
+    """`(returncode, stdout, stderr)` from the shared transient-retry runner.
+
+    A TRANSIENT failure never reaches a caller as a return code: run_aws
+    retries it and raises TransientExhausted only once its budget is spent."""
+    return run_aws(args)
 
 
-def _classify(proc: subprocess.CompletedProcess, args: list[str]) -> None:
+def _classify(rc: int, stdout: str, stderr: str, args: list[str]) -> None:
     """Raise AwsAbsent for a 'does not exist' answer, AwsUnavailable otherwise."""
-    blob = f"{proc.stderr}\n{proc.stdout}"
+    blob = f"{stderr}\n{stdout}"
     for code in _ABSENCE_CODES:
         if code in blob:
             raise AwsAbsent(code, f"aws {' '.join(args)}")
-    raise AwsUnavailable(
-        f"aws {' '.join(args)} exited {proc.returncode}: {proc.stderr.strip()[:400]}"
-    )
+    raise AwsUnavailable(f"aws {' '.join(args)} exited {rc}: {stderr.strip()[:400]}")
 
 
 def _aws(*args: str) -> Any:
-    proc = _aws_raw(list(args))
-    if proc.returncode != 0:
-        _classify(proc, list(args))
+    rc, stdout, stderr = _aws_raw(list(args))
+    if rc != 0:
+        _classify(rc, stdout, stderr, list(args))
     try:
-        return json.loads(proc.stdout) if proc.stdout.strip() else {}
+        return json.loads(stdout) if stdout.strip() else {}
     except json.JSONDecodeError as exc:
         raise AwsUnavailable(f"aws {' '.join(args)}: unparseable output") from exc
 
@@ -377,13 +379,13 @@ def _probe_put_bucket_logging(logging_enabled: dict) -> tuple[str, str]:
         "--bucket-logging-status",
         body,
     ]
-    proc = _aws_raw(args)
-    if proc.returncode == 0:
+    rc, stdout, stderr = _aws_raw(args)
+    if rc == 0:
         return "accepted", ""
-    blob = f"{proc.stderr}\n{proc.stdout}"
+    blob = f"{stderr}\n{stdout}"
     if "InvalidTargetBucketForLogging" in blob:
-        return "rejected", proc.stderr.strip()[:400]
-    _classify(proc, args)
+        return "rejected", stderr.strip()[:400]
+    _classify(rc, stdout, stderr, args)
     raise AssertionError("unreachable")  # pragma: no cover
 
 
@@ -553,8 +555,20 @@ def poll() -> dict:
                     f"exists: {exc}"
                 ],
             }
+        except TransientExhausted as exc:
+            return {
+                "outcome": "not_verifiable",
+                "not_verifiable_kind": exc.kind,
+                "reason": str(exc),
+                "failures": [],
+            }
         except AwsUnavailable as exc:
-            return {"outcome": "not_verifiable", "reason": str(exc), "failures": []}
+            return {
+                "outcome": "not_verifiable",
+                "not_verifiable_kind": "api-error",
+                "reason": str(exc),
+                "failures": [],
+            }
         if last["outcome"] == "pass" or time.monotonic() >= deadline:
             last["polled_for_s"] = None if last["outcome"] == "pass" else POLL_TIMEOUT_S
             return last

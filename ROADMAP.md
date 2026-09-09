@@ -669,10 +669,17 @@ boundary, and a live check would be both cheaper and more authoritative.
 
 ### 5b.1 Live oracles have no retry — a transient AWS error becomes a verdict
 
-**Open, well-evidenced, not yet fixed.** A single failed AWS call is currently
-treated as an answer. `tests/live_check.py` classifies any non-zero `aws` exit
-it does not recognise as `not_verifiable`, and fail-closed gating turns that
-into reward 0.0 — so an infrastructure hiccup is recorded as an agent result.
+**Done** (DECISIONS.md Amendment 35, bounded retry on transient AWS errors —
+`tests/_live_lib.py` for live checks, `cdktn_bench/aws_transient.py` for the
+post-trial reset; contract in `specs/SCHEMA.md` §5 and `docs/runner.md`
+"Post-trial reset retry"). The finding it records is kept below because the
+amendment's promotion criterion is a live trial that logs a transient retry,
+and until one lands this is the evidence.
+
+A single failed AWS call was treated as an answer: `tests/live_check.py`
+classified any non-zero `aws` exit it did not recognise as `not_verifiable`,
+and fail-closed gating turned that into reward 0.0 — so an infrastructure
+hiccup was recorded as an agent result.
 
 Measured 2026-08-26, `jobs/live-brownfield-seed/2026-08-26__14-19-22` (awscdk):
 seed `seed_deployed`, idempotence `converged`, the requested rename correctly
@@ -686,9 +693,9 @@ URL: "None"` failed two post-trial resets and one `env reset`; the reset that
 succeeded was the third attempt of an unchanged command against an unchanged
 account.
 
-**Fix.** Classify AWS failures into TRANSIENT (timeout, throttling, 5xx) versus
-RESOLVED, retry the transient class with bounded backoff, and only then fall to
-`not_verifiable`. The three-valued contract already distinguishes "I could not
+**Fix, shipped.** Classify AWS failures into TRANSIENT (timeout, throttling,
+5xx) versus RESOLVED, retry the transient class with bounded backoff, and only
+then fall to `not_verifiable`. The three-valued contract already distinguishes "I could not
 tell" from "it is wrong"; what is missing is that one timed-out call jumps
 straight to a verdict. Fail-closed is preserved — after exhausting retries the
 oracle still refuses to award reward. This makes the oracle stricter about its

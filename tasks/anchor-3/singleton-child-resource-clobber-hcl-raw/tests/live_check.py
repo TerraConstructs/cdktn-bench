@@ -71,10 +71,15 @@ OUTCOME CONTRACT (SCHEMA.md §5, gating): a JSON object on stdout with an
                         failure to observe;
     "not_verifiable" -- the check could not be run (no `aws` CLI, no
                         credentials, an API error other than the two named
-                        above). Fail-closed: the generated tests/test.sh
-                        downgrades reward to 0.0 for anything that is not
-                        "pass", and an unverifiable claim must never silently
-                        earn reward.
+                        above, or a transient AWS failure that outlived
+                        tests/_live_lib.py's bounded retry --
+                        `not_verifiable_kind` says which). Fail-closed: an
+                        unanswered check ("transient-exhausted", "api-error")
+                        VOIDS the row -- the generated tests/test.sh writes no
+                        reward file, so harbor reports the trial INVALID -- and
+                        every other outcome that is not "pass" scores 0.0. An
+                        unverifiable claim never earns reward, and an outage is
+                        never scored as a wrong solution.
 
 TWO CALL SHAPES, matching this repo's existing convention (see
 named-resource-replacement's own live_check.py):
@@ -94,10 +99,13 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
+import os
 import sys
 import time
 from typing import Any
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _live_lib import TransientExhausted, run_aws  # noqa: E402
 
 BUCKET = "cdktn-bench-reports-archive"
 
@@ -118,7 +126,8 @@ POLL_INTERVAL_S = 10
 
 # The two S3 error codes that are OBSERVATIONS about the agent's change rather
 # than failures to observe. Everything else the CLI can fail with (expired
-# credentials, throttling, no network, no `aws` binary) is not_verifiable.
+# credentials, no `aws` binary) is not_verifiable; throttling and timeouts are
+# retried by tests/_live_lib.py before they can reach that verdict.
 _VERDICT_ERROR_CODES = ("NoSuchLifecycleConfiguration", "NoSuchBucket")
 
 
@@ -131,25 +140,17 @@ class AwsSaysAbsent(RuntimeError):
 
 
 def _aws(*args: str) -> Any:
-    try:
-        proc = subprocess.run(
-            ["aws", *args, "--output", "json"],
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-    except (subprocess.SubprocessError, OSError) as exc:
-        raise AwsUnavailable(f"aws {' '.join(args)}: {exc}") from exc
-    if proc.returncode != 0:
-        stderr = proc.stderr or ""
+    rc, stdout, stderr_raw = run_aws(list(args))
+    if rc != 0:
+        stderr = stderr_raw or ""
         for code in _VERDICT_ERROR_CODES:
             if code in stderr:
                 raise AwsSaysAbsent(f"aws {' '.join(args)}: {code}")
         raise AwsUnavailable(
-            f"aws {' '.join(args)}: exit {proc.returncode}: {stderr.strip()[:400]}"
+            f"aws {' '.join(args)}: exit {rc}: {stderr.strip()[:400]}"
         )
     try:
-        return json.loads(proc.stdout)
+        return json.loads(stdout)
     except json.JSONDecodeError as exc:
         raise AwsUnavailable(f"aws {' '.join(args)}: unparseable output") from exc
 
@@ -271,9 +272,18 @@ def poll() -> dict:
     while True:
         try:
             last = observe()
+        except TransientExhausted as exc:
+            return {
+                "outcome": "not_verifiable",
+                "not_verifiable_kind": exc.kind,
+                "reason": str(exc),
+                "failures": [],
+                "rules": [],
+            }
         except AwsUnavailable as exc:
             return {
                 "outcome": "not_verifiable",
+                "not_verifiable_kind": "api-error",
                 "reason": str(exc),
                 "failures": [],
                 "rules": [],

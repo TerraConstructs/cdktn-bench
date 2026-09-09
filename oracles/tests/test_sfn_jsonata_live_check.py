@@ -543,7 +543,6 @@ def test_run_propagates_an_api_failure_instead_of_scoring_it() -> None:
     "stderr, kind",
     [
         ("An error occurred (AccessDeniedException) when calling TestState", "access-denied"),
-        ("An error occurred (ThrottlingException): Rate exceeded", "throttled"),
         (
             "An error occurred (ValidationException): bad definition",
             "invalid-definition",
@@ -558,3 +557,16 @@ def test_run_propagates_an_api_failure_instead_of_scoring_it() -> None:
 )
 def test_cli_failures_are_classified_for_the_operator(stderr: str, kind: str) -> None:
     assert lc._classify_cli_failure(stderr)[0] == kind
+
+
+def test_throttling_never_reaches_this_classifier() -> None:
+    """Retry is the shared runner's job, not this file's.
+
+    tests/_live_lib.py retries the transient class and raises
+    TransientExhausted only once its budget is spent, so a throttle arriving
+    here would mean the call bypassed it -- and this classifier would turn a
+    retryable outage into an unretried "api-error" 0.0."""
+    assert lc._classify_cli_failure(
+        "An error occurred (ThrottlingException): Rate exceeded"
+    )[0] == "api-error"
+    assert "throttled" not in lc.NotVerifiable.__doc__
