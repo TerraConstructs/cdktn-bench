@@ -31,6 +31,12 @@ resource "aws_sfn_state_machine" "order_batch" {
     QueryLanguage = "JSONata"
     StartAt       = "ComputeTotals"
     States = {
+      # ONE embedded {% ... %} expression evaluating to the WHOLE Output
+      # object, not an object literal with a {% %} per field. The graded fact
+      # is the VALUE this state computes: tests/live_check.py submits this
+      # state to TestState and compares what Step Functions returns, so the
+      # reference states the computation as the single expression the service
+      # evaluates in one go.
       ComputeTotals = {
         Type   = "Pass"
         Output = "{% { \"orders\": $states.input.orders.{\"id\": id, \"qty\": qty, \"price\": price, \"total\": qty * price}, \"grandTotal\": $sum($states.input.orders.(qty * price)) } %}"
@@ -60,3 +66,10 @@ resource "aws_sfn_state_machine" "order_batch" {
 TF
 
 bash tests/static_tiers.sh
+
+# LIVE=1 (a real account): the same gating live oracle the verifier runs, in
+# its fixture-invoked shape. The reference solution's JSONata must be what
+# Step Functions actually computes, not merely what the static tiers accept.
+if [ "${LIVE:-0}" = "1" ]; then
+  python3 tests/live_check.py --expect ok
+fi

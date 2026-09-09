@@ -1,24 +1,19 @@
 """generator/tests/test_aws_preflight.py -- the AWS PREFLIGHT contract
-(DECISIONS.md Amendment 32, aws-access.html).
+(DECISIONS.md Amendment 32 "live AWS is the only trial mode", aws-access.html).
 
-Live AWS is the only trial mode, so both Terraform-shaped arms need a working
-ambient credential chain before any toolchain command is worth running. A
-missing chain is test INFRASTRUCTURE failing, not a bad solution, and must VOID
-the row -- no reward file at all, so harbor raises RewardFileNotFoundError --
-rather than score 0.0, which is indistinguishable from a wrong answer.
+A missing ambient credential chain is test INFRASTRUCTURE failing, not a bad
+solution: it must VOID the row -- no reward file at all, so harbor raises
+RewardFileNotFoundError -- rather than score 0.0, which is indistinguishable
+from a wrong answer. Three things hold that together:
 
-Three things have to hold together, and only one of them is visible in
-`static_tiers.sh` alone:
-
-  1. `static_tiers.sh` preflights `aws sts get-caller-identity` on hcl_raw and
-     terraconstructs (awscdk's chain makes no AWS call) and exports a region
-     first -- without the region the preflight itself dies `NoRegion` and would
-     void every row, perfect solutions included.
+  1. `static_tiers.sh` exports a region, then preflights
+     `aws sts get-caller-identity`, in every arm whose verifier reaches AWS --
+     both Terraform-shaped arms always, awscdk whenever the spec enables a
+     live check. Without the region the preflight itself dies `NoRegion` and
+     voids every row, perfect solutions included.
   2. The preflight writes NO reward.txt and runs BEFORE any toolchain command.
-  3. `test.sh` short-circuits on the marker. It does not abort on
-     static_tiers.sh's exit code, and its live_check / idempotence gating
-     blocks write `0.0` -- so without the short-circuit the void becomes a
-     zero. The positive control below proves those blocks really would.
+  3. `test.sh` short-circuits on the marker, so the void cannot decay into a
+     zero via the live_check / idempotence gating blocks that write `0.0`.
 
 Offline and toolchain-free: `bash` and `jq` only, with stub binaries on PATH.
 """
@@ -38,7 +33,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "generator"))
 
-from gen import build_static_tiers_sh, build_test_sh  # noqa: E402
+from gen import build_static_tiers_sh, build_test_sh, step_live_check  # noqa: E402
 from spec_model import Spec, load_spec  # noqa: E402
 
 SPEC_PATH = REPO_ROOT / "specs" / "named-resource-replacement.yaml"
@@ -68,6 +63,20 @@ def _static_tiers_variants(spec: Spec, arm: str) -> list[tuple[str, str]]:
     return [(f"{spec.id}[{arm}]", build_static_tiers_sh(spec, arm))]
 
 
+def _live_variants(spec: Spec, arm: str, *, live: bool) -> list[tuple[str, str]]:
+    """The scripts whose own resolved live check is (or is not) enabled --
+    per STEP, since a step may opt out of the spec-level one."""
+    if spec.is_multi_step():
+        return [
+            (f"{spec.id}[{arm}][step {s.name}]", build_static_tiers_sh(spec, arm, s))
+            for s in (spec.steps or [])
+            if step_live_check(spec, s).enabled is live
+        ]
+    if spec.verifier.live_check.enabled is not live:
+        return []
+    return [(f"{spec.id}[{arm}]", build_static_tiers_sh(spec, arm))]
+
+
 # --------------------------------------------------------------------------
 # 1. Emission
 # --------------------------------------------------------------------------
@@ -87,17 +96,37 @@ def test_every_terraform_shaped_static_tiers_preflights_aws() -> None:
                 )
 
 
-def test_awscdk_static_tiers_has_no_preflight() -> None:
+def test_awscdk_without_a_live_check_has_no_preflight() -> None:
     """`cdk synth --no-lookups` makes no AWS call: a preflight there would make
     awscdk rows void on a credential failure that could not have affected
     them."""
     for spec in _all_specs():
-        for arm in spec.arms.enabled_arms():
-            if arm != "awscdk":
-                continue
-            for label, body in _static_tiers_variants(spec, arm):
-                assert PREFLIGHT_CMD not in body, f"{label}: unexpected preflight"
-                assert MARKER not in body, f"{label}: unexpected aws-unavailable marker"
+        if "awscdk" not in spec.arms.enabled_arms():
+            continue
+        for label, body in _live_variants(spec, "awscdk", live=False):
+            assert PREFLIGHT_CMD not in body, f"{label}: unexpected preflight"
+            assert MARKER not in body, f"{label}: unexpected aws-unavailable marker"
+
+
+def test_awscdk_with_a_live_check_preflights_too() -> None:
+    """A live check calls AWS from the awscdk verifier as well. Without the
+    preflight, the same credential fault that VOIDS an hcl_raw row reaches
+    live_check.py as an api-error and test.sh's gating block publishes it as
+    reward 0.0 -- one arm scored as an agent failure for the infrastructure
+    fault the other arm is excused for."""
+    checked = 0
+    for spec in _all_specs():
+        if "awscdk" not in spec.arms.enabled_arms():
+            continue
+        for label, body in _live_variants(spec, "awscdk", live=True):
+            assert PREFLIGHT_CMD in body, (
+                f"{label}: this awscdk verifier runs a live check that calls "
+                "AWS, but its static_tiers.sh has no preflight, so a broken "
+                "credential chain is graded as a wrong answer"
+            )
+            assert MARKER in body, f"{label}: preflight writes no marker"
+            checked += 1
+    assert checked, "no awscdk arm with a live check -- this test would be vacuous"
 
 
 @pytest.mark.parametrize("arm", PREFLIGHT_ARMS)

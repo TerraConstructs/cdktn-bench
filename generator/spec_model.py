@@ -22,73 +22,57 @@ from typing import Annotated, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-# Same directory, and every entry point puts generator/ on sys.path before it
-# imports this module (gen.py, check_reference_paths.py, gates/*, the test
-# suites). Imported HERE, at spec-LOAD time, because SeedLiveAssert's
-# falsifiability rule (finding A, adversarial review round 3, 2026-08-25) is a
-# rule about the COMPILED jq filter, not about the JSONPath text -- and
-# because compiling at load turns an untranslatable `jsonpath` into a spec
-# error instead of a generation-time crash three commands later.
+# Same directory; every entry point puts generator/ on sys.path first. Imported
+# at spec-LOAD time because SeedLiveAssert's falsifiability rule is about the
+# COMPILED jq filter, not the JSONPath text, and because compiling at load
+# turns an untranslatable `jsonpath` into a spec error rather than a
+# generation-time crash three commands later.
 from jsonpath_jq import jsonpath_to_jq
 
-TierStr = Literal["0", "0.5", "1"]
-# "live" added by Slice G (apigw-redeploy, 2026-08-06): a catch whose
-# mistake is invisible to EVERY static tier by construction (the only
-# discriminating signal is a live apply -> modify -> re-apply -> curl loop,
-# docs/apigw-redeploy-mechanics.md §6(c)) -- distinct from "0.5"
-# (tier05_jsonata, which IS a static/offline check, just host-side and
-# non-gating). Backward compatible: no pre-Slice-G spec uses it.
-CatchTierStr = Literal["0", "0.5", "1", "live"]
+# The two STATIC tiers, and the only tiers a generated tests/static_tiers.sh
+# can run: "0" (the arm's own toolchain plus jq-compiled structural asserts)
+# and "1" (the hand-authored Rego/cfn-guard bundle).
+TierStr = Literal["0", "1"]
+# "live": a catch whose mistake is invisible to EVERY static tier by
+# construction -- the only discriminating signal comes from a real AWS API
+# call made by the scenario's hand-authored tests/live_check.py
+# (docs/apigw-redeploy-mechanics.md; DECISIONS.md Amendment 34).
+CatchTierStr = Literal["0", "1", "live"]
 Arm = Literal["awscdk", "hcl_raw", "terraconstructs"]
 
 ID_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 PLACEHOLDER_TOKEN_RE = re.compile(r"\{\{([A-Za-z0-9_.\-]+)\}\}")
 
 # --------------------------------------------------------------------------
-# §0.1 AGENT-VISIBLE IDENTITY — the deny-list (DECISIONS.md Amendment 28
-# addendum, "identity separation").
+# §0.1 AGENT-VISIBLE IDENTITY -- the deny-list (identity separation, DECISIONS.md
+# Amendment 28 addendum).
 #
 # THE RULE: the spec `id` is OPERATOR-FACING and may name the pitfall; every
-# name the AGENT can see must be named for the CURRENT-STEP GOAL only. The
-# leak test is one question: *does this name reveal more than the step's own
-# prompt does?*
+# name the AGENT can see must describe the CURRENT-STEP GOAL only. The leak
+# test is one question: does this name reveal more than the step's own prompt
+# does? The patterns below are the mechanical half of that question, enforced
+# at spec-load time so a leaking `workspace_id`/`workspace_title` is refused
+# rather than noticed by a test several regenerations later.
 #
-# These patterns are the mechanical half of that question. They are the union
-# of two deny-lists that used to live only in test modules -- the BROWNFIELD
-# mechanism vocabulary (test_workspace_seed.py::MECHANISM_PATTERNS, Amendment
-# 28 §3) and the MULTI-STEP foreshadowing grammar
-# (test_multistep_emission.py::TEMPORAL_TOKENS, Amendment 27 §5.1) -- promoted
-# here so a VALIDATOR can refuse a leaking `workspace_id`/`workspace_title` at
-# spec-load time instead of a test noticing it three regenerations later.
+# Every separator-bearing pattern matches `-`, `_`, a space, or nothing: an id
+# like `apigw-redeploy` reaches the agent when a sweep greps `re-deploy` only.
+# Ordinary change-request and domain vocabulary is DELIBERATELY absent
+# ("rename", "deploy", "security group", "retention", "route") -- that is what
+# a prompt legitimately asks for, and banning it would ban the scenarios.
 #
-# UNHYPHENATED VARIANTS ARE DELIBERATE. Amendment 27's sweep grepped
-# `re-deploy` only, so `apigw-redeploy` -- whose id IS the step-2 trap verb --
-# was stamped into every step-1 skeleton header and into the terraconstructs
-# arm's `ScenarioStack` id and `gridUUID` without any test seeing it. Every
-# separator-bearing pattern below therefore matches `-`, `_`, a space, or
-# nothing at all.
-#
-# WHAT IS DELIBERATELY ABSENT: ordinary change-request and domain vocabulary --
-# "rename", "deploy", "security group", "retention", "route". Those are what a
-# prompt legitimately asks for. Banning them would ban the scenarios.
-#
-# TWO CLASSES, because they have genuinely different SCOPES -- and collapsing
-# them is how a sweep either goes blind or cries wolf.
+# TWO CLASSES, with genuinely different scopes; collapsing them makes a sweep
+# either go blind or cry wolf.
 #
 #   MECHANISM/META  names the fix, the diagnosis, or the benchmark's own
-#                   machinery. Banned on EVERY agent-visible surface, at every
-#                   point in a scenario's life. Even the last prompt of a
-#                   multi-step scenario may not say `create_before_destroy`:
-#                   that is the answer, not the request.
+#                   machinery. Banned on EVERY agent-visible surface at every
+#                   point in a scenario's life. Even a multi-step scenario's
+#                   last prompt may not say `create_before_destroy`: that is
+#                   the answer, not the request.
 #
-#   FORESHADOWING   names something a LATER step introduces. Banned on the
-#                   surfaces the FIRST step can read -- `environment/` (the
-#                   image, present from turn one) and the first prompt -- and
-#                   legitimate afterwards. Step 02's own prompt IS a change
-#                   request and does ask for a re-deploy; banning those words
-#                   there would ban the scenario, and a sweep that has to be
-#                   switched off for the file where the words are correct is a
-#                   sweep nobody keeps running.
+#   FORESHADOWING   names something a LATER step introduces. Banned only on
+#                   surfaces the FIRST step can read -- `environment/` and the
+#                   first prompt -- and legitimate afterwards: step 02's prompt
+#                   IS a change request and does ask for a re-deploy.
 AGENT_MECHANISM_DENY_PATTERNS: tuple[str, ...] = (
     # --- mechanism: names the fix instead of the request (brownfield) --------
     r"create[ _-]?before[ _-]?destroy",
@@ -246,18 +230,12 @@ class OutputContract(BaseModel):
     build_command: str | None = None
     synth_command: str | None = None
     plan_command: str | None = None
-    # SCHEMA.md §2.6: the REAL deploy command for this arm, used ONLY by a
-    # multi-step spec whose step declares `pre_invoke.deploy_prior: true`
-    # (the harness deploys the previous step's work with staged credentials
-    # before this step's agent runs -- DECISIONS.md Amendment 26 §2's
-    # DEFAULT). Deliberately spec-declared per arm rather than inferred by
-    # the generator from a hardcoded arm->command map: guessing a deploy
-    # command is how a harness action silently deploys the wrong tree or the
-    # wrong stack. gen.py hard-errors if a step asks for deploy_prior and any
-    # enabled arm leaves this unset. `apigw-redeploy` -- the only multi-step
-    # spec today -- deliberately does NOT use it (the AGENT deploys in both
-    # steps; see docs/prompt-decomposition-audit.md §3), so this field is
-    # unset on every arm of every current spec.
+    # SCHEMA.md §2.6: the REAL deploy command for this arm, run by the harness
+    # under staged credentials for `steps[].pre_invoke.deploy_prior` or
+    # `workspace_seed.deploy`. Spec-declared per arm, never inferred from an
+    # arm->command map: guessing is how a harness action silently deploys the
+    # wrong tree or the wrong stack. gen.py hard-errors if a consumer asks for
+    # it and any enabled arm leaves it unset.
     deploy_command: str | None = None
     json_fields: list[dict] = Field(default_factory=list)
 
@@ -354,9 +332,8 @@ class Instruction(BaseModel):
 # §2.5 seeded_files
 # --------------------------------------------------------------------------
 
-# Mirrors generator/gen.py::ARM_BOOTSTRAP_FILE -- duplicated here (not
-# imported) because gen.py imports THIS module, not the other way around.
-# Keep in sync by hand if a new arm's bootstrap filename ever changes.
+# Mirrors generator/gen.py::ARM_BOOTSTRAP_FILE. Duplicated rather than imported
+# because gen.py imports THIS module; keep in sync by hand.
 _KNOWN_BOOTSTRAP_FILES = {"bin/app.ts", "provider.tf", "main.ts"}
 
 
@@ -390,38 +367,36 @@ class SeededFile(BaseModel):
 
 # --------------------------------------------------------------------------
 # §2.7 workspace_seed -- the BROWNFIELD (poisoned-workspace) starting state
+# (docs/design/poisoned-workspace-design.md; DECISIONS.md Amendment 28).
 #
-# Added 2026-08-20 (task #15, docs/design/poisoned-workspace-design.md;
-# DECISIONS.md Amendment 28). A spec with NO `workspace_seed` key generates
-# byte-identically to before this field existed -- that regression guarantee is
-# why every branch gen.py grows for it is `if spec.workspace_seed:`-guarded.
+# A spec with NO `workspace_seed` key generates byte-identically to a spec that
+# has no such field; every gen.py branch for it is `if spec.workspace_seed:`-
+# guarded to keep that so.
 #
-# What it IS: the per-arm body shipped **as** `output_contract.entry_file`'s
-# content, replacing §2.4's empty `TODO(agent)` skeleton. Working, green,
-# semantically-equivalent-across-arms IaC that already carries a latent
-# pitfall. AGENT-WRITABLE (0o644) -- it is the file the agent is being asked to
-# change. That is the exact opposite of `seeded_files` (§2.5), which are 0o444
-# read-only reference inputs; the two blocks stay separate because their
-# permissions and semantics are opposites.
+# What it IS: the per-arm body shipped AS `output_contract.entry_file`'s
+# content, replacing §2.4's empty `TODO(agent)` skeleton -- working, green,
+# cross-arm-equivalent IaC already carrying a latent pitfall. AGENT-WRITABLE
+# (0o644), because it is the file the agent is asked to change. `seeded_files`
+# (§2.5) are the opposite: 0o444 read-only reference inputs. The two blocks
+# stay separate because their permissions and semantics are opposites.
 #
 # What it is NOT: a hint. The seed must synth/plan GREEN (proved per arm by
-# `make seed-parity`, generator/check_reference_paths.py --seed) and must carry
-# no comment, name or structure that signposts the trap. The mechanical half of
-# that rule is `_SEED_COMMENT_BANNED_TOKENS` below; the real rule is a
-# review-time obligation (SCHEMA.md §2.7, Amendment 28 §3).
+# `make seed-parity`) and must carry no comment, name or structure that
+# signposts the trap. `_SEED_COMMENT_BANNED_TOKENS` below is the mechanical
+# half; the real rule is a review-time obligation (SCHEMA.md §2.7).
 # --------------------------------------------------------------------------
 
 # Tokens that must never appear in a COMMENT line of a seed body. Two families:
-#   (a) editorial markers a real production config would not carry and that
-#       tell the agent this file is bench scaffolding, inviting meta-reasoning
-#       about planted traps ("TODO", "FIXME", ... ) -- including the
-#       generator's own skeleton banner text, which is also how this validator
-#       enforces "a workspace_seed spec must not ALSO ship the empty stub";
-#   (b) the generator-side tripwire for the most common way a seed leaks its
-#       own answer: naming the Terraform lifecycle meta-argument that fixes it.
-# Matched case-insensitively, comment lines only -- a seed legitimately
-# contains e.g. `description` text, and a REFERENCE SOLUTION legitimately
-# contains `create_before_destroy` in real code (this list never sees one).
+#   (a) editorial markers a real production config would not carry, which tell
+#       the agent this file is bench scaffolding and invite meta-reasoning
+#       about planted traps -- including the generator's own skeleton banner,
+#       so this also enforces "a workspace_seed spec must not ALSO ship the
+#       empty stub";
+#   (b) the most common way a seed leaks its own answer: naming the Terraform
+#       lifecycle meta-argument that fixes it.
+# Matched case-insensitively, on comment lines only: a seed legitimately
+# carries `description` text, and a reference solution legitimately contains
+# `create_before_destroy` in real code (this list never sees one).
 _SEED_COMMENT_BANNED_TOKENS = (
     "TODO",
     "FIXME",
@@ -435,10 +410,9 @@ _SEED_COMMENT_BANNED_TOKENS = (
     "EMPTY ON PURPOSE",
     "GENERATED SKELETON",
     "GENERATED ENTRYPOINT",
-    # The regenerate hint the skeleton banners close with. Kept as the bare
-    # `MAKE GEN` rather than the old `MAKE GEN SPEC=`: §0.1 dropped the spec
-    # filename from every agent-visible stamp, so a seed copied from a skeleton
-    # would now carry the shorter form and the longer token would miss it.
+    # The regenerate hint the skeleton banners close with. Bare `MAKE GEN`,
+    # not `MAKE GEN SPEC=`: §0.1 keeps the spec filename out of every
+    # agent-visible stamp, so the longer token would never match.
     "MAKE GEN",
     "GENERATOR/GEN.PY",
 )
@@ -447,17 +421,14 @@ _SEED_COMMENT_BANNED_TOKENS = (
 # (HCL `#`, TS `//`, and the inside of a TS/JSDoc block comment `*` or `/*`).
 _COMMENT_LINE_RE = re.compile(r"^\s*(#|//|/\*|\*)")
 
-# `terraform [<global flags>] plan` -- the PLAN SUBCOMMAND, not the literal
-# string "terraform plan" (finding G, adversarial review round 3, 2026-08-25).
-# terraform accepts its global flags between the binary and the subcommand
-# (`terraform -chdir=... plan`), so a substring test silently exempted a real,
-# documented invocation from `Spec._brownfield_plan_must_not_refresh`.
+# Matches the `terraform [<global flags>] plan` SUBCOMMAND, not the literal
+# string "terraform plan": terraform accepts global flags between binary and
+# subcommand (`terraform -chdir=... plan`), and a substring test would exempt
+# that real invocation from `Spec._brownfield_plan_must_not_refresh`.
 #
-# ONE owner, TWO consumers: this pattern and the one in
-# generator/tests/test_seed_deploy.py::_TF_PLAN must agree, because the
-# validator speaks for the spec FIELD and the test speaks for the emitted
-# BYTES -- the emitted-bytes test is the only thing that covers the arms whose
-# plan command the spec does not carry at all.
+# Must agree with generator/tests/test_seed_deploy.py::_TF_PLAN: this pattern
+# speaks for the spec FIELD, that one for the emitted BYTES, and only the
+# emitted-bytes test covers arms whose plan command the spec never carries.
 _TF_PLAN_RE = re.compile(r"\bterraform\b(?:\s+-\S+)*\s+plan\b")
 
 
@@ -478,14 +449,14 @@ def _seed_comment_violations(body: str) -> list[str]:
 class SeedAssert(BaseModel):
     """One behavioural fact the seed must satisfy on every arm it applies to.
 
-    Deliberately reuses `StructuralAssert`'s vocabulary verbatim -- same
-    `op`/`expected` table (§4.2), same `{cfn,tf}_jsonpath` split, same
-    `generator/jsonpath_jq.py` compilation, resolved by the SAME
-    `_assert_lib.sh::assert_check` bash function a real trial's tier-0 runs. A
-    second, differently-behaving path language would be a new drift surface for
-    zero gain. The one field `StructuralAssert` has that this does not is
-    `tier`: a seed assert is never graded during a trial -- it is a
-    GENERATION-TIME parity gate (§4 of the design memo), run by
+    Reuses `StructuralAssert`'s vocabulary verbatim -- same `op`/`expected`
+    table (§4.2), same `{cfn,tf}_jsonpath` split, same
+    `generator/jsonpath_jq.py` compilation, resolved by the same
+    `_assert_lib.sh::assert_check` a real trial's tier-0 runs. A second path
+    language would be a new drift surface for zero gain.
+
+    No `tier` field, unlike `StructuralAssert`: a seed assert is never graded
+    during a trial. It is a GENERATION-TIME parity gate run by
     `make seed-parity`, never by `tests/static_tiers.sh`.
     """
 
@@ -494,20 +465,18 @@ class SeedAssert(BaseModel):
     applies_to: list[Arm] = Field(
         default_factory=lambda: ["awscdk", "hcl_raw", "terraconstructs"]
     )
-    # Back-reference to `catches[].name`. At least one seed assert per spec must
-    # set it (see `Spec._workspace_seed_wellformed`): without it a seed could
-    # silently drift into being NON-poisoned -- still green, still parity-clean,
-    # but no longer carrying the pitfall the scenario exists to measure -- and
-    # nothing would notice.
+    # Back-reference to `catches[].name`; at least one seed assert per spec must
+    # set it (`Spec._workspace_seed_wellformed`). Without it a seed can drift
+    # into being NON-poisoned -- still green, still parity-clean, no longer
+    # carrying the pitfall the scenario measures -- and nothing would notice.
     pins_catch: str | None = None
     cfn_jsonpath: str | None = None
     tf_jsonpath: str | None = None
-    # SAME nine-op vocabulary as `StructuralAssert`/`SeedAssert` at the TYPE
-    # level, deliberately: one table, one translator, one evaluator. Three of
-    # the nine are then rejected in `_wellformed` below with a message that
-    # explains WHY -- a spec author who copies an op straight out of
-    # `oracle.structural_asserts` (where all nine are legal) has to be told
-    # what is different HERE, not handed a bare "input should be one of ...".
+    # The same nine ops as `StructuralAssert` at the TYPE level: one table, one
+    # translator, one evaluator. Three are rejected in `_wellformed` below with
+    # a message explaining why, so an author who copied an op out of
+    # `oracle.structural_asserts` (where all nine are legal) is told what
+    # differs here rather than handed a bare "input should be one of ...".
     op: Literal[
         "exists", "not_exists", "eq", "in", "contains", "regex", "set_eq",
         "absent_or_eq", "not_regex",
@@ -548,12 +517,10 @@ class SeedAssert(BaseModel):
 class SeedExtraFile(BaseModel):
     """An additional WRITABLE (0o644) file the seed ships alongside `entry_file`.
 
-    Same path rules as `SeededFile` (§2.5) -- the difference is only the
-    permission and the ownership story: a `seeded_files` entry is a read-only
-    reference input, a `workspace_seed.extra_files` entry is part of the
-    existing configuration the agent may legitimately edit. Per-arm, because a
-    multi-file layout is an arm-specific authoring choice (a `variables.tf`
-    exists only on hcl_raw).
+    Same path rules as `SeededFile` (§2.5); the difference is permission and
+    ownership. A `seeded_files` entry is a read-only reference input; this is
+    part of the existing configuration the agent may legitimately edit. Per-arm,
+    because a multi-file layout is an arm-specific authoring choice.
     """
 
     path: str
@@ -595,18 +562,15 @@ class SeedExtraFile(BaseModel):
 class PerArmSeedBodies(BaseModel):
     """`workspace_seed.entry_file` -- one hand-authored body per ENABLED arm.
 
-    A per-arm map, not one document: there is no derivation path between the
-    three (docs/scenario-candidates.md:169-176 -- aws-cdk-rfcs #217 closed
-    `not_planned`, `hashicorp/terraform-cdk` archived, no public CDK->TF
-    synthesizer exists). Hand-authoring per arm is the SAME discipline this repo
-    already applies to `solution/solve.sh` (§8.2 point 8) and to
-    `generator/tests/fixtures/<id>/<arm>/<entry_file>`.
+    A per-arm map, not one document: no derivation path exists between the three
+    (no public CDK->TF synthesizer; docs/scenario-candidates.md). Hand-authoring
+    per arm is the same discipline `solution/solve.sh` (§8.2 point 8) and
+    `generator/tests/fixtures/<id>/<arm>/<entry_file>` already use.
 
-    Each body is written VERBATIM as that arm's `output_contract.entry_file` --
-    no generator header, no wrapper. The generator therefore checks the body
+    Each body is written VERBATIM as that arm's `output_contract.entry_file`,
+    with no generator header or wrapper, so gen.py::seed_entry_body checks it
     still satisfies its arm's structural contract (`export class ScenarioStack`
-    on the TS arms, no second `provider "aws"` block on hcl_raw) at generation
-    time; see gen.py::seed_entry_body.
+    on the TS arms, no second `provider "aws"` block on hcl_raw).
     """
 
     awscdk: str | None = None
@@ -622,17 +586,16 @@ class PerArmSeedExtraFiles(BaseModel):
 
 
 # The ops from SCHEMA.md §4.2's nine-op table whose compiled jq filter is TRUE
-# when the path resolves to zero nodes -- i.e. the ops that PASS on a
-# completely empty AWS account. Legal on a `StructuralAssert` (where "this key
-# is absent from the template" is a real, falsifiable fact about an artifact
-# that definitely exists) and REJECTED on a `SeedLiveAssert`, where the whole
-# question is whether the artifact -- the account state -- exists at all.
+# on zero resolved nodes -- i.e. the ops that PASS on a completely empty AWS
+# account. Legal on a `StructuralAssert`, where "this key is absent from the
+# template" is a falsifiable fact about an artifact that definitely exists;
+# REJECTED on a `SeedLiveAssert`, where the question is whether the artifact --
+# the account state -- exists at all.
 #
-# REJECTING THESE DOES NOT MAKE A LIVE ASSERT FALSIFIABLE. It closes one of
-# two known routes to a free pass; the other is a `jsonpath` that names a
-# collection instead of iterating it, closed separately in
-# `SeedLiveAssert._wellformed` (finding A, round 3, 2026-08-25). Neither rule
-# is a decision procedure and this comment does not claim one.
+# REJECTING THESE DOES NOT MAKE A LIVE ASSERT FALSIFIABLE. It closes one of two
+# known routes to a free pass; the other, a `jsonpath` that names a collection
+# instead of iterating it, is closed in `SeedLiveAssert._wellformed`. Neither
+# rule is a decision procedure.
 _VACUOUS_ON_AN_EMPTY_ACCOUNT = frozenset({"not_exists", "absent_or_eq", "not_regex"})
 
 
@@ -641,41 +604,34 @@ class SeedLiveAssert(BaseModel):
     """One fact about the REAL AWS ACCOUNT that must hold after the harness has
     deployed the seed and BEFORE the agent's first token (SCHEMA.md §2.7.1).
 
-    This is the anti-vacuity gate, and it is a different instrument from
-    `SeedAssert` -- which never enters a container at all. A `seed_assert` is a
-    GENERATION-time parity gate (`make seed-parity`) resolved against the
-    offline, never-deployed workspace: it answers "do the three seeds declare
-    the same system?". A `SeedLiveAssert` is resolved at TRIAL time, inside the
-    agent container, against a real `aws` CLI response, and answers "does the
+    The anti-vacuity gate, and a different instrument from `SeedAssert`, which
+    never enters a container: a `seed_assert` is a GENERATION-time parity gate
+    (`make seed-parity`) against the offline workspace, answering "do the three
+    seeds declare the same system?", while this is resolved at TRIAL time inside
+    the agent container against a real `aws` CLI response, answering "does the
     account actually hold it?".
 
-    Why both are mandatory: the defect this whole mechanism exists to fix
-    (docs/brownfield-seed-not-deployed.md) is an oracle that passed for FREE.
-    `tests/live_check.py`'s discriminating assertion for
-    named-resource-replacement is "no security group named
-    `internal-services-ssm-endpoint` remains" -- which a never-deployed account
-    satisfies vacuously. A contradicted live assert ABORTS the trial in
-    `_prepare`, so that vacuous pass is unreachable.
+    Why it is mandatory: a live oracle can pass for FREE on a never-deployed
+    account (docs/brownfield-seed-not-deployed.md -- "no security group named
+    `internal-services-ssm-endpoint` remains" is vacuously true of an empty
+    account). A contradicted live assert ABORTS the trial in `_prepare`, so
+    that vacuous pass is unreachable.
 
-    Deliberately ARM-AGNOSTIC (no `applies_to`): the account does not know which
-    arm produced its resources, which is the same principle that makes
-    `tests/live_check.py` byte-identical across all three arms.
+    ARM-AGNOSTIC by design (no `applies_to`): the account does not know which
+    arm produced its resources -- the same principle that keeps
+    `tests/live_check.py` byte-identical across arms.
 
-    `op`/`expected` reuse `StructuralAssert`/`SeedAssert`'s vocabulary verbatim
-    -- same nine-op table (§4.2), same `generator/jsonpath_jq.py` compilation,
-    resolved by the SAME `_assert_lib.sh::assert_check` bash function a real
-    trial's tier-0 runs. One `jsonpath`, not a `{cfn,tf}` pair: the artifact is
-    an AWS API response, which has no arm-shaped dialect.
+    `op`/`expected` reuse `StructuralAssert`'s nine-op table (§4.2) and
+    `generator/jsonpath_jq.py` compilation. One `jsonpath`, not a `{cfn,tf}`
+    pair: an AWS API response has no arm-shaped dialect.
     """
 
     name: str
     description: str
-    # argv tokens appended to `aws`, as a LIST -- never a shell string. The
-    # generator single-quotes each token when it emits the call, so no quoting
-    # or word-splitting question exists at any point. The harness owns
-    # --profile (staged credentials), --region (the script's own export) and
-    # --output (always json, because the compiled jq filter assumes it), so
-    # those are rejected rather than silently overridden.
+    # argv tokens appended to `aws`, as a LIST -- never a shell string; the
+    # generator single-quotes each token, so no quoting or word-splitting
+    # question arises. --profile, --region and --output are harness-owned and
+    # rejected below rather than silently overridden.
     aws: Annotated[list[str], Field(min_length=1)]
     jsonpath: str
     op: Literal[
@@ -683,13 +639,11 @@ class SeedLiveAssert(BaseModel):
         "absent_or_eq", "not_regex",
     ]
     expected: object = None
-    # Back-reference to `catches[].name`. At least one live assert per spec must
-    # set it (see `Spec._workspace_seed_deploy_coverage`). Meaning: "the named
-    # catch's LIVE oracle is vacuous unless this fact holds before the agent
-    # starts." Without it the live asserts drift into proving that SOMETHING got
-    # deployed rather than that the POISONED thing got deployed -- which is the
-    # same vacuity this mechanism exists to close, one level up. Mirrors
-    # `SeedAssert.pins_catch` exactly.
+    # Back-reference to `catches[].name`, meaning "the named catch's LIVE oracle
+    # is vacuous unless this fact holds before the agent starts". At least one
+    # live assert per spec must set it (`Spec._workspace_seed_deploy_coverage`);
+    # without it these asserts drift into proving that SOMETHING got deployed
+    # rather than that the POISONED thing did.
     pins_catch: str | None = None
 
     @model_validator(mode="after")
@@ -703,39 +657,13 @@ class SeedLiveAssert(BaseModel):
                 "the same translator oracle.structural_asserts uses (SCHEMA.md "
                 "§2.7.1/§4.2)"
             )
-        # VACUITY IS REACHABLE THROUGH THE PATH, NOT ONLY THROUGH THE OP
-        # (finding A, adversarial review round 3, 2026-08-25, REPRODUCED).
-        # `_VACUOUS_ON_AN_EMPTY_ACCOUNT` below rejects the three ops that pass
-        # on zero resolved nodes. It does NOT make the live proof falsifiable,
-        # because a `jsonpath` that stops at the CONTAINER instead of
-        # descending INTO it hands even `exists` one node on an empty account:
-        #
-        #     $ echo '{"SecurityGroups":[]}' > /tmp/empty.json
-        #     $ assert_check probe '.SecurityGroups' exists '' /tmp/empty.json
-        #       PASS [probe]                                          # rc=0
-        #
-        # `[ .SecurityGroups ]` is `[[]]` -- length 1, and `map(select(. !=
-        # null))` does not drop an empty ARRAY. So a `workspace_seed.deploy`
-        # whose ENTIRE live proof passed on a completely empty account was
-        # still expressible, accepted at load, emitted, and reported
-        # `seed_deployed`. That is the same defect M1 was filed for, reached
-        # through the other half of the assert.
-        #
-        # THE RULE, EXACTLY: the compiled filter must contain at least one
-        # `.[]` stage -- i.e. the JSONPath must carry a `[*]` or a `[?(...)]`
-        # segment and therefore ITERATE a collection rather than name it. On an
-        # empty collection an iterating filter resolves to ZERO nodes, which is
-        # what every accepted op needs in order to be contradictable.
-        #
-        # THIS IS A NARROWING, NOT A DECISION PROCEDURE, and the distinction is
-        # the whole reason M1's own comment was a defect: nothing here proves a
-        # path is falsifiable in general. It is a conservative SHAPE rule that
-        # makes the known-vacuous shape unexpressible and rejects some
-        # falsifiable paths as collateral -- notably recursive descent
-        # (`$..GroupName`), which compiles to `.. | objects | .GroupName?` and
-        # iterates nothing. A live assert that genuinely needs one of those
-        # should widen this rule deliberately, with its own executed
-        # empty-account proof, rather than have the rule quietly bent.
+        # THE PATH HALF of the falsifiability narrowing: the compiled filter
+        # must contain at least one `.[]` stage, so the JSONPath ITERATES a
+        # collection rather than naming it. Naming one hands even `exists` a
+        # node on an empty account, letting a whole live proof pass with
+        # nothing deployed. A conservative SHAPE rule, not a decision
+        # procedure, and it rejects some falsifiable paths as collateral --
+        # See docs/generator.md#seed-live-assert-falsifiability.
         try:
             compiled = jsonpath_to_jq(self.jsonpath)
         except ValueError as exc:
@@ -798,8 +726,8 @@ class SeedLiveAssert(BaseModel):
                         "--endpoint-url would point the proof somewhere other "
                         "than the account under test (SCHEMA.md §2.7.1)"
                     )
-        # Copied verbatim from SeedAssert._jsonpaths_required_per_applies_to's
-        # tail: one op table, one expected-ness rule, three consumers.
+        # Same op table and expected-ness rule as
+        # SeedAssert._jsonpaths_required_per_applies_to: one rule, three consumers.
         needs_expected = self.op in {
             "eq", "in", "contains", "regex", "set_eq", "absent_or_eq", "not_regex"
         }
@@ -811,38 +739,12 @@ class SeedLiveAssert(BaseModel):
             raise ValueError(
                 f"seed live assert {self.name!r}: op={self.op!r} must not set 'expected'"
             )
-        # THE OP HALF of the falsifiability narrowing (finding M1, adversarial
-        # review 2026-08-25). The PATH half is enforced above; NEITHER is a
-        # decision procedure, and saying so is the point -- M1 was filed
-        # against a comment that claimed a property the code did not enforce,
-        # and finding A (round 3) was filed against M1's own fix for doing it
-        # again. What is enforced here, exactly: three of the nine ops PASS on
-        # ZERO resolved nodes (verified against gen.py::ASSERT_LIB_SH and
-        # pinned by an EXECUTED test -- generator/tests/test_seed_deploy.py::
-        # test_the_rejected_ops_really_do_pass_on_an_empty_account), so a spec
-        # could declare a deploy whose ENTIRE live proof was satisfied by a
-        # completely empty account. This rule removes that route and the path
-        # rule removes the other known one; together they do not prove that an
-        # accepted assert can fail. min_length=1 and `pins_catch` are counting
-        # rules, not falsifiability rules.
-        #
-        #   not_exists   -> `($v | length) == 0`                  -- true on []
-        #   absent_or_eq -> `($v | length) == 0 or ...`            -- true on []
-        #   not_regex    -> `$v | all(...)`; jq's all/1 over []    -- true on []
-        #
-        # So they are rejected HERE, on every live assert, not merely on the
-        # `pins_catch`-bearing one. Narrowing it to the pinning assert was the
-        # other option and is weaker for a reason worth writing down: the
-        # non-pinning entries are read by an operator as part of the same
-        # proof, and one that cannot fail dilutes the verdict rather than
-        # strengthening it -- "3 live asserts held" must mean three facts about
-        # the account, not two facts and a tautology.
-        #
-        # `set_eq` needs the same treatment for a different reason: its filter
-        # compares SETS, so `expected: []` is "the account holds none of these",
-        # which is also true on []. Every other accepted op requires >=1
-        # resolved node by construction (`exists`: length > 0; `eq`: length ==
-        # 1; `in`: flattened length > 0; `contains`/`regex`: length >= 1).
+        # THE OP HALF of the falsifiability narrowing (the PATH half is above).
+        # Three of the nine ops, and `set_eq` with an empty `expected`, PASS on
+        # zero resolved nodes, so a live proof built from them is satisfied by
+        # an empty account. Rejected on EVERY live assert, not only the
+        # `pins_catch`-bearing one: an operator reads them all as one proof.
+        # See docs/generator.md#seed-live-assert-falsifiability.
         if self.op in _VACUOUS_ON_AN_EMPTY_ACCOUNT:
             raise ValueError(
                 f"seed live assert {self.name!r}: op={self.op!r} PASSES on zero "
@@ -871,54 +773,40 @@ class WorkspaceSeedDeploy(BaseModel):
     this account" from a claim into a fact (SCHEMA.md §2.7.1).
 
     Presence makes the generator emit `pre_invoke/{pre_invoke.sh,_assert_lib.sh}`
-    into every enabled arm's task dir. `AwsBenchSingleStepTrial._prepare` runs
-    that script inside the AGENT container, after the container is up and before
-    the agent's first token, with `~/.aws/credentials` staged for
-    `[scenario].pre_invoke_role_name`. No runner change is needed: that code path
-    already exists for every task carrying the file, and a multi-step brownfield
-    spec reaches the same `_prepare` through its MRO (harbor/trial/multi_step.py
-    overrides `_run`/`_prepare_step`, never `_prepare`).
+    into every enabled arm's task dir. `AwsBenchSingleStepTrial._prepare` runs it
+    inside the AGENT container, after the container is up and before the agent's
+    first token, with `~/.aws/credentials` staged for
+    `[scenario].pre_invoke_role_name`. No runner change is needed; a multi-step
+    brownfield spec reaches the same `_prepare` through its MRO
+    (harbor/trial/multi_step.py overrides `_run`/`_prepare_step`, never
+    `_prepare`).
 
-    OMITTED, a brownfield spec generates exactly as it did before this field
-    existed -- §2.7's byte-identity regression guarantee extends to it.
+    Omitted, a brownfield spec generates byte-identically to §2.7 without it.
     """
 
-    # Becomes task.toml's TASK-level `[pre_invoke] timeout_sec`. aws-bench's own
-    # default is 600.0 (aws_bench/dataset/task_config.py), far too short for a
-    # real apply plus an interface VPC endpoint reaching `available`.
-    #
-    # NOT scaled by `--timeout-multiplier`: `_run_phase_script` passes
-    # `phase.timeout_sec` straight to ScriptRunner, unlike the agent/verifier
-    # timeouts which go through `Trial._resolve_timeout_sec`. Size it for the
-    # slowest runner you will ever use; a seed timeout ABORTS the trial.
+    # Becomes task.toml's TASK-level `[pre_invoke] timeout_sec`. aws-bench's
+    # default of 600.0 is far too short for a real apply plus an interface VPC
+    # endpoint reaching `available`. NOT scaled by `--timeout-multiplier`
+    # (`_run_phase_script` passes it straight to ScriptRunner), so size it for
+    # the slowest runner you will ever use: a seed timeout ABORTS the trial.
     timeout_sec: float = 1800.0
-    # Overrides `[scenario].pre_invoke_role_name`. Default (None) is
-    # `verifier.live_check.agent_role_name` -- the AGENT's own role, and that is
-    # a rule, not a convenience. Deploying the seed with the broader
-    # OrganizationAccountAccessRole fallback could create resources the agent's
-    # role cannot subsequently modify or delete, turning a harness privilege
-    # asymmetry into a fake agent failure -- precisely the failure mode
-    # DECISIONS.md Amendment 24 retired QADeployApplicationRole to avoid.
-    # A seed the harness can deploy must be a seed the agent can change.
+    # Overrides `[scenario].pre_invoke_role_name`. Default (None) is the AGENT's
+    # own role, `verifier.live_check.agent_role_name`, and that is a rule: a
+    # seed the harness can deploy must be a seed the agent can change. Deploying
+    # under the broader OrganizationAccountAccessRole fallback can create
+    # resources the agent's role cannot modify or delete, turning a harness
+    # privilege asymmetry into a fake agent failure (DECISIONS.md Amendment 24).
     role_name: str | None = None
-    # THREE rules, and none of them proves an assert can fail. min_length=1 is
-    # the counting half: there is always at least one live assert. The two in
-    # `SeedLiveAssert._wellformed` are what stop the count being satisfiable for
-    # free, each by removing ONE known vacuous shape:
-    #   * the OP rule -- `not_exists` / `absent_or_eq` / `not_regex` (and
-    #     `set_eq: []`) pass on zero resolved nodes (finding M1, adversarial
-    #     review 2026-08-25);
-    #   * the PATH rule -- a `jsonpath` that names a collection instead of
-    #     iterating it resolves to ONE node, the empty container, on an empty
-    #     account, so `exists` passes there too (finding A, round 3, same day).
-    # What this field does NOT say, deliberately: that a live assert accepted by
-    # all three is falsifiable. The comment that used to sit here claimed the
-    # coupling was "structural, not a review-time convention" while the op table
-    # made it a convention (M1), and M1's own replacement claimed the op rule
-    # settled it while the path did not (A). Every rule above is pinned by an
-    # executed test in generator/tests/test_seed_deploy.py that runs the
-    # REJECTED shape against an empty-account fixture and shows it passing --
-    # so no rule can outlive its justification.
+    # THREE rules, none of which proves an assert can fail. min_length=1 is the
+    # counting half: there is always at least one live assert. The two in
+    # `SeedLiveAssert._wellformed` stop the count being satisfiable for free,
+    # each removing one known vacuous shape -- the OP rule (`not_exists` /
+    # `absent_or_eq` / `not_regex` / `set_eq: []` pass on zero resolved nodes)
+    # and the PATH rule (a `jsonpath` naming a collection rather than iterating
+    # it resolves to one node, the empty container, so `exists` passes too).
+    # Each is pinned by an executed test in generator/tests/test_seed_deploy.py
+    # that runs the REJECTED shape against an empty-account fixture and shows it
+    # passing, so no rule outlives its justification.
     live_asserts: Annotated[list[SeedLiveAssert], Field(min_length=1)]
 
     @model_validator(mode="after")
@@ -941,10 +829,10 @@ class WorkspaceSeed(BaseModel):
     entry_file: PerArmSeedBodies
     extra_files: PerArmSeedExtraFiles = Field(default_factory=PerArmSeedExtraFiles)
     seed_asserts: Annotated[list[SeedAssert], Field(min_length=1)]
-    # SCHEMA.md §2.7.1. Optional; omitted, this spec generates byte-identically
-    # to how it did before the field existed. Set, the harness DEPLOYS this seed
-    # for real before the agent phase and PROVES it landed -- see
-    # docs/design/single-step-seed-deploy.md.
+    # SCHEMA.md §2.7.1. Optional; omitted, generation is byte-identical to a
+    # spec without the field. Set, the harness DEPLOYS this seed for real before
+    # the agent phase and PROVES it landed
+    # (docs/design/single-step-seed-deploy.md).
     deploy: WorkspaceSeedDeploy | None = None
 
     def body_for(self, arm: Arm) -> str | None:
@@ -1008,19 +896,13 @@ class Catch(BaseModel):
     ]
     description: str
     predicted_tier_caught: PredictedTierCaught
-    # Slice G addition (apigw-redeploy, 2026-08-06): which enabled arms this
-    # catch's mistake is even POSSIBLE on. Defaults to all three (matching
-    # every pre-Slice-G spec's implicit assumption -- apigw-openapi's own
-    # catches never set this and every one of its declared mistakes reproduces
-    # identically on all 3 arms) so this is 100% backward compatible: no
-    # existing spec's generated output or gate verdict changes.
-    # gates/oracle_falsifiability.py::check_arm only requires a
-    # `solution/broken/<name>/solve.sh` fixture for arms listed here -- some
-    # mistakes are structurally IMPOSSIBLE to reproduce on an L2 arm without
-    # dropping to a manual escape hatch (e.g. hand-omitting a TF `triggers`
-    # block has no direct CDK/terraconstructs L2 equivalent; the L2 always
-    # computes one), and requiring a fixture nothing can meaningfully author
-    # for that arm was previously not even expressible.
+    # Which enabled arms this catch's mistake is even POSSIBLE on; defaults to
+    # all three. gates/oracle_falsifiability.py::check_arm requires a
+    # `solution/broken/<name>/solve.sh` fixture only for the arms listed here:
+    # some mistakes cannot be reproduced on an L2 arm without a manual escape
+    # hatch (hand-omitting a TF `triggers` block has no CDK/terraconstructs L2
+    # equivalent -- the L2 always computes one), and demanding a fixture nobody
+    # can meaningfully author would make the gate lie.
     applies_to: list[Arm] = Field(
         default_factory=lambda: ["awscdk", "hcl_raw", "terraconstructs"]
     )
@@ -1048,10 +930,16 @@ class StructuralAssert(BaseModel):
 
     @model_validator(mode="after")
     def _jsonpaths_required_per_applies_to(self) -> "StructuralAssert":
-        if self.tier == "0.5":
+        # A structural assert is compiled into the arm's own
+        # tests/static_tiers.sh, so the only tiers it may name are the ones
+        # that script can run. Stated here as well as in TierStr so widening
+        # that alias for some future host-side tier cannot silently admit it
+        # into a generated verifier (SCHEMA.md §4.2).
+        if self.tier not in ("0", "1"):
             raise ValueError(
-                f"structural_assert {self.name!r}: tier '0.5' is invalid here "
-                "— that tier is tier05_jsonata-only (SCHEMA.md §4.2)"
+                f"structural_assert {self.name!r}: tier must be '0' or '1' "
+                f"(got {self.tier!r}) -- those are the only tiers "
+                "tests/static_tiers.sh runs (SCHEMA.md §4.2)"
             )
         if "awscdk" in self.applies_to and not self.cfn_jsonpath:
             raise ValueError(
@@ -1080,139 +968,53 @@ class StructuralAssert(BaseModel):
 
 
 @_strict
-class Tier05Case(BaseModel):
-    # `expression_path` pins this case to ONE specific `{% ... %}`
-    # expression -- the exact path oracles.lib.tier05_jsonata.
-    # jsonata_expressions() reports it found that expression at (e.g.
-    # "$.States.G.Parameters.foo"). Without this, run_tier05 used to
-    # evaluate EVERY expression against EVERY case's sample_input and
-    # compare each to that case's single expected_output -- a cartesian
-    # product that rejects a fully-correct multi-expression state machine
-    # the moment it has more than one embedded expression (state A's
-    # expression evaluated against state B's sample input, compared to
-    # state B's expected output, fails despite both A and B individually
-    # being correct). Keying each case to its own expression_path also
-    # fixes real Step-Functions-input-binding fidelity as a side effect:
-    # each case now supplies exactly the input ITS expression should see
-    # (the real predecessor state's output, or whatever `$states.input`
-    # resolves to at that point in a real execution) instead of one global
-    # workflow input auto-bound to every expression uniformly.
-    #
-    # MULTIPLE cases MAY share the same `expression_path` (relaxed
-    # 2026-08-06, suspenders half of the fix for benchmark-integrity review
-    # finding "tier05_jsonata materialize() container fallback accepts a
-    # fully-hardcoded literal"): the container-fallback path in
-    # `run_tier05` (case 2 of its own docstring) compares a materialized
-    # value against ONE sample's `expected_output`, and with exactly one
-    # sample per expression a fully hardcoded literal tuned to that one
-    # sample compares equal by construction. A second, independently-input
-    # sample against the SAME expression_path closes that gap without any
-    # oracle-side special-casing -- `run_tier05` already evaluates every
-    # case independently (see above), so two cases naming the same
-    # expression are just two more (sample_index, input, expected_output)
-    # rows through the exact same per-case loop, each checked on its own.
-    expression_path: str
-    input: dict
-    expected_output: object
-
-
-@_strict
-class Tier05Jsonata(BaseModel):
-    # str: one JSONPath used against every arm's own artifact (only usable
-    # when a scenario is checked against a single artifact family). dict:
-    # {"cfn": <path>, "tf": <path>} -- the normal case for a real cross-arm
-    # scenario, since CFN template JSON and Terraform plan JSON have
-    # structurally different root shapes (`$.Resources[...]` vs.
-    # `$.planned_values.root_module.resources[...]`) -- one path literally
-    # cannot resolve against both. `oracles.lib.tier05_jsonata.run_tier05`
-    # auto-detects which family a given artifact document is (top-level
-    # `Resources` key vs. `planned_values` key) and selects the matching
-    # path; `hcl_raw`/`terraconstructs` share the `tf` path (SCHEMA.md §4.4).
-    expressions_from: str | dict[str, str]
-    cases: Annotated[list[Tier05Case], Field(min_length=1)]
-
-    @model_validator(mode="after")
-    def _expressions_from_dict_keys_valid(self) -> "Tier05Jsonata":
-        if isinstance(self.expressions_from, dict):
-            allowed = {"cfn", "tf"}
-            keys = set(self.expressions_from)
-            if not keys or keys - allowed:
-                raise ValueError(
-                    "oracle.tier05_jsonata.expressions_from (dict form) keys "
-                    f"must be a non-empty subset of {sorted(allowed)}, got "
-                    f"{sorted(keys)} (SCHEMA.md §4.4)"
-                )
-        return self
-
-    # NOTE: this used to reject duplicate `expression_path` values outright
-    # ("each declared expression should have exactly one case"). Relaxed
-    # 2026-08-06 (see Tier05Case's own docstring) -- multiple cases MAY
-    # legitimately share an `expression_path`, each supplying an
-    # independent (input, expected_output) sample against that same
-    # expression, so a single hardcoded-literal container can't satisfy
-    # every sample at once. `run_tier05` (oracles/lib/tier05_jsonata.py)
-    # already evaluates every case independently regardless of path
-    # collisions, so no oracle-side change was needed to support this --
-    # only this now-removed over-strict validator stood in the way.
-
-
-@_strict
 class Oracle(BaseModel):
     intent: str
     structural_asserts: list[StructuralAssert]
     rego_hints: list[str] = Field(default_factory=list)
     cfn_guard_hints: list[str] = Field(default_factory=list)
-    # Which engine grades tier-"1" on the `awscdk` arm (specs/SCHEMA.md §4.5;
-    # ROADMAP.md M8, DECISIONS.md Amendment 29 §4). The TF-shaped arms are
-    # ALWAYS graded by OPA/Rego over `terraform show -json`; this field only
-    # picks what runs against awscdk's synthesized CloudFormation template.
+    # Which engine grades tier-"1" on the `awscdk` arm (specs/SCHEMA.md §4.5).
+    # TF-shaped arms are ALWAYS graded by OPA/Rego over `terraform show -json`;
+    # this only picks what runs against awscdk's synthesized CFN template.
     #
     #   "cfn_guard" (DEFAULT) -- `cfn-guard validate --data <template.json>
-    #       --rules oracles/cfn-guard/<id>/policy.guard`. The default is
-    #       deliberately the incumbent so every already-generated spec keeps
-    #       regenerating BYTE-IDENTICALLY; nothing about an existing task dir
-    #       changes by adding this field.
-    #   "rego" -- `opa eval` over the SAME template, using this scenario's
-    #       `oracles/rego-cfn/<id>/policy.rego` (a CFN-shaped policy, distinct
-    #       from the TF-shaped `oracles/rego/<id>/policy.rego`). Chosen when
-    #       the scenario's intent needs something cfn-guard 3.2.0 cannot
-    #       express -- notably a cross-resource logical-id join -- or when
-    #       cross-arm equal-strictness grading (Amendment 29 §4) requires one
-    #       policy language across all three arms.
+    #       --rules oracles/cfn-guard/<id>/policy.guard`. The default is the
+    #       incumbent so every already-generated spec regenerates
+    #       BYTE-IDENTICALLY.
+    #   "rego" -- `opa eval` over the SAME template with this scenario's
+    #       `oracles/rego-cfn/<id>/policy.rego` (CFN-shaped, distinct from the
+    #       TF-shaped `oracles/rego/<id>/policy.rego`). Chosen when the intent
+    #       needs something cfn-guard cannot express (notably a cross-resource
+    #       logical-id join), or when cross-arm equal-strictness grading needs
+    #       one policy language on all three arms (DECISIONS.md Amendment 29).
     awscdk_tier1_engine: Literal["cfn_guard", "rego"] = "cfn_guard"
-    # HCL symbol resolution for the hcl_raw arm's tier-1 (specs/SCHEMA.md
-    # §4.6; docs/design/conftest-hcl-traversal-spike.md).
+    # HCL symbol resolution for the hcl_raw arm's tier-1 (specs/SCHEMA.md §4.6;
+    # docs/design/conftest-hcl-traversal-spike.md).
     #
-    # False (DEFAULT) -- unchanged, and deliberately the default so every
-    #     already-generated task regenerates BYTE-IDENTICALLY. `opa eval` is
-    #     handed `terraform show -json` plan JSON and nothing else.
-    # True -- the hcl_raw arm's generated tests/static_tiers.sh additionally
-    #     parses the agent's own `*.tf` / `*.tf.json` files with `hcl2json`
-    #     (pinned + sha256-verified in arms/hcl-raw/environment/Dockerfile)
-    #     and merges them into that same plan document under ONE reserved key,
-    #     `_hcl`, before `opa eval` runs. The ENGINE does not change and
-    #     `input` stays byte-identical for every pre-existing rule -- only new
-    #     rules read `_hcl`. The shared resolver library
-    #     `oracles/rego/lib/hcl_traversal.rego` is copied into the task's
-    #     tests/ and loaded with a second `-d`.
+    # False (DEFAULT) -- `opa eval` is handed `terraform show -json` plan JSON
+    #     and nothing else; every already-generated task regenerates
+    #     BYTE-IDENTICALLY.
+    # True -- the hcl_raw arm's tests/static_tiers.sh also parses the agent's
+    #     own `*.tf` / `*.tf.json` with `hcl2json` (pinned + sha256-verified in
+    #     arms/hcl-raw/environment/Dockerfile) and merges them into that plan
+    #     document under one reserved key, `_hcl`, before `opa eval`. The engine
+    #     does not change and `input` stays byte-identical for every
+    #     pre-existing rule -- only new rules read `_hcl`. The resolver library
+    #     `oracles/rego/lib/hcl_traversal.rego` is copied into the task's tests/
+    #     and loaded with a second `-d`.
     #
-    # WHY A SPEC NEEDS THIS: `terraform show -json` does not emit `locals`, so
-    # a plan's `.configuration...references` list dead-ends on `local.x` -- it
-    # records that an argument was SET to that symbol and nothing about what
-    # the symbol HOLDS. A scenario whose tier-1 grades a DEDICATED SINGLE-ARN
-    # ARGUMENT SLOT (an invoke permission's `source_arn`, a topic policy's
-    # `arn`) cannot tell an ordinary DRY hoist from a laundered wrong-resource
-    # ARN without it; both directions of that error have been reproduced by
-    # execution on a real scenario.
+    # WHY A SPEC NEEDS IT: `terraform show -json` does not emit `locals`, so a
+    # plan's `.configuration...references` dead-ends on `local.x` -- it records
+    # that an argument was SET to that symbol, not what the symbol HOLDS. A
+    # tier-1 grading a dedicated single-ARN argument slot (an invoke
+    # permission's `source_arn`, a topic policy's `arn`) cannot otherwise tell a
+    # DRY hoist from a laundered wrong-resource ARN.
     #
-    # SCOPE: hcl_raw only. Confirmed by synthesis on the other two arms
-    # (spike memo §9) -- awscdk resolves TS variables at synth and the
-    # template names its referent in an `Fn::GetAtt`, and cdktn does the same
-    # and emits no `locals` block at all, so neither arm has anything to
-    # resolve. Setting this true with hcl_raw disabled is therefore a spec
-    # bug, not a no-op, and is rejected below.
+    # SCOPE: hcl_raw only. awscdk resolves TS variables at synth and names its
+    # referent in an `Fn::GetAtt`; cdktn does the same and emits no `locals`
+    # block, so neither arm has anything to resolve. Setting this with hcl_raw
+    # disabled is a spec bug, not a no-op, and is rejected below.
     hcl_traversal: bool = False
-    tier05_jsonata: Tier05Jsonata | None = None
 
     @model_validator(mode="after")
     def _names_unique(self) -> "Oracle":
@@ -1246,45 +1048,37 @@ class VerifierBudget(BaseModel):
 
 @_strict
 class LiveCheck(BaseModel):
-    # Relaxed from `Literal[False]` by Slice G (apigw-redeploy, 2026-08-06;
-    # docs/slice-g-recon.md gap 1, DECISIONS.md "Slice G" amendment). Every
-    # v1 spec still sets this false (unchanged behavior); `true` is now a
-    # legal, gen.py-honored value.
     enabled: bool
     module: str = "tests/live_check.py"
-    # When true, `module` (tests/live_check.py) is HAND-AUTHORED, not
-    # generated -- gen.py's write_tests step becomes destructive-safe for
-    # this one file, the same "never touch existing hand-authored content"
-    # convention solution/solve.sh already has (SCHEMA.md §8.2 point 8).
-    # Must be true whenever enabled is true: a spec that turns live_check on
-    # but leaves the generated not-implemented stub in place would silently
-    # ship a scenario whose live behavioral facts are never actually
-    # checked (docs/slice-g-recon.md gap 5).
+    # True: `module` (tests/live_check.py) is HAND-AUTHORED, so gen.py's
+    # write_tests step is destructive-safe for it -- the same convention
+    # solution/solve.sh has (SCHEMA.md §8.2 point 8). Required whenever
+    # `enabled`, or the generated not-implemented stub would silently ship as
+    # this scenario's live check.
     hand_authored: bool = False
-    # Spec-driven override of the previously hardcoded
-    # `agent_role_name = "QALocalInvocationApplicationRole"` /
-    # `[concurrency] mode = "read-only"` (generator/gen.py:655,662 before
-    # this fix; docs/slice-g-recon.md gap 2). None (the default) preserves
-    # the old hardcoded values byte-for-byte -- required for every
-    # live_check.enabled=false spec, and legal (though unusual) for one that
-    # somehow needs live_check without mutation.
+    # Override the generator's defaults for the task's agent role and
+    # `[concurrency] mode`. None keeps `QALocalInvocationApplicationRole` /
+    # "read-only".
+    #
+    # A LIVE CHECK DOES NOT IMPLY "mutating", and nothing here couples them.
+    # `[concurrency] mode` describes what the TRIAL does to the account, not
+    # whether the verifier calls AWS: a live check built only from evaluating
+    # APIs -- `stepfunctions test-state`, which creates nothing -- leaves the
+    # account exactly as it found it, so "read-only" is the correct and
+    # cheaper mode for it (no post-trial account reset, and such trials co-run
+    # under the reader-preferring scenario lock). Only `workspace_seed.deploy`
+    # forces "mutating", and that rule lives on Spec, where the seed is
+    # (Spec._seed_deploy_requires_live_and_mutating).
     agent_role_name: str | None = None
     concurrency_mode: Literal["read-only", "mutating"] | None = None
-    # Slice G fix-round-3 addition (DECISIONS.md Slice G amendment,
-    # 2026-08-07): False (default) reproduces every pre-existing spec's
-    # behavior byte-for-byte -- live_check.py runs (if enabled) purely
-    # observationally, its result never affecting /logs/verifier/reward.txt
-    # (SCHEMA.md §5's original "non-gating" invariant). `apigw-redeploy` is
-    # the first spec to set this `true`: its `triggers-incomplete-hash`
-    # catch is a `predicted_tier_caught: "live"` catch BY CONSTRUCTION
-    # (docs/apigw-redeploy-mechanics.md §6(c)) -- no static tier can ever
-    # observe it, so leaving live_check non-gating for this scenario would
-    # mean the one catch that motivates this scenario's existence can never
-    # actually cost a real trial any reward. gen.py::build_test_sh reads
-    # this to fold live_check.py's own outcome into reward.txt (AND
-    # semantics: final reward is 1.0 iff the static tiers say 1.0 AND
-    # live_check.py's outcome is "pass" -- "not_verifiable" and
-    # "fail_stale" both downgrade to 0.0, fail-closed).
+    # False (default): live_check.py runs observationally and never affects
+    # /logs/verifier/reward.txt (SCHEMA.md §5's non-gating invariant). True:
+    # gen.py::build_test_sh folds its outcome into reward.txt with AND,
+    # fail-closed -- final reward is 1.0 iff the static tiers say 1.0 AND the
+    # outcome is "pass"; "not_verifiable" and "fail_stale" both give 0.0.
+    # Required by a scenario whose motivating catch is `predicted_tier_caught:
+    # "live"`, since no static tier can observe it and a non-gating live check
+    # would let it cost a real trial nothing.
     gating: bool = False
 
     @model_validator(mode="after")
@@ -1354,20 +1148,16 @@ class Verifier(BaseModel):
 
 
 # --------------------------------------------------------------------------
-# §2.6 steps -- multi-step decomposition (top-level, sibling of `instruction`)
+# §2.6 steps -- multi-step decomposition (top-level, sibling of `instruction`).
+# docs/prompt-decomposition-audit.md; DECISIONS.md Amendments 26/27.
 #
-# Added 2026-08-20 by the prompt-decomposition slice
-# (docs/prompt-decomposition-audit.md; DECISIONS.md Amendments 26/27). A spec
-# with NO `steps` key generates byte-identically to before this field existed
-# -- that regression guarantee is the whole reason every branch gen.py grows
-# for steps is `if spec.steps:`-guarded rather than a refactor of the
-# single-step path.
+# A spec with NO `steps` key generates byte-identically to a spec predating the
+# field; every gen.py branch for steps is `if spec.steps:`-guarded, rather than
+# a refactor of the single-step path, to keep that so.
 #
-# What a step is FOR: revealing the second intent only when it is due. A
-# single prompt that says "build X, then change it to Y" measures day-1
-# authoring with perfect foreknowledge, which is the one condition a real
-# day-2 change never has -- see the audit doc's §0 for the rule and §2 for
-# the worked evidence.
+# What a step is FOR: revealing the second intent only when it is due. A single
+# prompt saying "build X, then change it to Y" measures day-1 authoring with
+# perfect foreknowledge -- the one condition a real day-2 change never has.
 # --------------------------------------------------------------------------
 
 STEP_NAME_RE = re.compile(r"^[0-9]{2}-[a-z][a-z0-9-]*$")
@@ -1377,11 +1167,10 @@ STEP_NAME_RE = re.compile(r"^[0-9]{2}-[a-z][a-z0-9-]*$")
 class StepPerArm(BaseModel):
     """Per-arm, per-STEP override of `instruction.per_arm.<arm>.language_line`.
 
-    Exists because the spec-level language line can itself foreshadow: this
-    scenario's awscdk line named `MockIntegration` -- the day-2 integration
-    type -- which would have leaked the step-2 intent into the step-1 prompt
-    on exactly ONE arm (an arm-PARITY defect on top of a foreshadowing one).
-    See docs/prompt-decomposition-audit.md §2 "Leak 4".
+    Exists because a spec-level language line can itself foreshadow, and does so
+    on ONE arm only -- an arm-parity defect on top of a foreshadowing one. An
+    awscdk line naming the day-2 integration type leaks step 2 into step 1's
+    prompt for awscdk agents alone (docs/prompt-decomposition-audit.md).
     """
 
     language_line: str
@@ -1499,23 +1288,19 @@ class StepPreInvoke(BaseModel):
     `[scenario].pre_invoke_role_name` credentials staged
     (cdktn_bench/trial.py::CdktnMultiStepTrial._run_step_pre_invoke).
 
-    `deploy_prior: true` is DECISIONS.md Amendment 26 §2's DEFAULT shape --
-    the harness deploys the previous step's IaC so this step's prompt lands on
-    an account that really is in the state the prompt assumes. It emits
+    `deploy_prior: true` is the default shape (DECISIONS.md Amendment 26): the
+    harness deploys the previous step's IaC so this step's prompt lands on an
+    account really in the state it assumes. It emits
     `steps/<name>/pre_invoke/pre_invoke.sh` running the arm's own
-    `output_contract.deploy_command` (spec-declared per arm; the generator
-    refuses to guess one).
+    `output_contract.deploy_command`, which the generator refuses to guess.
 
-    `apigw-redeploy` deliberately declares NO pre_invoke at all: it opts into
-    agent-deploys in both steps because the deploy loop IS the measurement
-    (Amendment 26 §2's explicit opt-out; rationale in
-    docs/prompt-decomposition-audit.md §3).
+    Omitting `pre_invoke` entirely is the explicit opt-out, for a scenario
+    where the agent's own deploy loop IS the measurement.
 
-    `timeout_sec` is REQUIRED reading of Amendment 26's draft addendum (a):
-    the per-step pre_invoke inherits the TASK-level `[pre_invoke].timeout_sec`
-    (aws-bench's default is 600 s) and a real deploy comfortably exceeds it,
-    so gen.py emits `[pre_invoke] timeout_sec` explicitly, sized to the
-    LARGEST value any step declares.
+    `timeout_sec`: the per-step pre_invoke inherits the TASK-level
+    `[pre_invoke].timeout_sec`, whose aws-bench default of 600 s a real deploy
+    comfortably exceeds, so gen.py emits it explicitly, sized to the LARGEST
+    value any step declares.
     """
 
     deploy_prior: bool = False
@@ -1540,12 +1325,11 @@ class Step(BaseModel):
     instruction: StepInstruction
     oracle: StepOracle = Field(default_factory=StepOracle)
     pre_invoke: StepPreInvoke | None = None
-    # None -> gen.py's default: 1.0 on every NON-final step (Amendment 26 §3's
-    # hard gate: step N+1's prompt never fires unless step N verified green),
-    # omitted entirely on the final step (there are no remaining steps for it
-    # to gate). An author who genuinely wants an ungated intermediate step
-    # writes `min_reward: 0.0`, which is always satisfied -- deliberately
-    # explicit, so "no gate" is never the result of forgetting a key.
+    # None -> gen.py's default: 1.0 on every NON-final step, so step N+1's
+    # prompt never fires unless step N verified green (DECISIONS.md Amendment
+    # 26); omitted on the final step, which has nothing left to gate. An
+    # ungated intermediate step must say `min_reward: 0.0` explicitly, so "no
+    # gate" is never the result of forgetting a key.
     min_reward: float | None = None
 
     @model_validator(mode="after")
@@ -1594,72 +1378,53 @@ class Spec(BaseModel):
     id: str
     title: str
     # §0.1, optional. The header comment stamped into the arm SKELETON files
-    # (main.tf / lib/scenario-stack.ts / bin/app.ts / main.ts) -- i.e. into
-    # `environment/`, which IS the image the agent lives in from step 1
-    # onward. Absent = `title` (every single-step GREENFIELD spec:
-    # byte-identical emission). REQUIRED for a multi-step spec, because a
-    # scenario `title` legitimately describes the WHOLE arc ("deploy, confirm,
-    # modify, re-deploy (day-2 iteration)") and stamping that arc into the
-    # first file the step-1 agent opens foreshadows step 2 just as loudly as
-    # the prompt would -- DECISIONS.md Amendment 26 §7 rule 2 /
-    # docs/multistep-trial-investigation.md §5 rule 2 ("never place
-    # later-step material in environment/"). ALSO REQUIRED for a BROWNFIELD
-    # spec (§2.7) for the same reason with a different cause: a brownfield
-    # `title` describes the CHANGE and typically names the trapped property of
-    # the existing config, and on the arms whose entry file is NOT the seed
-    # (awscdk's bin/app.ts, terraconstructs' main.ts) it still reaches the
-    # agent -- arm-asymmetrically, which is worse than uniformly. See
+    # (main.tf / lib/scenario-stack.ts / bin/app.ts / main.ts) under
+    # `environment/` -- the image the agent lives in from step 1 onward. Absent
+    # = `title`, which every single-step greenfield spec relies on for
+    # byte-identical emission. REQUIRED on multi-step and brownfield specs,
+    # where a natural `title` describes the whole arc or the change itself and
+    # so foreshadows what the agent must not yet know. See
     # `_workspace_title_required_where_header_is_prompt_surface`.
     workspace_title: str | None = None
-    # §0.1, optional. The AGENT-VISIBLE scenario identity -- the sibling of
-    # `workspace_title` for every place the generator stamps a NAME rather than
-    # a sentence: the terraconstructs `ScenarioStack` construct id and
-    # `gridUUID` (and therefore `cdktf.out/stacks/<id>/`, which the agent sees
-    # in its own `npx cdktn synth` output and in `preflight.sh`).
+    # §0.1, optional. The AGENT-VISIBLE scenario identity -- `workspace_title`'s
+    # sibling for every place the generator stamps a NAME rather than a
+    # sentence: the terraconstructs `ScenarioStack` construct id and `gridUUID`,
+    # and therefore `cdktf.out/stacks/<id>/`, which the agent sees in its own
+    # `npx cdktn synth` output and in `preflight.sh`.
     #
-    # `id` is OPERATOR-FACING and MAY name the pitfall -- that is what makes it
-    # a useful name in `specs/`, `oracles/`, `task.toml [metadata]` and a
-    # results table. `workspace_id` is what the agent is allowed to know: the
-    # name of the workspace it has been asked to work in, describing the
-    # CURRENT step's goal and nothing beyond it.
+    # `id` is OPERATOR-FACING and MAY name the pitfall, which is what makes it
+    # useful in `specs/`, `oracles/`, `task.toml [metadata]` and a results
+    # table. `workspace_id` is what the agent is allowed to know: the workspace
+    # it has been asked to work in, named for the CURRENT step's goal.
     #
-    # Absent = `id` (every scenario whose id names only the open goal of its
-    # own prompt: byte-identical emission). REQUIRED for a multi-step spec and
-    # for a brownfield one -- the same two forms `workspace_title` is required
-    # on, for the same reason and after the same failure: `apigw-redeploy`'s id
-    # is the step-2 trap verb and `named-resource-replacement`'s id is the
-    # diagnosis the agent is supposed to reach from the configuration, and both
-    # were stamped into `environment/`. The deny-list
-    # (`_agent_visible_identity_is_deny_list_clean`) runs against the RESOLVED
-    # value either way, so a greenfield spec whose id would leak is refused
-    # until it declares an explicit `workspace_id`.
+    # Absent = `id`. REQUIRED on multi-step and brownfield specs, the same two
+    # forms `workspace_title` is required on and for the same reason. The
+    # deny-list (`_agent_visible_identity_is_deny_list_clean`) runs against the
+    # RESOLVED value either way, so a greenfield spec whose id would leak is
+    # refused until it declares an explicit `workspace_id`.
     workspace_id: str | None = None
-    # §0.1, optional. This scenario's OWN trap/foreshadowing vocabulary, on top
+    # §0.1, optional. This scenario's OWN trap/foreshadowing vocabulary on top
     # of the global `AGENT_IDENTITY_DENY_PATTERNS`: plain substrings that must
-    # never appear on an agent-visible surface of this scenario, and which
-    # `workspace_id`/`workspace_title` are validated against. Declared HERE, in
-    # the spec, rather than in a test module keyed by scenario id, so the words
-    # that would give a trap away are reviewed in the same file as the trap.
-    # `generator/tests/test_scenario_identity.py` sweeps the real emitted bytes
-    # with it.
+    # never reach an agent-visible surface. Declared in the spec, not in a test
+    # module keyed by scenario id, so the words that would give a trap away are
+    # reviewed in the same file as the trap.
+    # `generator/tests/test_scenario_identity.py` sweeps the emitted bytes.
     agent_deny_vocab: list[str] = Field(default_factory=list)
     difficulty: Annotated[int, Field(ge=1, le=3)]
     services: Annotated[list[str], Field(min_length=1)]
     arms: Arms
     instruction: Instruction
     seeded_files: list[SeededFile] = Field(default_factory=list)
-    # §2.7, optional. None/absent (every spec but `named-resource-replacement`)
-    # = the GREENFIELD shape: `entry_file` ships §2.4's empty `TODO(agent)`
-    # skeleton, generated byte-identically to before this field existed. Set =
-    # the BROWNFIELD shape: `entry_file` ships this block's per-arm seed body,
-    # writable, and the prompt is a change request against it.
+    # §2.7, optional. Absent = the GREENFIELD shape: `entry_file` ships §2.4's
+    # empty `TODO(agent)` skeleton. Set = the BROWNFIELD shape: `entry_file`
+    # ships this block's per-arm seed body, writable, and the prompt is a
+    # change request on it.
     workspace_seed: WorkspaceSeed | None = None
     catches: Annotated[list[Catch], Field(min_length=1)]
     oracle: Oracle
     verifier: Verifier
-    # §2.6, optional. None/absent (every spec but `apigw-redeploy`) = the
-    # single-step shape, generated byte-identically to before this field
-    # existed. A non-empty list makes this a MULTI-STEP task
+    # §2.6, optional. Absent = the single-step shape, byte-identical to a spec
+    # predating the field. A non-empty list makes this a MULTI-STEP task
     # (`[[steps]]` in task.toml, run by cdktn_bench.trial.CdktnMultiStepTrial).
     steps: list[Step] | None = None
     provenance: Provenance
@@ -2153,10 +1918,9 @@ class Spec(BaseModel):
         forgotten, and none with any other gate.
 
         All three are hard errors because the failure is invisible at
-        generation time and expensive at run time. `gating` was added by
-        finding m1 (adversarial review, 2026-08-25) -- it is the same "spend
-        with no measurement" as `enabled: false`, and unlike `enabled` it is
-        FALSE by default, so it is reached by omission.
+        generation time and expensive at run time. `gating` matters most: it is
+        the same "spend with no measurement" as `enabled: false`, and unlike
+        `enabled` it is FALSE by default, so it is reached by omission.
         """
         if self.workspace_seed is None or self.workspace_seed.deploy is None:
             return self
@@ -2171,15 +1935,6 @@ class Spec(BaseModel):
                 "(docs/brownfield-seed-not-deployed.md, SCHEMA.md §2.7.1)"
             )
         if not live.gating:
-            # Finding m1 (adversarial review, 2026-08-25). `gating: false` is
-            # the SAME condition `enabled: false` is rejected for above, and it
-            # is the DEFAULT, so it is the one an author reaches by omission
-            # rather than by decision. Non-gating, live_check.py's `.outcome`
-            # never reaches reward.txt (gen.py::build_test_sh only folds it in
-            # under SPEC_LIVE_CHECK_GATING=true), so the oracle whose vacuity
-            # this deploy exists to close cannot change any published number:
-            # the account is mutated, the money is spent, and the measurement
-            # is still decorative.
             raise ValueError(
                 "workspace_seed.deploy is set but verifier.live_check.gating "
                 "is false -- the live oracle's verdict never reaches "
@@ -2236,18 +1991,11 @@ class Spec(BaseModel):
             plan_command = getattr(
                 self.instruction.per_arm, arm
             ).output_contract.plan_command
-            # MATCH THE SUBCOMMAND, NOT THE LITERAL TWO WORDS (finding G,
-            # adversarial review round 3, 2026-08-25). This was
-            # `"terraform plan" not in plan_command`, so an ordinary
-            # `terraform -chdir=. plan -input=false ...` -- a form the CLI has
-            # documented since 0.14 -- passed spec load in SILENCE, and gen.py
-            # splices `plan_command` verbatim into hcl_raw's static_tiers.sh.
-            # The consequence is the exact one this validator's docstring
-            # states: with the seed's state present the verifier plan
-            # refreshes, scoring every hcl-raw brownfield trial 0.0 before the
-            # agent is judged. `_TF_PLAN_RE` allows any run of global flags between the
-            # binary and the subcommand, which is the only place terraform
-            # accepts them.
+            # Match the SUBCOMMAND, not the literal two words: gen.py splices
+            # `plan_command` verbatim into hcl_raw's static_tiers.sh, and a
+            # substring test lets `terraform -chdir=. plan ...` through in
+            # silence, scoring every hcl-raw brownfield trial 0.0 before the
+            # agent is judged.
             if not plan_command or not _TF_PLAN_RE.search(plan_command):
                 continue
             if "-refresh=false" not in plan_command:
@@ -2281,18 +2029,14 @@ class Spec(BaseModel):
 
           * MULTI-STEP: `title` describes the whole arc, so it foreshadows
             step 2 (Amendment 26 §7 rule 2, Amendment 27 §5.1).
-          * BROWNFIELD (§2.7): `title` describes the CHANGE and, in practice,
-            names the very property of the existing config that carries the
-            pitfall — the pilot's own first draft, "Rename an explicitly-named,
-            in-use security group and roll it out", stamped *both* halves of
-            its poison ("explicitly-named", "in-use") into
-            `bin/app.ts`'s CFN `description` and `main.ts`'s header comment on
-            two of three arms, while the third arm's workspace (whose entry
-            file IS the seed) stayed clean — an arm-asymmetric hint inside the
-            comparison the scenario exists to measure. A brownfield header must
-            therefore describe only what the workspace ALREADY IS (e.g.
-            "Internal services network"), never what is about to change about
-            it or why it is interesting.
+          * BROWNFIELD (§2.7): `title` describes the CHANGE and in practice
+            names the trapped property of the existing config. It reaches
+            `bin/app.ts`'s CFN `description` and `main.ts`'s header on the two
+            arms whose entry file is NOT the seed, leaving the third clean —
+            an arm-asymmetric hint inside the very comparison the scenario
+            measures. A brownfield header must describe only what the workspace
+            ALREADY IS ("Internal services network"), never what is about to
+            change about it or why it is interesting.
 
         Making the field required rather than silently defaulting to `title`
         forces the author to *choose* a safe header instead of inheriting a
@@ -2338,15 +2082,13 @@ class Spec(BaseModel):
         thing being MEASURED, and the thing being measured is what the agent
         must not be told.
 
-          * MULTI-STEP: `apigw-redeploy` -- the id IS step 2's verb. It reached
-            `environment/app/main.ts` as the `ScenarioStack` construct id and
-            `gridUUID`, and every arm's skeleton header cited
-            `specs/apigw-redeploy.yaml`. Amendment 27's sweep grepped the
-            hyphenated `re-deploy` only and saw none of it.
-          * BROWNFIELD (§2.7): `named-resource-replacement` -- the id is not
+          * MULTI-STEP: an id like `apigw-redeploy` IS step 2's verb, and it
+            reaches `environment/app/main.ts` as the `ScenarioStack` construct
+            id and `gridUUID`.
+          * BROWNFIELD (§2.7): an id like `named-resource-replacement` is not
             the change request ("rename the security group to X"), it is the
             DIAGNOSIS the agent is supposed to derive from the configuration.
-            It reached two of three arms and not the third, which biases the
+            It reaches two of three arms and not the third, biasing the
             cross-arm comparison the scenario exists to produce.
 
         Required rather than defaulted on these forms for the same reason
@@ -2420,14 +2162,13 @@ class Spec(BaseModel):
     @model_validator(mode="after")
     def _terraconstructs_artifact_path_matches_workspace_identity(self) -> "Spec":
         """The terraconstructs `artifact_path` names the SYNTHESIZED STACK
-        DIRECTORY, and that directory is named by the construct id
-        `gen.py::terraconstructs_main_ts` stamps -- which is now
-        `workspace_identity()`, not `id` (§0.1).
+        DIRECTORY, which is named by the construct id
+        `gen.py::terraconstructs_main_ts` stamps -- `workspace_identity()`,
+        not `id` (§0.1).
 
-        Checked here rather than left to a runtime surprise: a mismatch does
-        not fail loudly, it makes every tier-0 assert resolve against a
-        nonexistent plan.json and score a constant 0.0, INCLUDING for the
-        reference solution.
+        Checked here because a mismatch does not fail loudly: it makes every
+        tier-0 assert resolve against a nonexistent plan.json and score a
+        constant 0.0, INCLUDING for the reference solution.
         """
         per_arm = self.instruction.per_arm.terraconstructs
         if per_arm is None:
@@ -2445,11 +2186,9 @@ class Spec(BaseModel):
 
     @model_validator(mode="after")
     def _catches_taxonomy_diversity_note(self) -> "Spec":
-        # Real seed scenarios should carry an anti-L2 catch (SCHEMA.md §3);
-        # the toy fixture is explicitly exempt (its own header says so) and
-        # this is therefore advisory, not enforced here — enforcing it would
-        # make the toy fixture itself invalid, which SCHEMA.md §7 explicitly
-        # says must not happen.
+        # Advisory only. Real seed scenarios should carry an anti-L2 catch
+        # (SCHEMA.md §3), but enforcing it here would invalidate the toy
+        # fixture, which SCHEMA.md §7 requires stay valid.
         return self
 
     def complexity(self) -> str:

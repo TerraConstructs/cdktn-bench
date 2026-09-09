@@ -1051,8 +1051,6 @@ oracle:
       KMSMasterKeyID property is present at all (omitted entirely, as
       opposed to present-but-a-literal).
 
-  tier05_jsonata: null
-
 catches:
   - name: subresource-omitted
     taxonomy: nested-attribute

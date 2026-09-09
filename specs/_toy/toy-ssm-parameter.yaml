@@ -2,9 +2,13 @@
 #
 # NOT A BENCHMARK SCENARIO. Generator-testing fixture only — see specs/SCHEMA.md
 # §7. Deliberately boring: create an SSM parameter plus a read-only IAM role.
-# Exercises every field in SCHEMA.md at minimum cardinality (2 catches, all
-# three arms enabled, one of each optional-field shape populated, and
-# tier05_jsonata left null to exercise the "absent" path). Never register
+# Covers the generator's SINGLE-STEP GREENFIELD path at minimum cardinality:
+# all three arms enabled, two catches, both tier-0 and tier-1 structural
+# asserts, and both hint bundles. It deliberately carries none of the
+# optional shapes (`steps`, `workspace_seed`, `seeded_files`, non-empty
+# `placeholders`, an enabled `live_check`, `awscdk_tier1_engine`,
+# `hcl_traversal`, `verifier.idempotence`), so a generator change touching
+# one of those is not covered here and needs its own fixture. Never register
 # this under a real dataset; it has no anti-L2 catch and its
 # predicted_tier_caught values are illustrative only — NOT verified against
 # a pinned provider schema the way the real seed scenarios' catches must be
@@ -457,8 +461,6 @@ oracle:
       applies to awscdk only (the TF-shaped arms use a graph-edge check
       instead, see rego_hints)
     - "rule policy_actions_allowlist: Statement.Action subset of [\"ssm:GetParameter\", \"ssm:GetParameters\"]"
-
-  tier05_jsonata: null
 
 verifier:
   budget:

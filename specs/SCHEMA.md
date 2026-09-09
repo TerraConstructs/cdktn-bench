@@ -14,7 +14,7 @@ alongside this doc; every field below has a concrete instance there.
 
 Design inputs: `docs/aws-bench-datasets-guide.md` §2/§6 (task anatomy, the
 `create-eks-cluster` reference task), `docs/iac-abstraction-aws-bench-plan.md`
-Phase 1 (generator, M2; seed-scenario table; Tier-0.5 amendment),
+Phase 1 (generator, M2; seed-scenario table),
 `iac-abstraction-benchmark-prereg.md` §3 (oracle tiers), §5 (catch taxonomy),
 §6 (prompt parity), `DECISIONS.md` Amendment 2/3 (arm set, build-context
 contract, the falsified-catch lesson).
@@ -1177,9 +1177,9 @@ catches:
     taxonomy: typed-value-trap | graph-dependency | nested-attribute | anti-L2
     description: <string — the natural-language catch, no thresholds pasted into instruction.shared_body>
     predicted_tier_caught:
-      awscdk: "0" | "0.5" | "1" | "live"
-      hcl: "0" | "0.5" | "1" | "live"
-      terraconstructs_override: "0" | "0.5" | "1" | "live" | null   # optional, default null
+      awscdk: "0" | "1" | "live"
+      hcl: "0" | "1" | "live"
+      terraconstructs_override: "0" | "1" | "live" | null   # optional, default null
     applies_to: [awscdk, hcl_raw, terraconstructs]   # optional, default: all 3 (every enabled arm)
 ```
 
@@ -1194,10 +1194,9 @@ spec is exempt (its header says so) and does not need taxonomy diversity.
   table methodology); do not fabricate one for a fixture that isn't chasing
   H2 evidence.
 - `predicted_tier_caught.awscdk` / `.hcl` are **required**, string-typed
-  (`"0"`, `"0.5"`, or `"1"` — strings, not YAML floats, so `"0.50"` vs `"0.5"`
-  parsing landmines can't happen). Tier `"0.5"` (embedded-expression
-  evaluation, Amendment №1) only applies to catches inside a JSONata `{% ... %}`
-  expression string; everything else is `"0"` or `"1"`.
+  (`"0"`, `"1"` or `"live"` — strings, not YAML numbers). `"0"` and `"1"` are
+  the two STATIC tiers a generated `tests/static_tiers.sh` runs; a catch no
+  static tier can see is `"live"`.
 - **`.hcl` means "the Terraform-shaped arms as a group"** — `hcl_raw` and,
   when enabled, `terraconstructs` — because both synthesize to plain
   Terraform and are graded by **the same** `terraform show -json` plan shape
@@ -1218,12 +1217,13 @@ spec is exempt (its header says so) and does not need taxonomy diversity.
   scenario spec freezes.
 - **`"live"`** (Slice G addition, `DECISIONS.md` "Amendment 12"): a catch
   whose mistake is invisible to *every* static tier by construction — the
-  only discriminating signal is a real
-  apply→modify→re-apply→curl loop (only meaningful alongside
-  `verifier.live_check.enabled: true`, §5). Distinct from `"0.5"`
-  (`tier05_jsonata` is itself a static/offline check, just host-side and
-  non-gating): a `"live"` catch has no static evaluator to run against the
-  artifact at all. `gates/oracle_falsifiability.py::check_arm`'s `"live"`
+  only discriminating signal is a real AWS call — an
+  apply→modify→re-apply→curl loop, or an evaluating API such as
+  `stepfunctions test-state` that creates nothing (only meaningful alongside
+  `verifier.live_check.enabled: true`, §5). A `"live"` catch has no static
+  evaluator to run against the artifact at all, and the host gate cannot run
+  the live tier, so it never claims tier 0/1 caught the fixture.
+  `gates/oracle_falsifiability.py::check_arm`'s `"live"`
   branch requires the fixture's reward to stay `1.0` (the same static
   tiers a correct solution passes) AND its **offline** run to print the
   fixed marker `LIVE_ONLY_CONFIRMED_MARKER =
@@ -1256,7 +1256,7 @@ oracle:
   structural_asserts:
     - name: <kebab-case, unique within the spec>
       description: <string>
-      tier: "0" | "0.5" | "1"
+      tier: "0" | "1"
       applies_to: [awscdk, hcl_raw, terraconstructs]   # subset of enabled arms; default = all enabled arms
       cfn_jsonpath: <string>     # required iff 'awscdk' in applies_to
       tf_jsonpath: <string>      # required iff 'hcl_raw' or 'terraconstructs' in applies_to
@@ -1266,11 +1266,6 @@ oracle:
   cfn_guard_hints: [<string>, ...]   # optional, default []
   awscdk_tier1_engine: cfn_guard | rego   # optional, default cfn_guard — §4.5
   hcl_traversal: false | true        # optional, default false — §4.6 (hcl_raw only)
-  tier05_jsonata:                    # optional, default null
-    expressions_from: <string, JSONPath into the synthesized artifact locating every `{% ... %}` string>
-    sample_inputs:
-      - input: <object>
-        expected_output: <object>
 ```
 
 ### 4.1 `intent`
@@ -1502,7 +1497,7 @@ literal jq `fromjson` filter; `oracles/lib/structural.py::resolve` resolves
 segment-by-segment, `json.loads`-ing every node between segments (Rego and
 cfn-guard need no such extension — `json.unmarshal`/native JSON parsing of
 an embedded string is a normal, first-class operation in both, so this is
-a tier-0/tier-0.5-evaluator-specific gap, not a Rego/cfn-guard one).
+a tier-0-evaluator-specific gap, not a Rego/cfn-guard one).
 
 `tier`: `"0"` if checkable directly on the raw synth/plan artifact with no
 extra tool (this is what the generated `static_tiers.sh` runs immediately
@@ -1510,7 +1505,10 @@ after synth/plan, before invoking cfn-guard/Rego); `"1"` if it's the kind of
 graph/intent check better expressed as Rego/cfn-guard policy (in which case
 this entry is the **spec** for that policy, cross-checked by the
 oracle-equivalence CI — the policy file is still the thing that actually
-runs); `"0.5"` is invalid here (that tier is `tier05_jsonata`-only, §4.3).
+runs). Those two are the only legal values: a structural assert is compiled
+into `static_tiers.sh`, so it can only name a tier that script runs. A fact no
+static artifact can carry belongs in the live check instead (§5), declared as a
+`predicted_tier_caught: "live"` catch (§3).
 
 ### 4.3 `rego_hints` / `cfn_guard_hints`
 
@@ -1527,121 +1525,13 @@ Every tier-`"1"` entry in `structural_asserts` should have at least one
 corresponding hint in each list, since both a Rego rule and a cfn-guard rule
 need to exist for it.
 
-### 4.4 `tier05_jsonata` (optional, default `null`)
-
-Present **only** for scenarios embedding a JSONata `{% ... %}` expression
-(the `sfn-jsonata`-style scenario) — Amendment №1, `docs/iac-abstraction-aws-bench-plan.md`
-lines 120–127.
-
-```yaml
-tier05_jsonata:
-  expressions_from: <JSONPath string> | {cfn: <JSONPath string>, tf: <JSONPath string>}
-  cases:
-    - expression_path: <string — the exact path oracles.lib.tier05_jsonata.jsonata_expressions()
-                         reports finding this expression at, e.g. "$.States.ComputeTotals.Output">
-      input: <object>          # bound to $states.input for THIS expression's own evaluation
-      expected_output: <any>   # compared to the evaluated expression's result via ==
-```
-
-**Correction (this doc previously described a stale, never-shipped shape —
-`sample_inputs: [{input, expected_output}]` with no way to pin a case to a
-specific expression.** The actually-implemented shape (`generator/spec_model.py`'s
-`Tier05Jsonata`/`Tier05Case`, `oracles/lib/tier05_jsonata.py::run_tier05`) is
-`cases: [{expression_path, input, expected_output}, ...]`, matched by
-`expression_path` — **not** the cartesian product of every found expression
-against every case (that shape
-rejects a fully-correct multi-expression state machine the moment it has more
-than one embedded expression: state A's expression evaluated against state
-B's sample input, compared against state B's expected output, fails despite
-A and B individually being correct — see `run_tier05`'s own docstring for the
-fixed bug this replaced). Every declared case must match an expression that
-actually exists in the artifact — a case whose `expression_path` resolves to
-nothing FAILS loudly (a renamed/removed state, or a stale case, is a
-spec/artifact drift, never silently ignored). **Correction (2026-08-06,
-residual-findings fix, benchmark-integrity review finding "sfn-jsonata /
-Tier 0.5 anti-L2 oracle — false-positives on equally-correct solutions"):**
-the *converse* direction — an expression found in the artifact that no case
-covers — is INFORMATIONAL ONLY (surfaced in `Tier05CaseResult`/`explain()`
-output, `passed=True`), not a failure. This doc previously said "either
-mismatch fails loudly"; that was wrong for this direction specifically —
-`oracle.tier05_jsonata.cases` is authored against one reference
-decomposition (this scenario's own reference `solve.sh`), and a correct
-solution that decomposes an object-literal `Output`/`Arguments` value
-differently (e.g. per-field `{% %}` sub-expressions instead of one
-whole-object `{% %}` expression) legitimately introduces `{% %}` expressions
-no case names — scoring that as an anti-L2 catch hit would contaminate the
-H2 falsifiability signal this tier exists to produce with an oracle-shape
-artifact instead of a real catch. See `oracles/lib/tier05_jsonata.py::run_tier05`'s
-own docstring for the mechanics.
-
-**Correction (2026-08-06, benchmark-integrity review finding "tier05_jsonata
-materialize() container fallback accepts a fully-hardcoded literal"):** this
-doc previously implied one case per `expression_path` (`generator/spec_model.py`
-used to enforce it as a hard uniqueness constraint). Multiple cases MAY now
-share the same `expression_path` — each one an independent `(input,
-expected_output)` sample against that same expression, evaluated
-independently by `run_tier05`. Author at least two such samples (different
-inputs, different expected outputs) for any expression whose
-`expression_path` names a container rather than a bare `{% ... %}` string
-leaf (`run_tier05`'s case "2" — see its own docstring): a single sample lets
-a fully hardcoded literal (zero `{% %}` expressions anywhere in the
-container) satisfy `expected_output` by construction, indistinguishable from
-a genuinely computed value; a second, differently-valued sample cannot also
-be satisfied by that same literal. `oracles/lib/tier05_jsonata.py::run_tier05`
-also independently refuses to materialize-and-compare a zero-expression
-container at all (belt-and-suspenders — see its own docstring), but a
-second sample is the scenario-authoring-side half of the same fix and should
-be added regardless of that guard's presence.
-
-`expressions_from` locates every `{% ... %}`-embedding ASL document in the
-synthesized/planned artifact (e.g. a CFN `DefinitionString` property, or a
-TF `aws_sfn_state_machine.definition` attribute) via a JSONPath resolved
-through `oracles.lib.structural.resolve` (so `|fromjson` works here too, the
-common case since both attributes are JSON-encoded strings). **Two shapes**:
-a single string, when one path genuinely resolves against every arm's own
-artifact (rare — CFN template JSON and Terraform plan JSON have structurally
-different root shapes, `$.Resources[...]` vs.
-`$.planned_values.root_module.resources[...]`, so this is realistically only
-usable for a scenario checked against one artifact family); or a
-`{cfn: <path>, tf: <path>}` mapping (the normal case for a real cross-arm
-scenario) — `run_tier05` auto-detects which family a given artifact document
-is by checking for a top-level `Resources` key (CFN) vs. `planned_values`
-key (TF plan), and selects the matching path. `hcl_raw` and `terraconstructs`
-share the `tf` path, same collapsing convention as `predicted_tier_caught.hcl`
-(§3) and `tf_jsonpath` (§4.2) — both synthesize to the same `terraform show
--json` plan shape.
-
-Every extracted expression is evaluated with `jsonata-python`, `$states.input`
-bound to that CASE's own `input` (i.e. whatever that specific state would
-actually receive as its effective input in a real execution — not one global
-workflow input reused for every expression), identically across all
-applicable arms (the ASL JSON is extractable from both CFN and TF plan
-output, so this adds no arm asymmetry — same rationale as the amendment
-itself). Leave `null` for every scenario that has no embedded expression
-language; do not populate it "for completeness."
-
-**Non-gating (SCHEMA.md §5's precedent, `DECISIONS.md` "Tier-0.5 runs
-host-side, non-gating"):** Tier 0.5 never runs inside a generated
-`tests/static_tiers.sh` and never affects `/logs/verifier/reward.txt` — no
-arm image ships Python/`jsonata-python`. Run it host-side, post-hoc, via
-`uv run python -m oracles.lib.tier05_jsonata <artifact.json> <spec.yaml>`
-(the generator emits a `tests/TIER05.md` pointer at this exact command for
-any scenario declaring this field). Because it never gates reward, a
-scenario whose only mechanism for a given catch is Tier 0.5 (the anti-L2
-falsifiability catch's own defining property — invisible to every synth/
-plan/validate/policy tier by construction) needs its negative fixture proven
-via the Tier 0.5 evaluator directly, not via `reward.txt` — see
-`gates/oracle_falsifiability.py`'s tier-aware per-catch handling.
-
----
-
 ### 4.5 `awscdk_tier1_engine` (optional, default `cfn_guard`)
 
 Which engine grades **tier-`"1"`** on the `awscdk` arm. The TF-shaped arms
 (`hcl_raw`, `terraconstructs`) are *always* graded by OPA/Rego over
 `terraform show -json`; this field only chooses what runs against awscdk's
 synthesized CloudFormation template. It changes nothing about tier-`"0"`,
-tier-`"0.5"`, the live check, or any other arm.
+the live check, or any other arm.
 
 | value | tool | policy file | `input` at eval time |
 |---|---|---|---|
@@ -1935,7 +1825,12 @@ verifier:
   a scenario whose entire point
   is a day-2 apply→modify→re-apply→verify loop *inside one trial* cannot be
   meaningfully graded synth/plan-only, since the fact being tested (did the
-  second deploy actually take effect) only exists at runtime. Setting this
+  second deploy actually take effect) only exists at runtime. The same is true
+  without any deploy at all whenever the graded fact is a BEHAVIOUR the
+  artifact only describes: `sfn-jsonata`'s embedded JSONata expressions are
+  opaque strings to `tsc`, `cdk synth`, `terraform validate` and every policy
+  engine alike, and only the service's own `stepfunctions test-state`
+  evaluates them. Setting this
   `true` is a real design decision, not a default — see `apigw-redeploy`'s
   own `[concurrency] mode = "mutating"` consequence below.
 - `module`: a **path**, relative to the generated task's own `tests/`
@@ -1962,8 +1857,19 @@ verifier:
   (`aws_bench/task/aws_trial.py`'s `ConcurrencyMode.MUTATING` handling,
   outside this repo) — required for any scenario whose agent phase performs
   real AWS mutations, or the deployed/modified resources are never reset
-  between trials. `agent_role_name` must name a role capable of the
-  mutations the scenario's instruction asks for. The model is two-tier, not
+  between trials. **A live check does not by itself imply `"mutating"`**:
+  `[concurrency] mode` describes what the trial does *to* the account, not
+  whether the verifier calls AWS. A live check built only from evaluating
+  APIs — `stepfunctions test-state`, which creates nothing — leaves the
+  account exactly as it found it, so `read-only` is the correct mode for it,
+  and the cheaper one (no post-trial account reset, and such trials co-run
+  under the reader-preferring scenario lock). `sfn-jsonata` is the standing
+  example; only `workspace_seed.deploy` forces `"mutating"` (§2.7.1,
+  `Spec._seed_deploy_requires_live_and_mutating`). `agent_role_name` must name
+  a role capable of the mutations the scenario's instruction asks for — and
+  when the scenario asks for none, the read-only default is right even with a
+  live check on, because the LIVE CHECK runs in the verifier phase under the
+  verifier's own role, not the agent's. The model is two-tier, not
   per-scenario (`DECISIONS.md` Amendment 24, which retired the earlier
   per-scenario scoped deploy role, `QADeployApplicationRole`, and must not
   be reintroduced — a too-tight deploy role turns harness permission gaps
@@ -2203,8 +2109,7 @@ is **not** a prereg scenario (see the toy spec's own entry).
 [`specs/_toy/toy-ssm-parameter.yaml`](_toy/toy-ssm-parameter.yaml) exercises
 every field in this document at minimum cardinality (2 catches, one of each
 optional-field shape populated at least once, `terraconstructs` enabled to
-exercise the 3-arm generator path, `tier05_jsonata: null` to exercise the
-"absent" path). It is deliberately boring — a create-only SSM parameter plus
+exercise the 3-arm generator path). It is deliberately boring — a create-only SSM parameter plus
 a scoped-read IAM role — precisely so a generator bug shows up as "the
 generator did something wrong" and not "the scenario was hard." **Never
 register it as a benchmark scenario**: it has no `anti-L2` catch, its
@@ -2345,8 +2250,10 @@ if the flat grouping was actually intended.
    > **Terminology note — "scenario" is overloaded.** An *aws-bench*
    > scenario is a deployed AWS environment bound to one member account
    > (its own `scenario.toml`, `deploy.sh`, region SCP, CFN exports,
-   > baselines and reset) — we have exactly one, `anchor`, and every
-   > generated task binds to it via `scenario_id`. A *cdktn-bench* scenario
+   > baselines and reset) — `anchor` plus, at `shard_count > 1`, its
+   > identical shards `anchor-1 … anchor-(N-1)`; every generated task binds
+   > to exactly one of them via `scenario_id` (§8.3, "Which shard"). A
+   > *cdktn-bench* scenario
    > is the sense used everywhere in `docs/adding-scenarios.md`: a
    > `specs/<id>.yaml` spec and the N arm tasks it generates. `anchor`
    > deploys almost nothing (one SSM parameter + two IAM roles) because it
@@ -2394,8 +2301,10 @@ if the flat grouping was actually intended.
 ### 8.3 Multi-step generated layout (`steps:`, §2.6)
 
 ```
-tasks/anchor/<scenario-id>-<arm>/
-    task.toml                       # + multi_step_reward_strategy = "final"
+tasks/<scenario_id>/<scenario-id>-<arm>/
+    task.toml                       # + [scenario] scenario_id — the SAME value as the
+                                     #   parent directory above (see "Which shard" below)
+                                     # + multi_step_reward_strategy = "final"
                                      # + [[steps]] (name, min_reward on non-final steps
                                      #   only, [steps.agent], [steps.verifier] incl. env)
                                      # + [pre_invoke] timeout_sec, iff any step declares one
@@ -2420,6 +2329,32 @@ tasks/anchor/<scenario-id>-<arm>/
         broken/<catch>/solve.sh      #   negative fixture, graded against the FINAL oracle
     (no root instruction.md)
 ```
+
+**Which shard (`<scenario_id>`) a task lands under — single-step and multi-step
+alike.** An aws-bench scenario is bound to exactly one AWS member account, and
+its admission gate serializes mutating trials per `scenario_id`, holding the
+lock across the trial *and* its reset. `generator/shards.py` therefore assigns
+each `(spec, arm)` task a shard, from the single count `N` in
+`generator/shards.toml`:
+
+* shard 0 is `anchor` — the pre-existing account, which keeps its `env setup`;
+  shard *k* ≥ 1 is `anchor-k`, a name-rewritten copy of `scenarios/anchor`.
+* **read-only** tasks (`[concurrency] mode = "read-only"`, the default) all run
+  on shard 0: they co-run under the gate's reader-preferring lock, so extra
+  accounts buy them nothing.
+* **mutating** tasks are spread over shards `1..N-1`, offset per `spec.id`, so
+  that at `N ≥ 4` one spec's three arms never share a shard and never wait on
+  each other's ~8.5 min reset.
+* at `N = 1` every task is `anchor` and the layout is exactly the pre-shard one.
+
+The emitted `[scenario] scenario_id` and the parent directory always name the
+same shard: `aws-bench-datasets`' registry generator derives the scenario from
+the path while aws-bench reads the field, so a disagreement binds the task to a
+scenario that was never deployed. Changing `N` therefore requires `make gen-all`
+as well as `make shards`, and `make check` fails while `tasks/` is stale for the
+declared count. A task that changes shard carries its destructive-safe files
+(§8.2 point 8) to the new shard — the generator moves them before deleting the
+copy on the old one. See `DECISIONS.md` Amendment 33 and `ROADMAP.md` M7.
 
 **No root `instruction.md`.** Harbor sets `Task.instruction = ""` whenever
 `[[steps]]` is present, and `gates/equipping.py` folds `steps/*/instruction.md`

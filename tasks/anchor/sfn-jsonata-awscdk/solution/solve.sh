@@ -20,11 +20,12 @@ export class ScenarioStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    // Single {% ... %} expression evaluating to the WHOLE Output object at
-    // once (not an object literal with per-field {% %} sub-expressions) --
-    // this is what makes the synthesized ASL's "Output" field itself one
-    // embedded expression string, matching oracle.tier05_jsonata's
-    // "$.States.ComputeTotals.Output" case in specs/sfn-jsonata.yaml.
+    // ONE embedded {% ... %} expression evaluating to the WHOLE Output
+    // object, not an object literal with a {% %} per field. The graded fact
+    // is the VALUE this state computes: tests/live_check.py submits this
+    // state to TestState and compares what Step Functions returns, so the
+    // reference states the computation as the single expression the service
+    // evaluates in one go.
     const computeTotalsExpr = `{% {
       "orders": $states.input.orders.{"id": id, "qty": qty, "price": price, "total": qty * price},
       "grandTotal": $sum($states.input.orders.(qty * price))
@@ -58,3 +59,10 @@ export class ScenarioStack extends cdk.Stack {
 TS
 
 bash tests/static_tiers.sh
+
+# LIVE=1 (a real account): the same gating live oracle the verifier runs, in
+# its fixture-invoked shape. The reference solution's JSONata must be what
+# Step Functions actually computes, not merely what the static tiers accept.
+if [ "${LIVE:-0}" = "1" ]; then
+  python3 tests/live_check.py --expect ok
+fi

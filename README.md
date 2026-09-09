@@ -78,8 +78,9 @@ failure to a cheaper tier is the mechanism under test.
   optional live **idempotence** tier asks whether the agent's own toolchain reports a
   converged state after the change (gating, fail-closed, and skipped-with-a-reason rather
   than fake-passed when it cannot run).
-- A **Tier 0.5** oracle evaluates embedded JSONata `{% ... %}` expressions in Step
-  Functions ASL against real sample inputs — the catch class that sails through every
+- A gating **live** tier evaluates behaviour no artifact can show — including embedded
+  JSONata `{% ... %}` expressions in Step Functions ASL, run through the service's own
+  `TestState` API against real sample inputs: the catch class that sails through every
   compiler and synth step on every arm alike.
 - Adding a new scenario or task variant? See
   [`docs/adding-scenarios.md`](docs/adding-scenarios.md) — spec authoring, agent-role
@@ -118,7 +119,7 @@ failure to a cheaper tier is the mechanism under test.
 | `arms/{awscdk,hcl-raw,terraconstructs}/` | Per-arm agent container images (pinned toolchains, offline preflights) |
 | `scenarios/anchor/` | Near-empty scenario satisfying aws-bench's real-AWS-account precondition |
 | `tasks/` | Generated `<scenario>-<arm>` task directories (never hand-edited; `make gen`) |
-| `oracles/{rego,rego-cfn,cfn-guard}/` | Static oracle policies (plan-shaped Rego, CFN-shaped Rego, cfn-guard) + structural / Tier-0.5 libraries |
+| `oracles/{rego,rego-cfn,cfn-guard}/` | Static oracle policies (plan-shaped Rego, CFN-shaped Rego, cfn-guard) + the structural-assert library |
 | `cdktn_bench/` | The `cdktn-bench` runner — a superset of upstream aws-bench by inheritance, adding multi-step trials; nothing upstream is vendored or modified |
 | `gates/` | preflight / trajectory-audit / result-validity / equipping-hash / falsifiability gates |
 | `metrics/` | Result schema, validation, tokens-to-green + tier-attribution aggregation |

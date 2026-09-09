@@ -7403,3 +7403,124 @@ start/end timestamps across the three arms, and three clean reset outcomes.
   this amendment's code landing separable from its decision.
 
 ---
+
+## Amendment 34 (2026-09-09) — retire tier 0.5; JSONata correctness is a live TestState check — **ACCEPTED 2026-09-09**
+
+**Status: ACCEPTED (promoted 2026-09-09, the day it was registered).** Both
+halves of the promotion criterion were met the same day:
+
+* **Live trials** (`jobs/amend34-promotion/2026-09-09__21-19-05`;
+  claude-sonnet-5, k=1, read-only on shard `anchor`, 3 min 14 s wall, zero
+  exceptions): the verifier's `TestState` oracle ran on both enabled arms and
+  passed all five cases.
+
+  | arm | reward | output tok | turns | cost $ | agent s | tier-1 | live_check |
+  |---|---:|---:|---:|---:|---:|:---:|:---:|
+  | awscdk | 1.0 | 6,040 | 26 | 0.37 | 81 | PASS | pass |
+  | hcl_raw | 1.0 | 3,360 | 7 | 0.13 | 53 | PASS | pass |
+
+* **Negative proof, run from the host inside the hcl-raw arm image against the
+  same account**: the `jsonata-expression-correctness` broken fixture (flipped
+  comparison) evaluated to `fail_stale` — CheckBudget routed the over-budget
+  input to a `Succeed` state and the under-budget input to a `Fail` state —
+  while the reference solution evaluated to `pass`. Tier 0 and tier 1 pass
+  both, which is exactly why this catch is live-only.
+
+### The finding
+
+**Tier 0.5 never earned its keep.** It was adopted as Amendment №1 — evaluate
+every `{% ... %}` JSONata expression in a synthesized ASL document with
+`jsonata-python` against scenario-declared sample inputs — and Amendment 4 then
+put it host-side and non-gating, because no arm image ships Python's
+`jsonata-python` and installing it in three images for one scenario was judged
+not worth the cost. What that bought, measured against what it cost:
+
+* **One spec ever populated it** (`sfn-jsonata`); twelve carried
+  `tier05_jsonata: null` purely to exercise the "absent" path.
+* **It could not change a score.** It never ran inside `tests/static_tiers.sh`
+  and never touched `/logs/verifier/reward.txt`, so the anti-L2 catch it was
+  adopted to make visible still cost a real trial nothing. The only thing that
+  consulted it was `make falsifiability`, host-side.
+* **It graded a re-implementation, not the service.** `jsonata-python`
+  evaluating a string is not Step Functions evaluating a state; Amendments 8
+  and 9 are both records of that evaluator disagreeing with reality (a
+  cartesian-product bug, then a false-positive on a per-field decomposition
+  that is an equally correct solution).
+* **It cost a Python dependency the arms never see**, a generated
+  `tests/TIER05.md`, a schema section, a gate branch, and a `"0.5"` value
+  threaded through two tier enums.
+
+**Step Functions grades its own expressions, and the API is free.** Verified
+live from the bench account, 2026-09-09: `aws stepfunctions test-state
+--definition <state-or-machine JSON> [--state-name X] --input <json>`
+evaluates JSONata Pass and Choice states with **no `roleArn`** (`roleArn` is
+"Required: No"; a role is needed only for Task states that touch resources).
+The response carries `output` (a JSON-encoded string), `status`, and, for a
+Choice, `nextState`. It needs `states:TestState` and **creates nothing**.
+
+### The decision
+
+**Tier 0.5 is retired in full**, and `sfn-jsonata`'s
+`jsonata-expression-correctness` catch is re-declared
+`predicted_tier_caught: "live"`, graded by a hand-authored, **gating**
+`tests/live_check.py` that submits the synthesized definition to TestState.
+
+* **Tiers are `"0"` or `"1"`.** `StructuralAssert`'s tier-`"0.5"` rejection
+  becomes a plain "tiers are 0 or 1" rule, stated at the assert as well as in
+  the type alias: a structural assert is compiled into `static_tiers.sh` and
+  may only name a tier that script runs.
+* **The three cases move into `live_check.py`.** `LiveCheck` has no field for
+  them and gains none: inventing a schema field for one scenario is the
+  mistake this amendment is undoing.
+* **The scenario stays read-only.** A live check is not a mutation. TestState
+  creates no resource, so the trial leaves the account as it found it, needs no
+  post-trial reset, and co-runs on shard 0. The rule is stated on
+  `LiveCheck.concurrency_mode` and in SCHEMA.md §5, and tested
+  (`generator/tests/test_live_check_concurrency.py`); only
+  `workspace_seed.deploy` forces `"mutating"`. The read-only AGENT role lacks
+  `states:TestState` and does not need it — the verifier phase runs as
+  `OrganizationAccountAccessRole`, which has it.
+* **The two broken fixtures stay** and now earn `LIVE_ONLY_CONFIRMED_MARKER`
+  mechanically: each plans/synthesizes the reference shape and its own flipped
+  shape and requires the two graded artifacts to be byte-identical once every
+  `{% ... %}` body is elided. That is the static-indistinguishability claim
+  itself — the two differ only inside expression bodies, and no tier-0 assert
+  or tier-1 rule reads inside one.
+
+### What this retracts
+
+* **Amendment №1** (adopt Tier 0.5 as an oracle sub-tier): retracted whole.
+* **Amendment 4, "Tier-0.5 runs host-side, non-gating"** (host-side placement,
+  the `tests/TIER05.md` pointer, the `cases:` shape that replaced
+  `sample_inputs`): retracted whole, cartesian-product fix included.
+* **Amendment 8**, the two Tier-0.5 sections only — the `{cfn, tf}` dict form
+  of `expressions_from`, and making `gates/oracle_falsifiability.py`
+  tier-0.5-aware. Amendment 8's `sfn-jsonata` scenario, its catches and its
+  `aws_sfn_state_machine` offline-plan finding are untouched.
+* **Amendment 9 §F2** (the Tier-0.5 per-field-decomposition false-positive
+  fix): retracted. §F1, the `make grading-proof` blocker, stands.
+
+### What promotes this
+
+One live trial per enabled arm of `sfn-jsonata` (awscdk, hcl_raw) in which:
+
+* the reference solution scores **reward 1.0** with `live_check` **`pass`**,
+  and the trial's `[concurrency] mode` stays `read-only` with no account reset;
+* the `jsonata-expression-correctness` broken fixture is observed scoring
+  **0.0 through the live tier specifically** — static tiers 1.0,
+  `live_check-result.json` `outcome: "fail_stale"` naming the CheckBudget case.
+
+Evidence to capture: both `reward.txt` values and both
+`/logs/verifier/live_check-result.json` bodies.
+
+### What this does NOT change
+
+* **No published row is invalidated** — Tier 0.5 never fed `reward.txt`.
+* **`sfn-jsonata`'s tier-0 and tier-1 oracles are untouched** — the same two
+  structural asserts, the same seven policy-graded facts, the same
+  hand-authored `policy.rego`/`policy.guard`.
+* **Every other spec regenerates byte-identically.** The inert
+  `tier05_jsonata: null` lines emitted nothing, and the read-only
+  `[concurrency]` comment keeps its old wording without a live check.
+* **`make falsifiability`/`make grading-proof` stay credential-free** — the
+  live tier is not runnable host-side and the gate does not pretend otherwise.

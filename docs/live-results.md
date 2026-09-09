@@ -198,3 +198,16 @@ accounts, 21 min wall for the whole run.
 The terraconstructs 0.0 is an agent failure: it ended its turn to "wait for
 the background deploy", so the apply still held the Terraform state lock when
 the verifier ran. Turn counts here are the transcript's `num_turns`.
+
+## Amendment 34 promotion run — 2026-09-09 (tier 0.5 retired; TestState live check)
+
+`jobs/amend34-promotion/2026-09-09__21-19-05`; claude-sonnet-5, k=1, both
+trials read-only on `anchor`, 3 min 14 s wall, zero exceptions.
+
+| scenario | arm | reward | output tok | turns | cost $ | tier-1 | live_check |
+|---|---|---:|---:|---:|---:|:---:|:---:|
+| sfn-jsonata | awscdk | 1.0 | 6,040 | 26 | 0.37 | PASS | pass |
+| sfn-jsonata | hcl_raw | 1.0 | 3,360 | 7 | 0.13 | PASS | pass |
+
+The broken `jsonata-expression-correctness` fixture, run live from the host in
+the hcl-raw image, scored `fail_stale` on both CheckBudget threshold cases.

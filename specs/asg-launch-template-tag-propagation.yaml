@@ -802,8 +802,6 @@ oracle:
       %lts !empty (fail-closed companion, mirrors the rego_hints
       fail-closed rule above).
 
-  tier05_jsonata: null
-
 verifier:
   budget:
     max_iters: 8

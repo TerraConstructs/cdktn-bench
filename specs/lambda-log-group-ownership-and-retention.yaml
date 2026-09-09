@@ -833,8 +833,6 @@ oracle:
       PASS/FAIL fixtures, before this file was written (see this spec's own
       header comment for the transcript summary).
 
-  tier05_jsonata: null
-
 verifier:
   budget:
     max_iters: 8

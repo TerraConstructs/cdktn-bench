@@ -743,8 +743,6 @@ oracle:
       general case: any Fn::GetAtt-to-a-Lambda-function necessarily names
       the one this scenario creates.
 
-  tier05_jsonata: null
-
 verifier:
   budget:
     max_iters: 8

@@ -1826,7 +1826,6 @@ oracle:
       the retired cfn-guard count-equality accepted a template leaving one
       role without the team policy). An unfalsified rule
       is untested; do not add a rule here without one.
-  tier05_jsonata: null
 
 verifier:
   budget:

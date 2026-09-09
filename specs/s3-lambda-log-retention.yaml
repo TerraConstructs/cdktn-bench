@@ -434,8 +434,6 @@ oracle:
       exist at all (fail-closed companion to the rule above, mirrors
       toy-ssm-parameter's cfn-guard fail-closed convention).
 
-  tier05_jsonata: null
-
 verifier:
   budget:
     max_iters: 8

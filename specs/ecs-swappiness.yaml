@@ -291,8 +291,6 @@ oracle:
       intent -- not because awscdk needs it to catch the realistic
       negative fixture.
 
-  tier05_jsonata: null
-
 verifier:
   budget:
     max_iters: 8

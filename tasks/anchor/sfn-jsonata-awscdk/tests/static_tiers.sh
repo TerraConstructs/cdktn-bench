@@ -10,6 +10,22 @@ set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$DIR/_assert_lib.sh"
 mkdir -p /logs/verifier
+: "${AWS_DEFAULT_REGION:=us-east-1}"
+export AWS_DEFAULT_REGION
+rm -f /logs/verifier/aws-unavailable /logs/verifier/aws-unavailable.json
+if ! aws sts get-caller-identity >/dev/null 2>&1; then
+  {
+    echo "aws-unavailable: 'aws sts get-caller-identity' failed --"
+    echo "no working AWS credentials in this environment. This is a"
+    echo "run-invalidating test-infrastructure condition, NOT a bad"
+    echo "solution -- no toolchain command was ever attempted."
+  } | tee /logs/verifier/aws-unavailable
+  jq -n \
+    '{outcome: "run_invalid", status: "run_invalid", reason: "aws sts get-caller-identity failed -- no working AWS credentials in this environment"}' \
+    > /logs/verifier/aws-unavailable.json 2>/dev/null \
+    || echo '{"outcome":"run_invalid","status":"run_invalid","reason":"aws credentials unavailable"}' > /logs/verifier/aws-unavailable.json
+  exit 1
+fi
 
 cd /app/project
 

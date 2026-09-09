@@ -1,73 +1,22 @@
-"""gates/oracle_falsifiability.py — the Phase-2 exit criterion, made
-executable now (benchmark-integrity review finding "end-to-end reward —
-oracle-violating solution scores 1.0").
+"""Falsifiability gate: proves a scenario's oracle can tell good from bad.
 
-Demonstrated failure this gate exists to prevent: running a generated
-scenario's tier-0/tier-1 verifier against a hand-crafted artifact that
-violates every clause of the scenario's own `oracle.intent` (a wrong IAM
-role trust, a wildcard-resource inline policy) scored a clean 1.0 reward --
-the scaffolding awarded full marks to a solution that fails the thing it
-was supposed to check for. A generated `tests/static_tiers.sh` proves
-nothing about a scenario's actual discriminating power until it is shown
-to (a) accept a genuinely correct solution, AND (b) reject at least one
-genuinely bad one *per declared catch* -- otherwise a reward of 1.0 could
-just mean "the oracle never fails," not "this solution is correct."
+A generated `tests/static_tiers.sh` proves nothing about a scenario's
+discriminating power until it is shown to (a) accept a genuinely correct
+solution AND (b) reject at least one genuinely bad one *per declared catch* --
+otherwise a reward of 1.0 could just mean "the oracle never fails".
 
-Convention this gate enforces (new, since none existed before): for a task
-directory to pass, it must have
-
-    solution/solve.sh                  -- writes a known-good entry_file,
-                                           then runs tests/static_tiers.sh
-                                           (exactly what the generator's own
-                                           stub docstring already says a
-                                           real solve.sh does)
-    solution/broken/<catch-name>/solve.sh
-                                        -- one per spec.catches[].name,
-                                           writes a deliberately-bad
-                                           entry_file that violates that
-                                           specific catch, then runs
-                                           tests/static_tiers.sh the same
-                                           way
+Exit 0 iff, for every enabled arm, `solution/solve.sh` is authored (not a
+generator stub) and scores reward 1.0, and every `spec.catches[].name` has a
+`solution/broken/<name>/solve.sh` scoring reward 0.0. A still-stubbed solve.sh
+is reported NOT_AUTHORED rather than FAIL -- the one non-gating exception;
+once it is authored, missing broken/ coverage for any catch is a hard FAIL.
 
 Usage:
     uv run python gates/oracle_falsifiability.py specs/_toy/toy-ssm-parameter.yaml
     make falsifiability SPEC=specs/_toy/toy-ssm-parameter.yaml
 
-Exit 0 iff, for every enabled arm: solution/solve.sh is authored (not a
-generator stub) AND scores reward 1.0, AND every catch has a
-solution/broken/<catch-name>/solve.sh that scores reward 0.0. A scenario
-whose solve.sh is still a generator stub is reported NOT_AUTHORED (Slice D
-hasn't gotten to it yet) rather than FAIL -- that is the one non-gating
-exception, matching the rest of this codebase's stub-detection convention
-(is_stub_policy in generator/gen.py's ASSERT_LIB_SH). Once solve.sh IS
-authored, missing broken/ coverage for any catch is a hard FAIL: "no
-scenario should be registerable without it."
-
-MULTI-STEP (SCHEMA.md §2.6 / DECISIONS.md Amendment 27, 2026-08-20)
-===================================================================
-A spec with `steps:` has one oracle PER STEP, under `steps/<name>/tests/`,
-and no root `tests/` oracle at all. This gate then:
-
-  * runs the task-root `solution/solve.sh` and every
-    `solution/broken/<catch>/solve.sh` against the **FINAL** step's oracle.
-    That is not a convenience: the final step's oracle IS the full tier
-    suite (spec_model enforces it), so those rows check byte-for-byte what
-    they checked before the decomposition -- same asserts, same script, same
-    expected rewards. Every declared catch is a fact about the FINAL
-    delivered artifact, which is what the root reference solution produces.
-  * ADDITIONALLY requires each NON-final step to have its own
-    `steps/<name>/solution/solve.sh` scoring reward 1.0 against that step's
-    own (subset) oracle. This is the new proof obligation the decomposition
-    creates: without it nothing shows an intermediate step's oracle is
-    satisfiable, and a step-01 oracle that no correct step-01 solution can
-    pass would abort every trial at the min_reward gate before step 02's
-    prompt ever fired.
-
-The sandbox's `tests/` for a given step is the SHARED root `tests/` merged
-with that step's own `tests/` -- exactly what Harbor's verifier uploads into
-`/tests` for that step (harbor/verifier/verifier.py::_resolve_tests), so a
-solve.sh's `bash tests/static_tiers.sh` means the same thing here as in a
-real trial.
+Multi-step oracles, per-tier fixture handling and AWS access:
+docs/gates.md#oracle-falsifiability
 """
 
 from __future__ import annotations
@@ -92,41 +41,32 @@ from gen import (  # noqa: E402
 )
 from spec_model import Arm, Catch, Spec, Step, load_spec  # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from oracles.lib.tier05_jsonata import Tier05Error, run_tier05  # noqa: E402
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from aws_stub import running_stub  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# Slice G addition (apigw-redeploy, 2026-08-06): the fixed marker string a
-# `predicted_tier_caught: "live"` broken/ fixture's normal (single-mode)
-# gate run must print, after mechanically confirming (not just claiming) the
-# static-indistinguishability property that is this catch's whole point --
-# see check_arm()'s "live" branch below and
-# docs/apigw-redeploy-mechanics.md §6(c). Shared here (not duplicated in
-# each fixture) so the gate and every fixture agree on the exact string.
+# The fixed marker string a `predicted_tier_caught: "live"` broken/ fixture's
+# gate run must print, after mechanically confirming the static-
+# indistinguishability property that is this catch's whole point (see
+# check_arm()'s "live" branch). Shared here, not duplicated per fixture, so the
+# gate and every fixture agree on the exact string.
 LIVE_ONLY_CONFIRMED_MARKER = "CDKTN_BENCH_LIVE_ONLY_CONFIRMED"
 
 _MIRROR_CACHE: dict[str, dict[str, set[str]] | None] = {}
 
 
 def _arm_mirror_provider_versions(arm: Arm) -> dict[str, set[str]] | None:
-    """`{full_name: {version, ...}}` (e.g. `{"registry.terraform.io/hashicorp/aws":
-    {"6.52.0"}}`) actually baked into `cdktn-bench/<arm>:dev`'s own
-    `/opt/terraform-plugin-mirror`, by extracting it via `docker cp` and
-    reading the mirror's own `<namespace>/<type>/index.json` files (the
-    same format `terraform providers mirror` writes and a `filesystem_mirror`
-    block reads, SCHEMA.md §4.2's sibling contract -- see arms/*/environment/
-    terraformrc). Used by `_check_mirror_coverage` below to prove a
-    synthesized artifact's actual provider requirements are satisfiable
-    OFFLINE by this specific arm image, without needing to run `terraform
-    init` against a platform-matched copy of the mirror on the host (which
-    doesn't work cross-platform -- the mirror only contains packages for the
-    image's own build platform, e.g. linux_arm64, not darwin_arm64/host
-    dev-machine platforms; verified directly, see the fix commentary this
-    function's caller carries). Returns `None` for `awscdk` (no terraform
+    """`{full_name: {version, ...}}` baked into `cdktn-bench/<arm>:dev`'s own
+    `/opt/terraform-plugin-mirror`, extracted via `docker cp` and read from the
+    mirror's `<namespace>/<type>/index.json` files (the format `terraform
+    providers mirror` writes and the arm's `filesystem_mirror` block reads --
+    see arms/*/environment/terraformrc).
+
+    Read from the image rather than by running `terraform init` against a
+    host-side copy: the mirror only contains packages for the image's own build
+    platform (linux_arm64), never the host's (darwin_arm64), so a host init
+    cannot resolve from it at all. Returns `None` for `awscdk` (no terraform
     CLI in that arm's grading path) or if the image can't be inspected."""
     if arm == "awscdk":
         return None
@@ -190,22 +130,19 @@ _PINNED_VERSION_RE = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 
 
 def _check_mirror_coverage(document: dict, arm: Arm) -> tuple[bool, str]:
-    """Every provider `configuration.provider_config` in a synthesized
-    artifact names (by `full_name` + a literal, pinned `version_constraint`
-    -- a range constraint doesn't pin one version to check, and is skipped,
-    not silently treated as covered) must actually be present in THIS arm
-    image's own offline mirror (`_arm_mirror_provider_versions`). Fixes the
-    root cause of benchmark-integrity finding "apigw-openapi / terraconstructs
-    arm -- catch cannot fire at all in the real image": a solution that
-    synthesizes cleanly and plans successfully on the HOST (which resolves
-    providers from the public registry) can still be fundamentally
-    unrunnable inside the arm's actual `--network none` image if a required
-    provider was never mirrored there -- exactly what happened with
-    `hashicorp/archive` before that finding's fix (arms/terraconstructs/
-    environment/mirror-src/main.tf). Returns `(True, "")` when mirror
-    checking is unavailable (image not built -- a separately reported,
-    louder warning) rather than silently failing every run for an unrelated
-    reason."""
+    """Every provider `configuration.provider_config` in a synthesized artifact
+    must be present in THIS arm image's own offline mirror
+    (`_arm_mirror_provider_versions`), matched by `full_name` plus a literal,
+    pinned `version_constraint`. A range constraint pins no single version to
+    check and is skipped, not silently treated as covered.
+
+    A solution that synthesizes and plans successfully on the HOST (which
+    resolves providers from the public registry) can still be unrunnable inside
+    the arm's `--network none` image if a required provider was never mirrored
+    there (arms/terraconstructs/environment/mirror-src/main.tf is where they
+    are declared). Returns `(True, "")` when mirror checking is unavailable --
+    image not built, separately reported as a louder warning -- rather than
+    failing every run for an unrelated reason."""
     mirror = _arm_mirror_provider_versions(arm)
     if mirror is None:
         return True, ""
@@ -223,26 +160,23 @@ def _check_mirror_coverage(document: dict, arm: Arm) -> tuple[bool, str]:
 
 
 # `== summary: tier0_pass=N tier1_status=X ==` -- generator/gen.py's
-# build_static_tiers_sh's own literal format, matched here to recover an
-# OBSERVED tier from a run's stdout (see observed_tier() below).
+# build_static_tiers_sh's own literal format, matched to recover an OBSERVED
+# tier from a run's stdout (see observed_tier() below).
 _SUMMARY_RE = re.compile(r"== summary: tier0_pass=(\d) tier1_status=(\S+) ==")
-# Every generated toolchain step (build/synth/plan/validate/init) that fails
-# before tier-0 structural asserts even run prints "<LABEL> FAILED" and
-# writes reward 0.0 immediately (generator/gen.py's toolchain_block) -- a
-# rejection at this stage is a tier-"0"-equivalent catch (caught by the
-# compiler/synthesizer itself, with no Rego/cfn-guard tooling involved at
-# all), the same bucket predicted_tier_caught's "0" denotes.
+# A toolchain step (build/synth/plan/validate/init) that fails before tier-0
+# asserts run prints "<LABEL> FAILED" and writes reward 0.0 immediately
+# (generator/gen.py's toolchain_block). That is tier-"0"-equivalent: caught by
+# the compiler/synthesizer itself, the bucket predicted_tier_caught's "0"
+# denotes.
 _TOOLCHAIN_FAILED_RE = re.compile(r"^[A-Z][A-Z0-9_ ]* FAILED$", re.MULTILINE)
 
 
 def observed_tier(stdout: str) -> str | None:
-    """Recover the tier a run's `tests/static_tiers.sh` actually caught a
-    violation at, from its stdout -- the mechanical backstop
-    `predicted_tier_caught` never had (benchmark-integrity review finding
-    "gates/oracle_falsifiability.py -- predicted_tier_caught is never
-    verified"). Returns `"0"`, `"1"`, or `None` (never caught by any static
-    tier -- the expected outcome for a "0.5"-predicted catch, and a mismatch
-    for anything else)."""
+    """Recover, from a run's stdout, the tier its `tests/static_tiers.sh`
+    actually caught a violation at -- the mechanical backstop for
+    `predicted_tier_caught`. Returns `"0"`, `"1"`, or `None` (never caught by
+    any static tier: the expected outcome for a "live"-predicted catch, and a
+    mismatch for anything else)."""
     if _TOOLCHAIN_FAILED_RE.search(stdout):
         return "0"
     m = _SUMMARY_RE.search(stdout)
@@ -257,8 +191,8 @@ def observed_tier(stdout: str) -> str | None:
 
 
 def predicted_tier(catch: Catch, arm: Arm) -> str:
-    """`catches[].predicted_tier_caught` for one arm (SCHEMA.md §3):
-    `.awscdk` for awscdk; `.hcl` for hcl_raw AND terraconstructs UNLESS
+    """`catches[].predicted_tier_caught` for one arm (specs/SCHEMA.md §3,
+    catches): `.awscdk` for awscdk; `.hcl` for hcl_raw AND terraconstructs UNLESS
     `.terraconstructs_override` is set, in which case that wins for
     terraconstructs specifically (the "terraconstructs' own typed surface
     diverges" escape hatch)."""
@@ -275,19 +209,6 @@ class RunResult:
     reward: float | None
     ok: bool
     detail: str
-    # Populated only when the caller asked _run_solve to also evaluate
-    # Tier 0.5 against the artifact this run produced (tier05_spec passed) --
-    # None otherwise. See the "0.5"-predicted-catch branch in check_arm()
-    # below: unlike every other tier, a "0.5"-predicted catch's broken/
-    # fixture is EXPECTED to score reward 1.0 (Tier 0.5 never gates
-    # reward.txt, DECISIONS.md "Tier-0.5 runs host-side, non-gating" --
-    # that invisibility to the static tiers IS the catch's own defining
-    # property, the anti-L2 falsifiability instrument prereg §5/H2 names).
-    # Falsifying such a catch means proving Tier 0.5 ITSELF catches it,
-    # which needs the actual (still-warm) artifact this same sandboxed run
-    # produced -- not a second, separately-sandboxed invocation.
-    tier05_ok: bool | None = None
-    tier05_detail: str = ""
     # Populated whenever this run produced an artifact on a terraform-shaped
     # arm (hcl_raw/terraconstructs) -- False means this artifact requires a
     # provider genuinely absent from that arm image's own offline mirror
@@ -327,58 +248,41 @@ def _run_solve(
     solve_sh: Path,
     label: str,
     *,
-    tier05_spec: dict | None = None,
     artifact_rel: str | None = None,
     step: Step | None = None,
     env: dict[str, str] | None = None,
 ) -> RunResult:
-    """Copy `task`'s environment/<workspace-subdir> (the exact tree the
-    arm's own Dockerfile COPYs into WORKDIR /app/project -- flattened, no
-    'workspace'/'app' prefix, matching real container layout: `workspace/`
-    for awscdk/hcl_raw, `app/` for terraconstructs, per gen.py's
-    ARM_WORKSPACE_SUBDIR) into the SANDBOX ROOT, run `solve_sh` there with
-    cwd=that scratch dir, and read back /logs/verifier/reward.txt. Runs
-    entirely on the host using whatever toolchain is on PATH
-    (terraform/cfn-guard/opa/node/npm) -- the same approach used to
-    hand-verify every other fix in this review, not a new mechanism.
+    """Copy `task`'s `environment/<ARM_WORKSPACE_SUBDIR[arm]>` (the exact tree
+    the arm's own Dockerfile COPYs into WORKDIR /app/project -- flattened, no
+    'workspace'/'app' prefix: `workspace/` for awscdk/hcl_raw, `app/` for
+    terraconstructs) into the SANDBOX ROOT, run `solve_sh` there with cwd=that
+    scratch dir, and read back /logs/verifier/reward.txt. Runs entirely on the
+    host using whatever toolchain is on PATH (terraform/cfn-guard/opa/node/npm).
 
-    Finding F1 (benchmark-integrity review, fixed 2026-08-06): this used to
-    copytree the WHOLE `environment/` dir (workspace/fixtures/mirror-src/
-    preflight.sh/terraformrc for hcl_raw; the analogous per-arm layout for
-    the others) into the sandbox, landing the arm's actual entry_file/
-    bootstrap files at `<sandbox>/workspace/main.tf` or `<sandbox>/app/
-    main.ts` -- one directory level too deep. But the generated
-    `tests/static_tiers.sh` (patched below to run against this sandbox
-    exactly the way it runs against `/app/project` in a real trial) does
-    `cd /app/project` and then reads `main.tf`/`cdk.out/...` etc directly
-    at that root -- so with the old copy, `terraform init`/`cdk synth`
-    always ran against an EMPTY directory (no .tf/.ts files at the root
-    the tools actually looked in), and every solve.sh, however correct,
-    could only ever fail. Reusing generator/check_reference_paths.py's own
-    `_prepare_project` pattern (`environment/<ARM_WORKSPACE_SUBDIR[arm]>`
-    flattened onto the sandbox root, the same mapping every arm's own
-    Dockerfile encodes) fixes this: proven below by a self-test
-    (gates/tests/test_oracle_falsifiability.py) that runs this exact
-    function against a known-good, hand-authored solve.sh and asserts
-    reward 1.0 -- a regression back to the whole-`environment/` copy makes
-    that test fail loudly instead of silently reintroducing the bug.
+    The flattening is load-bearing, and shared with
+    generator/check_reference_paths.py::_prepare_project. The generated
+    `tests/static_tiers.sh` (patched below to run against this sandbox) does
+    `cd /app/project` and reads `main.tf`/`cdk.out/...` directly at that root;
+    copying the whole `environment/` dir instead lands the entry_file one level
+    too deep, so `terraform init`/`cdk synth` run against an empty directory and
+    every solve.sh, however correct, can only fail. Enforced by
+    gates/tests/test_oracle_falsifiability.py, which runs this function against
+    a known-good solve.sh and asserts reward 1.0.
 
-    `env`: the credential-free AWS environment every toolchain subprocess
-    below runs under (gates/aws_stub.py::running_stub() -- AWS_ENDPOINT_URL
-    pointed at a loopback stub, dummy static credentials, no inherited
-    `AWS_*` variable of any kind). Live AWS is the only trial mode
-    (aws-access.html), so the generated toolchain always talks to `aws`/the
-    provider's STS calls regardless of whether this specific scenario needs
+    `env`: the credential-free AWS environment every toolchain subprocess below
+    runs under (gates/aws_stub.py::running_stub()). Live AWS is the only trial
+    mode (aws-access.html, DECISIONS.md Amendment 32), so the generated
+    toolchain always makes STS calls regardless of whether this scenario needs
     them -- there is no offline-fixture branch to fall back to. Defaults to
-    `None`, in which case THIS call starts and tears down its own one-off
-    stub (correct but wasteful for a caller running many solve.sh in a row);
-    `check_arm` below hoists one shared `env` for its whole per-arm run, and
-    each gate's own `main()` hoists further, to ONE stub per gate process."""
+    `None`, in which case THIS call starts and tears down its own one-off stub
+    (correct but wasteful for a caller running many solve.sh in a row);
+    `check_arm` hoists one shared `env` per arm, and each gate's `main()`
+    hoists further, to ONE stub per gate process."""
     if env is None:
         with running_stub() as stub_env:
             return _run_solve(
                 task, arm, solve_sh, label,
-                tier05_spec=tier05_spec, artifact_rel=artifact_rel, step=step,
+                artifact_rel=artifact_rel, step=step,
                 env=stub_env,
             )
     with tempfile.TemporaryDirectory(prefix="falsifiability-") as tmp:
@@ -391,9 +295,9 @@ def _run_solve(
         if (task / "solution").is_dir():
             shutil.copytree(task / "solution", project / "solution", dirs_exist_ok=True)
         # Multi-step: the step tree is copied at its real relative path, so a
-        # `steps/<n>/solution/solve.sh` still resolves (and so a step solution
-        # can reach the root one -- steps/01's reference solution is a thin
-        # STEP=01 wrapper around it, by design; see that file's header).
+        # `steps/<n>/solution/solve.sh` still resolves, and a step solution can
+        # reach the root one (steps/01's reference solution is a thin STEP=01
+        # wrapper around it, by design).
         if (task / "steps").is_dir():
             shutil.copytree(task / "steps", project / "steps", dirs_exist_ok=True)
         # awscdk/terraconstructs ship package.json/package-lock.json in
@@ -412,14 +316,11 @@ def _run_solve(
             )
         rel_solve = solve_sh.relative_to(task)
         reward_file = logs / "reward.txt"
-        # tests/static_tiers.sh (generated with absolute /logs/verifier and
-        # /app/project paths, since that's where it really runs inside a
-        # trial's container) is patched to point at this scratch sandbox
-        # instead, mirroring the manual proof technique used throughout
-        # this review -- solve.sh's own docstring convention is "writes a
-        # known-good entry_file, then runs the same tests/static_tiers.sh a
-        # real trial's verifier runs", so patching that one file is enough
-        # to make the whole chain self-contained on the host.
+        # tests/static_tiers.sh bakes in the absolute /logs/verifier and
+        # /app/project paths it really runs under inside a trial's container;
+        # repoint them at this scratch sandbox. Every solve.sh ends by running
+        # that one script, so patching it is enough to make the whole chain
+        # self-contained on the host.
         static_tiers = project / "tests" / "static_tiers.sh"
         if static_tiers.exists():
             text = static_tiers.read_text()
@@ -447,29 +348,11 @@ def _run_solve(
             if artifact.exists() and artifact.stat().st_size > 0:
                 document = json.loads(artifact.read_text())
 
-        tier05_ok: bool | None = None
-        tier05_detail = ""
-        if tier05_spec is not None:
-            if document is None:
-                tier05_ok = False
-                tier05_detail = f"tier05: no artifact at {project / (artifact_rel or '?')} to evaluate"
-            else:
-                try:
-                    results = run_tier05(document, tier05_spec)
-                    tier05_ok = bool(results) and all(r.passed for r in results)
-                    tier05_detail = "; ".join(r.explain() for r in results if not r.passed)
-                except Tier05Error as exc:
-                    tier05_ok = False
-                    tier05_detail = f"tier05: {exc}"
-
-        # Provider-mirror-coverage check (arms/*.hcl-shaped only -- see
-        # _check_mirror_coverage's own docstring for the finding this
-        # closes): a solution that reaches reward 1.0 on the HOST (public
-        # registry) but requires a provider genuinely absent from the arm
-        # image's own offline mirror is not really achievable inside a real
-        # trial's `--network none` container -- surfaced here as a distinct
-        # `mirror_ok=False`, folded into `.ok` by check_arm below, rather
-        # than silently trusting a host-side reward of 1.0.
+        # Terraform-shaped arms only: a solution reaching reward 1.0 on the
+        # HOST (public registry) but requiring a provider absent from the arm
+        # image's offline mirror is not achievable inside a real trial's
+        # `--network none` container. Folded into `.ok` by check_arm rather than
+        # trusting a host-side 1.0. See _check_mirror_coverage.
         mirror_ok: bool | None = None
         mirror_detail = ""
         if arm in ("hcl_raw", "terraconstructs") and document is not None:
@@ -481,7 +364,6 @@ def _run_solve(
         # main() truncates for display only.
         return RunResult(
             label, reward, True, proc.stdout,
-            tier05_ok=tier05_ok, tier05_detail=tier05_detail,
             mirror_ok=mirror_ok, mirror_detail=mirror_detail,
         )
 
@@ -491,16 +373,15 @@ def _check_non_final_steps(
 ) -> list[RunResult]:
     """Every NON-final step needs its own reference solution scoring 1.0.
 
-    The new proof obligation the multi-step decomposition creates (see this
-    module's docstring). Nothing else in the repo shows that an intermediate
-    step's oracle is SATISFIABLE, and an unsatisfiable step-01 oracle would
-    abort every trial at the `min_reward` hard gate before step 02's prompt
-    is ever delivered -- silently, since Harbor records a step abort on the
-    StepResult and not on the trial (DECISIONS.md Amendment 26 §3).
+    Nothing else in the repo shows that an intermediate step's oracle is
+    SATISFIABLE, and an unsatisfiable step-01 oracle would abort every trial at
+    the `min_reward` hard gate before step 02's prompt is ever delivered --
+    silently, since Harbor records a step abort on the StepResult and not on
+    the trial (multi-step trials, DECISIONS.md Amendment 26).
 
-    The FINAL step is deliberately absent here: its reference is the
-    task-root `solution/solve.sh`, checked by `check_arm` under its original
-    label so `gates/grading_proof.py`'s own row lookups keep working.
+    The FINAL step is deliberately absent here: its reference is the task-root
+    `solution/solve.sh`, checked by `check_arm` under its original label so
+    `gates/grading_proof.py`'s row lookups keep working.
     """
     results: list[RunResult] = []
     steps = spec.steps or []
@@ -522,8 +403,8 @@ def _check_non_final_steps(
 def _check_seed_unchanged(
     spec: Spec, arm: Arm, task: Path, step: Step | None, env: dict[str, str] | None = None
 ) -> list[RunResult]:
-    """THE MANDATORY BROWNFIELD DO-NOTHING CATCH (SCHEMA.md §2.7,
-    DECISIONS.md Amendment 28 §5).
+    """THE MANDATORY BROWNFIELD DO-NOTHING CATCH (specs/SCHEMA.md §2.7
+    `workspace_seed`; brownfield scenarios, DECISIONS.md Amendment 28).
 
     A brownfield workspace does not start empty — it starts from working,
     green configuration. That creates one failure mode no other check in this
@@ -540,9 +421,8 @@ def _check_seed_unchanged(
     means either a stale task dir or a deliberate deletion, and both must be
     loud.
 
-    `< 1.0` rather than `== 0.0` on purpose. 0.0 is what today's reward contract
-    produces and is what this pilot observes, but the *claim* being falsified is
-    "doing nothing does not earn full marks" — pinning it to an exact 0.0 would
+    `< 1.0` rather than `== 0.0` on purpose: the claim being falsified is
+    "doing nothing does not earn full marks", and pinning an exact 0.0 would
     couple this gate to the reward scale rather than to the property.
     """
     if spec.workspace_seed is None:
@@ -563,23 +443,11 @@ def _check_seed_unchanged(
     artifact_rel = getattr(spec.instruction.per_arm, arm).output_contract.artifact_path
     run = _run_solve(task, arm, solve, label, artifact_rel=artifact_rel, step=step, env=env)
     scored = run.reward is not None and run.reward < 1.0
-    # A reward BELOW 1.0 is necessary but NOT sufficient, and this is the one
-    # fixture where that distinction bites. `tests/static_tiers.sh` writes 0.0
-    # for a toolchain failure too -- `TF-PLAN FAILED`, `MISSING ARTIFACT`, the
-    # `aws-unavailable` preflight bail-out (live AWS is the only trial mode;
-    # see aws-access.html) -- and each of those is a RUN-INVALIDATING
-    # condition that static_tiers.sh itself labels "NOT a bad solution".
-    # Accepting those 0.0s would let this gate report "doing nothing is
-    # rejected" on a run where nothing was ever graded, which is exactly the
-    # vacuous pass the do-nothing catch exists to prevent (and it is not
-    # hypothetical: a batch run on 2026-08-20 produced `TF-PLAN FAILED` on the
-    # terraconstructs arm from port contention between back-to-back fixtures,
-    # while the same fixture run in isolation failed honestly on
-    # `security-group-uses-the-new-team-prefixed-name`).
-    #
-    # So the tier-0 summary marker must be present: it is printed only after the
-    # arm's toolchain actually produced a graded artifact and ran the asserts.
-    # Fail-closed -- an unprovable claim fails rather than passes.
+    # A reward below 1.0 is necessary but NOT sufficient: static_tiers.sh writes
+    # 0.0 for run-invalidating toolchain failures too (`TF-PLAN FAILED`,
+    # `MISSING ARTIFACT`, the `aws-unavailable` preflight bail-out), so the
+    # tier-0 summary marker -- printed only once a graded artifact exists and
+    # the asserts ran -- must also be present. Fail-closed.
     graded = "tier0_pass=" in run.detail
     if run.ok and scored and not graded:
         run.detail = (
@@ -617,43 +485,26 @@ def check_arm(spec: Spec, arm: Arm, env: dict[str, str] | None = None) -> list[R
     solve_sh = task / "solution" / "solve.sh"
     results: list[RunResult] = []
 
-    # Multi-step: the task-root reference + every broken/ fixture are graded
-    # against the FINAL step's oracle -- which spec_model guarantees is the
-    # full tier suite, i.e. exactly what they were graded against before the
-    # decomposition. `final_step` is None for a single-step spec, which makes
-    # every _run_solve call below byte-identical to its pre-steps behaviour.
+    # Multi-step: the task-root reference and every broken/ fixture are graded
+    # against the FINAL step's oracle, which spec_model guarantees is the full
+    # tier suite. `final_step` is None for a single-step spec, which keeps every
+    # _run_solve call below on its single-step path.
     final_step: Step | None = (spec.steps or [None])[-1] if spec.is_multi_step() else None
 
     if _is_stub(solve_sh):
-        results.append(RunResult(f"{arm}/solution/solve.sh", None, True, "NOT_AUTHORED (Slice D pending)"))
+        results.append(RunResult(f"{arm}/solution/solve.sh", None, True, "NOT_AUTHORED (solve.sh still a generator stub)"))
         return results
 
     results.extend(_check_non_final_steps(spec, arm, task, env))
     results.extend(_check_seed_unchanged(spec, arm, task, final_step, env))
 
-    # Tier-0.5-aware plumbing (SCHEMA.md §4.4, DECISIONS.md "Tier-0.5 runs
-    # host-side, non-gating"): a catch whose predicted_tier_caught is "0.5"
-    # for THIS arm (the anti-L2 falsifiability instrument, prereg §5/H2) is
-    # by construction invisible to every static tier that feeds
-    # reward.txt -- that invisibility IS the catch. Its broken/ fixture is
-    # therefore EXPECTED to score reward 1.0 (not 0.0 like every other
-    # tier), and is only genuinely falsified by proving Tier 0.5 itself
-    # (oracles.lib.tier05_jsonata.run_tier05) catches it against the SAME
-    # artifact this sandboxed run produced.
-    tier05_spec = spec.oracle.tier05_jsonata.model_dump(mode="json") if spec.oracle.tier05_jsonata else None
     artifact_rel = getattr(spec.instruction.per_arm, arm).output_contract.artifact_path
 
     good = _run_solve(
         task, arm, solve_sh, f"{arm}/solution/solve.sh",
-        tier05_spec=tier05_spec, artifact_rel=artifact_rel, step=final_step, env=env,
+        artifact_rel=artifact_rel, step=final_step, env=env,
     )
     good.ok = good.ok and good.reward == 1.0
-    if tier05_spec is not None:
-        # The REFERENCE solution's own embedded expressions must genuinely
-        # be correct too, not just structurally clean -- a good.reward==1.0
-        # that turns out tier05_ok==False would mean this spec's own
-        # solve.sh has a real JSONata bug the static tiers can't see either.
-        good.ok = good.ok and good.tier05_ok is True
     if good.mirror_ok is False:
         # A reward of 1.0 on the HOST doesn't mean this solution is really
         # achievable inside the arm's own offline image -- see
@@ -663,13 +514,11 @@ def check_arm(spec: Spec, arm: Arm, env: dict[str, str] | None = None) -> list[R
 
     catch_names = {catch.name for catch in spec.catches}
     for catch in spec.catches:
-        # Slice G addition (apigw-redeploy, 2026-08-06): a catch whose
-        # `applies_to` (spec_model.Catch, default all 3 arms -- 100%
-        # backward compatible) excludes THIS arm names a mistake that is
-        # structurally impossible to reproduce here (e.g. a hand-omitted TF
-        # `triggers` block has no direct L2 equivalent -- the L2 always
-        # computes one). No broken/ fixture is required or expected; this is
-        # reported N/A (non-gating), not MISSING.
+        # A catch whose `applies_to` (spec_model.Catch, default all three
+        # arms) excludes THIS arm names a mistake structurally impossible to
+        # reproduce here -- e.g. a hand-omitted TF `triggers` block has no L2
+        # equivalent, the L2 always computes one. No broken/ fixture is
+        # required; reported N/A (non-gating), not MISSING.
         if arm not in catch.applies_to:
             results.append(RunResult(
                 f"{arm}/solution/broken/{catch.name}/solve.sh", None, True,
@@ -684,25 +533,14 @@ def check_arm(spec: Spec, arm: Arm, env: dict[str, str] | None = None) -> list[R
             continue
         tier = predicted_tier(catch, arm)
         if tier == "live":
-            # Slice G addition: a catch whose mistake is invisible to EVERY
-            # static tier by construction (docs/apigw-redeploy-mechanics.md
-            # §6(c) -- only a live apply->modify->re-apply->curl loop
-            # discriminates it). Mirrors the "0.5" branch immediately below
-            # in SHAPE (reward is EXPECTED to stay 1.0 -- that invisibility
-            # IS the catch), but the falsifying evidence is a fixed marker
-            # string this fixture's own gate run prints after
-            # mechanically confirming the static-indistinguishability
-            # property itself (e.g. two-plan triggers-hash diff showing no
-            # change) -- LIVE_ONLY_CONFIRMED_MARKER, not a second static-
-            # tool invocation (there is no static tool for this tier by
-            # definition). The run is credential-FREE, not offline: like
-            # every other fixture it executes under `running_stub()`, so its
-            # `terraform plan`s and the generated `tests/static_tiers.sh`
-            # `aws sts get-caller-identity` preflight resolve against the
-            # loopback stub (which needs `aws` on PATH) instead of an
-            # operator's ambient `~/.aws`. What that buys is the same thing:
-            # the fixture MECHANICALLY demonstrates (not just claims in a
-            # comment) that it reproduces the documented gap.
+            # A mistake only a real AWS call discriminates -- an
+            # apply->modify->re-apply->curl loop, or an evaluating API such as
+            # stepfunctions test-state (docs/apigw-redeploy-mechanics.md;
+            # DECISIONS.md Amendment 34). The host gate CANNOT run a live tier,
+            # so it never claims tier 0/1 caught the fixture. Reward is
+            # EXPECTED to stay 1.0; the falsifying evidence is instead
+            # LIVE_ONLY_CONFIRMED_MARKER, printed by the fixture after it
+            # mechanically confirms the property it claims.
             bad = _run_solve(
                 task, arm, broken_solve, label,
                 artifact_rel=artifact_rel, step=final_step, env=env,
@@ -716,36 +554,17 @@ def check_arm(spec: Spec, arm: Arm, env: dict[str, str] | None = None) -> list[R
                     "static-indistinguishability property it claims, not just "
                     "assert it in a comment\n" + bad.detail
                 )
-        elif tier == "0.5":
-            bad = _run_solve(
-                task, arm, broken_solve, label,
-                tier05_spec=tier05_spec, artifact_rel=artifact_rel, step=final_step, env=env,
-            )
-            # Falsified two ways at once, both required: (a) reward stays
-            # 1.0 -- proving the static tiers genuinely cannot see this
-            # catch, the parity claim itself; (b) tier05_ok is False --
-            # proving Tier 0.5 genuinely DOES catch it. Either alone is not
-            # enough: reward==1.0 with no tier05 check at all would just be
-            # an unfalsified catch again (this is exactly the "reward is
-            # constant 1.0, nothing proves grading" F2-shaped gap, applied
-            # to the one tier reward.txt can never cover by design).
-            bad.ok = bad.ok and bad.reward == 1.0 and bad.tier05_ok is False
         else:
             bad = _run_solve(
                 task, arm, broken_solve, label,
                 artifact_rel=artifact_rel, step=final_step, env=env,
             )
             observed = observed_tier(bad.detail)
-            # Mechanical backstop for `predicted_tier_caught` (benchmark-
-            # integrity review finding "gates/oracle_falsifiability.py --
-            # predicted_tier_caught is never verified"): reward==0.0 alone
-            # only proves SOMETHING caught the violation, never that it was
-            # caught at the TIER the spec records (and the per-catch tier-
-            # attribution table's headline H1/H2 comparison depends on that
-            # tier being right, not just on reward being 0). A catch
-            # recorded "1" that a real run actually catches at "0" (a
-            # stronger, earlier catch) or vice versa now fails this gate
-            # instead of passing silently.
+            # Mechanical backstop for `predicted_tier_caught`: reward==0.0
+            # alone proves only that SOMETHING caught the violation, never that
+            # it was caught at the TIER the spec records -- which the per-catch
+            # tier-attribution table depends on. A recorded "1" that a real run
+            # catches at "0", or vice versa, fails here instead of passing.
             bad.ok = bad.ok and bad.reward == 0.0 and observed == tier
             if bad.reward == 0.0 and observed != tier:
                 bad.detail = (
@@ -756,26 +575,20 @@ def check_arm(spec: Spec, arm: Arm, env: dict[str, str] | None = None) -> list[R
                 )
         results.append(bad)
 
-    # Extra, non-catch-named negative fixtures under solution/broken/ --
-    # added by the "tier-1 oracle vacuity" fix (2026-08-06) alongside the
-    # widened rego/cfn-guard bundles, to prove an alternate-but-equally-
-    # idiomatic IAM shape (e.g. aws_iam_policy+aws_iam_role_policy_attachment
-    # on the TF arms, inlinePolicies on awscdk) is caught too, not just the
-    # ONE shape a declared catch's own name happens to cover. Any directory
-    # here NOT matching a declared catch name is discovered and required to
-    # score reward 0.0 the same way, so a future regression that re-narrows
-    # the policy bundle back to a single shape turns this gate red instead
-    # of silently losing coverage no catch name names.
+    # Extra, non-catch-named negative fixtures prove an alternate-but-equally-
+    # idiomatic shape is caught too (aws_iam_policy +
+    # aws_iam_role_policy_attachment on the TF arms, inlinePolicies on awscdk),
+    # not just the ONE shape a catch name covers. Each is required to score 0.0
+    # the same way, so re-narrowing the rego/cfn-guard bundle turns this red.
     broken_dir = task / "solution" / "broken"
     if broken_dir.is_dir():
         for extra_dir in sorted(broken_dir.iterdir()):
             if not extra_dir.is_dir() or extra_dir.name in catch_names:
                 continue
-            # The brownfield do-nothing fixture already ran, under its own
-            # dedicated, differently-worded check (_check_seed_unchanged above:
-            # required verdict `< 1.0`, missing = FAIL). Running it a second
-            # time here would double the slowest step in this gate and report
-            # the same fact under a vaguer label.
+            # The brownfield do-nothing fixture already ran under its own
+            # dedicated check (_check_seed_unchanged: required verdict `< 1.0`,
+            # missing = FAIL). Re-running it here would double the slowest step
+            # in this gate and report the same fact under a vaguer label.
             if spec.workspace_seed is not None and extra_dir.name == SEED_UNCHANGED_FIXTURE:
                 continue
             extra_solve = extra_dir / "solve.sh"
@@ -797,19 +610,15 @@ def main(argv: list[str]) -> int:
 
     spec = load_spec(args.spec_path)
     all_ok = True
-    # ONE stub for the whole gate process (not one per arm/per solve.sh) --
-    # see running_stub()'s own docstring and check_arm's `env` parameter.
+    # ONE stub for the whole gate process, not one per arm or per solve.sh.
     with running_stub() as env:
         for arm in spec.arms.enabled_arms():
             for r in check_arm(spec, arm, env):
                 status = "PASS" if r.ok else "FAIL"
-                tier05_note = f" tier05_ok={r.tier05_ok}" if r.tier05_ok is not None else ""
                 last_line = r.detail.splitlines()[-1] if r.detail else ""
-                print(f"[{status}] {r.label}: reward={r.reward}{tier05_note} -- {last_line}")
+                print(f"[{status}] {r.label}: reward={r.reward} -- {last_line}")
                 if not r.ok and "tier-attribution mismatch" in r.detail:
                     print(f"    {r.detail.splitlines()[0]}")
-                if not r.ok and r.tier05_detail:
-                    print(f"    tier05_detail: {r.tier05_detail}")
                 if r.mirror_ok is False:
                     print(f"    mirror_detail: {r.mirror_detail}")
                 if not r.ok:

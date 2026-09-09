@@ -730,8 +730,6 @@ oracle:
       AWS::Route53::HostedZone exists in the template but zero
       AWS::CertificateManager::Certificate resources exist at all.
 
-  tier05_jsonata: null
-
 verifier:
   budget:
     max_iters: 8

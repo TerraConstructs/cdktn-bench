@@ -509,8 +509,6 @@ oracle:
       lambda-permission-exists assert is checked on awscdk for this fact;
       see oracle.intent's own note for the full write-up.
 
-  tier05_jsonata: null
-
 verifier:
   budget:
     max_iters: 8

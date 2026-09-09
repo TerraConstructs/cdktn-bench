@@ -3685,8 +3685,6 @@ oracle:
   # `_hcl` key present at all and denies nothing.
   hcl_traversal: true
 
-  tier05_jsonata: null
-
 catches:
   # Blueprint §9(c) lists 3 catches; this spec adds 4 more
   # (lambda-permission-not-scoped-to-bucket,

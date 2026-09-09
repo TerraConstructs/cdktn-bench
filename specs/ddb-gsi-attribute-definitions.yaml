@@ -1397,7 +1397,6 @@ oracle:
       fail-CLOSED backstops for a malformed entry (an empty name matches
       neither the allowlist nor any declared name, so the corresponding
       rule fires), not a tolerance for an unresolved value.
-  tier05_jsonata: null
 
 verifier:
   budget:

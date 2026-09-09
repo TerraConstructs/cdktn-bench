@@ -2,8 +2,9 @@
 #
 # Seed scenario 3 (Slice D). Design source:
 # docs/iac-abstraction-aws-bench-plan.md Phase 1 seed-scenario table, row
-# `sfn-jsonata` ("Anti-L2 catch (+ mode-mixing trap)"); Amendment №1
-# (Tier-0.5 embedded-expression oracle); catch patterns mined from (never
+# `sfn-jsonata` ("Anti-L2 catch (+ mode-mixing trap)"); Amendment 34
+# (the JSONata-correctness catch is a gating live check on Step Functions
+# TestState); catch patterns mined from (never
 # copied from) ../tyme/repos/tc-ai-pdlc-coding-features/tests/helpers_asl.py
 # and tests/pdlc_core/test_no_jsonpath.py -- read alongside this file's own
 # catches[] entries below for the parallel.
@@ -198,9 +199,12 @@ catches:
       validate`/`plan` treat the whole ASL document as an opaque JSON blob;
       cfn-guard/Rego (the mode-mixing catch's own tier-1 mechanism above)
       inspect ASL STRUCTURE (which keys/strings are present), never
-      evaluate JSONata SEMANTICS. Only Tier 0.5 -- evaluating every embedded
-      expression with `jsonata-python` against this spec's own sample
-      inputs (oracle.tier05_jsonata below) -- can catch it. Predicted
+      evaluate JSONata SEMANTICS. Only the service itself can: the LIVE
+      check (tests/live_check.py, gating) submits the synthesized definition
+      to `stepfunctions test-state` with this scenario's own sample inputs
+      and compares what Step Functions actually computed. TestState
+      evaluates a JSONata Pass/Choice state with no roleArn and creates no
+      resources, which is why this scenario stays read-only. Predicted
       PARITY across arms, not a CDK advantage: unlike the typed-value-trap
       taxonomy member (where CDK's enum genuinely steers the model to a
       valid value before emission), there is no typed surface for "the
@@ -209,8 +213,8 @@ catches:
       retained specifically to detect a CDK penalty/advantage if this
       parity prediction turns out wrong, per prereg §5's own framing.
     predicted_tier_caught:
-      awscdk: "0.5"
-      hcl: "0.5"
+      awscdk: "live"
+      hcl: "live"
       terraconstructs_override: null
 
 oracle:
@@ -412,58 +416,40 @@ oracle:
       not_regex check and the Rego bundle's raw "$." rule, at the same
       strictness.
 
-  tier05_jsonata:
-    expressions_from:
-      cfn: "$.Resources[?(@.Type=='AWS::StepFunctions::StateMachine')].Properties.DefinitionString|fromjson"
-      tf: "$.planned_values.root_module.resources[?(@.type=='aws_sfn_state_machine')].values.definition|fromjson"
-    cases:
-      - expression_path: "$.States.ComputeTotals.Output"
-        input:
-          orders:
-            - { id: "o1", qty: 2, price: 10 }
-            - { id: "o2", qty: 1, price: 5 }
-        expected_output:
-          orders:
-            - { id: "o1", qty: 2, price: 10, total: 20 }
-            - { id: "o2", qty: 1, price: 5, total: 5 }
-          grandTotal: 25
-      # Second sample_input/expected_output pair for the SAME
-      # expression_path (deliberately different orders/qty/price/totals
-      # from the sample above) -- the suspenders half of the fix for
-      # benchmark-integrity review finding "tier05_jsonata materialize()
-      # container fallback accepts a fully-hardcoded literal" (2026-08-06).
-      # A fully hardcoded literal Output tuned to satisfy the sample above
-      # cannot ALSO satisfy this one (different grandTotal, different
-      # per-order totals), so even absent the belt-half code guard in
-      # oracles/lib/tier05_jsonata.py, a zero-{% %}-expression literal now
-      # fails Tier 0.5 on this second case.
-      - expression_path: "$.States.ComputeTotals.Output"
-        input:
-          orders:
-            - { id: "o3", qty: 3, price: 7 }
-            - { id: "o4", qty: 4, price: 2 }
-        expected_output:
-          orders:
-            - { id: "o3", qty: 3, price: 7, total: 21 }
-            - { id: "o4", qty: 4, price: 2, total: 8 }
-          grandTotal: 29
-      - expression_path: "$.States.CheckBudget.Choices[0].Condition"
-        input:
-          grandTotal: 2500
-        expected_output: true
-
 verifier:
   budget:
     max_iters: 8
   live_check:
-    enabled: false
+    # THE ONLY ORACLE THAT CAN SEE `jsonata-expression-correctness`. The
+    # catch is a `{% ... %}` expression that is syntactically valid JSONata
+    # and structurally valid ASL and computes the wrong value; no compiler,
+    # synthesizer, plan or policy engine reads inside that string, so the
+    # tier-0/tier-1 asserts below pass a wrong solution and a correct one
+    # identically. `stepfunctions test-state` evaluates the state for real
+    # and is the discriminating signal (DECISIONS.md Amendment 34).
+    enabled: true
     module: tests/live_check.py
+    # tests/live_check.py is written by hand and byte-identical in both
+    # enabled arms' task dirs; `make gen` must not overwrite it (SCHEMA.md
+    # §8.2 point 8).
+    hand_authored: true
+    # Gating, for the reason SCHEMA.md §5 gives: the catch this scenario
+    # exists to motivate is `predicted_tier_caught: "live"`, so a non-gating
+    # live check would let it cost a real trial nothing.
+    gating: true
+    # DELIBERATELY read-only, and left at the defaults that express it. The
+    # agent deploys nothing, and TestState evaluates a state without creating
+    # any resource, so this trial leaves the account exactly as it found it
+    # and needs no post-trial reset. The read-only agent role does not carry
+    # `states:TestState` and does not need to -- only the VERIFIER calls it,
+    # under the verifier's own role (SCHEMA.md §5).
+    agent_role_name: null
+    concurrency_mode: null
 
 provenance:
   author: "Vincent (via Claude Code, Slice D scenario-authoring task)"
   date: "2026-08-06"
   prereg_section_refs:
     - "docs/iac-abstraction-aws-bench-plan.md Phase 1 seed-scenario table, sfn-jsonata row"
-    - "docs/iac-abstraction-aws-bench-plan.md 'New oracle sub-tier adopted (pre-registration amendment №1, logged)' -- Tier 0.5"
-    - "iac-abstraction-benchmark-prereg.md §5 (catch taxonomy: nested-attribute, anti-L2), §3 (oracle tiers, Tier 0.5)"
-    - "DECISIONS.md Amendment №1 (Tier-0.5 embedded-expression oracle) and 'Tier-0.5 runs host-side, non-gating'"
+    - "iac-abstraction-benchmark-prereg.md §5 (catch taxonomy: nested-attribute, anti-L2), §3 (oracle tiers)"
+    - "DECISIONS.md Amendment 34 (JSONata correctness is a gating live check on Step Functions TestState)"
