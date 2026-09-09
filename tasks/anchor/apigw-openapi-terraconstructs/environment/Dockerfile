@@ -1,7 +1,7 @@
 # arms/terraconstructs — AWSCDK-style L2 constructs (terraconstructs) synthesizing
 # Terraform via cdktn (the community fork of cdktf, formerly "CDK Terrain").
 #
-# Toolchain: Node 20 + TypeScript + terraconstructs + cdktn/cdktn-cli + the
+# Toolchain: Node 22 + TypeScript + terraconstructs + cdktn/cdktn-cli + the
 # @cdktn/provider-* prebuilt bindings terraconstructs' peerDependencies require,
 # plus the `terraform` CLI + a pre-warmed hashicorp/aws provider filesystem
 # mirror for the arm's validate/plan gate (no apply, no credentials — see
@@ -19,7 +19,7 @@
 # arms/awscdk and arms/hcl-raw. Build with:
 #   cd arms/terraconstructs/environment && docker build -t cdktn-bench/terraconstructs:dev .
 # See ../../DECISIONS.md "Arm build-context contract".
-FROM node:20.20.2-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS base
+FROM node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS base
 
 # NOTE: deliberately no default value -- one of BuildKit's predefined
 # platform ARGs, auto-populated from --platform (or the builder's native

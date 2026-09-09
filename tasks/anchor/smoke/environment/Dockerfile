@@ -1,22 +1,18 @@
 # cdktn-bench / tasks/anchor/smoke / environment/Dockerfile
 #
-# Byte-copy of ../../../../arms/awscdk/environment/Dockerfile (the awscdk
-# arm's canonical image contract), used unmodified so this dummy task
-# validates the Phase 0 exit criterion — "one dummy task runs end-to-end on
-# all 3 arm Dockerfiles" — against the arm's real image, not a lighter
-# stand-in. aws-bench builds each task's environment/ as its own Docker
-# build context (docs/aws-bench-guide.md §5 "Sandboxing"), so a cross-task-dir
-# COPY --from isn't available; keep this in sync by hand until the Slice C
-# generator templates task environment/ directly from arms/*/environment/.
-# Re-copy with `cp -R arms/awscdk/environment/. tasks/anchor/smoke/environment/`
-# after any upstream change to the arm contract.
+# Byte-copy of arms/awscdk/environment/Dockerfile: the smoke task must run on
+# the awscdk arm's real image, and aws-bench builds each task's environment/
+# as its own Docker build context, so it cannot reference the arm's directory.
+# Kept in sync by hand; ci/check-smoke-drift.sh fails on any difference beyond
+# these leading comments. Re-copy with
+# `cp -R arms/awscdk/environment/. tasks/anchor/smoke/environment/`.
 #
 # Agent container for the "awscdk" arm: hand-written AWS CDK (TypeScript),
 # aws-cdk-lib L2 constructs. Gate = `tsc --noEmit` + `cdk synth` (no deploy).
 #
 # Pinned toolchain (exact versions — see ../../../../arms/awscdk/README.md
 # "Image contract" for the rationale and how to bump them):
-#   node        20.20.2   (node:20.20.2-bookworm-slim, digest-pinned below)
+#   node        22.23.2   (node:22.23.2-bookworm-slim, digest-pinned below)
 #   typescript  7.0.2
 #   aws-cdk-lib 2.263.0
 #   constructs  10.8.1
@@ -47,7 +43,7 @@
 # non-root-unaware base image with AWS CLI v2 baked in, WORKDIR under /app.
 # Never COPY from tests/ or solution/ — see aws-bench-datasets-guide.md §6b.
 
-FROM node:20.20.2-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0
+FROM node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
 
 # --- OS packages -------------------------------------------------------
 # Same baseline utility set as the upstream dataset's Dockerfile

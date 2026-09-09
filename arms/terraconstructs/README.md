@@ -110,7 +110,7 @@ was verified upstream:
 | `ts-node` | `10.9.1` | — | — (no longer on any execution path: the `cdktf.json` app command is `npx tsc … && node main.js`; the pin is kept only so dropping it doesn't force a `package-lock.json` regeneration) |
 | `terraform` (CLI, apt) | `1.15.8` | — | `1.15.8` (current stable, 2026-07-08) |
 | `hashicorp/aws` (TF provider, mirrored) | `6.52.0` | fixed by `@cdktn/provider-aws@24.8.0`'s jsii bindings (not a peer range — the generated `cdk.tf.json`'s `required_providers.aws.version` hardcodes this) | `6.58.0` (`arms/hcl-raw`'s independent pin — see `../../DECISIONS.md` "TF provider version per arm" for why the two TF arms don't share one version) |
-| `node` | `20.20.2` (base image `node:20-bookworm-slim`) | `>=20.9.0` | — |
+| `node` | `22.23.2` (base image `node:22-bookworm-slim`) | `>=22.0.0` | — |
 
 Note `@aws-cdk/cloud-assembly-schema`'s peer range (`^49.4.0`) caps at
 `<50.0.0` under npm's caret rule — the registry's overall "latest" (`54.16.0`)
@@ -188,7 +188,7 @@ ecs-swappiness, apigw-openapi); sfn-jsonata is out of scope for this arm.**
 arms/terraconstructs/
 ├── README.md                    (this file)
 └── environment/
-    ├── Dockerfile                node:20.20.2-bookworm-slim (digest-pinned) + pinned toolchain (§2)
+    ├── Dockerfile                node:22.23.2-bookworm-slim (digest-pinned) + pinned toolchain (§2)
     ├── preflight.sh              versions + offline `cdktn synth` + output assertions + offline `terraform init`/`validate`
     ├── terraformrc                filesystem_mirror-only CLI config (byte-for-byte same contract as arms/hcl-raw)
     ├── mirror-src/main.tf         build-time-only: `terraform providers mirror` input (hashicorp/aws 6.52.0)
@@ -266,8 +266,8 @@ on the synthesized `cdk.tf.json`, then offline `terraform init` +
 "Offline terraform tier" below):
 
 ```
-node:            v20.20.2
-npm:             10.8.2
+node:            v22.23.2
+npm:             10.9.8
 typescript:      Version 5.7.3
 cdktn (cli):     0.23.0
 terraform:       1.15.8

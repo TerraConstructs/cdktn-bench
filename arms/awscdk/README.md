@@ -45,7 +45,7 @@ could foreshadow (`specs/SCHEMA.md` §0.1, `DECISIONS.md` Amendments 27 §5.1 /
 
 ## Image contract
 
-- **Base**: `node:20.20.2-bookworm-slim`, pinned by tag *and* digest
+- **Base**: `node:22.23.2-bookworm-slim`, pinned by tag *and* digest
   (`sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0`).
   Node ≥ 20 is CDK 2.x's minimum (`aws-cdk-lib@2.263.0` `engines.node` = `>=20.0.0`).
 - **WORKDIR**: `/app/project` — the agent's working directory, a ready CDK
@@ -80,7 +80,7 @@ inside `environment/workspace/`) and re-run `preflight.sh`.
 
 | Package | Version | Where pinned |
 | --- | --- | --- |
-| `node` (base image) | `20.20.2` | `environment/Dockerfile` `FROM` (tag + digest) |
+| `node` (base image) | `22.23.2` | `environment/Dockerfile` `FROM` (tag + digest) |
 | `typescript` | `7.0.2` | `workspace/package.json` devDependencies |
 | `aws-cdk-lib` | `2.263.0` | `workspace/package.json` dependencies |
 | `constructs` | `10.8.1` | `workspace/package.json` dependencies (satisfies `aws-cdk-lib`'s peer range `^10.5.0`) |

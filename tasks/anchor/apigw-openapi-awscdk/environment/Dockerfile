@@ -5,7 +5,7 @@
 #
 # Pinned toolchain (exact versions — see ../README.md "Image contract" for the
 # rationale and how to bump them):
-#   node        20.20.2   (node:20.20.2-bookworm-slim, digest-pinned below)
+#   node        22.23.2   (node:22.23.2-bookworm-slim, digest-pinned below)
 #   typescript  7.0.2
 #   aws-cdk-lib 2.263.0
 #   constructs  10.8.1
@@ -36,7 +36,7 @@
 # non-root-unaware base image with AWS CLI v2 baked in, WORKDIR under /app.
 # Never COPY from tests/ or solution/ — see aws-bench-datasets-guide.md §6b.
 
-FROM node:20.20.2-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0
+FROM node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
 
 # --- OS packages -------------------------------------------------------
 # Same baseline utility set as the upstream dataset's Dockerfile
