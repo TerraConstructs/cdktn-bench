@@ -1,33 +1,29 @@
-"""gates/tests/test_grading_proof.py -- unit coverage for
-`gates/grading_proof.py::auto_select_negative()`, added alongside the
-benchmark-integrity fix that wired `make check`'s `test-gates` to actually
-run `oracles/` + `generator/` (mk/rails.mk finding "the 75 oracles/ +
-generator/ tests ... never run in any make target").
+"""Unit coverage for `gates/grading_proof.py`'s two proof selectors.
 
-`auto_select_negative` itself has NO test coverage anywhere in the repo
-before this file -- despite being the piece of `make grading-proof` that
-picks, per arm, which `solution/broken/<name>/solve.sh` fixture actually
-proves the tier-1 Rego/cfn-guard chain is wired for real (see its own
-docstring in gates/grading_proof.py for the full "generalized 2026-08-06"
-history this function has: it used to be a spec-wide, then a
-predicted-tier-based selector, both of which silently produced zero
-results for scenarios like sfn-jsonata/ecs-swappiness whose whole point is
-a PER-ARM tier divergence).
+`auto_select_negative` picks, per arm, the `solution/broken/<name>/solve.sh`
+fixture whose run proves the arm's tier-1 Rego/cfn-guard chain is wired for
+real; `live_tier_proof` picks the live-tier proof a scenario graded at the live
+tier offers instead. Both must select on what a run was OBSERVED to do -- a
+spec-wide or predicted-tier selector silently yields nothing for a scenario
+whose whole point is a PER-ARM tier divergence (sfn-jsonata, ecs-swappiness).
 
-These tests build synthetic `RunResult` lists directly (`gates.
-oracle_falsifiability.RunResult`) instead of running any real toolchain --
-`auto_select_negative` only ever reads `r.label` and `observed_tier(r.detail)`,
-both of which are cheap to construct by hand from the exact stdout shapes
-`observed_tier()`'s own regexes match (`generator/gen.py`'s
+`RunResult` lists are built by hand rather than by running a toolchain: both
+selectors read only `.label`, `.reward` and `.detail`, and `.detail` is cheap to
+write in the exact shapes `observed_tier()`'s regexes match (gen.py's
 `"== summary: tier0_pass=N tier1_status=X =="` line, and a toolchain-failure
-line of the form `"<LABEL> FAILED"`). No toolchain/network dependency, no
-skip marker needed -- this is pure unit coverage of one selection function.
+line `"<LABEL> FAILED"`). No toolchain or network dependency, so no skip marker.
 """
 
 from __future__ import annotations
 
-from gates.grading_proof import auto_select_negative
-from gates.oracle_falsifiability import RunResult
+import contextlib
+from types import SimpleNamespace
+
+import pytest
+
+from gates import grading_proof
+from gates.grading_proof import auto_select_negative, live_tier_proof, main
+from gates.oracle_falsifiability import LIVE_ONLY_CONFIRMED_MARKER, RunResult
 
 
 def _result(label: str, detail: str) -> RunResult:
@@ -162,3 +158,179 @@ class TestAutoSelectNegativeNoTier1Fixture:
         # even if its own stdout happens to look tier-1-shaped.
         results = [_result("awscdk/solution/solve.sh", TIER1_CAUGHT)]
         assert auto_select_negative(results, "awscdk") is None
+
+
+# ---------------------------------------------------------------------------
+# live_tier_proof(): the SECOND accepted proof of gradeability
+# ---------------------------------------------------------------------------
+# A scenario graded at the live tier owns no tier-1 fixture and never will, so
+# `make grading-proof` accepts a live-tier proof instead of failing the spec
+# outright (DECISIONS.md Amendment 39, "grading-proof accepts a live-tier proof
+# of gradeability"). Every condition below is one the gate reads off the run;
+# dropping any single one must make the proof unavailable, which is what these
+# tests pin.
+
+# The stdout a live-predicted fixture's own host-side run produces: every
+# static tier PASSED it (reward 1.0, no tier caught it) and it earned the
+# marker by mechanically confirming its static-indistinguishability claim.
+LIVE_UNCAUGHT = (
+    f"{LIVE_ONLY_CONFIRMED_MARKER}: both shapes synthesize byte-identical artifacts\n"
+    "== summary: tier0_pass=1 tier1_status=SKIPPED_NO_ASSERTS =="
+)
+# Same run WITHOUT the tier-0 summary line: static_tiers.sh never graded an
+# artifact, so nothing about tiers was observed at all.
+LIVE_UNGRADED = f"{LIVE_ONLY_CONFIRMED_MARKER}: claimed, but the toolchain never produced an artifact"
+
+
+def _catch(name="live-catch", *, awscdk="live", hcl="0", override=None, applies_to=None):
+    return SimpleNamespace(
+        name=name,
+        applies_to=list(applies_to or ("awscdk", "hcl_raw", "terraconstructs")),
+        predicted_tier_caught=SimpleNamespace(
+            awscdk=awscdk, hcl=hcl, terraconstructs_override=override
+        ),
+    )
+
+
+def _spec(catches, *, enabled=True, gating=True, hand_authored=True, arms=("awscdk",)):
+    return SimpleNamespace(
+        id="fake-spec",
+        arms=SimpleNamespace(enabled_arms=lambda: list(arms)),
+        catches=list(catches),
+        verifier=SimpleNamespace(
+            live_check=SimpleNamespace(
+                enabled=enabled, gating=gating, hand_authored=hand_authored
+            )
+        ),
+    )
+
+
+def _good(arm):
+    return RunResult(label=f"{arm}/solution/solve.sh", reward=1.0, ok=True, detail=NEVER_CAUGHT)
+
+
+def _live_results(detail=LIVE_UNCAUGHT, reward=1.0, name="live-catch", arm="awscdk"):
+    return [
+        _good(arm),
+        RunResult(
+            label=f"{arm}/solution/broken/{name}/solve.sh",
+            reward=reward,
+            ok=True,
+            detail=detail,
+        ),
+    ]
+
+
+class TestLiveTierProofAccepted:
+    def test_accepted_when_every_condition_holds(self):
+        proof = live_tier_proof(_live_results(), _spec([_catch()]), "awscdk")
+        assert proof is not None
+        assert proof.label == "awscdk/solution/broken/live-catch/solve.sh"
+
+    def test_per_arm_resolution_uses_predicted_tier(self):
+        # The same catch is tier-0 on the hcl-shaped arms (predicted_tier's
+        # `.hcl`), so only awscdk can offer the live proof.
+        spec = _spec([_catch()], arms=("awscdk", "hcl_raw"))
+        assert live_tier_proof(_live_results(arm="hcl_raw"), spec, "hcl_raw") is None
+
+
+class TestLiveTierProofConditionsAreEachLoadBearing:
+    """Each condition dropped on its own -- the rest still holding -- must
+    withdraw the proof. A live-tier proof asserts that the live tier is the one
+    left to decide; every one of these is part of showing that."""
+
+    @pytest.mark.parametrize("field", ["enabled", "gating", "hand_authored"])
+    def test_live_check_must_be_enabled_gating_and_hand_authored(self, field):
+        spec = _spec([_catch()], **{field: False})
+        assert live_tier_proof(_live_results(), spec, "awscdk") is None
+
+    def test_no_catch_predicts_the_live_tier_on_this_arm(self):
+        spec = _spec([_catch(awscdk="1")])
+        assert live_tier_proof(_live_results(), spec, "awscdk") is None
+
+    def test_catch_does_not_apply_to_this_arm(self):
+        spec = _spec([_catch(applies_to=("hcl_raw",))])
+        assert live_tier_proof(_live_results(), spec, "awscdk") is None
+
+    def test_fixture_missing_from_the_results(self):
+        spec = _spec([_catch(name="absent-catch")])
+        assert live_tier_proof(_live_results(), spec, "awscdk") is None
+
+    def test_marker_absent(self):
+        # The fixture asserted its tier in a comment instead of earning it.
+        detail = "== summary: tier0_pass=1 tier1_status=SKIPPED_NO_ASSERTS =="
+        assert live_tier_proof(_live_results(detail=detail), _spec([_catch()]), "awscdk") is None
+
+    def test_no_tier0_summary_means_nothing_was_observed(self):
+        # Fail-closed: without the summary line no static tier ever ran, so
+        # "survived every static tier" is an assumption, not a reading.
+        assert live_tier_proof(_live_results(detail=LIVE_UNGRADED), _spec([_catch()]), "awscdk") is None
+
+    def test_caught_by_a_static_tier(self):
+        # tier-1 FAIL: a static tier decided it, so the live tier did not.
+        detail = f"{LIVE_ONLY_CONFIRMED_MARKER}\n== summary: tier0_pass=1 tier1_status=FAIL =="
+        assert live_tier_proof(_live_results(detail=detail, reward=0.0), _spec([_catch()]), "awscdk") is None
+
+    def test_reward_not_one(self):
+        assert live_tier_proof(_live_results(reward=0.0), _spec([_catch()]), "awscdk") is None
+
+
+# ---------------------------------------------------------------------------
+# main(): which proof satisfied the gate, and what it says when none did
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def gate(monkeypatch):
+    """Drive `main()` with a synthetic spec and synthetic `check_arm` results:
+    the selection and reporting logic is what these tests pin, and running the
+    real toolchain would prove nothing extra about it."""
+
+    def _install(spec, results_by_arm):
+        monkeypatch.setattr(grading_proof, "load_spec", lambda _path: spec)
+        monkeypatch.setattr(
+            grading_proof, "check_arm", lambda _spec, arm, _env: results_by_arm[arm]
+        )
+        monkeypatch.setattr(
+            grading_proof, "running_stub", contextlib.contextmanager(lambda: iter([{}]))
+        )
+
+    return _install
+
+
+class TestMainProofKinds:
+    def test_tier1_proof_still_accepted(self, gate, capsys):
+        arm = "hcl_raw"
+        results = [
+            _good(arm),
+            RunResult(f"{arm}/solution/broken/live-catch/solve.sh", 0.0, True, TIER1_CAUGHT),
+        ]
+        gate(_spec([_catch(hcl="1")], arms=(arm,)), {arm: results})
+        assert main(["grading_proof.py", "specs/fake.yaml"]) == 0
+        assert "tier-1 catch" in capsys.readouterr().out
+
+    def test_live_tier_proof_accepted(self, gate, capsys):
+        gate(_spec([_catch()]), {"awscdk": _live_results()})
+        assert main(["grading_proof.py", "specs/fake.yaml"]) == 0
+        out = capsys.readouterr().out
+        assert "live-tier catch" in out
+        assert "every arm is GRADEABLE" in out
+
+    def test_live_predicted_fixture_caught_at_tier0_fails(self, gate, capsys):
+        # Falsifiability's own rule is unchanged: a live-predicted fixture that
+        # a static tier catches is a mis-tiered catch, not a proof. It reaches
+        # neither selector, so this gate reports no proof at all rather than
+        # laundering the tier-0 catch into one.
+        detail = f"{LIVE_ONLY_CONFIRMED_MARKER}\n== summary: tier0_pass=0 tier1_status=SKIP =="
+        gate(_spec([_catch()]), {"awscdk": _live_results(detail=detail, reward=0.0)})
+        assert main(["grading_proof.py", "specs/fake.yaml"]) == 1
+        assert "no enabled arm produced EITHER" in capsys.readouterr().err
+
+    @pytest.mark.parametrize("field", ["enabled", "gating", "hand_authored"])
+    def test_failure_message_names_both_accepted_proof_kinds(self, gate, capsys, field):
+        gate(_spec([_catch()], **{field: False}), {"awscdk": _live_results()})
+        assert main(["grading_proof.py", "specs/fake.yaml"]) == 1
+        err = capsys.readouterr().err
+        assert 'observed caught at tier "1"' in err
+        assert "live-tier proof" in err
+        assert LIVE_ONLY_CONFIRMED_MARKER in err

@@ -800,10 +800,13 @@ and the disarmed shape.
      promotion needs one live trial writing `teardown-result.json` with outcome
      `clean` on at least one arm. First gating use:
      `ecr-repo-destroy-force-delete`.
-   * `grading-proof` accepting an observed live-tier catch as proof of
-     gradeability — Amendment 39 (unblocks
-     `lambda-alias-tracks-unpublished-latest`, red in `make ci` because it
-     declares no tier-1 catch and a tier-1 rule there is vacuous on awscdk).
+   * ~~`grading-proof` accepting an observed live-tier catch as proof of
+     gradeability~~ — Amendment 39, ACCEPTED 2026-09-10
+     (`gates/grading_proof.py::live_tier_proof`,
+     `gates/tests/test_grading_proof.py`, `docs/gates.md#grading-proof`).
+     Unblocks `lambda-alias-tracks-unpublished-latest`, red in `make ci`
+     because it declares no tier-1 catch and a tier-1 rule there is vacuous on
+     awscdk.
 6. Comment clean-up continues as part of every change (rules in CLAUDE.md
    "Comments"); remaining hot spots are `generator/gen.py` bodies, the
    emitted template strings, hand-authored `solve.sh` files, `arms/*/README.md`,

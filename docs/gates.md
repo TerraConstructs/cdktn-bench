@@ -89,7 +89,9 @@ free, not offline. `main()` hoists one stub for the whole gate process.
 
 `gates/grading_proof.py` — the end-to-end proof that each arm is GRADEABLE: a
 correct reference solution scores 1.0 and a negative fixture that genuinely
-exercises the arm's tier-1 Rego/cfn-guard chain scores 0.0.
+exercises the arm's grading chain is shown to be discriminated by it. Two kinds
+of proof are accepted (see "Live-tier proof" below); at least one enabled arm
+must produce one, or the spec fails outright.
 
 Deliberately thin: it reuses `oracle_falsifiability.check_arm` (the same
 sandbox-preparation path `make falsifiability` runs) rather than a second,
@@ -120,6 +122,39 @@ without this script knowing either name in advance.
 name, applied to every enabled arm; a named fixture missing on an arm is a hard
 FAIL for that arm, because an explicit request names one specific thing to
 prove.
+
+### Live-tier proof
+
+A scenario whose discriminating fact only exists at runtime owns no tier-1
+fixture and never will: where both the right and the wrong shape produce the
+same artifact graph, a cross-resource tier-1 rule is vacuous
+(`lambda-alias-tracks-unpublished-latest` on awscdk — both shapes reference an
+`AWS::Lambda::Version` through `Fn::GetAtt`, and only the CDK-generated logical
+id differs, which no `structural_assert` may pin). Such a spec is still graded,
+at the tier it says decides, so `live_tier_proof()` accepts that instead —
+DECISIONS.md Amendment 39, "grading-proof accepts a live-tier proof of
+gradeability".
+
+An arm with no tier-1 fixture offers a live-tier proof when ALL of the
+following hold, each read off the run rather than assumed:
+
+* the spec's `verifier.live_check` is `enabled`, `gating` AND `hand_authored`
+  (`specs/SCHEMA.md` §5) — a non-gating live check costs a trial no reward, so
+  it proves nothing about grading;
+* a catch applying to this arm declares `predicted_tier_caught: "live"` here;
+* that fixture's host-side run produced a graded artifact (the `tier0_pass=`
+  summary is present in its stdout) and scored **1.0** — every static tier,
+  tier 0 and where present tier 1, passed it;
+* `observed_tier()` names no static tier, so the live tier is the one left to
+  decide;
+* the run printed `LIVE_ONLY_CONFIRMED_MARKER`, the same mechanically-earned
+  evidence the falsifiability gate requires of a live catch.
+
+Fail-closed on every branch, and the tier-1 proof is still tried first per arm,
+so a spec that has one is unaffected. A live-predicted fixture that a static
+tier DOES catch is a tier-attribution failure in `make falsifiability` exactly
+as before, and reaches neither selector here. The run's final line names which
+proof satisfied each arm.
 
 ## emit-result
 

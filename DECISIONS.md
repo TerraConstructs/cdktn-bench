@@ -7933,3 +7933,72 @@ terraconstructs, the arm and scenario of the killed deploy.
   class changes from `invalid-bypass` to `valid` under the widened evidence
   table, which is a correction of the gate, not of the trial.
 * **The arms and the verifier** are untouched.
+
+## Amendment 39 (2026-09-10) — `grading-proof` accepts a live-tier proof of gradeability — ACCEPTED
+
+**Status: ACCEPTED.** A host gate, enforced in code and covered by tests; no
+live run is needed, since nothing about a trial changes.
+
+### The finding
+
+`make grading-proof` failed a spec outright unless some broken fixture was
+OBSERVED caught at tier 1 on some arm. `specs/lambda-alias-tracks-unpublished-
+latest.yaml` is red in `make ci` for that reason alone: its catch
+`alias-still-serves-the-previous-version` is `predicted_tier_caught: "live"` on
+awscdk and `"0"` on the two Terraform-shaped arms, so no arm owns a tier-1
+fixture and the gate reported "nothing tier-1-graded anywhere".
+
+The missing tier-1 rule cannot be written. On awscdk the poisoned and the
+corrected shape both declare an `AWS::Lambda::Version` and both reference it
+from the alias by `Fn::GetAtt`; the templates differ in exactly one place, the
+CDK-generated logical id of that resource. A cross-resource Rego rule keyed on
+anything but that id is vacuous — it holds of both shapes — and keying on the
+id would couple the oracle to `aws-cdk-lib`'s private hashing and score 0.0 a
+correct solution that publishes versions any other way (the same refusal
+`specs/named-resource-replacement.yaml` already records). The spec is graded;
+it is graded at the live tier, which the host gate cannot run.
+
+### The decision
+
+**The gate is satisfied by a tier-1 proof (unchanged) OR by a live-tier proof.**
+`gates/grading_proof.py::live_tier_proof` offers the second only when ALL of
+the following hold on an arm, each read off the run and never assumed:
+
+* the spec's `verifier.live_check` is `enabled` AND `gating` AND
+  `hand_authored` (`specs/SCHEMA.md` §5) — a non-gating live check costs a
+  trial no reward, so it can prove nothing about grading;
+* a catch applying to that arm declares `predicted_tier_caught: "live"` there,
+  resolved per arm by `oracle_falsifiability.predicted_tier`;
+* that fixture's host-side run produced a graded artifact (its stdout carries
+  the `tier0_pass=` summary) and scored **1.0**, i.e. every static tier — tier
+  0 and, where present, tier 1 — passed it;
+* `observed_tier()` names no static tier, so the live tier is the one left to
+  decide;
+* the run printed `LIVE_ONLY_CONFIRMED_MARKER`, the same mechanically-earned
+  evidence `make falsifiability` already requires of a live catch.
+
+The final line names which proof satisfied each arm (`awscdk via live-tier
+catch`), so a spec cannot quietly change which chain it is proving.
+
+### Why fail-closed is preserved
+
+Every branch above withdraws the proof rather than granting it. A run with no
+tier-0 summary proves nothing — `static_tiers.sh` writes 0.0 for a broken
+toolchain too — and a missing marker means the fixture asserted its tier
+instead of earning it; both yield a per-arm SKIP, and a spec with no proof of
+either kind still exits 1, now with a message naming both accepted kinds. The
+tier-1 selector is tried first per arm, so an arm that has a static proof must
+still produce it. Widening the accepted proof does not widen what counts as
+evidence: the live proof rests on the same marker the falsifiability gate
+demands, and that marker is earned by a mechanical offline confirmation, not by
+a comment.
+
+### What this does NOT change
+
+* **Falsifiability is untouched.** A live-predicted fixture caught by a static
+  tier is still a tier-attribution failure there, and reaches neither selector
+  here.
+* **No spec, generator or verifier behaviour moves**, and no published row is
+  affected — this is a host gate reading runs it already made.
+* **`sfn-jsonata` and `named-resource-replacement` are unaffected**: both have
+  tier-1 fixtures, which still win per arm.
