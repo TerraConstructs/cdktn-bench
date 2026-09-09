@@ -1,5 +1,6 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
+  "scenario_form": "greenfield",
   "equipping_hash": "fd37e9973f6d557319489638c100539724604de99d56d9f7e2e48ba56cd43dac",
   "oracle_version": "oracles@0000000",
   "arm": "awscdk",

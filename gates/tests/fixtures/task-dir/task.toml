@@ -1,0 +1,12 @@
+# Minimal GREENFIELD task.toml for the gate fixtures: no [[steps]] and no
+# [metadata] workspace_seed_sha256, so derive_scenario_form() returns
+# "greenfield". Carries no equipping input -- compute_equipping_hash only
+# reads task.toml for workspace_seed_sha256, so this file leaves every
+# fixture row's equipping_hash unchanged.
+schema_version = "1.1"
+
+[task]
+name = "fixture/task-dir"
+
+[metadata]
+id = "00000000-0000-0000-0000-000000000000"

@@ -365,14 +365,18 @@
     </tbody>
   </table>
   </div>
-  <div class="note warnbox">
-    <p><b>The pooling rule is only half-mechanical, and the gap is stated.</b>
-    <code>task.toml [metadata] workspace_seed_sha256</code> gives every
-    brownfield row a distinct <code>equipping_hash</code>, but
+  <div class="note">
+    <p><b>The pooling rule is mechanical and enforced.</b> Every result row
+    carries a REQUIRED <code>scenario_form</code>, derived from the task dir by
+    <code>gates/emit_result.py::derive_scenario_form</code>, and
     <code>metrics/tokens_to_green.py::cell_key</code> is
-    <code>(arm, model, harness)</code> and carries no form dimension — so
-    <code>make metrics</code> must not be run over a results directory holding
-    more than one form (Amendment 28 §6).</p>
+    <code>(scenario_form, arm, model, harness)</code>. The label is composite —
+    a step-shape base plus a <code>-brownfield</code> suffix when the workspace
+    is seeded — so neither dimension can absorb the other. A results directory
+    holding more than one form gets one section per form,
+    <code>pooling_refused: true</code> and <em>no</em> combined headline; an
+    unlabelled row aborts the run (<code>DECISIONS.md</code> Amendment 36,
+    Amendment 28 §6).</p>
   </div>
 </section>
 

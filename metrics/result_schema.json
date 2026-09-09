@@ -2,12 +2,13 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/cdktn-bench/cdktn-bench/metrics/result_schema.json",
   "title": "cdktn-bench published result row",
-  "description": "One row of the published cdktn-bench results table: one trial's outcome, with everything needed to know whether it can be pooled with another row. REQUIRED fields are schema-required, not optional-by-convention — this is the direct fix for the chant-bench gap documented in docs/chant-bench-diff.md §5, where `run.substrate` was specified in that project's own plan but silently absent from all 122 published result JSONs because nothing enforced it. `equipping_hash` (gates/equipping.py) additionally guards against pooling results produced under a silently-different instruction, skill/MCP/plugin config, or Docker image.",
+  "description": "One row of the published cdktn-bench results table: one trial's outcome, with everything needed to know whether it can be pooled with another row. REQUIRED fields are schema-required, not optional-by-convention \u2014 this is the direct fix for the chant-bench gap documented in docs/chant-bench-diff.md \u00a75, where `run.substrate` was specified in that project's own plan but silently absent from all 122 published result JSONs because nothing enforced it. `equipping_hash` (gates/equipping.py) additionally guards against pooling results produced under a silently-different instruction, skill/MCP/plugin config, or Docker image.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schema_version",
     "equipping_hash",
+    "scenario_form",
     "oracle_version",
     "arm",
     "model",
@@ -24,8 +25,20 @@
   "properties": {
     "schema_version": {
       "type": "string",
-      "const": "1.0",
-      "description": "Version of this result-row schema. Bump on any breaking change to required fields; keep old rows valid against their own recorded schema_version rather than migrating them in place."
+      "const": "1.1",
+      "description": "Version of this result-row schema. Bump on any breaking change to required fields; keep old rows valid against their own recorded schema_version rather than migrating them in place. 1.1 adds the REQUIRED `scenario_form` (ROADMAP.md \u00a76b item 4), so a 1.0 row does not validate as 1.1."
+    },
+    "scenario_form": {
+      "type": "string",
+      "enum": [
+        "greenfield",
+        "brownfield",
+        "multi-step",
+        "multi-step-brownfield",
+        "pre-configured-account",
+        "pre-configured-account-brownfield"
+      ],
+      "description": "REQUIRED. Which SCENARIO FORM this trial's task has -- the coarsest pooling boundary in the benchmark, applied by metrics/tokens_to_green.py BEFORE the train/holdout split and before the (arm, model, harness) cell. Rows of different forms are NEVER pooled into one headline number, at any n, in any estimator. The label is COMPOSITE: a step-shape base (greenfield | multi-step | pre-configured-account) plus a '-brownfield' suffix when the workspace is seeded, so the two independent dimensions can never collapse into one another ('brownfield' is the seeded greenfield base). Derived from the task directory alone by gates/emit_result.py::derive_scenario_form -- never guessed from a spec id -- and a row whose form could not be derived is never emitted: to_result_row refuses it the way it refuses a missing equipping_hash, rather than defaulting to 'greenfield'. The derivation, the base ordering and its justification, and the no-pooling rule are pre-registered in DECISIONS.md Amendment 36 (which rests on Amendment 26 \u00a74, Amendment 27 \u00a72 and Amendment 28 \u00a76)."
     },
     "equipping_hash": {
       "type": "string",
@@ -39,13 +52,21 @@
     },
     "arm": {
       "type": "string",
-      "enum": ["awscdk", "hcl-raw", "terraconstructs"],
+      "enum": [
+        "awscdk",
+        "hcl-raw",
+        "terraconstructs"
+      ],
       "description": "Which of the three shipped arms produced this trial (DECISIONS.md Amendment 2)."
     },
     "split_group": {
       "type": "string",
-      "enum": ["train", "holdout", "unclassified"],
-      "description": "REQUIRED. The trial's scenario's train/holdout split group (generator/split.py::spec_group, specs/split.yaml, prereg §7.1 / DECISIONS.md Amendment 10), as of the time this row was emitted. \"unclassified\" means the scenario had no entry in specs/split.yaml yet (a scenario authored before the next re-split). Fixes the finding that the train/holdout split was unenforceable at the layer that matters -- the published number: metrics/tokens_to_green.py used to pool every row into cells keyed on (arm, model, harness) only, silently mixing train scenarios (the ones equipping is explicitly allowed to be tuned against) with holdout scenarios in one headline metric. Downstream analysis MUST stratify on this field for any headline number -- prereg §7.1 calls the train/holdout boundary \"the methodological safeguard most likely to be skipped and most damaging if it is.\""
+      "enum": [
+        "train",
+        "holdout",
+        "unclassified"
+      ],
+      "description": "REQUIRED. The trial's scenario's train/holdout split group (generator/split.py::spec_group, specs/split.yaml, prereg \u00a77.1 / DECISIONS.md Amendment 10), as of the time this row was emitted. \"unclassified\" means the scenario had no entry in specs/split.yaml yet (a scenario authored before the next re-split). Fixes the finding that the train/holdout split was unenforceable at the layer that matters -- the published number: metrics/tokens_to_green.py used to pool every row into cells keyed on (arm, model, harness) only, silently mixing train scenarios (the ones equipping is explicitly allowed to be tuned against) with holdout scenarios in one headline metric. Downstream analysis MUST stratify on this field for any headline number -- prereg \u00a77.1 calls the train/holdout boundary \"the methodological safeguard most likely to be skipped and most damaging if it is.\""
     },
     "model": {
       "type": "string",
@@ -54,18 +75,25 @@
     },
     "harness": {
       "type": "string",
-      "enum": ["empty", "tuned"],
-      "description": "The empty-vs-tuned equipping axis (prereg §2.2 / build plan Phase 2 item 4): \"empty\" = bare container, loop only; \"tuned\" = arm-specific MCP servers + skills injected."
+      "enum": [
+        "empty",
+        "tuned"
+      ],
+      "description": "The empty-vs-tuned equipping axis (prereg \u00a72.2 / build plan Phase 2 item 4): \"empty\" = bare container, loop only; \"tuned\" = arm-specific MCP servers + skills injected."
     },
     "validity_class": {
       "type": "string",
-      "enum": ["valid", "invalid-bypass", "invalid-infra"],
-      "description": "Output of Gates 2+3 of the three-gate integrity pattern (gates/README.md; values match gates/emit_result.py's VALID/INVALID_BYPASS/INVALID_INFRA exactly, so a gate-emitted record's validity_class always validates as-is). \"valid\" = the audit gate (gates/audit.py) found toolchain evidence in the trial's trajectory and no infra-failure signal was detected. \"invalid-bypass\" = the trial completed but never invoked the arm's own toolchain (e.g. answered via jq/cat instead of tsc/cdk synth/terraform validate) — not a scored failure of the arm, the trial never really tested it. \"invalid-infra\" = an infrastructure failure unrelated to code correctness (OOM, Docker-daemon unreachable, missing/invalid model-auth env var, the trial couldn't even be audited, or the audit gate found the toolchain was invoked but never actually available — command-not-found/SIGKILLed) — takes priority over a bypass verdict. validity_class is orthogonal to reward: an invalid row must never be pooled into a scored headline number, and reward/tokens are only meaningful when validity_class == \"valid\" — read validity_class first. NOTE: Gate 1 (preflight, gates/preflight.py) is intentionally NOT represented here. It is a pre-job check — \"does this arm's toolchain even work in its container, offline\" — that gates whether an arm's trials should run AT ALL, before any task/trial/equipping context exists to attach a schema row to; a preflight failure blocks a whole arm's job rather than producing a per-trial row. Run it with `make gate-preflight` (mk/rails.mk); its JSON report is not a validity_class value and is never expected to appear in a published result row."
+      "enum": [
+        "valid",
+        "invalid-bypass",
+        "invalid-infra"
+      ],
+      "description": "Output of Gates 2+3 of the three-gate integrity pattern (gates/README.md; values match gates/emit_result.py's VALID/INVALID_BYPASS/INVALID_INFRA exactly, so a gate-emitted record's validity_class always validates as-is). \"valid\" = the audit gate (gates/audit.py) found toolchain evidence in the trial's trajectory and no infra-failure signal was detected. \"invalid-bypass\" = the trial completed but never invoked the arm's own toolchain (e.g. answered via jq/cat instead of tsc/cdk synth/terraform validate) \u2014 not a scored failure of the arm, the trial never really tested it. \"invalid-infra\" = an infrastructure failure unrelated to code correctness (OOM, Docker-daemon unreachable, missing/invalid model-auth env var, the trial couldn't even be audited, or the audit gate found the toolchain was invoked but never actually available \u2014 command-not-found/SIGKILLed) \u2014 takes priority over a bypass verdict. validity_class is orthogonal to reward: an invalid row must never be pooled into a scored headline number, and reward/tokens are only meaningful when validity_class == \"valid\" \u2014 read validity_class first. NOTE: Gate 1 (preflight, gates/preflight.py) is intentionally NOT represented here. It is a pre-job check \u2014 \"does this arm's toolchain even work in its container, offline\" \u2014 that gates whether an arm's trials should run AT ALL, before any task/trial/equipping context exists to attach a schema row to; a preflight failure blocks a whole arm's job rather than producing a per-trial row. Run it with `make gate-preflight` (mk/rails.mk); its JSON report is not a validity_class value and is never expected to appear in a published result row."
     },
     "tokens_input": {
       "type": "integer",
       "minimum": 0,
-      "description": "Total prompt/input tokens for the trial (TrialResult.compute_token_cost_totals(), docs/aws-bench-guide.md §6)."
+      "description": "Total prompt/input tokens for the trial (TrialResult.compute_token_cost_totals(), docs/aws-bench-guide.md \u00a76)."
     },
     "tokens_output": {
       "type": "integer",
@@ -81,20 +109,20 @@
       "type": "number",
       "minimum": 0,
       "maximum": 1,
-      "description": "Reward float written by the verifier (docs/aws-bench-guide.md §3: 1.0 = pass, 0.0 = fail; partial credit permitted where a task's verifier defines it). Meaningless when validity_class != \"valid\" — read validity_class first."
+      "description": "Reward float written by the verifier (docs/aws-bench-guide.md \u00a73: 1.0 = pass, 0.0 = fail; partial credit permitted where a task's verifier defines it). Meaningless when validity_class != \"valid\" \u2014 read validity_class first."
     },
     "censored": {
       "type": "boolean",
-      "description": "True if the trial hit the budget cap (MAX_ITERS/MAX_TOKENS) before reaching a natural stop — right-censored for the tokens-to-green metric (build plan Phase 2 item 2), recorded rather than dropped. Independent of validity_class and reward."
+      "description": "True if the trial hit the budget cap (MAX_ITERS/MAX_TOKENS) before reaching a natural stop \u2014 right-censored for the tokens-to-green metric (build plan Phase 2 item 2), recorded rather than dropped. Independent of validity_class and reward."
     },
     "tier1_not_verifiable": {
       "type": "boolean",
-      "description": "REQUIRED, default-false semantics: true iff gates/emit_result.py found a `/logs/verifier/tier1-not-verifiable` marker for this trial (generator/gen.py::build_static_tiers_sh tees it whenever the scenario's tier-1 policy.rego defines a `not_verifiable` rule, specs/SCHEMA.md §4.2.1, that fired against this trial's plan). Fixes a per-arm scoring bias (residual finding, 2026-08-06): a tier-1 value-content check (e.g. an IAM action allowlist) can go plan-time-unknown on the TF arms whenever a correct solution references another resource's provider-computed output — an entirely normal, idiomatic pattern — silently skipping that check while the CFN/awscdk arm (always fully static, no plan concept) has no such gap. Without this field, an identical wildcard-IAM violation scores 0.0 on awscdk but 1.0 on hcl_raw/terraconstructs with nothing in the row to show the tier-1 check was never actually evaluated for those two. Independent of validity_class and reward — always false when no marker was written (including for non-\"valid\" trials, which never run a verifier at all). Downstream analysis MUST flag or segment true rows separately: a reward of 1.0 with tier1_not_verifiable=true is not the same claim of correctness as reward 1.0 with tier1_not_verifiable=false, and pooling them silently reintroduces the exact bias this field exists to surface."
+      "description": "REQUIRED, default-false semantics: true iff gates/emit_result.py found a `/logs/verifier/tier1-not-verifiable` marker for this trial (generator/gen.py::build_static_tiers_sh tees it whenever the scenario's tier-1 policy.rego defines a `not_verifiable` rule, specs/SCHEMA.md \u00a74.2.1, that fired against this trial's plan). Fixes a per-arm scoring bias (residual finding, 2026-08-06): a tier-1 value-content check (e.g. an IAM action allowlist) can go plan-time-unknown on the TF arms whenever a correct solution references another resource's provider-computed output \u2014 an entirely normal, idiomatic pattern \u2014 silently skipping that check while the CFN/awscdk arm (always fully static, no plan concept) has no such gap. Without this field, an identical wildcard-IAM violation scores 0.0 on awscdk but 1.0 on hcl_raw/terraconstructs with nothing in the row to show the tier-1 check was never actually evaluated for those two. Independent of validity_class and reward \u2014 always false when no marker was written (including for non-\"valid\" trials, which never run a verifier at all). Downstream analysis MUST flag or segment true rows separately: a reward of 1.0 with tier1_not_verifiable=true is not the same claim of correctness as reward 1.0 with tier1_not_verifiable=false, and pooling them silently reintroduces the exact bias this field exists to surface."
     },
     "tier1_not_verifiable_detail": {
       "type": "string",
       "minLength": 1,
-      "description": "Free-text detail from the `/logs/verifier/tier1-not-verifiable` marker file itself (the human-readable message a scenario's `not_verifiable` Rego rule produced), present only when tier1_not_verifiable is true. Optional even then — informational only, never schema-enforced."
+      "description": "Free-text detail from the `/logs/verifier/tier1-not-verifiable` marker file itself (the human-readable message a scenario's `not_verifiable` Rego rule produced), present only when tier1_not_verifiable is true. Optional even then \u2014 informational only, never schema-enforced."
     },
     "scenario": {
       "type": "string",
@@ -104,7 +132,7 @@
     "spec_id": {
       "type": "string",
       "minLength": 1,
-      "description": "REQUIRED-in-spirit (not schema-required, to keep old rows valid): the cdktn-bench BENCHMARK spec id (specs/<spec_id>.yaml, e.g. \"apigw-openapi\", \"sfn-jsonata\") this trial's task was generated from -- generator/gen.py::task_dir()'s own `<spec-id>-<arm>` naming convention. Distinct from `scenario` (the aws-bench scenario shard, \"anchor\" or \"anchor-k\", which many benchmark scenarios share) and from `task` (task.toml's own id). This is the field downstream per-scenario grouping (metrics/tokens_to_green.py::build_tier_attribution, _group_by_scenario/by_scenario/scenario_coverage) and prereg §7's paired-by-scenario analysis MUST key on -- `scenario` names a shard many benchmark scenarios share, so it collapses them into a few degenerate groups and cannot support that decomposition. Populated by gates/emit_result.py::to_result_row from its own `spec_id=` kwarg (already resolved there for split_group)."
+      "description": "REQUIRED-in-spirit (not schema-required, to keep old rows valid): the cdktn-bench BENCHMARK spec id (specs/<spec_id>.yaml, e.g. \"apigw-openapi\", \"sfn-jsonata\") this trial's task was generated from -- generator/gen.py::task_dir()'s own `<spec-id>-<arm>` naming convention. Distinct from `scenario` (the aws-bench scenario shard, \"anchor\" or \"anchor-k\", which many benchmark scenarios share) and from `task` (task.toml's own id). This is the field downstream per-scenario grouping (metrics/tokens_to_green.py::build_tier_attribution, _group_by_scenario/by_scenario/scenario_coverage) and prereg \u00a77's paired-by-scenario analysis MUST key on -- `scenario` names a shard many benchmark scenarios share, so it collapses them into a few degenerate groups and cannot support that decomposition. Populated by gates/emit_result.py::to_result_row from its own `spec_id=` kwarg (already resolved there for split_group)."
     },
     "task": {
       "type": "string",
@@ -139,19 +167,32 @@
     "tier_evidence": {
       "type": "object",
       "additionalProperties": false,
-      "description": "Per-catch tier-attribution evidence (docs/iac-abstraction-aws-bench-plan.md Phase 2 item 3 / prereg §4's per-tier catch attribution), read by gates/emit_result.py::read_tier_evidence() from verifier/test-stdout.txt. tier0 is REAL per-assert evidence (each tier-\"0\" structural_assert echoes its own PASS/FAIL independently); tier1_status is a single BUNDLED verdict covering every tier-\"1\" structural_assert for this arm/scenario at once (the oracle itself only ever computes one opa-eval/cfn-guard-validate verdict per bundle -- there is no per-tier-1-catch breakdown to read). Absent entirely when verifier/test-stdout.txt doesn't exist (verifier never ran a static_tiers.sh-shaped test.sh); present with tier0={} and tier1_status=null when the file exists but a toolchain step failed before tier-0/1 ever ran.",
+      "description": "Per-catch tier-attribution evidence (docs/iac-abstraction-aws-bench-plan.md Phase 2 item 3 / prereg \u00a74's per-tier catch attribution), read by gates/emit_result.py::read_tier_evidence() from verifier/test-stdout.txt. tier0 is REAL per-assert evidence (each tier-\"0\" structural_assert echoes its own PASS/FAIL independently); tier1_status is a single BUNDLED verdict covering every tier-\"1\" structural_assert for this arm/scenario at once (the oracle itself only ever computes one opa-eval/cfn-guard-validate verdict per bundle -- there is no per-tier-1-catch breakdown to read). Absent entirely when verifier/test-stdout.txt doesn't exist (verifier never ran a static_tiers.sh-shaped test.sh); present with tier0={} and tier1_status=null when the file exists but a toolchain step failed before tier-0/1 ever ran.",
       "properties": {
         "tier0": {
           "type": "object",
           "description": "structural_assert name -> \"PASS\" | \"FAIL\", for every tier-\"0\" assert this arm/scenario declares and that actually ran before any earlier toolchain step failed.",
           "additionalProperties": {
             "type": "string",
-            "enum": ["PASS", "FAIL"]
+            "enum": [
+              "PASS",
+              "FAIL"
+            ]
           }
         },
         "tier1_status": {
-          "type": ["string", "null"],
-          "enum": ["PASS", "FAIL", "SKIPPED_NO_ASSERTS", "TOOL_MISSING", "SKIPPED_STUB", null],
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "PASS",
+            "FAIL",
+            "SKIPPED_NO_ASSERTS",
+            "TOOL_MISSING",
+            "SKIPPED_STUB",
+            null
+          ],
           "description": "The single bundled tier-1 verdict (generator/gen.py::build_static_tiers_sh's own tier1_status bash variable), or null if the verifier never reached the tier-1 block (an earlier toolchain/tier-0 step already wrote reward.txt and exited)."
         }
       }
@@ -163,7 +204,7 @@
     },
     "validity_reason": {
       "type": "string",
-      "description": "Free-text detail for a non-\"valid\" validity_class (e.g. which preflight check failed, or the OOM/timeout signal observed) — required in spirit whenever validity_class != \"valid\", not schema-enforced since the exact detail is gate-specific."
+      "description": "Free-text detail for a non-\"valid\" validity_class (e.g. which preflight check failed, or the OOM/timeout signal observed) \u2014 required in spirit whenever validity_class != \"valid\", not schema-enforced since the exact detail is gate-specific."
     },
     "timestamp": {
       "type": "string",

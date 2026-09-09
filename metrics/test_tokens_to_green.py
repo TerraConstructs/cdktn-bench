@@ -23,6 +23,8 @@ from pathlib import Path
 import pytest
 from tokens_to_green import (
     MIN_EVENTS_FOR_CONFIDENT_MEDIAN,
+    SOURCE_LABEL_KEY,
+    ScenarioFormMissing,
     Z_95,
     build_report,
     build_tier_attribution,
@@ -42,7 +44,8 @@ from tokens_to_green import (
 # ---------------------------------------------------------------------------
 
 BASE_ROW = {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
+    "scenario_form": "greenfield",
     "equipping_hash": "a" * 64,
     "oracle_version": "oracles@0000000",
     "arm": "awscdk",
@@ -857,3 +860,125 @@ class TestFindRowFiles:
         (tmp_path / "d.txt").write_text("")
         found = {p.name for p in find_row_files(tmp_path)}
         assert found == {"a.json", "b.ndjson", "c.jsonl"}
+
+
+class TestScenarioFormStratification:
+    """Scenario form is the COARSEST pooling boundary: applied before the
+    train/holdout split and before the (arm, model, harness) cell. Rows of
+    different forms measure different tasks -- and, for multi-step, a
+    different metric -- so no estimator may ever see them together
+    (DECISIONS.md Amendments 26 §4, 27 §2, 28 §6).
+    """
+
+    def test_form_leads_the_cell_identity(self):
+        rows = [
+            make_row(scenario_form="greenfield", reward=1.0, tokens_total=1000),
+            make_row(scenario_form="brownfield", reward=1.0, tokens_total=9000),
+        ]
+        report = build_report(rows, [])
+        forms = {c["scenario_form"]: c for c in report["by_scenario_form"]["greenfield"]["cells"]}
+        assert set(forms) == {"greenfield"}
+        assert report["by_scenario_form"]["brownfield"]["cells"][0]["scenario_form"] == "brownfield"
+        # Same arm/model/harness, two forms -> two cells, never one.
+        assert report["by_scenario_form"]["greenfield"]["cells"][0]["n_valid"] == 1
+        assert report["by_scenario_form"]["brownfield"]["cells"][0]["n_valid"] == 1
+
+    def test_single_form_directory_keeps_a_top_level_headline(self):
+        rows = [make_row(scenario_form="multi-step", split_group="holdout", reward=1.0)]
+        report = build_report(rows, [])
+        assert report["scenario_forms"] == ["multi-step"]
+        assert report["pooling_refused"] is False
+        assert len(report["headline_cells"]) == 1
+
+    def test_mixed_directory_refuses_a_combined_headline(self):
+        rows = [
+            make_row(scenario_form="greenfield", split_group="holdout", reward=1.0, tokens_total=1000),
+            make_row(scenario_form="brownfield", split_group="holdout", reward=1.0, tokens_total=9000),
+            make_row(scenario_form="multi-step", split_group="holdout", reward=0.0, tokens_total=5000),
+        ]
+        report = build_report(rows, [])
+        assert report["pooling_refused"] is True
+        assert report["headline_cells"] is None
+        assert report["train_cells"] is None
+        assert report["cells"] is None
+        assert report["split_composition"] is None
+        assert report["tier_attribution"] is None
+        assert report["scenario_forms"] == ["greenfield", "brownfield", "multi-step"]
+        for form in report["scenario_forms"]:
+            assert len(report["by_scenario_form"][form]["headline_cells"]) == 1
+
+    def test_mixed_directory_markdown_has_a_section_per_form_and_no_pooled_headline(self):
+        rows = [
+            make_row(scenario_form="greenfield", split_group="holdout", reward=1.0),
+            make_row(scenario_form="brownfield", split_group="holdout", reward=1.0),
+        ]
+        md = render_markdown(build_report(rows, []))
+        assert "## Scenario form: greenfield" in md
+        assert "## Scenario form: brownfield" in md
+        assert "No combined headline is reported" in md
+        assert md.index("Scenario form: greenfield") < md.index("Scenario form: brownfield")
+
+    def test_forms_are_rendered_in_a_stable_order(self):
+        rows = [
+            make_row(scenario_form="pre-configured-account", reward=1.0),
+            make_row(scenario_form="greenfield", reward=1.0),
+            make_row(scenario_form="brownfield", reward=1.0),
+        ]
+        report = build_report(rows, [])
+        assert report["scenario_forms"] == ["greenfield", "brownfield", "pre-configured-account"]
+
+    def test_a_seeded_row_never_shares_a_cell_with_its_unseeded_base(self):
+        # The seed dimension rides in the label, so multi-step-brownfield and
+        # multi-step are two forms, two cells, no combined headline.
+        rows = [
+            make_row(scenario_form="multi-step", reward=1.0, tokens_total=1000),
+            make_row(scenario_form="multi-step-brownfield", reward=1.0, tokens_total=9000),
+        ]
+        report = build_report(rows, [])
+        assert report["scenario_forms"] == ["multi-step", "multi-step-brownfield"]
+        assert report["pooling_refused"] is True
+        assert report["headline_cells"] is None
+        for form in report["scenario_forms"]:
+            assert len(report["by_scenario_form"][form]["cells"]) == 1
+
+    def test_a_form_outside_the_schema_enum_raises_rather_than_being_appended(self):
+        with pytest.raises(ScenarioFormMissing, match="drifted apart"):
+            build_report([make_row(scenario_form="day-3")], [])
+
+    def test_an_unlabelled_row_is_kept_by_the_loader_for_build_report_to_refuse(
+        self, tmp_path: Path
+    ):
+        bad = make_row()
+        del bad["scenario_form"]
+        (tmp_path / "bad.json").write_text(json.dumps(bad))
+        rows, errors = load_rows(tmp_path)
+        assert errors == []
+        assert len(rows) == 1 and "scenario_form" not in rows[0]
+        assert "bad.json" in rows[0][SOURCE_LABEL_KEY]
+
+    def test_cli_refuses_an_unlabelled_row_with_rc2_and_writes_no_report(
+        self, tmp_path: Path, capsys
+    ):
+        good = make_row()
+        bad = make_row(trial_id="t-unlabelled")
+        del bad["scenario_form"]
+        (tmp_path / "rows.json").write_text(json.dumps([good, bad]))
+        assert main([str(tmp_path)]) == 2
+        assert not (tmp_path / "benchmark.json").exists()
+        assert not (tmp_path / "benchmark.md").exists()
+        err = capsys.readouterr().err
+        assert "rows.json" in err and "scenario_form" in err
+
+    def test_a_schema_rejected_row_is_named_on_stderr(self, tmp_path: Path, capsys):
+        bad = make_row()
+        bad["reward"] = "not-a-number"
+        (tmp_path / "bad.json").write_text(json.dumps(bad))
+        assert main([str(tmp_path)]) == 1
+        assert "bad.json" in capsys.readouterr().err
+
+    def test_build_report_refuses_an_unlabelled_row_rather_than_defaulting(self):
+        bad = make_row()
+        del bad["scenario_form"]
+        bad[SOURCE_LABEL_KEY] = "rows/bad.json"
+        with pytest.raises(ScenarioFormMissing, match="rows/bad.json"):
+            build_report([make_row(), bad], [])

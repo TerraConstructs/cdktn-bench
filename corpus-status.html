@@ -599,32 +599,36 @@ ARM_ORDER = (awscdk, hcl_raw, terraconstructs)</code></pre>
       <tr><td class="id">multi-step</td><td>day-2 change cost on code the agent itself wrote</td><td>spec's top-level <code>steps:</code> list</td><td>Amdt 26 §4 — never pooled with 1-step; Amdt 27 §2 — never pooled with the same scenario's own single-step-form rows</td></tr>
       <tr><td class="id">brownfield</td><td>day-2 change cost on code it did <strong>not</strong> write</td><td>spec's <code>workspace_seed</code> block</td><td>Amdt 28 §6 — never pooled with greenfield</td></tr>
       <tr class="unrun"><td class="id">pre-configured</td><td>—</td><td><code>steps[].pre_invoke.deploy_prior</code></td><td>no rows, and no specs to produce them</td></tr>
+      <tr class="unrun"><td class="id">…-brownfield</td><td>a step-shape base whose workspace is also seeded</td><td>both markers on one spec</td><td>Amdt 36 — the seed dimension rides in the label, so a seeded row never pools with its unseeded base</td></tr>
     </tbody>
   </table>
   </div>
 
-  <div class="note bad">
-    <h3>The metrics tool does not know what form a row is</h3>
-    <p><code>metrics/tokens_to_green.py</code> stratifies by <strong>train/holdout</strong>
-    mechanically — <code>headline_cells</code> is holdout, <code>train_cells</code> is train,
-    <code>split_composition</code> reports the counts including
+  <div class="note">
+    <h3>The metrics tool enforces the form boundary</h3>
+    <p><code>metrics/tokens_to_green.py</code> stratifies by <strong>scenario form
+    first</strong>, then by <strong>train/holdout</strong> — <code>headline_cells</code> is holdout,
+    <code>train_cells</code> is train, <code>split_composition</code> reports the counts including
     <code>n_unclassified_rows</code> so nothing is silently guessed into either side. It also emits a
     per-scenario <code>by_scenario</code> breakdown inside each cell.</p>
-    <p>It does <strong>not</strong> stratify by form. <code>cell_key</code> is
-    <code>(arm, model, harness)</code> and carries no form dimension, and
-    <code>metrics/result_schema.json</code> has no posture, form or stratum field at all — a result
-    row carries <code>arm</code>, <code>split_group</code>, <code>spec_id</code>,
-    <code>scenario</code>, <code>equipping_hash</code> and nothing that names the type. The type
-    label exists only in the spec YAML and never reaches the row. So a headline cell computed over a
-    mixed directory <em>will</em> average the forms together. A brownfield row's
-    <code>equipping_hash</code> does move — <code>workspace_seed_sha256</code> is folded into it —
-    which makes the non-comparability <em>visible</em> without making it <em>enforced</em>.</p>
-    <p><strong>The gap, stated as the repo states it:</strong> until <code>cell_key</code> grows a
-    form dimension — a pre-registration change in its own right, deliberately deferred to land next
-    to the first real multi-step/brownfield results — do not run <code>make metrics</code> over a
-    results directory containing more than one scenario form. Aggregate each stratum separately, by
-    hand. Note also that a multi-step trial's tokens-to-green is <em>cumulative across steps</em>, so
-    it is not denominator-comparable with a single-step figure even within one arm.</p>
+    <p>Every result row carries a REQUIRED <code>scenario_form</code>
+    (<code>metrics/result_schema.json</code>), derived from the task dir by
+    <code>gates/emit_result.py::derive_scenario_form</code>, and <code>cell_key</code> is
+    <code>(scenario_form, arm, model, harness)</code> — so no cell can mix forms. The label is
+    composite: a step-shape base plus a <code>-brownfield</code> suffix when the workspace is
+    seeded, so a seeded multi-step row is <code>multi-step-brownfield</code> and never pools with
+    either base. A brownfield row's <code>equipping_hash</code> also moves —
+    <code>workspace_seed_sha256</code> is folded into it — which makes the non-comparability
+    visible as well as enforced.</p>
+    <p><strong>What running <code>make metrics</code> over a mixed directory does:</strong> one
+    section per form in <code>benchmark.md</code>, a <code>by_scenario_form</code> block in
+    <code>benchmark.json</code>, <code>pooling_refused: true</code>, and <em>no</em> combined
+    headline at all (top-level <code>cells</code>/<code>headline_cells</code>/<code>train_cells</code>/
+    <code>split_composition</code>/<code>tier_attribution</code> are <code>null</code>). A row with
+    no <code>scenario_form</code> aborts the run with exit code 2 and writes nothing. Registered as
+    <code>DECISIONS.md</code> Amendment 36. Note also that a multi-step trial's tokens-to-green is
+    <em>cumulative across steps</em>, so it is not denominator-comparable with a single-step figure
+    even within one arm.</p>
   </div>
 
   <p><strong>Censoring convention.</strong> Every non-green trial is right-censored at the
@@ -1019,7 +1023,6 @@ ARM_ORDER = (awscdk, hcl_raw, terraconstructs)</code></pre>
         <li>Do rbw / escape-hatch / blast radius become pre-registered <strong>headline</strong> columns or exploratory secondary ones? They were found post-hoc — exactly the situation pre-registration exists to discipline.</li>
         <li>Does <code>hcl-modules</code> become a fourth arm, or a treatment on a subset?</li>
         <li>Is fresh-session-per-step pre-registered as <em>modelling maintenance by a different engineer</em>, and does an explicitly-cached variant become an M2 condition?</li>
-        <li>Does <code>cell_key</code> grow a scenario-form dimension, and in which amendment window?</li>
       </ul></div>
   </div>
 </section>

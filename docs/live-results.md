@@ -89,10 +89,10 @@ are separate: a brownfield trial is graded on a change to code the agent did not
 write, a greenfield one on authoring from empty. Averaging them produces a
 number that describes neither.
 
-Note the aggregator does **not** enforce this: its cell key is
-`(arm, model, harness)` and carries no scenario-form dimension, so `make
-metrics` must not be run over a results directory holding more than one form.
-Aggregate each stratum separately until that changes (Amendment 28 §6).
+The aggregator enforces this: every row carries a REQUIRED `scenario_form`,
+`cell_key` is `(scenario_form, arm, model, harness)`, and a results directory
+holding more than one form gets one section per form and **no** combined
+headline at all (`pooling_refused: true`) — Amendment 36, resting on Amendment 28 §6.
 
 This scenario also carries the gating, fail-closed **idempotence** tier
 (Amendment 28 §4). It was first exercised live on 2026-08-26 and returned

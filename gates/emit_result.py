@@ -655,6 +655,38 @@ def _count_failed_steps(step_results: Any) -> int:
     return sum(1 for step_result in step_results if _step_aborted_unverified(step_result))
 
 
+class TaskTomlUnreadable(ValueError):
+    """``<task_dir>/task.toml`` is absent, unreadable or malformed.
+
+    Raised by the single loader below so every caller decides for itself
+    whether that is fatal; nothing in this module parses task.toml twice.
+    """
+
+
+def _load_task_toml(task_dir: str | Path) -> dict[str, Any]:
+    """``<task_dir>/task.toml``, parsed. The ONLY parser of that file in this
+    module -- two parsers of one file can disagree after a schema change.
+
+    Raises TaskTomlUnreadable when it is absent, unreadable or malformed.
+    """
+    path = Path(task_dir) / "task.toml"
+    if not path.is_file():
+        raise TaskTomlUnreadable(f"{path} does not exist")
+    try:
+        return tomllib.loads(path.read_text(errors="replace"))
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise TaskTomlUnreadable(f"{path} is unreadable/malformed ({exc})") from exc
+
+
+def _step_names(data: dict[str, Any]) -> list[str]:
+    """The ``[[steps]]`` names declared by a parsed task.toml (``[]`` when it
+    declares none)."""
+    steps = data.get("steps")
+    if not isinstance(steps, list):
+        return []
+    return [s.get("name") for s in steps if isinstance(s, dict)]
+
+
 def _declared_step_names(task_dir: str | Path) -> list[str] | None:
     """Step names declared by ``<task_dir>/task.toml``'s ``[[steps]]``.
 
@@ -662,17 +694,95 @@ def _declared_step_names(task_dir: str | Path) -> list[str] | None:
     "we could not tell how many steps were declared" stays distinguishable
     from "the task declares no steps".
     """
-    path = Path(task_dir) / "task.toml"
-    if not path.is_file():
-        return None
     try:
-        data = tomllib.loads(path.read_text(errors="replace"))
-    except (OSError, tomllib.TOMLDecodeError):
+        return _step_names(_load_task_toml(task_dir))
+    except TaskTomlUnreadable:
         return None
-    steps = data.get("steps")
-    if not isinstance(steps, list):
-        return []
-    return [s.get("name") for s in steps if isinstance(s, dict)]
+
+
+GREENFIELD = "greenfield"
+BROWNFIELD = "brownfield"
+MULTI_STEP = "multi-step"
+MULTI_STEP_BROWNFIELD = "multi-step-brownfield"
+PRE_CONFIGURED_ACCOUNT = "pre-configured-account"
+PRE_CONFIGURED_ACCOUNT_BROWNFIELD = "pre-configured-account-brownfield"
+
+# The seeded (brownfield) variant of each unseeded base form. The seed
+# dimension is ORTHOGONAL to the step-shape dimension, so it is carried in the
+# label rather than collapsed into it: pooling a seeded row with an unseeded
+# one is what DECISIONS.md Amendment 36 / Amendment 28 §6 forbid.
+_BROWNFIELD_OF = {
+    GREENFIELD: BROWNFIELD,
+    MULTI_STEP: MULTI_STEP_BROWNFIELD,
+    PRE_CONFIGURED_ACCOUNT: PRE_CONFIGURED_ACCOUNT_BROWNFIELD,
+}
+
+
+class ScenarioFormUndeterminable(ValueError):
+    """The task dir carries nothing to derive ``scenario_form`` from.
+
+    Raised rather than defaulted: ``greenfield`` is the most-pooled form, so a
+    silent default would pool an unlabelled row into the headline number the
+    forms exist to keep apart.
+    """
+
+
+def derive_scenario_form(task_dir: str | Path) -> str:
+    """The row's ``scenario_form`` (metrics/result_schema.json), from the task
+    directory alone -- never guessed from a spec id.
+
+    The label is COMPOSITE: a step-shape base, plus a ``-brownfield`` suffix
+    when the workspace is seeded. Both dimensions survive because they are
+    independent -- a multi-step task may also start from a seeded workspace
+    (specs/SCHEMA.md §9 documents exactly that spec), and collapsing either
+    into the other would pool a seeded row with an unseeded one
+    (DECISIONS.md Amendment 36; Amendment 28 §6).
+
+    Base, most specific first:
+
+    1. ``pre-configured-account`` -- some ``steps/<name>/pre_invoke/pre_invoke.sh``
+       exists, i.e. a step declares ``pre_invoke.deploy_prior`` (specs/SCHEMA.md
+       §2.6) and the harness deploys prior-step work into the ACCOUNT before that
+       step's agent runs. Outranks multi-step because it only ever occurs ON a
+       multi-step task and says strictly more about the starting condition -- a
+       refinement of the same dimension, not a second one. The BROWNFIELD seed
+       script lives at ``<task_dir>/pre_invoke/pre_invoke.sh`` (specs/SCHEMA.md
+       §2.7.1) and is deliberately not matched here.
+    2. ``multi-step`` -- ``task.toml`` declares ``[[steps]]``. Its own stratum
+       because it changes what the headline metric IS: a multi-step trial's
+       tokens-to-green is the cumulative across-steps sum, so an N-step and a
+       1-step task are not comparable on it by construction (DECISIONS.md
+       Amendment 26 §4, Amendment 27 §2).
+    3. ``greenfield`` -- neither.
+
+    Seed suffix: ``task.toml [metadata] workspace_seed_sha256`` is set, so the
+    trial starts from a resource-bearing workspace and is graded on a change
+    rather than on authoring (Amendment 28 §6). On the ``greenfield`` base the
+    label is plain ``brownfield``.
+
+    Raises ScenarioFormUndeterminable when ``task.toml`` is absent or malformed:
+    that file is the only evidence, and rows of different forms are never
+    pooled, so an underivable form must stop the row rather than default.
+    """
+    task_dir = Path(task_dir)
+    try:
+        data = _load_task_toml(task_dir)
+    except TaskTomlUnreadable as exc:
+        raise ScenarioFormUndeterminable(
+            f"derive_scenario_form: {exc} -- scenario_form is derivable only "
+            "from the task dir and is never defaulted"
+        ) from exc
+
+    if any((task_dir / "steps").glob("*/pre_invoke/pre_invoke.sh")):
+        base = PRE_CONFIGURED_ACCOUNT
+    elif _step_names(data):
+        base = MULTI_STEP
+    else:
+        base = GREENFIELD
+
+    metadata = data.get("metadata")
+    seeded = isinstance(metadata, dict) and bool(metadata.get("workspace_seed_sha256"))
+    return _BROWNFIELD_OF[base] if seeded else base
 
 
 def read_step_summary(trial_dir: str | Path, task_dir: str | Path) -> dict[str, Any] | None:
@@ -922,6 +1032,16 @@ def build_result_record(
         equipping_hash = None
         equipping_hash_error = str(exc)
 
+    # Recorded best-effort, exactly like equipping_hash above: an underivable
+    # form is carried as null + an error string here and REFUSED by
+    # to_result_row, so it can never reach a published row as a default.
+    try:
+        scenario_form: str | None = derive_scenario_form(task_dir)
+        scenario_form_error = None
+    except ScenarioFormUndeterminable as exc:
+        scenario_form = None
+        scenario_form_error = str(exc)
+
     tier1_not_verifiable, tier1_not_verifiable_detail = read_tier1_not_verifiable(trial_dir)
     tier_evidence = read_tier_evidence(trial_dir)
 
@@ -934,6 +1054,7 @@ def build_result_record(
         "valid": validity_class == VALID,
         "reason": reason,
         "equipping_hash": equipping_hash,
+        "scenario_form": scenario_form,
         "audit": audit,
         "infra": infra,
         # Always attached regardless of validity_class (same reasoning as
@@ -951,6 +1072,8 @@ def build_result_record(
     }
     if equipping_hash_error is not None:
         record["equipping_hash_error"] = equipping_hash_error
+    if scenario_form_error is not None:
+        record["scenario_form_error"] = scenario_form_error
 
     # Multi-step only, attached regardless of validity_class -- an aborted or
     # infra-invalid trial is when "how far did it get" matters most. The
@@ -973,7 +1096,7 @@ def build_result_record(
 
 
 # Must match metrics/result_schema.json's "schema_version" const exactly.
-RESULT_ROW_SCHEMA_VERSION = "1.0"
+RESULT_ROW_SCHEMA_VERSION = "1.1"
 
 
 def to_result_row(
@@ -1033,6 +1156,13 @@ def to_result_row(
             f"({record.get('equipping_hash_error', 'unknown reason')}) — "
             f"a published result row requires one."
         )
+    if record.get("scenario_form") is None:
+        raise ValueError(
+            "to_result_row: record has no scenario_form "
+            f"({record.get('scenario_form_error', 'unknown reason')}) — "
+            "a published result row requires one; rows of different scenario "
+            "forms are never pooled, so it is never defaulted."
+        )
 
     tokens_input = record.get("n_input_tokens") or 0
     tokens_output = record.get("n_output_tokens") or 0
@@ -1052,6 +1182,7 @@ def to_result_row(
     row: dict[str, Any] = {
         "schema_version": RESULT_ROW_SCHEMA_VERSION,
         "equipping_hash": record["equipping_hash"],
+        "scenario_form": record["scenario_form"],
         "oracle_version": oracle_version,
         "arm": record["arm"],
         "model": model,

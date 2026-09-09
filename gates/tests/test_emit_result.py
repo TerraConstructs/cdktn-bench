@@ -20,14 +20,22 @@ import pytest
 
 from gates.emit_result import (
     _extract_score_fields,
+    BROWNFIELD,
+    GREENFIELD,
     INVALID_BYPASS,
     INVALID_INFRA,
+    MULTI_STEP,
+    MULTI_STEP_BROWNFIELD,
+    PRE_CONFIGURED_ACCOUNT,
+    PRE_CONFIGURED_ACCOUNT_BROWNFIELD,
+    ScenarioFormUndeterminable,
     VALID,
     build_result_record,
     classify_infra_failure,
     extract_n_llm_calls,
     read_budget,
     read_tier1_not_verifiable,
+    derive_scenario_form,
     read_tier_evidence,
     resolve_split_group,
     to_result_row,
@@ -937,6 +945,7 @@ class TestToResultRowAutoCensoring:
             "arm": "awscdk",
             "validity_class": VALID,
             "equipping_hash": "a" * 64,
+            "scenario_form": "greenfield",
             "reward": reward,
             "n_input_tokens": tokens_total,
             "n_output_tokens": 0,
@@ -1039,3 +1048,159 @@ def test_transcript_fallback_does_not_override_harbor_totals(tmp_path) -> None:
     out = _extract_score_fields(trial)
     assert out["n_output_tokens"] == 9 and out["cost_usd"] == 0.01
     assert "tokens_source" not in out
+
+
+class TestScenarioFormDerivation:
+    """`scenario_form` (metrics/result_schema.json) derived from the task dir
+    alone. The label is composite: a step-shape base (pre-configured-account,
+    a step shipping pre_invoke/pre_invoke.sh > multi-step, [[steps]] >
+    greenfield) plus a `-brownfield` suffix when [metadata]
+    workspace_seed_sha256 is set. Rows of different forms are never pooled
+    (DECISIONS.md Amendment 36; Amendments 26 §4, 27 §2, 28 §6), so an
+    underivable form stops the row instead of defaulting.
+    """
+
+    def _task_dir(self, tmp_path: Path, name: str, toml: str) -> Path:
+        d = tmp_path / name
+        d.mkdir()
+        (d / "instruction.md").write_text("Do the thing.\n", encoding="utf-8")
+        (d / "task.toml").write_text(toml, encoding="utf-8")
+        return d
+
+    def test_plain_task_is_greenfield(self, tmp_path: Path) -> None:
+        d = self._task_dir(tmp_path, "plain", '[task]\nname = "t"\n')
+        assert derive_scenario_form(d) == GREENFIELD
+
+    def test_steps_make_it_multi_step(self, tmp_path: Path) -> None:
+        d = self._task_dir(
+            tmp_path,
+            "stepped",
+            '[task]\nname = "t"\n\n[[steps]]\nname = "01-a"\n\n[[steps]]\nname = "02-b"\n',
+        )
+        assert derive_scenario_form(d) == MULTI_STEP
+
+    def test_workspace_seed_marker_makes_it_brownfield(self, tmp_path: Path) -> None:
+        d = self._task_dir(
+            tmp_path,
+            "seeded",
+            '[task]\nname = "t"\n\n[metadata]\nworkspace_seed_sha256 = "' + "0" * 64 + '"\n',
+        )
+        assert derive_scenario_form(d) == BROWNFIELD
+
+    def test_deploy_prior_step_makes_it_pre_configured_account(self, tmp_path: Path) -> None:
+        d = self._task_dir(
+            tmp_path,
+            "deploy-prior",
+            '[task]\nname = "t"\n\n[[steps]]\nname = "01-a"\n\n[[steps]]\nname = "02-b"\n',
+        )
+        pre = d / "steps" / "02-b" / "pre_invoke"
+        pre.mkdir(parents=True)
+        (pre / "pre_invoke.sh").write_text("#!/usr/bin/env bash\ncdk deploy\n", encoding="utf-8")
+        assert derive_scenario_form(d) == PRE_CONFIGURED_ACCOUNT
+
+    def test_brownfield_seed_script_at_task_root_is_not_pre_configured_account(
+        self, tmp_path: Path
+    ) -> None:
+        # The BROWNFIELD seed deploy lives at <task_dir>/pre_invoke/pre_invoke.sh
+        # (specs/SCHEMA.md §2.7.1); only a per-STEP one is deploy_prior.
+        d = self._task_dir(
+            tmp_path,
+            "seed-deploy",
+            '[task]\nname = "t"\n\n[metadata]\nworkspace_seed_sha256 = "' + "1" * 64 + '"\n',
+        )
+        (d / "pre_invoke").mkdir()
+        (d / "pre_invoke" / "pre_invoke.sh").write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        assert derive_scenario_form(d) == BROWNFIELD
+
+    def test_steps_and_a_workspace_seed_keep_both_dimensions(self, tmp_path: Path) -> None:
+        # The seed dimension is orthogonal to the step shape: collapsing it
+        # would pool a seeded multi-step row with an unseeded one.
+        d = self._task_dir(
+            tmp_path,
+            "both",
+            '[task]\nname = "t"\n\n[metadata]\nworkspace_seed_sha256 = "'
+            + "2" * 64
+            + '"\n\n[[steps]]\nname = "01-a"\n',
+        )
+        assert derive_scenario_form(d) == MULTI_STEP_BROWNFIELD
+
+    def test_deploy_prior_and_a_workspace_seed_keep_both_dimensions(
+        self, tmp_path: Path
+    ) -> None:
+        d = self._task_dir(
+            tmp_path,
+            "both-deploy-prior",
+            '[task]\nname = "t"\n\n[metadata]\nworkspace_seed_sha256 = "'
+            + "3" * 64
+            + '"\n\n[[steps]]\nname = "01-a"\n\n[[steps]]\nname = "02-b"\n',
+        )
+        pre = d / "steps" / "02-b" / "pre_invoke"
+        pre.mkdir(parents=True)
+        (pre / "pre_invoke.sh").write_text("#!/usr/bin/env bash\ncdk deploy\n", encoding="utf-8")
+        assert derive_scenario_form(d) == PRE_CONFIGURED_ACCOUNT_BROWNFIELD
+
+    def test_every_derived_form_is_in_the_published_schema_enum(self) -> None:
+        # gates/emit_result.py's constants and result_schema.json's closed enum
+        # are one contract: a form the deriver can produce but the schema
+        # rejects makes every row of that form unpublishable.
+        schema = json.loads(
+            (Path(__file__).resolve().parents[2] / "metrics" / "result_schema.json").read_text()
+        )
+        enum = set(schema["properties"]["scenario_form"]["enum"])
+        assert {
+            GREENFIELD,
+            BROWNFIELD,
+            MULTI_STEP,
+            MULTI_STEP_BROWNFIELD,
+            PRE_CONFIGURED_ACCOUNT,
+            PRE_CONFIGURED_ACCOUNT_BROWNFIELD,
+        } == enum
+
+    def test_pre_invoke_artifact_implies_deploy_prior_in_the_spec_model(self) -> None:
+        """`pre-configured-account` is keyed on the mere EXISTENCE of a
+        per-step pre_invoke.sh, which is only sound while deploy_prior is the
+        one action a `steps[].pre_invoke` block can declare. This asserts that
+        invariant from the gates side, so adding a second action breaks here
+        rather than silently mislabelling every task that uses it."""
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "generator"))
+        from spec_model import StepPreInvoke  # noqa: PLC0415
+
+        with pytest.raises(ValueError, match="deploy_prior is false"):
+            StepPreInvoke(deploy_prior=False)
+
+    def test_missing_task_toml_raises_rather_than_defaulting(self, tmp_path: Path) -> None:
+        d = tmp_path / "no-toml"
+        d.mkdir()
+        (d / "instruction.md").write_text("Do the thing.\n", encoding="utf-8")
+        with pytest.raises(ScenarioFormUndeterminable, match="task.toml"):
+            derive_scenario_form(d)
+
+    def test_malformed_task_toml_raises_rather_than_defaulting(self, tmp_path: Path) -> None:
+        d = self._task_dir(tmp_path, "bad-toml", "[task\nname =\n")
+        with pytest.raises(ScenarioFormUndeterminable, match="malformed"):
+            derive_scenario_form(d)
+
+    def test_record_carries_the_form_and_the_row_publishes_it(self, task_dir) -> None:
+        record = build_result_record(
+            trial_dir("awscdk", "genuine"), "awscdk", task_dir, FAKE_DIGEST_IMAGE_REF, {}
+        )
+        assert record["scenario_form"] == GREENFIELD
+        row = to_result_row(
+            record, model="claude-sonnet-5", harness="empty", oracle_version="oracles@fixture"
+        )
+        assert row["scenario_form"] == GREENFIELD
+        assert validate_result(row) == []
+
+    def test_underivable_form_records_an_error_and_refuses_a_row(self, tmp_path: Path) -> None:
+        d = tmp_path / "task-no-toml"
+        d.mkdir()
+        (d / "instruction.md").write_text("Do the thing.\n", encoding="utf-8")
+        record = build_result_record(
+            trial_dir("awscdk", "genuine"), "awscdk", d, FAKE_DIGEST_IMAGE_REF, {}
+        )
+        assert record["scenario_form"] is None
+        assert "task.toml" in record["scenario_form_error"]
+        with pytest.raises(ValueError, match="no scenario_form"):
+            to_result_row(
+                record, model="claude-sonnet-5", harness="empty", oracle_version="oracles@fixture"
+            )

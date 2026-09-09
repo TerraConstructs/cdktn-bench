@@ -7524,3 +7524,77 @@ Evidence to capture: both `reward.txt` values and both
   `[concurrency]` comment keeps its old wording without a live check.
 * **`make falsifiability`/`make grading-proof` stay credential-free** — the
   live tier is not runnable host-side and the gate does not pretend otherwise.
+
+## Amendment 36 (2026-09-09) — `scenario_form` is a REQUIRED row field and the first dimension of `cell_key` — ACCEPTED
+
+**Status: ACCEPTED.** Enforced in code and covered by tests; no live run is
+needed, since the field is derived from the task dir and changes no trial.
+
+### The finding
+
+Three amendments already forbade three poolings — Amendment 26 §4 (an N-step and
+a 1-step task are not comparable on tokens-to-green, whose multi-step form is the
+cumulative across-steps sum), Amendment 27 §2 (one scenario's single-step and
+multi-step forms are different scenarios), Amendment 28 §6 (brownfield is a
+separate stratum from greenfield) — and nothing enforced any of them. A result
+row carried no field naming its form, `cell_key` was `(arm, model, harness)`, and
+the operating instruction was prose: *do not run `make metrics` over a mixed
+directory*. Amendment 28 §6 named growing `cell_key` a form dimension as a
+pre-registration change in its own right and deferred it. This is that change.
+
+### The decision
+
+**Every result row carries a REQUIRED `scenario_form`, and it is the first
+element of `cell_key`.** Rows of different forms are never pooled into one
+headline number, at any n, in any estimator.
+
+* **The label is composite**, because the two dimensions it encodes are
+  independent: a step-shape base — `pre-configured-account` (a step declares
+  `pre_invoke.deploy_prior`, so the harness deployed prior-step work into the
+  account before that step's agent ran) > `multi-step` (`task.toml` declares
+  `[[steps]]`) > `greenfield` — plus a `-brownfield` suffix when `task.toml
+  [metadata] workspace_seed_sha256` is set. On the greenfield base the label is
+  plain `brownfield`. The full enum is `greenfield`, `brownfield`, `multi-step`,
+  `multi-step-brownfield`, `pre-configured-account`,
+  `pre-configured-account-brownfield`.
+* **Why composite rather than a precedence chain.** A flat enum forces a
+  seeded multi-step task to surrender one of its two identities, which pools it
+  with rows Amendment 26 §4 or Amendment 28 §6 keeps apart. The base ordering is
+  a refinement of ONE dimension and so is safe to collapse:
+  `pre-configured-account` occurs only on a multi-step task and states strictly
+  more about the starting condition.
+* **Derived, never declared.** `gates/emit_result.py::derive_scenario_form`
+  reads the task directory only — never the spec id, which an author can rename.
+  A form that cannot be derived (no `task.toml`, or a malformed one) refuses the
+  row exactly as a missing `equipping_hash` does, rather than defaulting to
+  `greenfield`, the most-pooled form.
+* **`pre-configured-account` is keyed on the artifact** — some
+  `steps/<name>/pre_invoke/pre_invoke.sh` exists — which is sound only while
+  `deploy_prior` is the one action a `steps[].pre_invoke` block may declare
+  (`generator/spec_model.py::StepPreInvoke`). `gates/tests/test_emit_result.py`
+  asserts that invariant, so a second step action breaks the label loudly.
+
+### What moves
+
+* `metrics/result_schema.json`: new REQUIRED `scenario_form`; `schema_version`
+  const `1.0` → `1.1`, so a 1.0 row does not validate as 1.1.
+* `metrics/tokens_to_green.py`: `cell_key` is `(scenario_form, arm, model,
+  harness)`; the report gains `scenario_forms`, `by_scenario_form` and
+  `pooling_refused`, and `benchmark.md` gains one section per form. When a
+  directory holds more than one form the top-level `cells`, `headline_cells`,
+  `train_cells`, `split_composition` and `tier_attribution` are all `null` —
+  there is no combined headline to misread. `benchmark.json`'s own
+  `schema_version` moves `1.0` → `1.1`.
+* An unlabelled row aborts the aggregator with exit code 2 and writes no
+  `benchmark.json`/`benchmark.md`: a report missing the very rows that made a
+  directory look single-form is worse than no report.
+
+### What this does NOT change
+
+* **No published row is invalidated.** Existing rows are re-emitted, not
+  re-scored; the field describes the task, not the trial.
+* **No pooling that was allowed becomes forbidden.** The three refusals are
+  Amendments 26 §4, 27 §2 and 28 §6 already; this one only makes them
+  mechanical.
+* **No spec field and no generator behaviour change.** The form is read from
+  the emitted task dir.

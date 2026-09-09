@@ -83,7 +83,24 @@ Then, once: `make test-gates` and `make check`.
 `iac-abstraction-benchmark-prereg.md` §4 (metrics/censoring) and §7 (analysis)
 over a directory of published result rows:
 
-- **(a) censored tokens-to-green per cell** (arm x model x harness):
+- **(0) scenario-form stratification — the coarsest boundary, applied FIRST.**
+  Every row carries a REQUIRED `scenario_form`, derived by
+  `gates/emit_result.py::derive_scenario_form` from the task dir. The label is
+  composite — a step-shape base (`greenfield`/`multi-step`/
+  `pre-configured-account`) plus a `-brownfield` suffix when the workspace is
+  seeded — so the two independent dimensions never collapse into one another.
+  Rows are split on it before the train/holdout split and before the cell, and
+  forms are never pooled: they measure different tasks and, for multi-step, a
+  different metric (`DECISIONS.md` Amendment 36, resting on Amendment 26 §4 —
+  cumulative across-steps tokens-to-green; Amendment 27 §2 — one scenario's
+  single- and multi-step forms are different scenarios; Amendment 28 §6 —
+  brownfield is a separate stratum). Output carries `by_scenario_form` plus one
+  markdown section per form. A directory holding more than one form sets
+  `pooling_refused: true` and reports **no** combined headline (top-level
+  `cells`/`headline_cells`/`train_cells`/`split_composition`/`tier_attribution`
+  are all `null`). A row with no `scenario_form` aborts the run with exit code 2
+  and no output file — no backfill, no default.
+- **(a) censored tokens-to-green per cell** (scenario form x arm x model x harness):
   Kaplan-Meier median + IQR over `tokens_total`, right-censored. A non-green
   trial is "event not yet observed by this many tokens", never dropped.
   Censoring is at the ADMINISTRATIVE budget bound; the own-stopping-point
@@ -96,9 +113,9 @@ over a directory of published result rows:
   `gates/emit_result.py::read_tier_evidence` for the tier-0-real /
   tier-1-bundle-only caveat it inherits); the tier-1 bundle row is joined
   against the spec's declared tier-1 `structural_assert` names when resolvable.
-- **(e) train/holdout stratification** (prereg §7.1): `headline_cells`
-  (holdout-only, the pre-registered primary result) and `train_cells`, never
-  pooled. Each cell also carries `by_scenario`/`scenario_coverage` so a
+- **(e) train/holdout stratification** (prereg §7.1), applied *within* each
+  scenario form: `headline_cells` (holdout-only, the pre-registered primary
+  result) and `train_cells`, never pooled. Each cell also carries `by_scenario`/`scenario_coverage` so a
   paired-by-scenario analysis needs no re-read of raw rows.
 - **(f) `tier1_not_verifiable` accounting** per cell plus a same-shaped
   sensitivity summary with those rows excluded.

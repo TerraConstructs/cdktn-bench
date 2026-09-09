@@ -12,7 +12,8 @@ from validate_result import load_schema, main, validate_result
 EXAMPLE_PATH = Path(__file__).with_name("examples") / "valid-result.json"
 
 VALID_ROW = {
-    "schema_version": "1.0",
+    "schema_version": "1.1",
+    "scenario_form": "greenfield",
     "equipping_hash": "a" * 64,
     "oracle_version": "oracles@0000000",
     "arm": "awscdk",

@@ -9,6 +9,12 @@ schema; a row failing validation is reported and excluded, never silently
 pooled. The per-cell measures, the train/holdout stratification and the prereg
 section each one implements: docs/generator.md "tokens-to-green aggregator".
 
+THE POOLING BOUNDARY: rows are split by `scenario_form` BEFORE the train/holdout
+split and before the (arm, model, harness) cell, and forms are never pooled --
+a results directory holding more than one form gets one section per form and no
+combined headline at all (DECISIONS.md Amendments 26 §4, 27 §2, 28 §6). A row
+without `scenario_form` is named and rejected; it is never backfilled.
+
 THE CENSORING CONVENTION: every non-green trial is right-censored at the
 ADMINISTRATIVE budget bound (--max-tokens, else the max observed tokens_total
 in that cell), never at its own stopping point -- prereg §4's "right-censored
@@ -43,6 +49,35 @@ from metrics.validate_result import _iter_rows, load_schema, validate_result  # 
 # number, since a partial-credit verifier could motivate a different
 # threshold later without touching every call site.
 GREEN_THRESHOLD = 1.0
+
+# Rendered in this order wherever per-form sections are emitted, so a report's
+# section order is stable regardless of which forms a results dir happens to
+# hold. Must stay a superset of result_schema.json's `scenario_form` enum.
+# Every scenario form, in report order: each step-shape base followed by its
+# seeded (`-brownfield`) variant. The seed dimension rides in the label instead
+# of collapsing into the base, so a seeded row can never share a cell with an
+# unseeded one (DECISIONS.md Amendment 36; Amendment 28 §6).
+SCENARIO_FORMS = (
+    "greenfield",
+    "brownfield",
+    "multi-step",
+    "multi-step-brownfield",
+    "pre-configured-account",
+    "pre-configured-account-brownfield",
+)
+
+
+# Where load_rows records which file an unlabelled row came from, so the
+# refusal below can name it: a published row carries no job or trial id.
+SOURCE_LABEL_KEY = "__source_label"
+
+
+class ScenarioFormMissing(ValueError):
+    """A row reached cell aggregation without a `scenario_form`.
+
+    Never backfilled or defaulted: the aggregator's whole no-pooling rule
+    rests on the field, so an unlabelled row stops the run instead.
+    """
 
 # norm.ppf(0.975) to full double precision — the two-sided 95% Wilson
 # z-score. Hardcoded rather than imported from scipy (not a project
@@ -229,7 +264,9 @@ def load_rows(results_dir: Path) -> tuple[list[dict[str, Any]], list[str]]:
     Returns ``(valid_rows, errors)``. A row failing schema validation is
     reported in ``errors`` (with its source label) and excluded from
     ``valid_rows`` — never silently pooled into a headline number, same
-    discipline ``metrics/validate_result.py``'s own CLI enforces.
+    discipline ``metrics/validate_result.py``'s own CLI enforces. The one
+    exception is a row with no ``scenario_form``: it is kept so that
+    ``build_report`` can refuse the whole run over it.
     """
     schema = load_schema()
     rows: list[dict[str, Any]] = []
@@ -244,6 +281,16 @@ def load_rows(results_dir: Path) -> tuple[list[dict[str, Any]], list[str]]:
             if not isinstance(row, dict):
                 errors.append(f"{label}: top-level value must be a JSON object")
                 continue
+            # An unlabelled row is KEPT, not dropped: build_report is the one
+            # refusal point and raises ScenarioFormMissing on it, so the run
+            # dies without writing a report rather than publishing a headline
+            # that silently lost the rows whose absence made it look poolable.
+            if not row.get("scenario_form"):
+                # The source label rides along under a reserved key so the
+                # refusal can NAME the file: a published row carries no
+                # job/trial id, so nothing else in it identifies the offender.
+                rows.append({**row, SOURCE_LABEL_KEY: label})
+                continue
             row_errors = validate_result(row, schema)
             if row_errors:
                 errors.append(f"{label}: " + "; ".join(row_errors))
@@ -257,8 +304,19 @@ def load_rows(results_dir: Path) -> tuple[list[dict[str, Any]], list[str]]:
 # ---------------------------------------------------------------------------
 
 
-def cell_key(row: dict[str, Any]) -> tuple[str, str, str]:
-    return row["arm"], row["model"], row["harness"]
+def cell_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
+    """A cell's full identity, scenario_form FIRST.
+
+    The form leads because it is the coarsest pooling boundary: two rows of
+    different forms measure different tasks (and, for multi-step, a different
+    metric), so no estimator may see them in one cell.
+    """
+    if not row.get("scenario_form"):
+        raise ScenarioFormMissing(
+            "cell_key: row carries no scenario_form -- refusing to pool it "
+            "into any cell"
+        )
+    return row["scenario_form"], row["arm"], row["model"], row["harness"]
 
 
 def _order_stats(values: list[float]) -> dict[str, float | int] | None:
@@ -704,6 +762,7 @@ def _group_by_scenario(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, A
 
 
 def _cell_report(
+    scenario_form: str,
     arm: str,
     model: str,
     harness: str,
@@ -712,11 +771,11 @@ def _cell_report(
     admin_max_tokens: float | None,
     admin_max_iters: float | None,
 ) -> dict[str, Any]:
-    """One (arm, model, harness) cell's stat block, PLUS a per-scenario
-    breakdown.
+    """One (scenario_form, arm, model, harness) cell's stat block, PLUS a
+    per-scenario breakdown.
 
-    cell_key() groups by (arm, model, harness) only, discarding scenario
-    identity, which leaves prereg §7's primary test ("tokens-to-green,
+    cell_key() discards scenario identity, which leaves prereg §7's primary
+    test ("tokens-to-green,
     tuned-CDK vs empty-HCL, per model, PAIRED BY SCENARIO") and its
     main-effects decomposition underivable from this script's output.
     ``scenario_coverage`` (counts) and ``by_scenario`` (a full
@@ -730,17 +789,24 @@ def _cell_report(
         s: summarize_cell(srows, admin_max_tokens=admin_max_tokens, admin_max_iters=admin_max_iters)
         for s, srows in sorted(scenario_groups.items())
     }
-    return {"arm": arm, "model": model, "harness": harness, **summary}
+    return {
+        "scenario_form": scenario_form,
+        "arm": arm,
+        "model": model,
+        "harness": harness,
+        **summary,
+    }
 
 
 def _cells_for(
     rows: list[dict[str, Any]], *, admin_max_tokens: float | None, admin_max_iters: float | None
 ) -> list[dict[str, Any]]:
-    grouped: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    grouped: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
     for row in rows:
         grouped.setdefault(cell_key(row), []).append(row)
     return [
         _cell_report(
+            scenario_form,
             arm,
             model,
             harness,
@@ -748,8 +814,57 @@ def _cells_for(
             admin_max_tokens=admin_max_tokens,
             admin_max_iters=admin_max_iters,
         )
-        for (arm, model, harness), cell_rows in sorted(grouped.items())
+        for (scenario_form, arm, model, harness), cell_rows in sorted(grouped.items())
     ]
+
+
+def _stratified_block(
+    rows: list[dict[str, Any]], *, max_iters: int | None, max_tokens: int | None
+) -> dict[str, Any]:
+    """The train/holdout stratification for ONE scenario form's rows.
+
+    `headline_cells` (holdout only) is the pre-registered primary result;
+    `train_cells` are the scenarios tuned equipping may be developed against
+    and are never merged into it; `cells` pools all three split groups and is
+    diagnostic only (prereg §7.1). Every cell here shares one scenario_form --
+    build_report never hands this function a mixed set.
+    """
+    holdout_rows = [r for r in rows if r.get("split_group") == "holdout"]
+    train_rows = [r for r in rows if r.get("split_group") == "train"]
+    unclassified_rows = [r for r in rows if r.get("split_group") not in ("holdout", "train")]
+    return {
+        "cells": _cells_for(rows, admin_max_tokens=max_tokens, admin_max_iters=max_iters),
+        "headline_cells": _cells_for(
+            holdout_rows, admin_max_tokens=max_tokens, admin_max_iters=max_iters
+        ),
+        "train_cells": _cells_for(
+            train_rows, admin_max_tokens=max_tokens, admin_max_iters=max_iters
+        ),
+        "split_composition": {
+            "n_holdout_rows": len(holdout_rows),
+            "n_train_rows": len(train_rows),
+            "n_unclassified_rows": len(unclassified_rows),
+        },
+    }
+
+
+def _forms_present(rows: list[dict[str, Any]]) -> list[str]:
+    """The scenario forms in `rows`, in SCENARIO_FORMS order.
+
+    A form outside SCENARIO_FORMS raises rather than sorting itself onto the
+    end: load_rows schema-validates every row against result_schema.json's
+    closed enum, so an unknown form means the two lists have drifted apart and
+    the report's per-form sections would silently omit it.
+    """
+    seen = {r["scenario_form"] for r in rows if r.get("scenario_form")}
+    unknown = sorted(seen - set(SCENARIO_FORMS))
+    if unknown:
+        raise ScenarioFormMissing(
+            "_forms_present: row(s) carry a scenario_form outside "
+            f"SCENARIO_FORMS: {unknown} -- metrics/tokens_to_green.py and "
+            "metrics/result_schema.json's enum have drifted apart"
+        )
+    return [f for f in SCENARIO_FORMS if f in seen]
 
 
 def build_report(
@@ -759,36 +874,77 @@ def build_report(
     max_iters: int | None = None,
     max_tokens: int | None = None,
 ) -> dict[str, Any]:
-    cell_reports = _cells_for(rows, admin_max_tokens=max_tokens, admin_max_iters=max_iters)
+    missing = [r for r in rows if not r.get("scenario_form")]
+    if missing:
+        labels = [
+            r.get(SOURCE_LABEL_KEY)
+            or json.dumps({k: r.get(k) for k in ("arm", "model", "harness")}, sort_keys=True)
+            for r in missing
+        ]
+        raise ScenarioFormMissing(
+            f"build_report: {len(missing)} row(s) carry no scenario_form: "
+            + "; ".join(labels)
+            + " -- re-emit them with gates/emit_result.py; the form is never "
+            "backfilled and forms are never pooled"
+        )
 
-    # split_group stratification. `cells` above pools every split_group into
-    # one number, which is exactly the boundary prereg §7.1 calls "the
-    # methodological safeguard most likely to be skipped and most damaging if
-    # it is". `headline_cells` (holdout only) is the PRE-REGISTERED primary
-    # result; `train_cells` (the scenarios equipping may be tuned against) is
-    # reported separately and never merged into it. `cells` stays pooled, for
-    # reference/diagnostic use only -- it is NOT the headline.
-    holdout_rows = [r for r in rows if r.get("split_group") == "holdout"]
-    train_rows = [r for r in rows if r.get("split_group") == "train"]
-    unclassified_rows = [r for r in rows if r.get("split_group") not in ("holdout", "train")]
+    forms = _forms_present(rows)
+    by_form = {
+        form: {
+            "n_rows": sum(1 for r in rows if r["scenario_form"] == form),
+            **_stratified_block(
+                [r for r in rows if r["scenario_form"] == form],
+                max_iters=max_iters,
+                max_tokens=max_tokens,
+            ),
+            "tier_attribution": build_tier_attribution(
+                [r for r in rows if r["scenario_form"] == form]
+            ),
+        }
+        for form in forms
+    }
 
-    return {
-        "schema_version": "1.0",
+    report: dict[str, Any] = {
+        "schema_version": "1.1",
         "n_rows_total": len(rows) + len(load_errors),
         "n_rows_loaded": len(rows),
         "n_rows_rejected": len(load_errors),
         "load_errors": load_errors,
         "budget": {"max_iters": max_iters, "max_tokens": max_tokens},
-        "cells": cell_reports,
-        "headline_cells": _cells_for(holdout_rows, admin_max_tokens=max_tokens, admin_max_iters=max_iters),
-        "train_cells": _cells_for(train_rows, admin_max_tokens=max_tokens, admin_max_iters=max_iters),
-        "split_composition": {
-            "n_holdout_rows": len(holdout_rows),
-            "n_train_rows": len(train_rows),
-            "n_unclassified_rows": len(unclassified_rows),
-        },
-        "tier_attribution": build_tier_attribution(rows),
+        "scenario_forms": forms,
+        "by_scenario_form": by_form,
     }
+
+    # The refusal, made structural. Top-level `cells`/`headline_cells`/
+    # `train_cells`/`split_composition`/`tier_attribution` are a single form's
+    # numbers, so they exist ONLY when the directory holds at most one form;
+    # with two or more they are null and `pooling_refused` is true, leaving
+    # by_scenario_form the only place a headline can be read from.
+    report["pooling_refused"] = len(forms) > 1
+    if len(forms) > 1:
+        report["cells"] = None
+        report["headline_cells"] = None
+        report["train_cells"] = None
+        report["split_composition"] = None
+        report["tier_attribution"] = None
+    elif forms:
+        single = by_form[forms[0]]
+        report["cells"] = single["cells"]
+        report["headline_cells"] = single["headline_cells"]
+        report["train_cells"] = single["train_cells"]
+        report["split_composition"] = single["split_composition"]
+        report["tier_attribution"] = single["tier_attribution"]
+    else:
+        report["cells"] = []
+        report["headline_cells"] = []
+        report["train_cells"] = []
+        report["split_composition"] = {
+            "n_holdout_rows": 0,
+            "n_train_rows": 0,
+            "n_unclassified_rows": 0,
+        }
+        report["tier_attribution"] = build_tier_attribution(rows)
+    return report
 
 
 # ---------------------------------------------------------------------------
@@ -849,73 +1005,8 @@ def _render_cell_table(lines: list[str], cells: list[dict[str, Any]]) -> None:
         )
 
 
-def render_markdown(report: dict[str, Any]) -> str:
-    lines: list[str] = []
-    lines.append("# cdktn-bench headline metrics")
-    lines.append("")
-    lines.append(
-        f"Rows loaded: **{report['n_rows_loaded']}** "
-        f"(rejected: {report['n_rows_rejected']})."
-    )
-    budget = report["budget"]
-    lines.append(
-        f"Budget: MAX_ITERS={_fmt(budget['max_iters'])} "
-        f"MAX_TOKENS={_fmt(budget['max_tokens'])}"
-    )
-    split_comp = report["split_composition"]
-    lines.append(
-        f"Split composition: {split_comp['n_holdout_rows']} holdout row(s), "
-        f"{split_comp['n_train_rows']} train row(s), "
-        f"{split_comp['n_unclassified_rows']} unclassified row(s) "
-        "(prereg §7.1 -- unclassified rows are pooled into NEITHER table below)."
-    )
-    lines.append("")
-
-    lines.append("## HEADLINE (holdout scenarios only -- prereg §7.1)")
-    lines.append("")
-    lines.append(
-        "This is the pre-registered primary result. Train-split scenarios "
-        "(the ones tuned equipping is explicitly allowed to be developed "
-        "against) are reported separately below, never pooled in here."
-    )
-    lines.append("")
-    if report["headline_cells"]:
-        _render_cell_table(lines, report["headline_cells"])
-    else:
-        lines.append("_(no holdout-split rows loaded)_")
-    lines.append("")
-
-    lines.append("## Train-split cells (secondary -- equipping-tunable scenarios)")
-    lines.append("")
-    if report["train_cells"]:
-        _render_cell_table(lines, report["train_cells"])
-    else:
-        lines.append("_(no train-split rows loaded)_")
-    lines.append("")
-
-    lines.append("## All rows pooled (train + holdout + unclassified) -- reference only, NOT the headline")
-    lines.append("")
-    _render_cell_table(lines, report["cells"])
-    lines.append("")
-    lines.append(
-        "Tokens-to-green is the Kaplan-Meier censored median/IQR over "
-        "`tokens_total` (event = reward >= 1.0), censored at the "
-        "ADMINISTRATIVE budget bound (explicit MAX_TOKENS, else the max "
-        "observed tokens_total in that cell) for every non-green trial -- "
-        "the pre-registered convention (prereg §4: runs that never reach "
-        "green WITHIN THE BUDGET CAP are right-censored AT THAT CAP, not "
-        "wherever they happened to stop; see metrics/README.md and each "
-        "cell's own `tokens_to_green_km_own_stopping_point` for the "
-        "diagnostic own-stopping-point convention this replaces as the "
-        "headline). `NE` = not estimable (the KM curve never dropped to "
-        "that survival level within this cell's sample); a `(low)` "
-        "annotation flags a reached median computed from fewer than "
-        f"{MIN_EVENTS_FOR_CONFIDENT_MEDIAN} observed events."
-    )
-    lines.append("")
-
-    attribution = report["tier_attribution"]
-    lines.append("## Per-catch tier-attribution table")
+def _render_attribution(lines: list[str], attribution: dict[str, Any], heading: str) -> None:
+    lines.append(heading)
     lines.append("")
     lines.append(
         "Tier \"0\" rows are real per-assert evidence; tier \"1\" rows are a "
@@ -944,6 +1035,108 @@ def render_markdown(report: dict[str, Any]) -> str:
         for e in attribution["no_evidence_failed_trials"]:
             lines.append(f"- {e['scenario']} / {e['arm']}: {e['count']}")
 
+
+def _render_form_section(lines: list[str], form: str, block: dict[str, Any]) -> None:
+    """One scenario form's whole output: its holdout headline, its train
+    cells, its pooled reference table and its tier attribution. Nothing in
+    here is ever combined with another form's section."""
+    split_comp = block["split_composition"]
+    lines.append(f"## Scenario form: {form} ({block['n_rows']} row(s))")
+    lines.append("")
+    lines.append(
+        f"Split composition: {split_comp['n_holdout_rows']} holdout row(s), "
+        f"{split_comp['n_train_rows']} train row(s), "
+        f"{split_comp['n_unclassified_rows']} unclassified row(s) "
+        "(prereg §7.1 -- unclassified rows are pooled into NEITHER table below)."
+    )
+    lines.append("")
+
+    lines.append(f"### HEADLINE ({form}, holdout scenarios only -- prereg §7.1)")
+    lines.append("")
+    lines.append(
+        "This is the pre-registered primary result for this form. Train-split "
+        "scenarios (the ones tuned equipping is explicitly allowed to be "
+        "developed against) are reported separately below, never pooled in here."
+    )
+    lines.append("")
+    if block["headline_cells"]:
+        _render_cell_table(lines, block["headline_cells"])
+    else:
+        lines.append("_(no holdout-split rows loaded)_")
+    lines.append("")
+
+    lines.append(f"### Train-split cells ({form}) (secondary -- equipping-tunable scenarios)")
+    lines.append("")
+    if block["train_cells"]:
+        _render_cell_table(lines, block["train_cells"])
+    else:
+        lines.append("_(no train-split rows loaded)_")
+    lines.append("")
+
+    lines.append(
+        f"### All rows pooled within {form} (train + holdout + unclassified) "
+        "-- reference only, NOT the headline"
+    )
+    lines.append("")
+    _render_cell_table(lines, block["cells"])
+    lines.append("")
+    _render_attribution(lines, block["tier_attribution"], f"### Per-catch tier-attribution table ({form})")
+    lines.append("")
+
+
+def render_markdown(report: dict[str, Any]) -> str:
+    lines: list[str] = []
+    lines.append("# cdktn-bench headline metrics")
+    lines.append("")
+    lines.append(
+        f"Rows loaded: **{report['n_rows_loaded']}** "
+        f"(rejected: {report['n_rows_rejected']})."
+    )
+    budget = report["budget"]
+    lines.append(
+        f"Budget: MAX_ITERS={_fmt(budget['max_iters'])} "
+        f"MAX_TOKENS={_fmt(budget['max_tokens'])}"
+    )
+    forms = report["scenario_forms"]
+    lines.append(
+        "Scenario forms present: "
+        + (", ".join(f"`{f}`" for f in forms) if forms else "_(none)_")
+        + ". Forms are NEVER pooled -- each gets its own section below "
+        "(DECISIONS.md Amendments 26 §4, 27 §2, 28 §6)."
+    )
+    if report["pooling_refused"]:
+        lines.append("")
+        lines.append(
+            "**No combined headline is reported.** This directory holds more "
+            "than one scenario form, which measure different tasks (and, for "
+            "multi-step, a different metric), so a single cross-form number "
+            "would describe none of them. Read each form's own HEADLINE table."
+        )
+    lines.append("")
+
+    if not forms:
+        lines.append("_(no rows loaded)_")
+        lines.append("")
+
+    for form in forms:
+        _render_form_section(lines, form, report["by_scenario_form"][form])
+
+    lines.append(
+        "Tokens-to-green is the Kaplan-Meier censored median/IQR over "
+        "`tokens_total` (event = reward >= 1.0), censored at the "
+        "ADMINISTRATIVE budget bound (explicit MAX_TOKENS, else the max "
+        "observed tokens_total in that cell) for every non-green trial -- "
+        "the pre-registered convention (prereg §4: runs that never reach "
+        "green WITHIN THE BUDGET CAP are right-censored AT THAT CAP, not "
+        "wherever they happened to stop; see metrics/README.md and each "
+        "cell's own `tokens_to_green_km_own_stopping_point` for the "
+        "diagnostic own-stopping-point convention this replaces as the "
+        "headline). `NE` = not estimable (the KM curve never dropped to "
+        "that survival level within this cell's sample); a `(low)` "
+        "annotation flags a reached median computed from fewer than "
+        f"{MIN_EVENTS_FOR_CONFIDENT_MEDIAN} observed events."
+    )
+
     if report["load_errors"]:
         lines.append("")
         lines.append("## Rejected rows")
@@ -962,7 +1155,21 @@ def render_markdown(report: dict[str, Any]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("results_dir", type=Path, help="Directory of result-row files to aggregate (recursive).")
+    parser.add_argument(
+        "results_dir",
+        type=Path,
+        help=(
+            "Directory of result-row files to aggregate (recursive). Rows are "
+            "split by `scenario_form` FIRST -- before the train/holdout split "
+            "and before the (arm, model, harness) cell -- and forms are never "
+            "pooled: a directory holding more than one form gets one section "
+            "per form in benchmark.md/benchmark.json and NO combined headline "
+            "(`pooling_refused: true`, top-level cells/headline_cells null). A "
+            "row with no `scenario_form` is never backfilled: it aborts the "
+            "whole run with exit code 2 and no output file. Any other "
+            "rejected row is named on stderr and exits 1."
+        ),
+    )
     parser.add_argument(
         "--out-dir", type=Path, default=None, help="Where to write benchmark.json/benchmark.md (default: results_dir)."
     )
@@ -984,7 +1191,17 @@ def main(argv: list[str] | None = None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     rows, errors = load_rows(args.results_dir)
-    report = build_report(rows, errors, max_iters=args.max_iters, max_tokens=args.max_tokens)
+    try:
+        report = build_report(rows, errors, max_iters=args.max_iters, max_tokens=args.max_tokens)
+    except ScenarioFormMissing as exc:
+        # No benchmark.json/benchmark.md is written: a report whose top-level
+        # headline is missing the unlabelled rows reads as a clean single-form
+        # result, which is the failure this refusal exists to prevent.
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    for err in errors:
+        print(f"rejected row: {err}", file=sys.stderr)
 
     (out_dir / "benchmark.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     (out_dir / "benchmark.md").write_text(render_markdown(report), encoding="utf-8")

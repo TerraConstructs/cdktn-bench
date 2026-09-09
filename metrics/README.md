@@ -84,9 +84,14 @@ row counts per group, including `n_unclassified_rows` (a scenario with no
 `specs/split.yaml` entry yet) so those rows are visibly excluded from
 both tables rather than silently dropped or guessed into either side.
 
-**SCENARIO-FORM stratification is NOT mechanical — it is on you.** Train/holdout
-above is enforced by the cell lists; **scenario form is not.** Three poolings are
-refused by pre-registration:
+**SCENARIO-FORM stratification is mechanical and is applied FIRST.** Every row
+carries a REQUIRED `scenario_form`, and `cell_key` is
+`(scenario_form, arm, model, harness)`, so no cell can mix forms. The label is
+composite — a step-shape base plus a `-brownfield` suffix when the workspace is
+seeded — because the two dimensions are independent and neither may absorb the
+other: `greenfield`, `brownfield`, `multi-step`, `multi-step-brownfield`,
+`pre-configured-account`, `pre-configured-account-brownfield`. Three poolings
+are refused by pre-registration:
 
 | Do not pool | Rule |
 |---|---|
@@ -94,25 +99,31 @@ refused by pre-registration:
 | single-step-form vs multi-step-form rows of the *same* scenario | Amendment 27 §2 |
 | brownfield vs greenfield | Amendment 28 §6 |
 
-`cell_key` is `(arm, model, harness)` and carries **no form dimension**, so a
-headline cell computed over a mixed row set *will* average the forms together —
-`equipping_hash` notwithstanding, since that field is carried on every row but is
-not part of the cell key. (A brownfield row's `equipping_hash` does move, because
-`task.toml [metadata] workspace_seed_sha256` is folded into it, which makes the
-non-comparability *visible*; it does not make it *enforced*.) Until `cell_key`
-grows a form dimension — a pre-registration change in its own right, deliberately
-deferred to land next to the first real multi-step/brownfield results —
-**do not run `make metrics` over a results directory containing more than one
-scenario form. Aggregate each stratum separately.** `benchmark.json`'s per-cell
-`scenario_coverage`/`by_scenario` breakdown separates them for *reading*, but the
-headline `tokens_to_green` figure does not.
+The derivation, the composite label and the enforcement points are
+pre-registered in `DECISIONS.md` Amendment 36.
+
+The aggregator splits rows by form before the train/holdout split, emits one
+`by_scenario_form` block and one markdown section per form, and — when a results
+directory holds more than one form — sets `pooling_refused: true` and reports
+**no** combined headline at all (top-level `cells`/`headline_cells`/
+`train_cells`/`split_composition`/`tier_attribution` are all `null`). A row with
+no `scenario_form` aborts the whole run with exit code 2 and no output file; it
+is never backfilled.
+
+The form is derived from the task directory by
+`gates/emit_result.py::derive_scenario_form`, never guessed from a spec id: base
+is `pre-configured-account` iff some `steps/<name>/pre_invoke/pre_invoke.sh`
+exists (a step declaring `pre_invoke.deploy_prior`), else `multi-step` iff
+`task.toml` declares `[[steps]]`, else `greenfield`; the `-brownfield` suffix is
+added iff `task.toml [metadata] workspace_seed_sha256` is set (on the greenfield
+base the label is plain `brownfield`).
 
 Note also that a multi-step trial's tokens-to-green is **cumulative across
 steps** — the sum of per-step agent output tokens up to and including the step at
 which the final oracle first passes (Amendment 26 §4) — so it is not
 denominator-comparable with a single-step figure even within one arm.
 
-Per **cell** (`arm` × `model` × `harness`, computed identically whichever
+Per **cell** (`scenario_form` × `arm` × `model` × `harness`, computed identically whichever
 of `cells`/`headline_cells`/`train_cells` it appears in), over that cell's
 `valid` rows only (`validity_class != "valid"` rows are counted under
 `n_excluded_invalid` and never pooled into a headline number — the same
@@ -196,12 +207,10 @@ rule `result_schema.json`'s own `validity_class` field description states):
   sensitivity block itself carries no further nested sensitivity field),
   so a reader can see whether a headline result survives their removal
   rather than silently pooling them in.
-- **`scenario_coverage`** / **`by_scenario`** (2026-08-06 fix, "prereg §7
-  analysis outputs not derivable from `benchmark.json`") — raw row counts
-  per scenario, plus a full `summarize_cell` block computed over each
-  scenario's own subset of the cell's rows. `cell_key()` itself is still
-  `(arm, model, harness)` only (scenario identity was previously
-  discarded entirely at this layer) — this unblocks prereg §7's primary
+- **`scenario_coverage`** / **`by_scenario`** — raw row counts per scenario,
+  plus a full `summarize_cell` block computed over each scenario's own subset
+  of the cell's rows. `cell_key()` carries the scenario FORM but not the
+  scenario identity, so this breakdown is what unblocks prereg §7's primary
   test ("tokens-to-green ... PAIRED BY SCENARIO") and its main-effects
   decomposition without requiring a re-read of raw rows, even though
   `benchmark.md`'s own rendered table still only shows the pooled-per-cell

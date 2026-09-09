@@ -72,6 +72,10 @@ def test_gate_emitted_rows_flow_end_to_end_through_tokens_to_green(tmp_path: Pat
     for key in ("cells", "headline_cells", "train_cells", "split_composition", "tier_attribution"):
         assert key in report, f"benchmark.json is missing expected top-level key {key!r}"
 
+    # Every top-level block is a SINGLE form's numbers, so it exists only
+    # while the fixture rows are all one form; assert that before indexing it.
+    assert report["pooling_refused"] is False
+    assert report["scenario_forms"] == ["greenfield"]
     assert len(report["cells"]) >= 1
     cell = report["cells"][0]
     for key in (
@@ -95,3 +99,30 @@ def test_gate_emitted_rows_flow_end_to_end_through_tokens_to_green(tmp_path: Pat
 
     md = out_md_path.read_text()
     assert "HEADLINE" in md
+
+
+def test_a_mixed_form_directory_refuses_a_combined_headline_end_to_end(tmp_path: Path) -> None:
+    """The refusal, proved through the real CLI rather than over hand-built
+    rows: two forms in one directory means one section per form, no top-level
+    headline anyone can read, and no way to average them together."""
+    rows = generate_rows()
+    assert rows, "generate_rows() produced nothing to test against"
+    for i, (label, row) in enumerate(rows):
+        row = dict(row)
+        row["scenario_form"] = "brownfield" if i % 2 else "greenfield"
+        (tmp_path / f"{label.replace('/', '-')}.json").write_text(json.dumps(row))
+
+    assert main([str(tmp_path)]) == 0
+
+    report = json.loads((tmp_path / "benchmark.json").read_text())
+    assert report["pooling_refused"] is True
+    assert report["scenario_forms"] == ["greenfield", "brownfield"]
+    for key in ("cells", "headline_cells", "train_cells", "split_composition", "tier_attribution"):
+        assert report[key] is None, f"{key} must be null when forms are not pooled"
+    for form in report["scenario_forms"]:
+        assert report["by_scenario_form"][form]["n_rows"] > 0
+
+    md = (tmp_path / "benchmark.md").read_text()
+    assert md.count("## Scenario form:") == 2
+    assert "## Scenario form: greenfield" in md
+    assert "## Scenario form: brownfield" in md
