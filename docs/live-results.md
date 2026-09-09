@@ -193,11 +193,14 @@ accounts, 21 min wall for the whole run.
 | ecs-swappiness (read-only) | awscdk | anchor | 1.0 | 3,850 | 13 | 0.21 | — | — |
 | named-resource-replacement | awscdk | anchor-1 | 1.0 | 2,506 | 10 | 0.12 | pass | converged |
 | named-resource-replacement | hcl_raw | anchor-2 | 1.0 | 3,383 | 8 | 0.12 | pass | converged |
-| named-resource-replacement | terraconstructs | anchor-3 | **0.0** | 5,588 | 23 | 0.32 | fail_stale | not_verifiable |
+| named-resource-replacement | terraconstructs | anchor-3 | **0.0** (invalid-infra) | 5,588 | 23 | 0.32 | fail_stale | not_verifiable |
 
-The terraconstructs 0.0 is an agent failure: it ended its turn to "wait for
-the background deploy", so the apply still held the Terraform state lock when
-the verifier ran. Turn counts here are the transcript's `num_turns`.
+The terraconstructs 0.0 is `invalid-infra`, excluded from every stratum
+(DECISIONS.md Amendment 38, foreground-only agent commands): the harness moved
+the deploy to the background after Claude Code's 120 s Bash timeout, then
+killed it when the agent's turn ended, so the apply still held the Terraform
+state lock when the verifier ran. Turn counts here are the transcript's
+`num_turns`.
 
 ## Amendment 34 promotion run — 2026-09-09 (tier 0.5 retired; TestState live check)
 

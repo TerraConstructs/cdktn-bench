@@ -269,6 +269,67 @@ def test_heredoc_bypass_end_to_end_via_shipped_bypass_fixture(tmp_path) -> None:
     assert report["evidence"] == []
 
 
+def _single_bash_trajectory(command: str) -> dict:
+    return {
+        "steps": [
+            {
+                "step_id": 1,
+                "source": "agent",
+                "tool_calls": [
+                    {"tool_call_id": "c1", "function_name": "Bash", "arguments": {"command": command}}
+                ],
+            }
+        ]
+    }
+
+
+@pytest.mark.parametrize(
+    "arm,command,pattern",
+    [
+        ("awscdk", "npx cdk deploy --require-approval never 2>&1 | tail -80", "cdk synth"),
+        ("awscdk", "cdk diff", "cdk synth"),
+        ("awscdk", "npm run synth 2>&1 | tail -50", "npm run synth"),
+        ("awscdk", "npm run build", "npm run build"),
+        ("awscdk", "pnpm run build", "npm run build"),
+        ("hcl-raw", "terraform apply -auto-approve -input=false", "terraform plan"),
+        ("terraconstructs", "npx cdktn deploy --auto-approve", "cdktn synth"),
+        ("terraconstructs", "cdktn diff", "cdktn synth"),
+        ("terraconstructs", "npm run synth", "npm run synth"),
+    ],
+)
+def test_deploying_and_the_arm_package_scripts_are_toolchain_evidence(
+    arm: str, command: str, pattern: str
+) -> None:
+    """A mutating trial's agent may go straight to deploy, and the task
+    instruction names the arm's own package scripts; neither path may be
+    audited as a bypass of a toolchain it plainly ran."""
+    report = audit_trajectory(_single_bash_trajectory(command), arm)
+    assert report["valid"] is True, f"{command!r} must count as {arm} toolchain evidence"
+    assert {e["pattern"] for e in report["evidence"]} == {pattern}
+
+
+@pytest.mark.parametrize(
+    "arm,command",
+    [
+        ("awscdk", "npm run test"),
+        ("awscdk", "npm run cdk"),
+        ("awscdk", "npm run"),
+        ("awscdk", "cdk bootstrap"),
+        ("awscdk", "npx cdktn deploy"),
+        ("hcl-raw", "npm run synth"),
+        ("hcl-raw", "terraform init"),
+        ("terraconstructs", "npm run build"),
+        ("terraconstructs", "npx cdk deploy"),
+    ],
+)
+def test_other_package_scripts_and_foreign_deploys_are_not_evidence(arm: str, command: str) -> None:
+    """Only the scripts the arm's package.json defines count, and only for
+    that arm; an agent-defined script or another arm's deploy does not."""
+    report = audit_trajectory(_single_bash_trajectory(command), arm)
+    assert report["valid"] is False, f"{command!r} must NOT count as {arm} toolchain evidence"
+    assert report["evidence"] == []
+
+
 def test_unknown_arm_raises() -> None:
     with pytest.raises(ValueError):
         audit_trajectory({"agent": {}, "steps": []}, "pulumi")

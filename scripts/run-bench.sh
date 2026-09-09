@@ -268,6 +268,16 @@ fi
 # threshold is recorded to budget.json below, which is the value
 # gates/emit_result.py / metrics/tokens_to_green.py actually read.
 [ -n "$MAX_TOKENS" ] && ARGS+=(--ae "CDKTN_BENCH_MAX_TOKENS=$MAX_TOKENS")
+# Harbor enables Claude Code's auto-backgrounding of slow commands, but it runs
+# the CLI in print mode, where the turn ends when the model stops and every
+# background task is killed with it, so a deploy moved to the background can
+# never be awaited. Agent commands therefore run in the foreground, with a
+# Bash timeout long enough for a real deploy (Claude Code's default is 120 s;
+# a deploy here takes minutes) inside the 3600 s agent phase. DECISIONS.md
+# Amendment 38, foreground-only agent commands. These come after Harbor's own
+# env in the merge, so they win.
+ARGS+=(--ae "FORCE_AUTO_BACKGROUND_TASKS=0" --ae "ENABLE_BACKGROUND_TASKS=0")
+ARGS+=(--ae "BASH_DEFAULT_TIMEOUT_MS=900000" --ae "BASH_MAX_TIMEOUT_MS=1800000")
 # bash 3.2 (macOS system bash) treats "${EXTRA[@]}" on a genuinely empty
 # array as an unbound-variable error under `set -u`; guard with a length
 # check instead of relying on the bash-4.4+ ${arr[@]:-} safe-expansion.

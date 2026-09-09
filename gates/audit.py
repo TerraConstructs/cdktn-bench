@@ -86,17 +86,28 @@ from typing import Any
 # makes "cdktn synth" (terraconstructs) never satisfy awscdk's "cdk synth"
 # pattern, and makes "cdk-synth-notes.txt" (a filename, not a command) never
 # satisfy it either.
+#
+# Deploying is evidence too: `cdk deploy`, `terraform apply` and `cdktn deploy`
+# synthesize or plan on the way, so a mutating trial whose agent goes straight
+# to deploy has exercised the arm's toolchain. So has a run of the arm's own
+# package.json scripts (`npm run build` is tsc, `npm run synth` is the arm's
+# synth), which the task instruction names; `_peel_wrappers` exposes them as
+# an `npm-run:<script>` argv[0] so a script is never mistaken for a binary.
+_NPM_SCRIPT_PREFIX = "npm-run:"
 ARM_TOKEN_PATTERNS: dict[str, list[tuple[str, str, frozenset[str] | None]]] = {
     "awscdk": [
         ("tsc", "tsc", None),
-        ("cdk synth", "cdk", frozenset({"synth"})),
+        ("cdk synth", "cdk", frozenset({"synth", "deploy", "diff"})),
+        ("npm run build", _NPM_SCRIPT_PREFIX + "build", None),
+        ("npm run synth", _NPM_SCRIPT_PREFIX + "synth", None),
     ],
     "hcl-raw": [
         ("terraform validate", "terraform", frozenset({"validate"})),
-        ("terraform plan", "terraform", frozenset({"plan"})),
+        ("terraform plan", "terraform", frozenset({"plan", "apply"})),
     ],
     "terraconstructs": [
-        ("cdktn synth", "cdktn", frozenset({"synth"})),
+        ("cdktn synth", "cdktn", frozenset({"synth", "deploy", "diff"})),
+        ("npm run synth", _NPM_SCRIPT_PREFIX + "synth", None),
     ],
 }
 
@@ -385,6 +396,9 @@ def _peel_wrappers(tokens: list[str]) -> list[str]:
             tokens = tokens[2:]
             if subcommand == "dlx" and tokens:
                 tokens[0] = _resolve_npm_package_token(tokens[0])
+            elif subcommand == "run" and tokens:
+                tokens[0] = _NPM_SCRIPT_PREFIX + tokens[0]
+                return tokens
             changed = True
             continue
         if head in _MULTI_ARG_WRAPPERS:

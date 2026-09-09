@@ -132,7 +132,11 @@ trial with a validity class and refuse to emit a score row for an invalid one
 * `valid` — the audit gate (`gates/audit.py`) found toolchain evidence and no
   infra-failure signal was detected.
 * `invalid-bypass` — the trial completed but never invoked the arm's toolchain.
-  Not a scored failure of the arm; the trial never really tested it.
+  Not a scored failure of the arm; the trial never really tested it. Evidence
+  is a synth, plan, diff or deploy of the arm's own tool (`tsc`, `cdk`,
+  `terraform`, `cdktn`) or one of the arm's package.json scripts (`npm run
+  build`, `npm run synth`); the table is `ARM_TOKEN_PATTERNS` in
+  `gates/audit.py`.
 * `invalid-infra` — an infrastructure failure (OOM, Docker daemon unreachable,
   missing/invalid model-auth env var) was found in the trial's own
   harness-owned logs, OR the audit gate found the toolchain was invoked but

@@ -7272,7 +7272,7 @@ claude-sonnet-5, k=1, `-n 4`, `max_turns=100`; 4 trials, 0 exceptions,
 | ecs-swappiness (read-only) awscdk | anchor / 886312446417 | 1.0 | 3,850 | 13 | 0.21 | 73 | — | — | none |
 | named-resource-replacement awscdk | anchor-1 / 182715287880 | 1.0 | 2,506 | 10 | 0.12 | 112 | pass | converged | ok, 10 min 01 s |
 | named-resource-replacement hcl_raw | anchor-2 / 218484443800 | 1.0 | 3,383 | 8 | 0.12 | 71 | pass | converged | ok, 10 min 28 s |
-| named-resource-replacement terraconstructs | anchor-3 / 015454941261 | **0.0** | 5,588 | 23 | 0.32 | 235 | fail_stale | not_verifiable | ok, 10 min 18 s |
+| named-resource-replacement terraconstructs | anchor-3 / 015454941261 | **0.0** (invalid-infra) | 5,588 | 23 | 0.32 | 235 | fail_stale | not_verifiable | ok, 10 min 18 s |
 
 The three mutating arms started within one minute of each other (19:09-19:10)
 and their resets overlapped (19:17-19:35), which is the concurrency the split
@@ -7280,16 +7280,17 @@ buys: under one scenario the same three trials would have serialized behind
 three ~10 min resets. The read-only trial ran and finished on `anchor` while
 the mutating shards were busy.
 
-**The 0.0 row is an agent failure, not a shard defect.** The terraconstructs
-agent started its deploy, then ended its turn with "I'll wait for the
-background deploy task notification or the scheduled wakeup before
-continuing." A harness trial ends when the agent's turn ends, so the apply was
-still holding the Terraform state lock when the verifier ran (`TF-PLAN
-FAILED` on the lock, `live_check` `fail_stale`, seed identity unmoved). The
-row is valid and scores 0.0 for the reason the oracle states. It is also a
-finding worth its own hypothesis: an agent that treats a deploy as a
-background job it can await later has misjudged the harness's turn semantics,
-and that misjudgement is paid in tokens-to-green.
+**The 0.0 row is `invalid-infra`, not a shard defect and not an agent
+result** (reclassified under Amendment 38, foreground-only agent commands).
+The terraconstructs deploy ran past Claude Code's 120 s Bash timeout and the
+harness moved it to the background, as the harness's own configuration forces;
+the agent waited for the completion notice, its turn ended, and print mode
+killed the background task with it. The apply was still holding the Terraform
+state lock when the verifier ran (`TF-PLAN FAILED` on the lock, `live_check`
+`fail_stale`, seed identity unmoved). The harness offered a way of running the
+deploy that it could not honour, so the row measures the harness and is
+excluded from every stratum. The shard behaved correctly throughout: the reset
+after it succeeded in 10 min 18 s.
 
 ### The finding
 
@@ -7695,3 +7696,85 @@ headline number, at any n, in any estimator.
   mechanical.
 * **No spec field and no generator behaviour change.** The form is read from
   the emitted task dir.
+
+## Amendment 38 (2026-09-09) — agent commands run in the foreground; deploying is toolchain evidence — DRAFT
+
+**Status: DRAFT.** In code; promotion needs the live trial described below.
+
+### The finding
+
+**The harness offered the agent a way of running its deploy that the harness
+itself could not honour.** Harbor's Claude Code adapter sets
+`FORCE_AUTO_BACKGROUND_TASKS=1` and `ENABLE_BACKGROUND_TASKS=1` in the CLI
+environment, and runs the CLI in print mode. Any Bash call that outlives the
+tool's 120 s default timeout is moved to a background task with the message
+"You will be notified when it completes." In print mode the process exits when
+the model ends its turn, and every background task is killed with it, so that
+notification can never arrive.
+
+Across the jobs on record four trials had a deploy moved to the background. In
+three the agent polled the task in the foreground until it finished, so the
+deploy completed inside the turn. In the fourth (`named-resource-replacement`
+terraconstructs, Amendment 33's promotion run) the agent did what the message
+invited — scheduled a wake-up and ended its turn — and the apply was killed
+mid-flight, still holding the Terraform state lock when the verifier ran. That
+row scored 0.0 and was written up as an agent failure. It was not: the agent
+used the tooling as configured, and the configuration was wrong for a print-mode
+run. Steering the agent away from a feature the harness advertises would be a
+prompt-level patch for a harness defect, and prompt-level steering is the last
+resort here.
+
+A second, quieter mis-measurement surfaced while re-deriving that run's rows:
+the audit gate credited only `tsc`, `cdk synth`, `terraform validate`,
+`terraform plan` and `cdktn synth` as toolchain evidence. The awscdk trial of
+the same run went `npm run synth` then `npx cdk deploy` and passed its live
+check, and the gate audited it `invalid-bypass` — a trial that deployed,
+classed as one that never touched the toolchain.
+
+### The decision
+
+**Agent commands run in the foreground, with a timeout long enough for a real
+deploy.** `scripts/run-bench.sh` passes, after Harbor's own environment so they
+win the merge:
+
+| variable | value | effect |
+| --- | --- | --- |
+| `FORCE_AUTO_BACKGROUND_TASKS` | `0` | a slow command is never moved to the background |
+| `ENABLE_BACKGROUND_TASKS` | `0` | the agent cannot start one either |
+| `BASH_DEFAULT_TIMEOUT_MS` | `900000` | a Bash call may run 15 min before it is killed, instead of 2 |
+| `BASH_MAX_TIMEOUT_MS` | `1800000` | the agent may ask for up to 30 min, inside the 3600 s agent phase |
+
+A deploy now blocks its Bash call until it finishes, which is what a
+tokens-to-green measurement wants: the turn that deploys is the turn that
+learns the outcome. Nothing is said to the agent about any of this.
+
+**Deploying is toolchain evidence.** `gates/audit.py` credits `cdk
+synth|deploy|diff`, `terraform validate|plan|apply`, `cdktn synth|deploy|diff`,
+and the arm's own package.json scripts (`npm run build`, `npm run synth`),
+which the task instruction names. Another arm's tool, an agent-defined script
+and `cdk bootstrap` still count for nothing; `gates/tests/test_audit.py` pins
+both lists.
+
+**The Amendment 33 terraconstructs row is `invalid-infra`.** It measured the
+harness, not the arm or the agent, and is excluded from every stratum; the
+table and paragraph in Amendment 33 and `docs/live-results.md` say so. No
+mechanical detector for "the agent ended its turn with a task still running" is
+built: with backgrounding off the condition cannot recur, and the trajectory of
+the one occurrence is the record.
+
+### What promotes this
+
+A mutating trial, agent on the default Bash timeout, whose deploy runs longer
+than 120 s inside one foreground Bash call and returns to the agent, followed by
+a `live_check` `pass`. First candidate: `named-resource-replacement`
+terraconstructs, the arm and scenario of the killed deploy.
+
+### What this does NOT change
+
+* **Tokens-to-green** is measured exactly as before; a foreground deploy costs
+  no output tokens while it runs.
+* **No published 1.0 moves.** The three passing rows of Amendment 33's run were
+  produced with deploys that completed inside the turn; the awscdk row's audit
+  class changes from `invalid-bypass` to `valid` under the widened evidence
+  table, which is a correction of the gate, not of the trial.
+* **The arms and the verifier** are untouched.
