@@ -1315,19 +1315,15 @@ def build_task_toml(spec: Spec, arm: Arm, task_uuid: str) -> str:
         concurrency_comment = (
             "# Static-tier verifier only (synth/plan, no deploy); no AWS mutation\n"
             "# happens in agent, verifier, pre_invoke, or post_invoke, so read-only\n"
-            "# trials of the anchor scenario can co-run (verifier.live_check.enabled\n"
+            "# trials on the same shard can co-run (verifier.live_check.enabled\n"
             "# is false for this scenario -- see specs/SCHEMA.md §5)."
         )
     else:
         concurrency_comment = (
-            "# MUTATING: this scenario's agent phase performs real AWS deploys\n"
-            "# (verifier.live_check.enabled is true -- SCHEMA.md §5 Slice G\n"
-            "# amendment). Per aws_bench/task/aws_trial.py's own\n"
-            "# ConcurrencyMode.MUTATING handling, this triggers a scenario-account\n"
-            "# reset after this trial -- see DECISIONS.md \"Slice G\" for the\n"
-            "# cleanup contract this scenario's solve.sh/live_check.py also\n"
-            "# implement directly (defense in depth, not reliance on the\n"
-            "# framework sweep alone; docs/slice-g-recon.md §4)."
+            "# MUTATING: the agent phase deploys into the shard account. aws-bench\n"
+            "# holds the shard's exclusive admission gate for the trial and resets\n"
+            "# the account afterwards (aws_bench/task/aws_trial.py,\n"
+            "# ConcurrencyMode.MUTATING); nothing in this task tears down by hand."
         )
     # DECISIONS.md Amendment 26 §3: `final`, never Harbor's `mean` default.
     # With `mean`, a trial that fails step 1 and is aborted by the min_reward
@@ -1504,22 +1500,11 @@ def build_task_toml(spec: Spec, arm: Arm, task_uuid: str) -> str:
         f"timeout_sec = {900.0 if live.enabled else 300.0}",
     ] + (
         [
-            "# Slice G (apigw-redeploy, 2026-08-06; docs/slice-g-recon.md gap 4):",
-            f"# read by the generated tests/test.sh ({live.module}'s sibling,"
-            " gen.py::build_test_sh) to decide whether",
-            "# to invoke live_check.py at all. CONFIRMED (2026-08-07, benchmark-",
-            "# integrity review finding G3) against real aws-bench source",
-            "# (harbor/verifier/verifier.py's verify(): merged_env includes",
-            "# self.task.config.verifier.env -- i.e. this [verifier] env table,",
-            "# parsed straight off this key -- then",
-            "# self.environment.exec(command=command, env=env) -- this genuinely",
-            "# reaches tests/test.sh's own process environment in a real trial,",
-            "# not a documented no-op.",
-            # BROWNFIELD idempotence tier (SCHEMA.md §5.1): same [verifier] env
-            # channel, same fail-closed AND semantics as live_check's gating.
-            # Appended (never substituted) so a spec that turns idempotence on
-            # keeps its live_check wiring byte-identical; absent entirely for
-            # every spec that leaves verifier.idempotence disabled.
+            "# Harbor merges this table into the verifier process environment",
+            "# (harbor/verifier/verifier.py::verify), so it is the channel by which",
+            "# tests/test.sh learns which live tiers are enabled and gating.",
+            # The idempotence flags are appended, never substituted, so enabling
+            # idempotence leaves a spec's live_check wiring byte-identical.
             "env = { " + ", ".join(
                 ['SPEC_LIVE_CHECK_ENABLED = "true"']
                 + (['SPEC_LIVE_CHECK_GATING = "true"'] if live.gating else [])

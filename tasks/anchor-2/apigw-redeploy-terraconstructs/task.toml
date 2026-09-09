@@ -13,14 +13,10 @@ scenario_id = "anchor-2"
 agent_role_name = "QALocalInvocationApplicationAdmin"
 
 [concurrency]
-# MUTATING: this scenario's agent phase performs real AWS deploys
-# (verifier.live_check.enabled is true -- SCHEMA.md §5 Slice G
-# amendment). Per aws_bench/task/aws_trial.py's own
-# ConcurrencyMode.MUTATING handling, this triggers a scenario-account
-# reset after this trial -- see DECISIONS.md "Slice G" for the
-# cleanup contract this scenario's solve.sh/live_check.py also
-# implement directly (defense in depth, not reliance on the
-# framework sweep alone; docs/slice-g-recon.md §4).
+# MUTATING: the agent phase deploys into the shard account. aws-bench
+# holds the shard's exclusive admission gate for the trial and resets
+# the account afterwards (aws_bench/task/aws_trial.py,
+# ConcurrencyMode.MUTATING); nothing in this task tears down by hand.
 mode = "mutating"
 
 # --- Harbor standard --- flexible metadata

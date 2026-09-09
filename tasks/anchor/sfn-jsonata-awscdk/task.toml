@@ -42,16 +42,9 @@ timeout_sec = 3600.0
 # --- Harbor standard ---
 [verifier]
 timeout_sec = 900.0
-# Slice G (apigw-redeploy, 2026-08-06; docs/slice-g-recon.md gap 4):
-# read by the generated tests/test.sh (tests/live_check.py's sibling, gen.py::build_test_sh) to decide whether
-# to invoke live_check.py at all. CONFIRMED (2026-08-07, benchmark-
-# integrity review finding G3) against real aws-bench source
-# (harbor/verifier/verifier.py's verify(): merged_env includes
-# self.task.config.verifier.env -- i.e. this [verifier] env table,
-# parsed straight off this key -- then
-# self.environment.exec(command=command, env=env) -- this genuinely
-# reaches tests/test.sh's own process environment in a real trial,
-# not a documented no-op.
+# Harbor merges this table into the verifier process environment
+# (harbor/verifier/verifier.py::verify), so it is the channel by which
+# tests/test.sh learns which live tiers are enabled and gating.
 env = { SPEC_LIVE_CHECK_ENABLED = "true", SPEC_LIVE_CHECK_GATING = "true" }
 
 # --- Harbor standard ---

@@ -14,7 +14,7 @@ agent_role_name = "QALocalInvocationApplicationRole"
 [concurrency]
 # Static-tier verifier only (synth/plan, no deploy); no AWS mutation
 # happens in agent, verifier, pre_invoke, or post_invoke, so read-only
-# trials of the anchor scenario can co-run (verifier.live_check.enabled
+# trials on the same shard can co-run (verifier.live_check.enabled
 # is false for this scenario -- see specs/SCHEMA.md §5).
 mode = "read-only"
 
