@@ -7697,6 +7697,106 @@ headline number, at any n, in any estimator.
 * **No spec field and no generator behaviour change.** The form is read from
   the emitted task dir.
 
+## Amendment 37 (2026-09-10) — the teardown tier: the agent's own destroy is graded — DRAFT
+
+**Status: DRAFT.** In code, schema and docs; promotion needs a live run (below).
+
+### The finding
+
+**"Teardown leaves the account clean" has never been gradeable.** The static
+tiers can see `force_delete = true`, but the argument is only a *proxy* for the
+requirement, and grading the proxy is the mistake `s3-lambda-log-retention`'s
+own header warns about. The only honest oracle for the requirement is running
+the agent's own teardown. `ecr-repo-destroy-force-delete`
+(`docs/design/batch-a-greenfield-blueprints.md` §12) cannot be authored without
+it: its plausible-wrong solution applies green, passes the live check, then
+fails `terraform destroy` on a repository that still contains images. §11's
+orphan half and §7's residue half become gradeable the moment it exists.
+
+### The decision
+
+**A new `verifier.teardown {enabled, gating}` tier, a deliberate near-clone of
+`verifier.idempotence` (§5.1), reusing its machinery rather than inventing a
+second pattern.** Eight rules:
+
+1. **It runs after the live check AND after idempotence**, and on a multi-step
+   spec on the **final step only**. Destroying first invalidates both tiers
+   above it; destroying after an intermediate step deletes the substrate the
+   next step is about to change.
+2. **Three outcomes** — `clean` / `destroy_failed` / `not_verifiable` — written
+   to `/logs/verifier/teardown-result.json` with the raw output in
+   `/logs/verifier/teardown.log`, **whether gating or not**.
+3. **`gating: true` is fail-closed and AND-composed** exactly as idempotence is:
+   reward is 1.0 iff the static tiers say 1.0 AND the live check passes AND (if
+   enabled) idempotence is `converged` AND teardown is `clean`.
+4. **`enabled` requires `live_check.enabled`.** With no apply there is nothing
+   to destroy, and an offline destroy of an empty working directory exits 0
+   having removed nothing — reporting `clean` for a trial that deployed nothing.
+5. **Per-arm destroy commands are generator-injected constants, never
+   spec-declared** (`gen.py::TEARDOWN_COMMAND`): `terraform destroy -input=false
+   -auto-approve`; on `terraconstructs`, `npx cdktn synth`, the post-synth state
+   re-probe, then that destroy inside `cdktf.out/stacks/<workspace_id>/`; on
+   `awscdk`, `npx cdk destroy --force ScenarioStack`.
+6. **Never-deployed is detected per arm by the existing probes** — the TF arms'
+   pre-flight state probe (`TEARDOWN_STATE_PROBE` *is*
+   `IDEMPOTENCE_STATE_PROBE`, one map), `awscdk`'s post-flight completion
+   marker, and — on a `workspace_seed.deploy` spec, which is what
+   `named-resource-replacement` is — the **seed movement guard** of §2.7.1
+   finding H, emitted by the same `gen.py::build_seed_movement_guard` §5.1
+   uses. Without it the file probe is dead by construction on that spec
+   (`pre_invoke.sh` writes the state before the agent's first token), so an
+   agent that deployed nothing would have the harness's own seed destroyed on
+   its behalf and be recorded `clean`. Every one of them yields
+   `not_verifiable` with **no destroy attempted**.
+7. **Emission is generation-conditional**, so no task without the tier moves a
+   byte: both live tiers share one placeholder line in `build_test_sh`.
+8. **A destroy that fails for a transient AWS reason is NOT retried.**
+   Amendment 35's bounded retry wraps `tests/_live_lib.py::run_aws`, i.e.
+   individual `aws` calls; the destroy is a toolchain run and the retry does not
+   reach inside it. Such a run records `destroy_failed`.
+
+### Why fail-closed is preserved
+
+* **Only `clean` keeps reward.** `destroy_failed` and `not_verifiable` both
+  write 0.0 under gating; nothing that would have scored 0.0 can now score 1.0.
+* **The never-deployed case cannot fake-pass.** The two ways this tier could
+  fail OPEN are an offline destroy exiting 0 having removed nothing and a
+  destroy of the harness-seeded state; the three guards of rule 6 exist to catch
+  them, and on a seeded spec no destroy is spent at all until the seed's
+  identity has moved.
+* **`awscdk`'s completion marker is unmeasured, and fails safe.** A wrong marker
+  reports `not_verifiable` for a destroy that succeeded; it can never report
+  `clean` for one that did not. This is why the tier ships non-gating.
+
+### What promotes this
+
+Both halves, together:
+
+* a **live trial of `named-resource-replacement`** with the tier enabled and
+  non-gating, writing `/logs/verifier/teardown-result.json` with `outcome:
+  "clean"` on at least one arm — which is also the measurement of `awscdk`'s
+  completion line that §12's Risk 1 demands; and
+* the **host-side fixture proof** that `destroy_failed` gates to 0.0
+  (`generator/tests/test_teardown_tier.py` runs the emitted block against
+  stubbed toolchains: `1.0` for `clean`, `0.0` for `destroy_failed` and for
+  `not_verifiable` under gating, reward untouched when not gating).
+
+The first **gating** use is the future `ecr-repo-destroy-force-delete`, not this
+spec: `named-resource-replacement` is the promotion vehicle, observed before it
+gates anything.
+
+### What this does NOT change
+
+* **The framework reset is untouched.** aws-bench's post-trial reset still
+  returns the account to baseline (Amendments 17/18,
+  `docs/teardown-experiment-results.md`) whatever this tier reports, so a
+  `destroy_failed` verdict leaks nothing. The tier GRADES teardown; it is not a
+  cleanup mechanism, and the schema text says so.
+* **No existing gating moves.** Only `named-resource-replacement` opts in, and
+  non-gating; every other spec's `tests/test.sh` is byte-identical.
+* **No published row is affected.** Every published result was produced without
+  this tier, which adds a conjunct rather than re-scoring one.
+
 ## Amendment 38 (2026-09-09) — agent commands run in the foreground; deploying is toolchain evidence — **ACCEPTED 2026-09-10**
 
 **Status: ACCEPTED.** The second promotion attempt met the criterion under

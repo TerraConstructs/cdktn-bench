@@ -73,7 +73,7 @@ timeout_sec = 900.0
 # Harbor merges this table into the verifier process environment
 # (harbor/verifier/verifier.py::verify), so it is the channel by which
 # tests/test.sh learns which live tiers are enabled and gating.
-env = { SPEC_LIVE_CHECK_ENABLED = "true", SPEC_LIVE_CHECK_GATING = "true", SPEC_IDEMPOTENCE_ENABLED = "true", SPEC_IDEMPOTENCE_GATING = "true", SPEC_SEED_DEPLOY_REQUIRED = "true" }
+env = { SPEC_LIVE_CHECK_ENABLED = "true", SPEC_LIVE_CHECK_GATING = "true", SPEC_IDEMPOTENCE_ENABLED = "true", SPEC_IDEMPOTENCE_GATING = "true", SPEC_TEARDOWN_ENABLED = "true", SPEC_SEED_DEPLOY_REQUIRED = "true" }
 
 # --- aws-bench extension --- BROWNFIELD seed-deploy budget
 # specs/SCHEMA.md §2.7.1. pre_invoke/pre_invoke.sh runs a REAL

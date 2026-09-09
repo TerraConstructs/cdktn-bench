@@ -30,6 +30,41 @@ the library it imports. The `_hcl` MERGE that library reads is emitted for
 `hcl_raw` ONLY — terraconstructs has no `.tf` files — see
 `build_static_tiers_sh`'s `hcl_lib`/`hcl_merge` comment.
 
+### Live verifier tiers in `tests/test.sh`
+
+Two optional live tiers are emitted into `tests/test.sh`, both
+GENERATION-conditional: a spec that does not opt in generates byte-identically
+to before either tier existed, because `build_test_sh` is otherwise one static
+template shared by every task. They share ONE placeholder line in that template,
+so opting into neither adds no blank line.
+
+| tier | spec key | env flags | outcomes | result file |
+|---|---|---|---|---|
+| idempotence (SCHEMA.md §5.1) | `verifier.idempotence` | `SPEC_IDEMPOTENCE_ENABLED` / `_GATING` | `converged` / `pending_changes` / `not_verifiable` | `/logs/verifier/idempotence-result.json` + `idempotence.log` |
+| teardown (SCHEMA.md §5.2) | `verifier.teardown` | `SPEC_TEARDOWN_ENABLED` / `_GATING` | `clean` / `destroy_failed` / `not_verifiable` | `/logs/verifier/teardown-result.json` + `teardown.log` |
+
+ORDER IS FIXED AND LOAD-BEARING: live check, then idempotence, then teardown.
+Destroying first would invalidate both tiers above it. On a multi-step spec each
+tier rides the FINAL step's `[steps.verifier] env` only.
+
+Both tiers' per-arm commands are generator constants — `IDEMPOTENCE_COMMAND`,
+`TEARDOWN_COMMAND` — never spec keys, so no spec can ship a tier without one.
+`TEARDOWN_STATE_PROBE` IS `IDEMPOTENCE_STATE_PROBE`: one map, so the two tiers
+cannot come to disagree about where an arm keeps its state. On a
+`workspace_seed.deploy` spec both tiers also emit the SEED MOVEMENT GUARD from
+one function (`build_seed_movement_guard`, SCHEMA.md §2.7.1 finding H): the
+state probe cannot fire when the harness wrote the state before the agent's
+first token, so each tier requires the state identity to have MOVED before it
+calls a plan converged or spends a destroy. Both write their
+result file whether gating or not, and both `gating` flags AND-compose
+fail-closed into `reward.txt`.
+
+The teardown tier GRADES the agent's destroy; it is not a cleanup mechanism.
+The framework's post-trial reset still returns the account to baseline whatever
+the tier reports, and a destroy that fails for a transient AWS reason is not
+retried (the destroy is a toolchain run, not an `aws` call, so Amendment 35's
+retry does not reach inside it).
+
 ## Scenario shards
 
 A shard IS an AWS member account. aws-bench binds one scenario to exactly one

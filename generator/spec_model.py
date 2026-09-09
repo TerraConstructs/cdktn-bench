@@ -1139,12 +1139,63 @@ class Idempotence(BaseModel):
 
 
 @_strict
+class Teardown(BaseModel):
+    """§5.2 -- the TEARDOWN tier: when the agent's own toolchain is asked to
+    destroy what it deployed, does the destroy succeed?
+
+    It GRADES the agent's teardown; it is NOT a cleanup mechanism. aws-bench's
+    own post-trial reset returns the account to baseline afterwards whatever
+    this tier reports, so turning the tier into the cleanup path would delete
+    that reset's independent guarantee (SCHEMA.md §5.2).
+
+    LIVE-ONLY: `enabled: true` requires `live_check.enabled: true`
+    (`Spec._teardown_requires_live_check`), because an offline destroy of an
+    empty working directory exits 0 having removed nothing.
+
+    Per-arm destroy commands are injected by the generator
+    (`gen.py::TEARDOWN_COMMAND`), never read from a spec key, so the tier
+    cannot go missing because a spec author forgot a YAML key.
+    """
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "Run the generator-injected destroy after the live check and after "
+            "the idempotence tier, on the final step only, and record "
+            "clean/destroy_failed/not_verifiable in "
+            "/logs/verifier/teardown-result.json. Requires "
+            "verifier.live_check.enabled."
+        ),
+    )
+    gating: bool = Field(
+        default=False,
+        description=(
+            "AND-compose this tier's outcome into the reward, fail-closed: only "
+            "'clean' keeps 1.0; destroy_failed and not_verifiable both write "
+            "0.0. Requires enabled."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _gating_requires_enabled(self) -> "Teardown":
+        if self.gating and not self.enabled:
+            raise ValueError(
+                "verifier.teardown.gating=true requires enabled=true -- a "
+                "tier that never runs cannot gate reward"
+            )
+        return self
+
+
+@_strict
 class Verifier(BaseModel):
     budget: VerifierBudget = Field(default_factory=VerifierBudget)
     live_check: LiveCheck
     # Optional, default disabled -> byte-identical generation for every spec
     # that predates this field (SCHEMA.md §5.1).
     idempotence: Idempotence = Field(default_factory=Idempotence)
+    # Optional, default disabled -> byte-identical generation for every spec
+    # that predates this field (SCHEMA.md §5.2).
+    teardown: Teardown = Field(default_factory=Teardown)
 
 
 # --------------------------------------------------------------------------
@@ -1685,6 +1736,23 @@ class Spec(BaseModel):
                 "verifier.live_check.enabled=true -- the idempotence tier reads "
                 "the state the agent's own deploy left behind, and a spec with no "
                 "live phase never produces one (SCHEMA.md §5.1)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _teardown_requires_live_check(self) -> "Spec":
+        """§5.2: no apply => nothing to destroy.
+
+        An offline `terraform destroy` / `cdk destroy` against an empty working
+        directory exits 0 having removed nothing, which would report `clean` for
+        a trial that deployed nothing at all.
+        """
+        if self.verifier.teardown.enabled and not self.verifier.live_check.enabled:
+            raise ValueError(
+                "verifier.teardown.enabled=true requires "
+                "verifier.live_check.enabled=true -- the teardown tier destroys "
+                "what the agent's own deploy left behind, and a spec with no "
+                "live phase never produces one (SCHEMA.md §5.2)"
             )
         return self
 

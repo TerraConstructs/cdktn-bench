@@ -35,6 +35,7 @@ import sys
 import textwrap
 import tomllib
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -1518,6 +1519,19 @@ def build_task_toml(spec: Spec, arm: Arm, task_uuid: str) -> str:
                     if spec.verifier.idempotence.gating
                     else []
                 )
+                # Appended after the idempotence flags for the same reason those
+                # are appended after live_check's: enabling teardown leaves a
+                # spec's existing verifier wiring byte-identical.
+                + (
+                    ['SPEC_TEARDOWN_ENABLED = "true"']
+                    if spec.verifier.teardown.enabled
+                    else []
+                )
+                + (
+                    ['SPEC_TEARDOWN_GATING = "true"']
+                    if spec.verifier.teardown.gating
+                    else []
+                )
                 + seed_required_env
             ) + " }",
             "",
@@ -1713,6 +1727,13 @@ def build_steps_toml(spec: Spec, live) -> list[str]:
                 env += ', SPEC_IDEMPOTENCE_ENABLED = "true"'
                 if spec.verifier.idempotence.gating:
                     env += ', SPEC_IDEMPOTENCE_GATING = "true"'
+            # Teardown rides the FINAL step only: destroying after an
+            # intermediate step deletes the substrate the next step is about to
+            # change, so every later step would grade an empty account.
+            if spec.verifier.teardown.enabled and step is (spec.steps or [])[-1]:
+                env += ', SPEC_TEARDOWN_ENABLED = "true"'
+                if spec.verifier.teardown.gating:
+                    env += ', SPEC_TEARDOWN_GATING = "true"'
             env += " }"
         else:
             # Explicit "false" rather than an omitted key: [steps.verifier].env
@@ -3100,7 +3121,9 @@ def build_static_tiers_sh(spec: Spec, arm: Arm, step: Step | None = None) -> str
 # toolchains themselves produce (terraform: 0/1/2, cdk: 0/1) so it can never be
 # confused with a real verdict, and mapped to `not_verifiable` with the
 # command's own printed reason. Used by the terraconstructs post-synth state
-# re-probe below.
+# re-probe in both live tiers' commands: one reserved code, so a third tier
+# cannot pick a colliding one. The name keeps its idempotence prefix because
+# renaming it would move every existing task's tests/test.sh.
 IDEMPOTENCE_STATE_VANISHED_RC = 9
 IDEMPOTENCE_STATE_VANISHED_MARKER = "IDEMPOTENCE_STATE_VANISHED:"
 
@@ -3231,43 +3254,145 @@ IDEMPOTENCE_COMPLETION_MARKER: dict[Arm, str] = {
 }
 
 
-def build_idempotence_seed_movement_guard(arm: Arm, probe: str, *, indent: str) -> str:
-    """The idempotence tier's SEED MOVEMENT guard. Emitted only for a spec that
-    declares `workspace_seed.deploy`.
+@dataclass(frozen=True)
+class SeedMovementTexts:
+    """The per-tier wording of one shared mechanism (specs/SCHEMA.md §2.7.1,
+    finding H -- the harness-deployed seed a do-nothing agent inherits). Both
+    tiers ask the same question -- did the deployed state move off the identity
+    the harness seeded? -- so only the shell variables and the consequence
+    differ; the jq programs, the receipt and the branch structure stay here,
+    where they cannot drift apart.
 
-    WHAT IT REPLACES. `build_idempotence_block`'s state probe -- "nothing was
-    applied (no deploy state at /app/project/<probe>)" -- cannot fire on a
-    brownfield spec: `workspace_seed.deploy` writes that exact file (and, on
-    awscdk, creates that exact stack) before the agent's first token. Without
-    this guard a `converged` verdict no longer distinguishes "the agent deployed
-    and converged" from "the agent did nothing and the SEED is still converged":
-    the do-nothing agent inherits the harness's convergence, silently.
+    `header` lines are emitted verbatim above the guard; the three reason
+    strings are `.format()`ed with `receipt` and `probe`.
+    """
+
+    var_prefix: str  # names the emitted $<prefix>_outcome / $<prefix>_reason
+    tier_label: str  # the awscdk abstain line's own [tier] prefix on stderr
+    header: tuple[str, ...]
+    no_identity: str  # the receipt carries no state_identity
+    unreadable: str  # local state is present but its identity is unreadable
+    unmoved: str  # the identity is still EXACTLY the seed's
+
+
+IDEMPOTENCE_SEED_MOVEMENT_TEXTS = SeedMovementTexts(
+    var_prefix="idem",
+    tier_label="idempotence",
+    header=(
+        "# SEED MOVEMENT GUARD (specs/SCHEMA.md §2.7.1, finding H). The state",
+        "# probe above cannot fire on a spec whose seed the HARNESS deployed",
+        "# before the agent's first token, so a do-nothing agent would inherit",
+        "# the seed's own convergence as a `converged` verdict. The seed's",
+        "# identity has to have MOVED.",
+    ),
+    no_identity=(
+        "the seed receipt at {receipt} carries no state_identity, so this tier "
+        "cannot tell whether the agent deployed anything or simply inherited "
+        "the harness-deployed seed's converged state (specs/SCHEMA.md §2.7.1, "
+        "finding H)."
+    ),
+    unreadable=(
+        "the deploy state at /app/project/{probe} exists but carries no "
+        "readable state identity, so this tier cannot tell the agent's own "
+        "deployment from the harness-deployed seed's (specs/SCHEMA.md §2.7.1, "
+        "finding H)."
+    ),
+    # CLAIM ONLY WHAT WAS ESTABLISHED. "The agent applied nothing" is not
+    # established here, and is probably FALSE in this scenario's central trap
+    # case: a rename that forces destroy-then-create and dies on
+    # `DependencyViolation` does plenty of work and still moves no serial.
+    # What IS established is that the identity did not move, so the tier
+    # cannot separate the agent's deployment from the seed's.
+    unmoved=(
+        "the deployed state identity is still EXACTLY the one the harness "
+        "seeded before the agent's first token ($seed_identity unchanged). "
+        "That may mean the agent applied nothing, or that its apply failed "
+        "without moving the state -- this tier cannot tell them apart, and in "
+        "neither case is there an agent-produced deployment to be idempotent "
+        "about. A converged verdict here would credit the agent with the "
+        "SEED's convergence (specs/SCHEMA.md §2.7.1, finding H)."
+    ),
+)
+
+# The teardown tier's wording of the same guard (specs/SCHEMA.md §5.2). On a
+# brownfield spec pre_invoke.sh writes the state before the agent's first token,
+# so the tier's pre-flight probe cannot fire; without this guard a do-nothing
+# agent would have the HARNESS's seed destroyed on its behalf and be recorded
+# `clean`. An unmoved identity therefore skips the destroy entirely.
+TEARDOWN_SEED_MOVEMENT_TEXTS = SeedMovementTexts(
+    var_prefix="down",
+    tier_label="teardown",
+    header=(
+        "# SEED MOVEMENT GUARD (specs/SCHEMA.md §2.7.1). The probe above cannot",
+        "# fire on a spec whose seed the HARNESS deployed, so what a destroy",
+        "# would remove is the SEED. The identity must have MOVED first.",
+    ),
+    no_identity=(
+        "the seed receipt at {receipt} carries no state_identity, so this tier "
+        "cannot tell whether the agent deployed anything or simply inherited "
+        "the harness-deployed seed's state. No destroy is attempted: it would "
+        "tear down the SEED and record it as the agent's clean teardown "
+        "(specs/SCHEMA.md §2.7.1, finding H)."
+    ),
+    unreadable=(
+        "the deploy state at /app/project/{probe} exists but carries no "
+        "readable state identity, so this tier cannot tell the agent's own "
+        "deployment from the harness-deployed seed's, and no destroy is "
+        "attempted (specs/SCHEMA.md §2.7.1, finding H)."
+    ),
+    unmoved=(
+        "the deployed state identity is still EXACTLY the one the harness "
+        "seeded before the agent's first token ($seed_identity unchanged). "
+        "That may mean the agent applied nothing, or that its apply failed "
+        "without moving the state -- this tier cannot tell them apart, and in "
+        "neither case is there an agent-produced deployment to destroy. No "
+        "destroy is attempted: a clean verdict here would credit the agent "
+        "with destroying the SEED (specs/SCHEMA.md §2.7.1, finding H)."
+    ),
+)
+
+
+def build_seed_movement_guard(
+    arm: Arm, probe: str, *, indent: str, texts: SeedMovementTexts
+) -> str:
+    """The SEED MOVEMENT guard, emitted by both live tiers (`texts` says which)
+    and only for a spec that declares `workspace_seed.deploy`.
+
+    WHAT IT REPLACES. The calling tier's state probe -- "nothing was applied (no
+    deploy state at /app/project/<probe>)" -- cannot fire on a brownfield spec:
+    `workspace_seed.deploy` writes that exact file (and, on awscdk, creates that
+    exact stack) before the agent's first token. Without this guard the tier's
+    positive verdict no longer distinguishes "the agent deployed" from "the
+    agent did nothing and the SEED is still there": the do-nothing agent
+    inherits the harness's work, silently -- as `converged` under §5.1, and as a
+    `clean` destroy OF THE SEED under §5.2.
 
     THE MECHANISM. `pre_invoke.sh` stamps the identity of the state IT
     deployed into `/logs/seed-deploy-receipt.json` (`state_identity`, see
     SEED_STATE_IDENTITY_JQ). This guard re-reads the identity of the state that
     is there NOW and requires it to have MOVED. Unchanged means the agent
-    applied nothing, which is `not_verifiable` -- never `converged`.
+    applied nothing, which is `not_verifiable` -- never a positive verdict, and
+    under §5.2 never a destroy either.
 
-    WHY not_verifiable RATHER THAN pending_changes: the tier's three values are
-    "converged / still differs / could not be established" (§5.1). "The agent
-    applied nothing" does not establish anything about idempotence at all --
-    there is no agent-produced deployment to be idempotent about. Calling it
-    `pending_changes` would assert a fact about a configuration the agent never
-    rolled out. It is also gate-equivalent under
-    `verifier.idempotence.gating`, which downgrades any non-`converged`
-    outcome, so the honest label costs nothing.
+    WHY not_verifiable RATHER THAN pending_changes / destroy_failed: each tier's
+    third value means "could not be established" (§5.1, §5.2). "The agent
+    applied nothing" establishes nothing about idempotence or teardown at all --
+    there is no agent-produced deployment to be idempotent about or to tear
+    down. It is also gate-equivalent under either tier's `gating`, which
+    downgrades every non-positive outcome, so the honest label costs nothing.
 
     FAIL-CLOSED ON THE TF ARMS, FAIL-QUIET ON awscdk, and the asymmetry is
     deliberate: the TF arms read a LOCAL file, so an unreadable identity is a
     broken artifact this verifier is holding in its hand. awscdk must ask
-    CloudFormation, and offline -- where `cdk diff` cannot resolve an AWS
-    environment either -- an unanswered question is not evidence about the
-    account. So awscdk narrows the claim to the case where the answer arrived
-    and matched; the completion-marker guard below still catches the rest.
+    CloudFormation, and offline -- where the tier's own command cannot resolve
+    an AWS environment either -- an unanswered question is not evidence about
+    the account. So awscdk narrows the claim to the case where the answer
+    arrived and matched; the completion-marker guard below still catches the
+    rest.
     """
     receipt = SEED_DEPLOY_RECEIPT_PATH
     jq_identity = SEED_STATE_IDENTITY_JQ[arm]
+    p = texts.var_prefix
     if probe:
         now = (
             'now_identity="$(jq -er ' + "'" + jq_identity + "' "
@@ -3276,11 +3401,10 @@ def build_idempotence_seed_movement_guard(arm: Arm, probe: str, *, indent: str) 
         unreadable = "\n".join(
             [
                 'elif [ -z "$now_identity" ]; then',
-                '  idem_outcome="not_verifiable"',
-                f'  idem_reason="the deploy state at /app/project/{probe} exists '
-                "but carries no readable state identity, so this tier cannot tell "
-                "the agent's own deployment from the harness-deployed seed's "
-                '(specs/SCHEMA.md §2.7.1, finding H)."',
+                f'  {p}_outcome="not_verifiable"',
+                f'  {p}_reason="'
+                + texts.unreadable.format(receipt=receipt, probe=probe)
+                + '"',
             ]
         )
         moved_test = '[ "$seed_identity" = "$now_identity" ]'
@@ -3295,14 +3419,14 @@ def build_idempotence_seed_movement_guard(arm: Arm, probe: str, *, indent: str) 
         # nothing. See this function's docstring.
         #
         # But abstaining SILENTLY is the repo's signature failure mode -- the
-        # guard simply does not fire, `idem_reason` keeps whatever preceded it,
+        # guard simply does not fire, the reason keeps whatever preceded it,
         # and the operator cannot distinguish "the guard ran and the state had
         # moved" from "the guard never got an answer". The verdict stays
         # deliberately unchanged; only the record is added.
         unreadable = "\n".join(
             [
                 'elif [ -z "$now_identity" ]; then',
-                '  echo "[idempotence] SEED MOVEMENT GUARD ABSTAINED: '
+                f'  echo "[{texts.tier_label}] SEED MOVEMENT GUARD ABSTAINED: '
                 "describe-stacks on ScenarioStack returned no readable stack "
                 "identity, so this tier could not check whether the agent's own "
                 "deployment moved the harness-seeded state. The verdict below "
@@ -3312,39 +3436,22 @@ def build_idempotence_seed_movement_guard(arm: Arm, probe: str, *, indent: str) 
         )
         moved_test = '[ "$seed_identity" = "$now_identity" ]'
     body = [
-        "# SEED MOVEMENT GUARD (specs/SCHEMA.md §2.7.1, finding H). The state",
-        "# probe above cannot fire on a spec whose seed the HARNESS deployed",
-        "# before the agent's first token, so a do-nothing agent would inherit",
-        "# the seed's own convergence as a `converged` verdict. The seed's",
-        "# identity has to have MOVED.",
+        *texts.header,
         'seed_identity="$(jq -r ' + "'" + '.state_identity // ""' + "' "
         + receipt + ' 2>/dev/null)"',
         now,
         'if [ -z "$seed_identity" ]; then',
-        '  idem_outcome="not_verifiable"',
-        f'  idem_reason="the seed receipt at {receipt} carries no state_identity, '
-        "so this tier cannot tell whether the agent deployed anything or simply "
-        "inherited the harness-deployed seed's converged state "
-        '(specs/SCHEMA.md §2.7.1, finding H)."',
+        f'  {p}_outcome="not_verifiable"',
+        f'  {p}_reason="'
+        + texts.no_identity.format(receipt=receipt, probe=probe)
+        + '"',
     ]
     if unreadable:
         body += unreadable.splitlines()
     body += [
         f"elif {moved_test}; then",
-        '  idem_outcome="not_verifiable"',
-        # CLAIM ONLY WHAT WAS ESTABLISHED. "The agent applied nothing" is not
-        # established here, and is probably FALSE in this scenario's central
-        # trap case: a rename that forces destroy-then-create and dies on
-        # `DependencyViolation` does plenty of work and still moves no serial.
-        # What IS established is that the identity did not move, so the tier
-        # cannot separate the agent's deployment from the seed's.
-        '  idem_reason="the deployed state identity is still EXACTLY the one the '
-        "harness seeded before the agent's first token ($seed_identity unchanged). "
-        "That may mean the agent applied nothing, or that its apply failed without "
-        "moving the state -- this tier cannot tell them apart, and in neither case "
-        "is there an agent-produced deployment to be idempotent about. A converged "
-        "verdict here would credit the agent with the SEED's convergence "
-        '(specs/SCHEMA.md §2.7.1, finding H)."',
+        f'  {p}_outcome="not_verifiable"',
+        f'  {p}_reason="' + texts.unmoved.format(receipt=receipt, probe=probe) + '"',
         "fi",
     ]
     return "\n".join(indent + line for line in body)
@@ -3370,14 +3477,17 @@ def build_idempotence_block(spec: Spec, arm: Arm) -> str:
     pending_rc = IDEMPOTENCE_PENDING_RC[arm]
     # Emitted ONLY for a spec whose seed the harness actually deploys, so every
     # other task's tests/test.sh stays byte-identical (§5.1's own regression
-    # guarantee). See build_idempotence_seed_movement_guard for the argument.
+    # guarantee). See build_seed_movement_guard for the argument.
     seeded = spec.workspace_seed is not None and spec.workspace_seed.deploy is not None
     # Indent follows where the guard lands: inside the `else` of the file probe
     # on the TF arms (6 spaces of emitted script = 4 here), at the probe's own
     # level on awscdk, which has no file to probe (2).
     movement_guard = (
-        build_idempotence_seed_movement_guard(
-            arm, probe, indent="    " if probe else "  "
+        build_seed_movement_guard(
+            arm,
+            probe,
+            indent="    " if probe else "  ",
+            texts=IDEMPOTENCE_SEED_MOVEMENT_TEXTS,
         )
         if seeded
         else ""
@@ -3518,6 +3628,239 @@ def build_idempotence_block(spec: Spec, arm: Arm) -> str:
         "__PENDING_TEST__",
         pending_test,
     ).replace("__UNVERIFIABLE_REASON__", unverifiable_reason).replace(
+        "__VANISHED_BRANCH__", vanished_branch
+    )
+
+
+# The teardown tier's per-arm command (SCHEMA.md §5.2), injected by the
+# generator and never read from a spec key, so the tier cannot go missing
+# because a spec author forgot a YAML key.
+#
+#   hcl_raw          `terraform destroy` against the state the agent's own
+#                    apply left in /app/project. Exit 0 = clean.
+#   terraconstructs  synth, the post-synth state re-probe IDEMPOTENCE_COMMAND
+#                    uses (reserved rc 9), then that destroy inside the
+#                    synthesized stack dir.
+#   awscdk           `cdk destroy --force` against the DEPLOYED stack; this arm
+#                    keeps no local state, so CloudFormation is the state.
+#
+# `__WORKSPACE_ID__` is substituted with `Spec.workspace_identity()` (§0.1), the
+# agent-visible scenario name that names the synthesized stack directory.
+#
+# A destroy that fails for a transient AWS reason is not retried: the retry of
+# DECISIONS.md Amendment 35 (the transient-AWS retry) wraps
+# `tests/_live_lib.py::run_aws`, and a toolchain run is not an `aws` call. Such
+# a run records `destroy_failed`, and under `gating` costs the trial its
+# reward.
+TEARDOWN_COMMAND: dict[Arm, str] = {
+    "hcl_raw": "terraform destroy -input=false -auto-approve",
+    # This arm's state lives at /app/project/terraform.<workspace_id>.tfstate,
+    # not under cdktf.out/, so a synth that cleaned the stack directory would
+    # leave the destroy with no state -- exiting 0 having removed nothing, and
+    # recorded as `clean`. The re-probe below aborts instead.
+    "terraconstructs": (
+        "npx cdktn synth >/dev/null "
+        "&& cd cdktf.out/stacks/__WORKSPACE_ID__ "
+        "&& { [ -s /app/project/terraform.__WORKSPACE_ID__.tfstate ] || { "
+        f'echo "{IDEMPOTENCE_STATE_VANISHED_MARKER} /app/project/'
+        "terraform.__WORKSPACE_ID__.tfstate existed before 'npx cdktn synth' and "
+        "does not after it -- there is no deployed state left to destroy\"; "
+        f"exit {IDEMPOTENCE_STATE_VANISHED_RC}; }}; }} "
+        "&& terraform init -input=false >/dev/null "
+        "&& terraform destroy -input=false -auto-approve"
+    ),
+    "awscdk": "npx cdk destroy --force ScenarioStack",
+}
+# The never-deployed guard, one per arm, reading the idempotence tier's own map
+# so the two tiers cannot disagree about where an arm keeps its state: the TF
+# arms pre-flight probe the local state file, awscdk post-flight requires its
+# completion line. With nothing deployed to destroy the tier is SKIPPED WITH A
+# REASON, never fake-passed -- an offline `terraform destroy` with no state
+# exits 0 having removed nothing.
+TEARDOWN_STATE_PROBE: dict[Arm, str] = dict(IDEMPOTENCE_STATE_PROBE)
+# `cdk destroy` prints this line only once CloudFormation confirmed the delete,
+# so exit 0 is believed as `clean` only when the marker is present too; an exit
+# 0 without it (an unresolvable AWS environment, or a stack that was never
+# there) is `not_verifiable` with the reason recorded, never `clean`.
+#
+# This string is unmeasured against the arm's pinned CLI, which is why the tier
+# ships non-gating and why a live trial reporting `clean` on this arm is one of
+# its promotion criteria (DECISIONS.md Amendment 37, the teardown tier). A wrong
+# marker fails safe: not_verifiable for a destroy that succeeded, never clean
+# for one that did not.
+TEARDOWN_COMPLETION_MARKER: dict[Arm, str] = {
+    "hcl_raw": "",
+    "terraconstructs": "",
+    "awscdk": "ScenarioStack: destroyed",
+}
+
+
+def build_teardown_block(spec: Spec, arm: Arm) -> str:
+    """The generated `tests/test.sh` teardown-tier block, or "" when this spec
+    leaves `verifier.teardown` disabled.
+
+    Generation-conditional, as `build_idempotence_block` is and for the same
+    reason: a spec that does not opt in generates byte-identically to a spec
+    that predates the field (SCHEMA.md §5.2).
+
+    ORDERING IS LOAD-BEARING. The block is emitted AFTER the live check and
+    AFTER the idempotence block, because destroying first invalidates both.
+    The tier GRADES the destroy; the framework's post-trial reset, not this
+    block, is what returns the account to baseline.
+    """
+    if not spec.verifier.teardown.enabled:
+        return ""
+    wid = spec.workspace_identity()
+    command = TEARDOWN_COMMAND[arm].replace("__WORKSPACE_ID__", wid)
+    probe = TEARDOWN_STATE_PROBE[arm].replace("__WORKSPACE_ID__", wid)
+    marker = TEARDOWN_COMPLETION_MARKER[arm]
+    # Emitted ONLY for a spec whose seed the harness deploys: on any other spec
+    # the file probe below is the whole never-deployed guard, and emitting more
+    # would move tasks' bytes (§5.2's regression guarantee). On a seeded spec
+    # the probe cannot fire, so without this guard a destroy of the HARNESS's
+    # seed would be recorded as the agent's own clean teardown.
+    seeded = spec.workspace_seed is not None and spec.workspace_seed.deploy is not None
+    movement_guard = (
+        build_seed_movement_guard(
+            arm,
+            probe,
+            indent="    " if probe else "  ",
+            texts=TEARDOWN_SEED_MOVEMENT_TEXTS,
+        )
+        if seeded
+        else ""
+    )
+    if probe:
+        lines = [
+            f'  if [ ! -s "/app/project/{probe}" ]; then',
+            '    down_outcome="not_verifiable"',
+            f'    down_reason="nothing was applied (no deploy state at '
+            f'/app/project/{probe}), so there is nothing to destroy and no '
+            f'destroy is attempted. An offline destroy with no state exits 0 '
+            f'having removed nothing, so this is reported as unverifiable '
+            f'rather than as a real clean verdict."',
+        ]
+        if movement_guard:
+            # The probe above cannot fire on a seeded spec: pre_invoke.sh
+            # writes that exact file before the agent's first token. It is kept
+            # for a seed that vanished mid-trial; this branch carries the signal.
+            lines += ["  else", movement_guard]
+        lines += ["  fi"]
+        probe_block = "\n".join(lines)
+    elif movement_guard:
+        # CloudFormation is this arm's state, so the movement guard stands where
+        # the file probe would and asks the same question of the stack.
+        probe_block = "\n".join(
+            [
+                "  # No local deploy state to probe: cdk destroy acts on the",
+                "  # DEPLOYED stack, so the never-deployed / no-credentials",
+                "  # guarantee comes from the completion-marker guard below.",
+                movement_guard,
+            ]
+        )
+    else:
+        probe_block = "\n".join(
+            [
+                "  : # No local deploy state to probe: cdk destroy acts on the",
+                "    # DEPLOYED stack, so the never-deployed / no-credentials",
+                "    # guarantee comes from the completion-marker guard below.",
+            ]
+        )
+    # The post-synth re-probe's abort (terraconstructs only, see
+    # TEARDOWN_COMMAND). Emitted ONLY for an arm whose command can raise it, so
+    # no other arm's tests/test.sh moves a byte. The indentation is literal
+    # in-container indentation: this string is substituted after dedent().
+    vanished_branch = ""
+    if f"exit {IDEMPOTENCE_STATE_VANISHED_RC}" in TEARDOWN_COMMAND[arm]:
+        vanished_branch = (
+            f'elif [ "$down_rc" -eq {IDEMPOTENCE_STATE_VANISHED_RC} ]; then\n'
+            '      down_outcome="not_verifiable"\n'
+            '      down_reason="the deploy state this tier was about to destroy '
+            "disappeared when the command re-synthesized the stack directory, so "
+            "the destroy below it would have run against no state at all (an "
+            "offline destroy with no state exits 0 having removed nothing) -- see "
+            'teardown.log"\n'
+            "    "
+        )
+    clean_test = '[ "$down_rc" -eq 0 ]'
+    if marker:
+        clean_test += (
+            f" \\\n               && grep -qF '{marker}' /logs/verifier/teardown.log"
+        )
+        # An exit 0 that never printed the completion line never reached the
+        # stack, so it is not evidence about the account. It must precede the
+        # failure branch, or a never-deployed run is convicted of a failed
+        # destroy instead of being skipped with a reason.
+        vanished_branch += (
+            'elif [ "$down_rc" -eq 0 ]; then\n'
+            '      down_outcome="not_verifiable"\n'
+            '      down_reason="the destroy command exited 0 without printing '
+            "its own completion marker, so it never deleted the stack "
+            "(unresolvable AWS environment, credentials, network, or no such "
+            'stack) -- see teardown.log"\n'
+            "    "
+        )
+    # CLAIM ONLY WHAT THE EXIT CODE PROVES. On a brownfield spec the destroy
+    # also removes what the seed deployed, so "removed everything the agent
+    # deployed" would be false. What is established is that the arm's own
+    # destroy ran to completion against the deployed state.
+    clean_reason = (
+        "the arm's own destroy ran to completion against the deployed state"
+    )
+    failed_reason = (
+        "the destroy command exited $down_rc -- the agent's teardown does not "
+        "leave the account clean. See teardown.log"
+    )
+    return textwrap.dedent(
+        f"""\
+
+        # --- teardown tier (specs/SCHEMA.md §5.2) ---------------------------
+        # Does the agent's own toolchain destroy what it deployed? Runs after
+        # the live check and the idempotence tier: destroying first invalidates
+        # both. It GRADES the destroy and is NOT a cleanup mechanism -- the
+        # framework's post-trial reset returns the account to baseline whatever
+        # this tier reports.
+        # An offline destroy with no state exits 0 having removed nothing, so
+        # every such case below is not_verifiable WITH a reason, never clean.
+        # A destroy that fails for a transient AWS reason is NOT retried here:
+        # it records destroy_failed, and under gating costs the trial its reward.
+        if [ "${{SPEC_TEARDOWN_ENABLED:-false}}" = "true" ]; then
+          down_outcome="not_verifiable"
+          down_reason="tier did not run"
+          down_rc=""
+        __PROBE_BLOCK__
+          if [ "$down_outcome" = "not_verifiable" ] && [ "$down_reason" = "tier did not run" ]; then
+            ( cd /app/project && {command} ) > /logs/verifier/teardown.log 2>&1
+            down_rc=$?
+            if __CLEAN_TEST__; then
+              down_outcome="clean"
+              down_reason="__CLEAN_REASON__"
+            __VANISHED_BRANCH__else
+              down_outcome="destroy_failed"
+              down_reason="__FAILED_REASON__"
+            fi
+          fi
+          jq -n --arg o "$down_outcome" --arg r "$down_reason" --arg rc "$down_rc" \\
+            '{{outcome: $o, reason: $r, exit_code: $rc, arm: "{arm}"}}' \\
+            > /logs/verifier/teardown-result.json
+          if [ "${{SPEC_TEARDOWN_GATING:-false}}" = "true" ] \\
+             && [ "$down_outcome" != "clean" ]; then
+            echo "GATING: teardown outcome was '$down_outcome' ($down_reason) -- downgrading reward to 0.0" >&2
+            echo "0.0" > /logs/verifier/reward.txt
+            rc=1
+          fi
+        fi
+"""
+    ).replace(
+        "__PROBE_BLOCK__", probe_block
+    ).replace(
+        # Substituted AFTER dedent, like build_idempotence_block's placeholders:
+        # these strings carry their own in-container indentation.
+        "__CLEAN_TEST__",
+        clean_test,
+    ).replace("__CLEAN_REASON__", clean_reason).replace(
+        "__FAILED_REASON__", failed_reason
+    ).replace(
         "__VANISHED_BRANCH__", vanished_branch
     )
 
@@ -3750,7 +4093,15 @@ def build_test_sh(spec: Spec, arm: Arm) -> str:
         __IDEMPOTENCE_BLOCK__
         exit $rc
         """
-    ).replace("__IDEMPOTENCE_BLOCK__", build_idempotence_block(spec, arm)).replace(
+    ).replace(
+        # ONE placeholder line carries BOTH live tiers, teardown always second:
+        # destroying first invalidates the live check and the idempotence tier
+        # alike (specs/SCHEMA.md §5.2). A second placeholder LINE would add a
+        # blank line to every task that opts into neither, breaking the
+        # byte-identity their generation-conditional emission protects.
+        "__IDEMPOTENCE_BLOCK__",
+        build_idempotence_block(spec, arm) + build_teardown_block(spec, arm),
+    ).replace(
         "__SEED_RECEIPT__", SEED_DEPLOY_RECEIPT_PATH
     )
 

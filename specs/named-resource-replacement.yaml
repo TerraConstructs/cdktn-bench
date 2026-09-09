@@ -784,6 +784,14 @@ verifier:
     # (the same argument SCHEMA.md §5 makes for live_check.gating).
     enabled: true
     gating: true
+  teardown:
+    # SCHEMA.md §5.2. The PROMOTION VEHICLE for the tier: enabled and NOT
+    # gating, so the destroy is observed live -- writing
+    # /logs/verifier/teardown-result.json on every arm -- before it can cost any
+    # trial reward. The first gating use is ecr-repo-destroy-force-delete, whose
+    # whole requirement is that teardown leaves the account clean.
+    enabled: true
+    gating: false
 
 provenance:
   author: "cdktn-bench task #15 (poisoned-workspace generation)"

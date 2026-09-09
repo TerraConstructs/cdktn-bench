@@ -253,4 +253,63 @@ if [ "${SPEC_IDEMPOTENCE_ENABLED:-false}" = "true" ]; then
   fi
 fi
 
+# --- teardown tier (specs/SCHEMA.md §5.2) ---------------------------
+# Does the agent's own toolchain destroy what it deployed? Runs after
+# the live check and the idempotence tier: destroying first invalidates
+# both. It GRADES the destroy and is NOT a cleanup mechanism -- the
+# framework's post-trial reset returns the account to baseline whatever
+# this tier reports.
+# An offline destroy with no state exits 0 having removed nothing, so
+# every such case below is not_verifiable WITH a reason, never clean.
+# A destroy that fails for a transient AWS reason is NOT retried here:
+# it records destroy_failed, and under gating costs the trial its reward.
+if [ "${SPEC_TEARDOWN_ENABLED:-false}" = "true" ]; then
+  down_outcome="not_verifiable"
+  down_reason="tier did not run"
+  down_rc=""
+  if [ ! -s "/app/project/terraform.internal-services-network.tfstate" ]; then
+    down_outcome="not_verifiable"
+    down_reason="nothing was applied (no deploy state at /app/project/terraform.internal-services-network.tfstate), so there is nothing to destroy and no destroy is attempted. An offline destroy with no state exits 0 having removed nothing, so this is reported as unverifiable rather than as a real clean verdict."
+  else
+    # SEED MOVEMENT GUARD (specs/SCHEMA.md §2.7.1). The probe above cannot
+    # fire on a spec whose seed the HARNESS deployed, so what a destroy
+    # would remove is the SEED. The identity must have MOVED first.
+    seed_identity="$(jq -r '.state_identity // ""' /logs/seed-deploy-receipt.json 2>/dev/null)"
+    now_identity="$(jq -er '"lineage=" + (.lineage|strings) + ";serial=" + (.serial|numbers|tostring)' "/app/project/terraform.internal-services-network.tfstate" 2>/dev/null)"
+    if [ -z "$seed_identity" ]; then
+      down_outcome="not_verifiable"
+      down_reason="the seed receipt at /logs/seed-deploy-receipt.json carries no state_identity, so this tier cannot tell whether the agent deployed anything or simply inherited the harness-deployed seed's state. No destroy is attempted: it would tear down the SEED and record it as the agent's clean teardown (specs/SCHEMA.md §2.7.1, finding H)."
+    elif [ -z "$now_identity" ]; then
+      down_outcome="not_verifiable"
+      down_reason="the deploy state at /app/project/terraform.internal-services-network.tfstate exists but carries no readable state identity, so this tier cannot tell the agent's own deployment from the harness-deployed seed's, and no destroy is attempted (specs/SCHEMA.md §2.7.1, finding H)."
+    elif [ "$seed_identity" = "$now_identity" ]; then
+      down_outcome="not_verifiable"
+      down_reason="the deployed state identity is still EXACTLY the one the harness seeded before the agent's first token ($seed_identity unchanged). That may mean the agent applied nothing, or that its apply failed without moving the state -- this tier cannot tell them apart, and in neither case is there an agent-produced deployment to destroy. No destroy is attempted: a clean verdict here would credit the agent with destroying the SEED (specs/SCHEMA.md §2.7.1, finding H)."
+    fi
+  fi
+  if [ "$down_outcome" = "not_verifiable" ] && [ "$down_reason" = "tier did not run" ]; then
+    ( cd /app/project && npx cdktn synth >/dev/null && cd cdktf.out/stacks/internal-services-network && { [ -s /app/project/terraform.internal-services-network.tfstate ] || { echo "IDEMPOTENCE_STATE_VANISHED: /app/project/terraform.internal-services-network.tfstate existed before 'npx cdktn synth' and does not after it -- there is no deployed state left to destroy"; exit 9; }; } && terraform init -input=false >/dev/null && terraform destroy -input=false -auto-approve ) > /logs/verifier/teardown.log 2>&1
+    down_rc=$?
+    if [ "$down_rc" -eq 0 ]; then
+      down_outcome="clean"
+      down_reason="the arm's own destroy ran to completion against the deployed state"
+    elif [ "$down_rc" -eq 9 ]; then
+      down_outcome="not_verifiable"
+      down_reason="the deploy state this tier was about to destroy disappeared when the command re-synthesized the stack directory, so the destroy below it would have run against no state at all (an offline destroy with no state exits 0 having removed nothing) -- see teardown.log"
+    else
+      down_outcome="destroy_failed"
+      down_reason="the destroy command exited $down_rc -- the agent's teardown does not leave the account clean. See teardown.log"
+    fi
+  fi
+  jq -n --arg o "$down_outcome" --arg r "$down_reason" --arg rc "$down_rc" \
+    '{outcome: $o, reason: $r, exit_code: $rc, arm: "terraconstructs"}' \
+    > /logs/verifier/teardown-result.json
+  if [ "${SPEC_TEARDOWN_GATING:-false}" = "true" ] \
+     && [ "$down_outcome" != "clean" ]; then
+    echo "GATING: teardown outcome was '$down_outcome' ($down_reason) -- downgrading reward to 0.0" >&2
+    echo "0.0" > /logs/verifier/reward.txt
+    rc=1
+  fi
+fi
+
 exit $rc

@@ -299,16 +299,17 @@ def test_deploy_requires_a_live_oracle() -> None:
     """A seed deployed into a real account with no live oracle is spend with no
     measurement.
 
-    `gating`, `hand_authored` and the idempotence tier all have their OWN
-    "requires live_check.enabled" rules that fire first, so they are turned off
-    here too -- the mutation has to leave exactly one rule left to break, or the
-    test proves nothing about this one.
+    `gating`, `hand_authored` and the idempotence and teardown tiers all have
+    their OWN "requires live_check.enabled" rules that fire first, so they are
+    turned off here too -- the mutation has to leave exactly one rule left to
+    break, or the test proves nothing about this one.
     """
     raw = _raw()
     raw["verifier"]["live_check"].update(
         {"enabled": False, "gating": False, "hand_authored": False}
     )
     raw["verifier"]["idempotence"] = {"enabled": False, "gating": False}
+    raw["verifier"]["teardown"] = {"enabled": False, "gating": False}
     with pytest.raises(ValueError, match="spend with no measurement"):
         Spec.model_validate(raw)
 
@@ -1294,6 +1295,7 @@ def test_the_refresh_flag_no_longer_depends_on_live_check_alone(
         {"enabled": False, "gating": False, "hand_authored": False}
     )
     raw["verifier"]["idempotence"] = {"enabled": False, "gating": False}
+    raw["verifier"]["teardown"] = {"enabled": False, "gating": False}
     greenfield_oracle_brownfield_workspace = Spec.model_validate(raw)
 
     monkeypatch.setattr(gen_module, "TASKS_DIR", tmp_path / "tasks")
@@ -2010,20 +2012,24 @@ def test_only_a_seeded_spec_grows_the_movement_guard(tmp_path: Path) -> None:
     that emits pre_invoke.sh -- and never by `verifier.idempotence` alone.
 
     THE CONDITION IS THE CONJUNCTION, not `seeded` alone. The guard lives
-    INSIDE the idempotence block (gen.py::build_idempotence_block returns ""
-    when `verifier.idempotence.enabled` is false, before it ever reaches
-    build_idempotence_seed_movement_guard), so a brownfield spec that deploys
-    its seed and deliberately leaves idempotence OFF correctly ships no guard.
-    Written as `seeded` alone this test read the first such spec as a
+    INSIDE a live tier's block (gen.py::build_idempotence_block and
+    build_teardown_block each return "" when their own `enabled` is false,
+    before either reaches build_seed_movement_guard), so a brownfield spec that
+    deploys its seed and deliberately leaves both tiers OFF correctly ships no
+    guard. Written as `seeded` alone this test read the first such spec as a
     generation bug -- the docstring's own "never by verifier.idempotence alone"
     is a statement about the guard's SUFFICIENT condition, and this is its
     NECESSARY one.
+
+    EITHER tier arms it: §5.1 asks whether the state MOVED before it calls a
+    plan converged, §5.2 asks the same before it spends a destroy on what may
+    be the harness's own seed.
     """
     guard = "SEED MOVEMENT GUARD"
     expected_dirs = {
         task_dir(spec, arm).resolve()
         for spec in _seed_deploying_specs()
-        if spec.verifier.idempotence.enabled
+        if spec.verifier.idempotence.enabled or spec.verifier.teardown.enabled
         for arm in spec.arms.enabled_arms()
     }
     for path in sorted(TASKS_DIR.rglob("tests/test.sh")):
@@ -2031,12 +2037,12 @@ def test_only_a_seeded_spec_grows_the_movement_guard(tmp_path: Path) -> None:
         wants_guard = path.parent.parent.resolve() in expected_dirs
         assert has_guard == wants_guard, (
             f"{path}: movement guard present={has_guard} but this task's spec "
-            f"declares workspace_seed.deploy AND verifier.idempotence.enabled="
-            f"{wants_guard} -- these are one branch"
+            f"declares workspace_seed.deploy AND (verifier.idempotence.enabled "
+            f"or verifier.teardown.enabled)={wants_guard} -- these are one branch"
         )
     assert expected_dirs, (
-        "no spec both deploys a seed and enables idempotence -- this test would "
-        "be vacuous"
+        "no spec both deploys a seed and enables a live tier that asks about "
+        "seed movement -- this test would be vacuous"
     )
 
 

@@ -794,11 +794,12 @@ and the disarmed shape.
      `bookworm-slim-node22`, open-constructs/cdk-terrain PR #394):
      `node:22.23.2-bookworm-slim` digest-pinned, smoke environment synced,
      `make build-arms`, one smoke trial.
-   * Teardown tier — Amendment 37: `verifier.teardown {enabled, gating}`,
-     requires a live check, generator-injected per-arm destroy, outcomes
-     clean / destroy_failed / not_verifiable, runs after the live check and
-     idempotence, final step only, fail-closed, framework reset unchanged.
-     Promote on one mutating spec.
+   * ~~Teardown tier~~ — Amendment 37, DRAFT (`specs/SCHEMA.md` §5.2,
+     `gen.py::TEARDOWN_COMMAND`, `generator/tests/test_teardown_tier.py`).
+     `named-resource-replacement` opts in NON-GATING as the promotion vehicle;
+     promotion needs one live trial writing `teardown-result.json` with outcome
+     `clean` on at least one arm. First gating use:
+     `ecr-repo-destroy-force-delete`.
    * `grading-proof` accepting an observed live-tier catch as proof of
      gradeability — Amendment 39 (unblocks
      `lambda-alias-tracks-unpublished-latest`, red in `make ci` because it

@@ -2116,6 +2116,122 @@ only. An intermediate step is expected to leave pending changes (the next step i
 what applies them), and gating it there would abort every trial at the
 `min_reward` gate.
 
+### 5.2 `verifier.teardown` (optional, default disabled)
+
+```yaml
+verifier:
+  live_check: { enabled: true, hand_authored: true, gating: true, … }
+  teardown:
+    enabled: true      # default false
+    gating: true       # default false; requires enabled
+```
+
+Added 2026-09-10 (`docs/design/batch-a-greenfield-blueprints.md` §12 (c);
+`DECISIONS.md` Amendment 37, the teardown tier). A deliberate near-clone of §5.1
+above, reusing that tier's machinery rather than inventing a second pattern. The
+question it answers is one no static tier can: **when the agent's own toolchain
+is asked to destroy what it deployed, does the destroy succeed?**
+
+A static tier can see `force_delete = true` in the configuration, but the
+argument is only a *proxy* for the requirement. The requirement is "teardown
+leaves the account clean", and the only honest oracle for it is running the
+agent's own teardown.
+
+**IT GRADES THE AGENT'S TEARDOWN; IT IS NOT A CLEANUP MECHANISM.** aws-bench's
+own post-trial reset is still what guarantees the account returns to baseline
+(Amendments 17/18, re-proven in `docs/teardown-experiment-results.md`), and it
+runs afterwards whatever this tier reports — so a `destroy_failed` verdict leaks
+nothing. This sentence is the contract, not a note: an "improvement" that turned
+the tier into the cleanup path would delete the reset's independent guarantee.
+
+**It is a LIVE tier**, for §5.1's reason in a sharper form: with no apply there
+is nothing to destroy, and an offline destroy of an empty working directory
+exits 0 having removed nothing — i.e. it would report `clean` for a trial that
+deployed nothing at all. Hence `teardown.enabled: true` **requires**
+`live_check.enabled: true` (`spec_model.Spec._teardown_requires_live_check`).
+
+**Per-arm destroy commands are injected unconditionally by the generator**,
+never read from a spec key — the same "cannot go missing because a spec author
+forgot a YAML key" discipline `IDEMPOTENCE_COMMAND` uses
+(`gen.py::TEARDOWN_COMMAND`):
+
+| Arm | Command | Clean | Failed |
+|---|---|---|---|
+| `hcl_raw` | `terraform destroy -input=false -auto-approve` | exit 0 | non-zero |
+| `terraconstructs` | `npx cdktn synth`, the **post-synth state re-probe** (reserved rc `9`, §5.1), then the same destroy inside `cdktf.out/stacks/<workspace_id>/` | exit 0 | non-zero |
+| `awscdk` | `npx cdk destroy --force ScenarioStack` | exit 0 **and** the completion marker | non-zero |
+
+**A destroy that fails for a transient AWS reason is NOT retried by this tier.**
+Amendment 35's bounded retry wraps `tests/_live_lib.py::run_aws`, i.e. individual
+`aws` calls a hand-authored live check makes; the destroy is a *toolchain run*,
+and the retry does not reach inside it. A transient failure therefore records
+`destroy_failed` and, under `gating`, costs the trial its reward.
+
+**Three outcomes**, written to `/logs/verifier/teardown-result.json` (plus the
+raw command output in `/logs/verifier/teardown.log`) **whether gating or not**:
+
+- `clean` — the destroy succeeded;
+- `destroy_failed` — the destroy ran and did not;
+- `not_verifiable` — nothing was deployed, or the command never reached AWS.
+  Detected by the **same per-arm mechanisms §5.1 already defines**
+  (`gen.py::TEARDOWN_STATE_PROBE` *is* `IDEMPOTENCE_STATE_PROBE`; one map, so
+  the two tiers cannot come to disagree about where an arm keeps its state):
+
+  - **`hcl_raw` / `terraconstructs` — pre-flight file probe.** State absent ⇒
+    `not_verifiable` with a reason, and **no destroy is attempted**.
+  - **`terraconstructs` — plus the post-synth re-probe**, for §5.1's reason:
+    the state is at `/app/project/terraform.<workspace_id>.tfstate`, not under
+    `cdktf.out/`, and a synth that cleaned the stack directory would leave the
+    destroy with no state to act on.
+  - **`awscdk` — post-flight completion marker.** This arm keeps no local state
+    (CloudFormation is the state), so exit 0 is believed as `clean` **only if**
+    `teardown.log` also contains `ScenarioStack: destroyed`. Exit 0 *without*
+    the marker is `not_verifiable`, never `clean`. Unlike §5.1's `cdk diff`
+    marker, this line is **not yet measured against the arm's exact CLI pin** —
+    which is why the tier ships non-gating and why a live `clean` on this arm is
+    one of the promotion criteria in `DECISIONS.md` Amendment 37, the teardown
+    tier. A wrong marker fails **safe**: it
+    reports `not_verifiable` for a destroy that succeeded, and can never report
+    `clean` for one that did not.
+
+  - **Every arm, on a `workspace_seed.deploy` spec — the SEED MOVEMENT GUARD**
+    (§2.7.1, finding H), emitted from the same `gen.py::build_seed_movement_guard`
+    §5.1 uses, with this tier's own wording. It is not optional here: on a
+    brownfield spec the pre-flight probe above is **dead by construction**
+    (`pre_invoke.sh` writes that state before the agent's first token), so
+    without the guard an agent that deployed nothing — or whose apply died
+    partway — would have the *harness's* seed destroyed on its behalf and be
+    recorded `clean`. An unchanged identity, an absent receipt, a receipt
+    carrying no identity, and unreadable state all yield `not_verifiable` **with
+    no destroy attempted**; on `awscdk` an unanswerable `describe-stacks` makes
+    the guard abstain on stderr rather than convict, and the completion marker
+    still covers that case.
+
+  The guarantee is the guarantee, not the mechanism, and it is §5.1's in the
+  same words: **with nothing deployed to destroy, this tier is skipped with a
+  reason, never fake-passed, on all three arms.**
+
+**Ordering is load-bearing.** The block runs **after** `live_check` and **after**
+the idempotence block. Destroying first would invalidate both — the live check
+would assert against a deleted account and the idempotence plan would run
+against emptied state. Both tiers share one placeholder line in
+`build_test_sh`'s template, teardown always second.
+
+**`gating: true` is fail-closed and AND-composed**, byte for byte §5.1's
+contract with one more conjunct: final reward is 1.0 iff the static tiers say
+1.0 AND the live check's `.outcome` is `"pass"` AND (if enabled) idempotence is
+`"converged"` AND this tier's outcome is `"clean"`. Both `destroy_failed` and
+`not_verifiable` downgrade to 0.0.
+
+**Emission is generation-conditional, not a runtime-gated branch** — §5.1's
+regression guarantee, verified the same way: with `teardown` disabled, every
+pre-existing task's `tests/test.sh` is byte-identical.
+
+Multi-step composition: the block rides the **final** step's `[steps.verifier]
+env` only, for a stronger reason than idempotence's — a destroy after an
+intermediate step deletes the substrate the next step is about to change, so
+every later step would grade an empty account.
+
 ---
 
 ## 6. `provenance`
