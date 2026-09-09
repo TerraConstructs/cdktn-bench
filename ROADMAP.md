@@ -547,12 +547,18 @@ strictness than the engine used on the other arms.
 
 **Caveat on the capability claim.** "awscdk has more guardrail tooling" should
 NOT be evidenced by cfn-guard's existence: Terraform has conftest/OPA, Checkov,
-tfsec and Sentinel, and arguably a richer policy ecosystem. The genuinely
-CDK-specific guardrail is **Aspects / cdk-nag** — programmatic, type-aware,
-running at synth over the construct tree, with no HCL equivalent. If we want to
-claim a guardrail advantage, Aspects is what should be measured (plausibly its
-own scenario: "add a guardrail that fails the build when X"), not the presence
-of a template linter.
+tfsec and Sentinel, and arguably a richer policy ecosystem.
+
+**Decision (owner, 2026-09-09): cdk-nag and `@aws/cloudformation-validate` are
+outside the bench design.** They are neither oracles nor oracle complements.
+The validate plugin that `aws-cdk-lib` bundles (2.262.0+, and so the pinned
+2.263.0) runs on every awscdk synth by default; that is a shift-left feedback
+loop the awscdk arm has and the other arms do not, which is **by design** and
+part of what the arm comparison measures. The bench's only obligation is to
+never prevent the agent from running such tooling (no `allow_internet: false`,
+no plugin suppression in the arm image). The one thing worth keeping from the
+evaluation is a citation: AWS shipping Rego as the rule language for
+CloudFormation validation independently corroborates M8's engine choice.
 
 ### M9 — brownfield ADOPTION scenarios (import existing infrastructure)
 
@@ -738,6 +744,28 @@ and the disarmed shape.
   be worth it; `MAX_TOKENS` censor pilot-set from observed output distributions.
 
 ---
+
+## 6b. Owner priorities, in order (set 2026-09-09)
+
+1. ~~Sidecar / environment rework~~ — superseded by Amendment 32 (no mocks
+   left to host); recorded in `mock-endpoints.html`.
+2. ~~Scenario split (M7)~~ — Amendment 33, ACCEPTED.
+3. ~~Drop tier 0.5~~ — Amendment 34, ACCEPTED (live `TestState` check).
+4. **Rebalance the corpus toward day-2 / brownfield.** Every greenfield spec
+   stays in the corpus; results are reported per form (greenfield, multi-step,
+   brownfield, pre-configured account) and never pooled. Mechanize the form
+   label: `scenario_form` in `metrics/result_schema.json`, derived by
+   `gates/emit_result.py` from the task, grouped by `metrics/tokens_to_green.py`.
+5. Before the first full battery: §5b.1 bounded retry on transient AWS errors;
+   `grading-proof` accepting an observed live-tier catch as proof of
+   gradeability (unblocks `lambda-alias-tracks-unpublished-latest`, which is
+   red in `make ci` today because it declares no tier-1 catch and the gate
+   requires one); a distinct verifier outcome for "agent ended its turn with
+   its deploy still running" (seen once, Amendment 33 promotion run).
+6. Comment clean-up continues as part of every change (rules in CLAUDE.md
+   "Comments"); remaining hot spots are `generator/gen.py` bodies, the
+   emitted template strings, hand-authored `solve.sh` files, `arms/*/README.md`,
+   `scripts/run-bench.sh` and `oracles/rego*`.
 
 ## 7. Open decisions
 

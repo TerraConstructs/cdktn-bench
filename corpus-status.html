@@ -1,6 +1,15 @@
+<!--
+  Palette note. Slate-teal on a cool grey-green ground, one accent hue, semantic
+  green/amber/red reserved for run outcomes. Chosen because this page is a
+  read-out of a benchmark whose subject is infrastructure state: the accent is
+  the colour of a terminal's own success text, the neutrals are biased toward it
+  rather than pure grey, and every other hue is spent on whether a row is
+  measured, partial, void or unrun. Deliberately not the warm-cream/serif/
+  terracotta editorial look - this is an engineering reference document, and the
+  serif is here for long-form argument, not for warmth.
+-->
 <title>Measured and Unmeasured</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 
 <style>
@@ -72,7 +81,7 @@
   }
   h2 {
     font-size: 21px; font-weight: 600; letter-spacing: -0.01em;
-    margin: 0 0 4px; padding-top: 4px;
+    margin: 0 0 4px; padding-top: 4px; text-wrap: balance;
   }
   h3 { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
   p { margin: 0 0 14px; max-width: 68ch; }
@@ -84,6 +93,7 @@
   code, .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.88em; }
   code { background: var(--idle-w); padding: 1px 5px; border-radius: 3px; }
   a { color: var(--accent); }
+  a:focus-visible, th:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
   header.head { border-bottom: 2px solid var(--ink); padding-bottom: 22px; margin-bottom: 34px; }
   .stamp {
@@ -128,6 +138,7 @@
   tr:last-child td { border-bottom: 0; }
   td.id { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; white-space: nowrap; }
   td.num { text-align: right; font-family: "IBM Plex Mono", monospace; font-size: 13px; }
+  td.sh  { font-family: "IBM Plex Mono", monospace; font-size: 12.5px; white-space: nowrap; }
   tbody tr.measured td:first-child { box-shadow: inset 3px 0 0 var(--ok); }
   tbody tr.partial  td:first-child { box-shadow: inset 3px 0 0 var(--warn); }
   tbody tr.unrun    td:first-child { box-shadow: inset 3px 0 0 var(--idle); }
@@ -143,6 +154,7 @@
   .chip.warn { color: var(--warn); }
   .chip.void { color: var(--void); }
   .chip.acc  { background: var(--accent-w); color: var(--accent); }
+  .chip.unv  { border: 1px dashed var(--warn); color: var(--warn); background: none; }
 
   .note {
     background: var(--card); border: 1px solid var(--rule);
@@ -162,6 +174,14 @@
   .attr .who { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--ink-3); margin-top: 7px; }
   ul { margin: 0 0 14px; padding-left: 20px; }
   li { margin-bottom: 6px; max-width: 66ch; }
+  pre {
+    background: var(--idle-w); padding: 12px 14px; border-radius: 3px;
+    overflow-x: auto; font-family: "IBM Plex Mono", monospace;
+    font-size: 12.5px; margin: 0 0 14px; line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; }
+  figure { margin: 18px 0; }
+  figcaption { font-size: 13px; color: var(--ink-3); margin-top: 8px; max-width: 66ch; }
   .foot { margin-top: 56px; padding-top: 18px; border-top: 1px solid var(--rule); color: var(--ink-3); font-size: 13px; }
 </style>
 
@@ -170,58 +190,97 @@
 <header class="head">
   <div class="lbl">cdktn-bench · scenario corpus</div>
   <h1>Measured and Unmeasured</h1>
-  <p class="lede">Seventeen specs, fifty-one tasks, three arms, one AWS account. The hypothesis is
-  <strong>day-2 operations and brownfield</strong>, not greenfield generation — and 71% of the
-  corpus is greenfield, statically graded. Six specs have ever touched a real account — and on
-  2026-08-27/28 the first battery under Amendment 32 (live AWS as the only trial mode) produced
-  18/18 valid rows on the first attempt, on every arm, for every scenario it touched.</p>
+  <p class="lede">Seventeen specs, fifty task directories, three arms — and, since
+  Amendment 33, <strong>four AWS member accounts</strong> instead of one. The hypothesis is
+  <strong>day-2 operations and brownfield</strong>, not greenfield generation, and 12 of 17 specs
+  are still single-step greenfield. Six specs have ever touched a real account. Amendments 33
+  (scenario shards) and 34 (tier 0.5 retired; JSONata graded live by <code>states:TestState</code>)
+  were both registered and promoted on 2026-09-09, each on its first attempt.</p>
   <div class="stamp">
-    <span>2026-08-28</span><span>main @ fe01d59 (Amendment 32 ACCEPTED)</span><span>17 specs + 1 toy</span><span>train 10 / holdout 7</span>
+    <span>2026-09-09</span><span>main @ 4608901</span><span>17 specs + 1 toy</span><span>train 10 / holdout 7</span><span>shard_count = 4</span>
   </div>
 </header>
 
 <section>
   <div class="tiles">
     <div class="tile"><div class="n">17</div><div class="k">specs</div></div>
-    <div class="tile"><div class="n">51</div><div class="k">task dirs</div></div>
-    <div class="tile"><div class="n">13</div><div class="k">greenfield</div></div>
+    <div class="tile"><div class="n">50</div><div class="k">task dirs</div></div>
+    <div class="tile"><div class="n">12</div><div class="k">greenfield</div></div>
     <div class="tile"><div class="n">4</div><div class="k">brownfield</div></div>
     <div class="tile"><div class="n">1</div><div class="k">multi-step</div></div>
+    <div class="tile"><div class="n">4</div><div class="k">shards</div></div>
     <div class="tile alarm"><div class="n">11</div><div class="k">never run live</div></div>
   </div>
+  <p style="font-size:13.5px;color:var(--ink-3);margin-top:10px">
+    50 generated task directories across the 17 specs (16 specs × 3 arms, plus <code>sfn-jsonata</code>
+    on 2 — terraconstructs is disabled there). <code>tasks/</code> also holds the hand-maintained
+    <code>smoke</code> task and the 3-arm <code>toy-ssm-parameter</code>, which are not corpus specs.
+  </p>
 </section>
 
 <section>
   <div class="sechead">
-    <h2>Form</h2>
-    <p>Every scenario is single-step greenfield unless it says otherwise. The corpus is far less
-    varied in form than the roadmap implies.</p>
+    <h2>Terminology — seven words, four layers</h2>
+    <p>"Scenario" means two different things depending on which layer you are in. Nearly every
+    architectural confusion in this project traces back to that, and Amendment 33 made it worse
+    before it made it better.</p>
+  </div>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Term</th><th>Layer</th><th>What it actually is</th><th class="num">Count</th></tr></thead>
+    <tbody>
+      <tr><td class="id">spec</td><td>cdktn-bench</td><td><code>specs/&lt;id&gt;.yaml</code> — one task specification plus the arms it applies to. The authoring unit; operator-facing, and its <code>id</code> and <code>title</code> may name the pitfall (SCHEMA §0.1).</td><td class="num">17</td></tr>
+      <tr><td class="id">generator</td><td>cdktn-bench</td><td><code>generator/gen.py</code> — compiles one spec into one task directory <em>per arm</em>, stamping <code>scenario_id</code> and the task's parent directory. Everything under <code>tasks/**</code> is its output; the only hand-authored files are <code>solution/**/solve.sh</code> and a declared <code>tests/live_check.py</code>.</td><td class="num">—</td></tr>
+      <tr><td class="id">task</td><td>Harbor</td><td><code>tasks/&lt;scenario_id&gt;/&lt;spec&gt;-&lt;arm&gt;/</code> — what a trial actually runs. Carries <code>task.toml</code>, <code>environment/</code>, <code>tests/</code>, <code>solution/</code>, and (single-step only) <code>instruction.md</code>.</td><td class="num">50</td></tr>
+      <tr><td class="id">scenario shard</td><td>aws-bench</td><td><strong>Not a spec.</strong> An aws-bench <em>scenario</em> is a pre-provisioned AWS <em>account state</em> — the unit of <code>env setup</code>, reset, contamination and admission control, and it binds to exactly one member account. Shard 0 is <code>anchor</code>; shard k is <code>anchor-k</code>, materialized by <code>make shards</code> from the tracked files of <code>scenarios/anchor</code>.</td><td class="num">4</td></tr>
+      <tr><td class="id">arm</td><td>cdktn-bench</td><td><code>arms/&lt;arm&gt;/</code> — a toolchain under test: <code>awscdk</code>, <code>terraconstructs</code>, <code>hcl-raw</code>. Owns the image contract and the workspace skeleton.</td><td class="num">3</td></tr>
+      <tr><td class="id">environment</td><td>Harbor</td><td><code>&lt;task&gt;/environment/</code> — the Docker build context, and the build context is that directory itself, never the arm root. <strong>COPY'd into the agent image, so every byte is prompt surface.</strong></td><td class="num">50</td></tr>
+      <tr><td class="id">workspace</td><td>agent</td><td><code>/app/project</code> inside the container — what the agent edits. Greenfield: the arm's skeleton with a generated entry file. Brownfield: a hand-authored, already-deployed seed.</td><td class="num">—</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p style="font-size:14px;color:var(--ink-2);margin-top:12px">
+    The identity rule that keeps the two "scenario" senses from leaking into each other:
+    <code>scenario_id</code> and the task's parent directory under <code>tasks/</code>
+    <strong>always agree</strong>. The registry generator reads the path and aws-bench reads the
+    field; a disagreement binds a task to a scenario nobody deployed.
+  </p>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>The corpus, spec by spec</h2>
+    <p>Derived from <code>specs/*.yaml</code>, <code>specs/split.yaml</code>,
+    <code>generator/shards.py</code> and the <code>tasks/</code> tree — not from memory. Type is
+    read off the spec: a <code>workspace_seed</code> block makes it brownfield, a top-level
+    <code>steps:</code> list makes it multi-step, neither makes it greenfield.</p>
   </div>
 
   <div class="scroll">
   <table>
     <thead><tr>
-      <th>Scenario</th><th>Form</th><th>Split</th><th>Live check</th>
-      <th class="num">Catches</th><th class="num">Tier 0</th><th class="num">Tier 1</th>
+      <th>Spec</th><th>Type</th><th class="num">Arms</th><th>Concurrency</th>
+      <th>Shard <span style="text-transform:none">(cdk/hcl/tcons)</span></th>
+      <th>Live check</th><th>Idempotence</th><th>Split</th><th class="num">Catches</th>
     </tr></thead>
     <tbody>
-      <tr class="measured"><td class="id">ecs-swappiness</td><td><span class="chip">greenfield</span></td><td>train</td><td>—</td><td class="num">2</td><td class="num">3</td><td class="num">1</td></tr>
-      <tr class="measured"><td class="id">apigw-redeploy</td><td><span class="chip acc">multi-step</span></td><td>holdout</td><td><span class="chip ok">gating</span></td><td class="num">3</td><td class="num">6</td><td class="num">1</td></tr>
-      <tr class="measured"><td class="id">named-resource-replacement</td><td><span class="chip acc">brownfield + deploy</span></td><td>train</td><td><span class="chip ok">gating</span></td><td class="num">2</td><td class="num">4</td><td class="num">1</td></tr>
-      <tr class="measured"><td class="id">s3-lambda-log-retention</td><td><span class="chip">greenfield</span></td><td>train</td><td>—</td><td class="num">2</td><td class="num">6</td><td class="num">2</td></tr>
-      <tr class="partial"><td class="id">sfn-jsonata</td><td><span class="chip">greenfield</span></td><td>holdout</td><td>—</td><td class="num">2</td><td class="num">2</td><td class="num">7</td></tr>
-      <tr class="broken"><td class="id">apigw-openapi</td><td><span class="chip">greenfield</span></td><td>train</td><td>—</td><td class="num">2</td><td class="num">5</td><td class="num">2</td></tr>
-      <tr class="broken"><td class="id">lambda-alias-tracks-unpublished-latest</td><td><span class="chip acc">brownfield + deploy</span></td><td>train</td><td><span class="chip ok">gating</span></td><td class="num">2</td><td class="num">3</td><td class="num">0</td></tr>
-      <tr class="unrun"><td class="id">s3-acl-vs-object-ownership-log-delivery</td><td><span class="chip acc">brownfield + deploy</span></td><td>holdout</td><td><span class="chip ok">gating</span></td><td class="num">4</td><td class="num">5</td><td class="num">2</td></tr>
-      <tr class="unrun"><td class="id">singleton-child-resource-clobber</td><td><span class="chip acc">brownfield + deploy</span></td><td>train</td><td><span class="chip ok">gating</span></td><td class="num">3</td><td class="num">7</td><td class="num">1</td></tr>
-      <tr class="unrun"><td class="id">s3-notification-authoritative-singleton</td><td><span class="chip">greenfield</span></td><td>holdout</td><td>—</td><td class="num">7</td><td class="num">8</td><td class="num">5</td></tr>
-      <tr class="unrun"><td class="id">s3-bucket-hardening-decomposition</td><td><span class="chip">greenfield</span></td><td>train</td><td>—</td><td class="num">6</td><td class="num">7</td><td class="num">5</td></tr>
-      <tr class="unrun"><td class="id">iam-managed-policy-exclusive-vs-attachment</td><td><span class="chip">greenfield</span></td><td>holdout</td><td>—</td><td class="num">6</td><td class="num">5</td><td class="num">2</td></tr>
-      <tr class="unrun"><td class="id">ddb-gsi-attribute-definitions</td><td><span class="chip">greenfield</span></td><td>train</td><td>—</td><td class="num">6</td><td class="num">5</td><td class="num">1</td></tr>
-      <tr class="unrun"><td class="id">acm-dns-validation-record-wiring</td><td><span class="chip">greenfield</span></td><td>train</td><td>—</td><td class="num">5</td><td class="num">6</td><td class="num">3</td></tr>
-      <tr class="unrun"><td class="id">lambda-log-group-ownership-and-retention</td><td><span class="chip">greenfield</span></td><td>holdout</td><td>—</td><td class="num">5</td><td class="num">6</td><td class="num">2</td></tr>
-      <tr class="unrun"><td class="id">asg-launch-template-tag-propagation</td><td><span class="chip">greenfield</span></td><td>holdout</td><td>—</td><td class="num">4</td><td class="num">11</td><td class="num">1</td></tr>
-      <tr class="unrun"><td class="id">s3-notification-custom-resource-tax</td><td><span class="chip">greenfield</span></td><td>train</td><td>—</td><td class="num">3</td><td class="num">6</td><td class="num">4</td></tr>
+      <tr class="measured"><td class="id">ecs-swappiness</td><td><span class="chip">greenfield</span></td><td class="num">3</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>train</td><td class="num">2</td></tr>
+      <tr class="measured"><td class="id">named-resource-replacement</td><td><span class="chip acc">brownfield</span></td><td class="num">3</td><td>mutating</td><td class="sh">1 / 2 / 3</td><td><span class="chip ok">gating</span></td><td><span class="chip ok">gating</span></td><td>train</td><td class="num">2</td></tr>
+      <tr class="measured"><td class="id">apigw-redeploy</td><td><span class="chip acc">multi-step</span></td><td class="num">3</td><td>mutating</td><td class="sh">3 / 1 / 2</td><td><span class="chip ok">gating</span></td><td>—</td><td>holdout</td><td class="num">3</td></tr>
+      <tr class="measured"><td class="id">sfn-jsonata</td><td><span class="chip">greenfield</span></td><td class="num">2</td><td>read-only</td><td class="sh">anchor</td><td><span class="chip ok">gating</span></td><td>—</td><td>holdout</td><td class="num">2</td></tr>
+      <tr class="partial"><td class="id">s3-lambda-log-retention</td><td><span class="chip">greenfield</span></td><td class="num">3</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>train</td><td class="num">2</td></tr>
+      <tr class="broken"><td class="id">apigw-openapi</td><td><span class="chip">greenfield</span></td><td class="num">3</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>train</td><td class="num">2</td></tr>
+      <tr class="unrun"><td class="id">lambda-alias-tracks-unpublished-latest</td><td><span class="chip acc">brownfield</span></td><td class="num">3</td><td>mutating</td><td class="sh">1 / 2 / 3</td><td><span class="chip ok">gating</span></td><td><span class="chip warn">non-gating</span></td><td>train</td><td class="num">2</td></tr>
+      <tr class="unrun"><td class="id">s3-acl-vs-object-ownership-log-delivery</td><td><span class="chip acc">brownfield</span></td><td class="num">3</td><td>mutating</td><td class="sh">3 / 1 / 2</td><td><span class="chip ok">gating</span></td><td><span class="chip">declared, off</span></td><td>holdout</td><td class="num">4</td></tr>
+      <tr class="unrun"><td class="id">singleton-child-resource-clobber</td><td><span class="chip acc">brownfield</span></td><td class="num">3</td><td>mutating</td><td class="sh">2 / 3 / 1</td><td><span class="chip ok">gating</span></td><td><span class="chip ok">gating</span></td><td>train</td><td class="num">3</td></tr>
+      <tr class="unrun"><td class="id">s3-notification-authoritative-singleton</td><td><span class="chip">greenfield</span></td><td class="num">3</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>holdout</td><td class="num">7</td></tr>
+      <tr class="unrun"><td class="id">s3-bucket-hardening-decomposition</td><td><span class="chip">greenfield</span></td><td class="num">3</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>train</td><td class="num">6</td></tr>
+      <tr class="unrun"><td class="id">iam-managed-policy-exclusive-vs-attachment</td><td><span class="chip">greenfield</span></td><td class="num">3</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>holdout</td><td class="num">6</td></tr>
+      <tr class="unrun"><td class="id">ddb-gsi-attribute-definitions</td><td><span class="chip">greenfield</span></td><td class="num">3</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>train</td><td class="num">6</td></tr>
+      <tr class="unrun"><td class="id">acm-dns-validation-record-wiring</td><td><span class="chip">greenfield</span></td><td class="num">3</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>train</td><td class="num">5</td></tr>
+      <tr class="unrun"><td class="id">lambda-log-group-ownership-and-retention</td><td><span class="chip">greenfield</span></td><td class="num">3</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>holdout</td><td class="num">5</td></tr>
+      <tr class="unrun"><td class="id">asg-launch-template-tag-propagation</td><td><span class="chip">greenfield</span></td><td class="num">3</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>holdout</td><td class="num">4</td></tr>
+      <tr class="unrun"><td class="id">s3-notification-custom-resource-tax</td><td><span class="chip">greenfield</span></td><td class="num">3</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>train</td><td class="num">3</td></tr>
     </tbody>
   </table>
   </div>
@@ -229,8 +288,356 @@
     Stripe: <strong style="color:var(--ok)">green</strong> measured ·
     <strong style="color:var(--warn)">amber</strong> partial ·
     <strong style="color:var(--void)">red</strong> ran but produced nothing usable ·
-    grey never run.
+    grey never run. Shard column reads <em>awscdk / hcl-raw / terraconstructs</em>; a bare
+    <code>anchor</code> means all enabled arms are on shard 0.
   </p>
+
+  <div class="note">
+    <h3>The fourth type has no members</h3>
+    <p><strong>Pre-configured-account</strong> — a scenario whose infrastructure exists before the
+    trial, expressed as <code>steps[].pre_invoke.deploy_prior: true</code> — is a real, implemented
+    capability of the schema (SCHEMA §2.6) and is exercised by <strong>zero real specs</strong>.
+    Only <code>generator/</code>'s own unit tests reach it. <code>apigw-redeploy</code>, the one
+    multi-step spec, does not declare it: its step 1 deploys for real, and step 2 inherits that
+    deployment from the same trial.</p>
+    <p><code>lambda-alias-tracks-unpublished-latest</code> was designed to need it and is expressed
+    single-step instead, because the Amendment 31 seed deploy performs a real apply before the
+    agent's first token. So the brownfield type absorbed the case that would have created this one.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>Oracles and their tiers, as they are now</h2>
+    <p>An oracle decides whether a solution is correct. Four tiers, ordered by cost and by how close
+    they sit to the truth. There is no tier 0.5 any more.</p>
+  </div>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Tier</th><th>What it asks</th><th>awscdk</th><th>Terraform arms</th><th>Cost</th><th class="num">Specs</th></tr></thead>
+    <tbody>
+      <tr><td class="id">tier 0</td><td>Does the synthesized artifact have the right shape? Structural asserts compiled to <code>jq</code> over a template or a plan.</td><td><code>tsc</code> + <code>cdk synth</code> → CloudFormation JSON</td><td><code>validate</code> + <code>plan -json</code></td><td>seconds</td><td class="num">17</td></tr>
+      <tr><td class="id">tier 1</td><td>A <em>quantified</em> statement a jq path cannot express — "no rule anywhere in this group may be open to the world".</td><td>cfn-guard 3.2.0 by default; OPA/Rego where <code>oracle.awscdk_tier1_engine: rego</code> — 3 of 17</td><td>OPA/Rego 1.19.0, plus <code>hcl2json</code> traversal where <code>oracle.hcl_traversal</code> is set (1 spec)</td><td>seconds</td><td class="num">16</td></tr>
+      <tr class="measured"><td class="id">live</td><td>Does the real system actually behave? A hand-authored <code>tests/live_check.py</code>, byte-identical across every arm of its spec — verified by hash on all six (<code>apigw-redeploy</code> is multi-step: each step's file is identical across arms).</td><td colspan="2">Real AWS API calls from the verifier phase — 6 of 17 specs, every one of them <strong>gating</strong> and fail-closed</td><td>minutes + $</td><td class="num">6</td></tr>
+      <tr class="measured"><td class="id">idempotence</td><td>Is a second apply a no-op against what was just deployed? Plus the seed-movement guard, so a do-nothing agent cannot inherit the seed's own convergence.</td><td><code>cdk diff --fail --no-lookups</code> + a completion marker</td><td><code>plan -input=false -refresh=false -detailed-exitcode</code> + a state-file probe</td><td>minutes</td><td class="num">3</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="note good">
+    <h3>What changed: tier 0.5 is retired (Amendment 34, 2026-09-09)</h3>
+    <p>Tier 0.5 evaluated a synthesized ASL document's <code>{% … %}</code> JSONata expressions
+    host-side with <code>jsonata-python</code>. It is gone in full, along with the retraction of the
+    amendments that created it. The stated reasons: one spec ever populated it while twelve carried
+    <code>tier05_jsonata: null</code> purely to exercise the absent path; it never ran inside
+    <code>tests/static_tiers.sh</code> and never touched <code>reward.txt</code>, so it could not
+    change a score; and it graded a re-implementation rather than the service — two prior amendments
+    are records of that evaluator disagreeing with reality.</p>
+    <p><strong>The replacement is the service itself.</strong> <code>sfn-jsonata</code>'s
+    <code>jsonata-expression-correctness</code> catch is now <code>predicted_tier_caught: "live"</code>,
+    graded by a 701-line hand-authored <code>live_check.py</code> that submits the synthesized
+    definition to <code>stepfunctions test-state</code>. TestState needs no <code>roleArn</code> for
+    Pass and Choice states and <strong>creates nothing</strong>, so the spec stays
+    <code>[concurrency] mode = "read-only"</code>, co-runs on shard 0 and triggers no reset. Tiers
+    are now <code>"0"</code> or <code>"1"</code>, stated as a plain rule at the assert: a structural
+    assert may only name a tier that <code>static_tiers.sh</code> actually runs.</p>
+  </div>
+
+  <div class="note bad">
+    <h3>cdk-nag and <code>@aws/cloudformation-validate</code> are not oracles</h3>
+    <p>Neither grades anything. <code>@aws/cloudformation-validate</code> 1.6.0-beta ships
+    <em>bundled inside</em> <code>aws-cdk-lib</code> 2.263.0 in the awscdk arm's own
+    <code>package-lock.json</code>, and its findings surface as warnings during a normal
+    <code>cdk synth</code> — one appears in this repo's own record of a synth
+    (<code>CloudFormation-Validate::E3039</code>, in the <code>ddb-gsi-attribute-definitions</code>
+    repair log). That is an <strong>arm-specific shift-left feedback loop, by design</strong>: it is
+    part of what the awscdk toolchain gives its user, and it is one of the things the benchmark is
+    measuring. It is not a bench component and it writes nothing to <code>reward.txt</code>.</p>
+    <p>cdk-nag is not installed in any arm image and appears in this repo only as a roadmap note:
+    the genuinely CDK-specific guardrail worth measuring some day is Aspects/cdk-nag, and a
+    guardrail claim must not be evidenced by cfn-guard's mere presence, since Terraform has
+    conftest/OPA, Checkov, tfsec and Sentinel.</p>
+  </div>
+
+  <p style="font-size:14px;color:var(--ink-2);margin-top:12px">
+    <strong>Same intent, different substrate.</strong> The generator compiles one spec's assertions
+    into per-arm forms — a <code>cfn_jsonpath</code> for CloudFormation, a <code>tf_jsonpath</code>
+    for a Terraform plan. The <em>intent</em> is shared; the <em>expression</em> is not, and that gap
+    is where arm-asymmetric grading bugs live. The live check is the one instrument that is
+    genuinely arm-agnostic: the account does not know which toolchain produced a resource, which is
+    why <code>live_check.py</code> is byte-identical across the arms of a spec by construction.
+  </p>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>What the agent finds at turn 1</h2>
+    <p><code>/app/project</code> is the working directory in all three arms. Everything under
+    <code>environment/</code> is COPY'd into the image, so all of it is prompt surface — which is why
+    the entry-file split, and the header on it, are load-bearing rather than tidy.</p>
+  </div>
+
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Arm</th><th>Agent-owned entry file</th><th>Bootstrap, not agent-owned</th><th>Also present</th></tr></thead>
+    <tbody>
+      <tr><td class="id">awscdk</td><td><code>lib/scenario-stack.ts</code></td><td><code>bin/app.ts</code> — the <code>cdk.App</code> entrypoint synth depends on; the instruction names it and forbids touching it</td><td><code>package.json</code> / <code>package-lock.json</code> with <code>node_modules</code> installed at image build, <code>tsconfig.json</code>, <code>cdk.json</code>, and the emitted JS + <code>tsconfig.tsbuildinfo</code> from a build baked at image time so the agent's first compile is the warm incremental one</td></tr>
+      <tr><td class="id">hcl-raw</td><td><code>main.tf</code> — the only file the agent is expected to rewrite wholesale</td><td><code>provider.tf</code> — <code>required_providers</code> pinning <code>hashicorp/aws</code> 6.58.0 and a <code>provider "aws"</code> block with <code>region = "us-east-1"</code> and <code>default_tags</code>. It lives in its own file precisely because a normal solution rewrites <code>main.tf</code> entirely</td><td>a pre-warmed provider filesystem mirror, so <code>terraform init</code> needs no network</td></tr>
+      <tr><td class="id">terraconstructs</td><td><code>lib/scenario-stack.ts</code></td><td><code>main.ts</code> — App + <code>providerConfig</code> bootstrap only, the same two-file split as awscdk</td><td><code>cdktf.json</code>, <code>tsconfig.json</code>, <code>package.json</code> / lock with <code>node_modules</code>, a baked <code>tsc</code>, and its own provider mirror</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="cols" style="margin-top:18px">
+    <div class="attr"><h3>Greenfield</h3>
+      <p style="margin:0">The entry file is the generator's empty skeleton for that spec, headed by
+      the spec's <code>workspace_title</code> where one is declared. The agent sees a working,
+      idiomatic scaffold rather than an empty directory.</p></div>
+    <div class="attr"><h3>Brownfield — 4 specs</h3>
+      <p style="margin:0">The entry file ships hand-authored, plan-green config at mode
+      <code>0644</code> (writable — it is the file the change request is <em>about</em>), and
+      <code>pre_invoke.sh</code> has already <strong>deployed it into the shard account</strong>
+      under the agent's own role before the first token, with a 1800–2400 s budget. The seed's state
+      identity is stamped into <code>/logs/seed-deploy-receipt.json</code>. The seed is prompt
+      surface: no <code>TODO</code>, no banner, and no comment naming the mechanism that fixes the
+      trap.</p></div>
+    <div class="attr"><h3>Multi-step — 1 spec</h3>
+      <p style="margin:0">No root <code>instruction.md</code> at all. Step 1 gets the greenfield
+      skeleton and is told to deploy for real. Step 2 gets a <strong>fresh agent session</strong> on
+      the workspace step 1 left behind, with step 1's deployment live in the account — and a step-1
+      prompt may contain no hint of step 2's intent, enforced by a deny-list in the generator's
+      tests.</p></div>
+    <div class="attr"><h3>How the instruction arrives</h3>
+      <p style="margin:0">Single-step: <code>instruction.md</code> at the task root, uploaded by
+      Harbor — a ticket, closing with <em>write your final answer to
+      <code>/logs/agent/agent-output.txt</code></em>. Multi-step: one per step, under
+      <code>steps/&lt;name&gt;/</code>. The spec <code>id</code> and <code>title</code> never reach
+      it; <code>workspace_id</code> and <code>workspace_title</code> intercept them wherever they
+      would otherwise be stamped into <code>environment/</code>.</p></div>
+  </div>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>What the agent can check for itself</h2>
+    <p>Every trial runs against a live account — that is the whole of Amendment 32. What separates
+    the arms here is what their image ships and what their role permits.</p>
+  </div>
+
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Arm</th><th>Pinned toolchain</th><th>Self-verification commands</th><th class="num">Memory</th></tr></thead>
+    <tbody>
+      <tr><td class="id">awscdk</td>
+        <td>node 20.20.2 · typescript 7.0.2 · aws-cdk-lib 2.263.0 · constructs 10.8.1 · aws-cdk CLI 2.1135.0 · cfn-guard 3.2.0 · opa 1.19.0 · aws CLI v2 · jq, git, python3</td>
+        <td><code>tsc</code>, <code>cdk synth</code>, <code>cdk diff</code>, <code>cdk deploy</code> (mutating trials only) — plus the bundled CloudFormation validate plugin's warnings on every synth</td>
+        <td class="num">4096 MB</td></tr>
+      <tr><td class="id">hcl-raw</td>
+        <td>debian bookworm-slim · terraform 1.15.8 · hashicorp/aws 6.58.0 in a baked filesystem mirror · opa 1.19.0 · hcl2json 0.6.9 · aws CLI v2 · jq, git, python3</td>
+        <td><code>terraform init</code> (offline, from the mirror), <code>validate</code>, <code>plan</code>, <code>apply</code> (mutating trials only)</td>
+        <td class="num">2048 MB</td></tr>
+      <tr><td class="id">terraconstructs</td>
+        <td>node 20.20.2 · terraconstructs 0.2.13 · cdktn + cdktn-cli 0.23.0 · constructs 10.6.0 · @cdktn/provider-aws 24.8.0 · typescript 5.7.3 · ts-node 10.9.1 · terraform 1.15.8 with hashicorp/aws 6.52.0 mirrored · opa 1.19.0 · aws CLI v2</td>
+        <td><code>tsc</code>, <code>cdktn synth</code>, then <code>terraform init/validate/plan/apply</code> inside the synthesized stack directory</td>
+        <td class="num">4096 MB</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p style="font-size:13.5px;color:var(--ink-3);margin-top:10px">
+    The memory asymmetry is deliberate: both TypeScript arms compile, hcl-raw does not. Every task
+    gets 1 CPU and 4096 MB of storage.
+  </p>
+
+  <div class="cols" style="margin-top:18px">
+    <div class="attr"><h3>Read-only trials — <code>QALocalInvocationApplicationRole</code></h3>
+      <p style="margin:0 0 6px">Managed policies attached in
+      <code>scenarios/anchor/scenario/cdk_app/stacks/qa_roles_stack.ts</code>:</p>
+      <ul style="margin:0">
+        <li><code>ReadOnlyAccess</code></li>
+        <li><code>AmazonS3TablesReadOnlyAccess</code></li>
+        <li><code>AmazonRedshiftFullAccess</code></li>
+        <li><code>AmazonAthenaFullAccess</code></li>
+        <li><code>AmazonBedrockFullAccess</code></li>
+        <li>a stack-defined <code>S3VectorsReadOnlyAccess-&lt;account&gt;-&lt;region&gt;</code></li>
+      </ul>
+      <p style="margin:10px 0 0">So the agent can authenticate, describe and list against the real
+      shard account — enough for <code>terraform plan</code> and <code>cdk synth</code> to resolve
+      against reality rather than a stub — and cannot deploy. 12 specs run this way.</p></div>
+
+    <div class="attr"><h3>Mutating trials — <code>QALocalInvocationApplicationAdmin</code></h3>
+      <p style="margin:0"><code>AdministratorAccess</code> plus
+      <code>AmazonBedrockFullAccess</code>. Both arms deploy with equal authority — hcl-raw through
+      direct API calls, awscdk through the standard <code>cdk deploy</code> bootstrap path. Broad on
+      purpose: a too-tight deploy role turns harness permission gaps into fake agent failures and
+      breaks arm parity, which is why the bespoke <code>QADeployApplicationRole</code> was retired
+      and must not come back. Safety is the disposable account, the region and role-protection SCPs,
+      the turn/token budget and the post-trial reset — not narrow IAM.</p>
+      <p style="margin:10px 0 0">On a brownfield spec, <code>pre_invoke_role_name</code> is set to
+      the <em>same</em> role, as a rule rather than a convenience: a seed deployed with broader
+      authority than the agent gets creates resources the agent cannot then change.</p></div>
+
+    <div class="attr"><h3>The agent cannot call TestState</h3>
+      <p style="margin:0">Stated explicitly because it is the one place where the read-only role and
+      the oracle diverge. <code>sfn-jsonata</code>'s live tier calls
+      <code>states:TestState</code>, and the <strong>read-only agent role does not have it</strong>
+      and does not need it — the verifier phase runs as
+      <code>OrganizationAccountAccessRole</code>, which does. The catch stays live-only from the
+      agent's side of the container.</p></div>
+
+    <div class="attr"><h3>The awscdk arm's extra loop</h3>
+      <p style="margin:0">Of the three arms, only awscdk gets a validator invoked automatically by
+      its own synth. That is an arm property under measurement — a real shift-left advantage its
+      users have — and the reason it must never be read as a bench oracle: it can change what the
+      agent knows before grading, but it can never change a score.</p></div>
+  </div>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>Four shards, and what <code>-n</code> now buys</h2>
+    <p>Amendment 33, ACCEPTED 2026-09-09. One aws-bench scenario is one AWS member account by
+    construction, so "how many scenarios" <em>is</em> "how many accounts" — and throughput,
+    contamination radius and hash radius are all pinned to that number.</p>
+  </div>
+
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Shard</th><th>Account</th><th>Holds</th><th class="num">Tasks</th></tr></thead>
+    <tbody>
+      <tr><td class="id">anchor</td><td class="num">886312446417</td><td>every read-only task, plus <code>smoke</code> and the toy</td><td class="num">39</td></tr>
+      <tr><td class="id">anchor-1</td><td class="num">182715287880</td><td>mutating, one arm per spec</td><td class="num">5</td></tr>
+      <tr><td class="id">anchor-2</td><td class="num">218484443800</td><td>mutating, one arm per spec</td><td class="num">5</td></tr>
+      <tr><td class="id">anchor-3</td><td class="num">015454941261</td><td>mutating, one arm per spec</td><td class="num">5</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <p style="margin-top:16px"><strong>One knob.</strong> <code>generator/shards.toml</code> carries a
+  single integer, <code>shard_count = 4</code>, and it is the only place N is written.
+  <code>generator/shards.py</code> turns it into names and assignments; nothing else in the repo may
+  hardcode a scenario name. The assignment is a pure function of <code>(spec.id, arm)</code> — no
+  iteration order, no mtimes:</p>
+
+  <pre><code>read-only task            -> shard 0
+mutating task             -> shard 1 + (int(sha256(spec.id).hexdigest()[:8], 16) + arm_index) % (N-1)
+ARM_ORDER = (awscdk, hcl_raw, terraconstructs)</code></pre>
+
+  <p>At N ≥ 4 one spec's three arms never share a shard, which is exactly the property the extra
+  accounts are bought for. At N = 1 everything collapses back onto <code>anchor</code> and the
+  generated tree is byte-identical — which is what made the code landing separable from the
+  decision.</p>
+
+  <h3 style="margin-top:24px">Admission gate semantics</h3>
+  <p>The trial queue takes the scenario admission gate <em>before</em> the concurrency semaphore, and
+  the gate is keyed only by <code>scenario_id</code>:</p>
+  <pre><code>async with gate.hold(trial_config.concurrency_mode), self._semaphore:
+    return await self._execute_trial_with_retries(trial_config)</code></pre>
+  <ul>
+    <li><strong>READ_ONLY</strong> trials admit freely alongside one another. The 12 read-only specs
+    genuinely parallelize on shard 0 — and <code>sfn-jsonata</code> is read-only <em>with</em> a live
+    check, because the mode describes what a trial does <em>to</em> the account, not whether the
+    verifier calls AWS.</li>
+    <li><strong>MUTATING</strong> trials require no writer <em>and zero readers in flight</em>, and
+    the hold spans the whole trial <strong>including its reset</strong>. Under one scenario that made
+    every mutating trial serial regardless of <code>-n</code>; under four it makes them serial
+    <em>per shard</em>.</li>
+    <li>The gate is <strong>reader-preferring</strong> — a continuous stream of read-only trials can
+    still park a waiting mutating one. Liveness holds only because a run is finite.</li>
+    <li><strong>Contamination is per shard, not global.</strong> A failed reset tags one account and
+    refuses later trials mapped to that scenario. On a mutating shard that blast radius is now
+    5 tasks rather than the whole corpus &mdash; 51 tasks under one scenario (DECISIONS.md, Amendment
+    33 &sect;2; ROADMAP &sect;2 still carries the older count of 45). A contaminated shard 0 is the
+    exception: it still refuses all 39 read-only tasks.</li>
+  </ul>
+
+  <div class="note good">
+    <h3>What the promotion run showed</h3>
+    <p><code>jobs/amend33-promotion/2026-09-09__19-09-38</code> — claude-sonnet-5, k=1,
+    <code>-n 4</code>, <code>max_turns = 100</code>. Four trials, zero exceptions, 20 min 59 s
+    wall-clock, $0.77.</p>
+    <div class="scroll" style="margin:12px 0">
+    <table>
+      <thead><tr><th>Trial</th><th>Shard</th><th class="num">Reward</th><th class="num">Out tok</th><th class="num">Turns</th><th>live_check</th><th>Idempotence</th><th>Reset</th></tr></thead>
+      <tbody>
+        <tr class="measured"><td class="id">ecs-swappiness awscdk (read-only)</td><td class="sh">anchor</td><td class="num">1.0</td><td class="num">3,850</td><td class="num">13</td><td>—</td><td>—</td><td>none</td></tr>
+        <tr class="measured"><td class="id">named-resource-replacement awscdk</td><td class="sh">anchor-1</td><td class="num">1.0</td><td class="num">2,506</td><td class="num">10</td><td>pass</td><td>converged</td><td>ok, 10 min 01 s</td></tr>
+        <tr class="measured"><td class="id">named-resource-replacement hcl_raw</td><td class="sh">anchor-2</td><td class="num">1.0</td><td class="num">3,383</td><td class="num">8</td><td>pass</td><td>converged</td><td>ok, 10 min 28 s</td></tr>
+        <tr class="broken"><td class="id">named-resource-replacement terraconstructs</td><td class="sh">anchor-3</td><td class="num">0.0</td><td class="num">5,588</td><td class="num">23</td><td>fail_stale</td><td>not_verifiable</td><td>ok, 10 min 18 s</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p style="font-size:13.5px;color:var(--ink-3)">Reset durations in the last column are DECISIONS.md's
+    Amendment 33 record, not a re-measurement: the scenario-reset <code>result.json</code> timestamps give
+    10:01.2, 10:19.3 and 10:29.4, so two of the three are rounded a second short.</p>
+    <p>The three mutating arms started within one minute of each other and their resets overlapped —
+    that overlap <em>is</em> the promotion criterion, and it is the one property that cannot be proven
+    offline. Under one scenario the same three trials would have queued behind three ~10 min resets.
+    The read-only trial ran and finished on shard 0 while the mutating shards were busy, proving the
+    split does not strand shard 0 behind a mutating lock.</p>
+    <p><strong>The 0.0 is an agent failure, not a shard defect.</strong> The terraconstructs agent
+    started its deploy and then ended its turn with <em>"I'll wait for the background deploy task
+    notification or the scheduled wakeup before continuing."</em> A trial ends when the agent's turn
+    ends, so the apply still held the Terraform state lock when the verifier ran. The row is valid
+    and scores 0.0 for the reason the oracle states — and it is a finding in its own right: an agent
+    that treats a deploy as a background job it can await later has misjudged the harness's turn
+    semantics, and pays for it in tokens-to-green.</p>
+  </div>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>Reporting — one headline, four strata, one gap</h2>
+    <p>The headline is <strong>output tokens-to-green</strong> (Amendment 23), reported separately
+    per scenario form and never pooled.</p>
+  </div>
+
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Stratum</th><th>Measures</th><th>Where the label lives</th><th>Rule</th></tr></thead>
+    <tbody>
+      <tr><td class="id">greenfield</td><td>day-1 authoring cost</td><td>spec has neither <code>workspace_seed</code> nor <code>steps</code></td><td>the default</td></tr>
+      <tr><td class="id">multi-step</td><td>day-2 change cost on code the agent itself wrote</td><td>spec's top-level <code>steps:</code> list</td><td>Amdt 26 §4 — never pooled with 1-step; Amdt 27 §2 — never pooled with the same scenario's own single-step-form rows</td></tr>
+      <tr><td class="id">brownfield</td><td>day-2 change cost on code it did <strong>not</strong> write</td><td>spec's <code>workspace_seed</code> block</td><td>Amdt 28 §6 — never pooled with greenfield</td></tr>
+      <tr class="unrun"><td class="id">pre-configured</td><td>—</td><td><code>steps[].pre_invoke.deploy_prior</code></td><td>no rows, and no specs to produce them</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <div class="note bad">
+    <h3>The metrics tool does not know what form a row is</h3>
+    <p><code>metrics/tokens_to_green.py</code> stratifies by <strong>train/holdout</strong>
+    mechanically — <code>headline_cells</code> is holdout, <code>train_cells</code> is train,
+    <code>split_composition</code> reports the counts including
+    <code>n_unclassified_rows</code> so nothing is silently guessed into either side. It also emits a
+    per-scenario <code>by_scenario</code> breakdown inside each cell.</p>
+    <p>It does <strong>not</strong> stratify by form. <code>cell_key</code> is
+    <code>(arm, model, harness)</code> and carries no form dimension, and
+    <code>metrics/result_schema.json</code> has no posture, form or stratum field at all — a result
+    row carries <code>arm</code>, <code>split_group</code>, <code>spec_id</code>,
+    <code>scenario</code>, <code>equipping_hash</code> and nothing that names the type. The type
+    label exists only in the spec YAML and never reaches the row. So a headline cell computed over a
+    mixed directory <em>will</em> average the forms together. A brownfield row's
+    <code>equipping_hash</code> does move — <code>workspace_seed_sha256</code> is folded into it —
+    which makes the non-comparability <em>visible</em> without making it <em>enforced</em>.</p>
+    <p><strong>The gap, stated as the repo states it:</strong> until <code>cell_key</code> grows a
+    form dimension — a pre-registration change in its own right, deliberately deferred to land next
+    to the first real multi-step/brownfield results — do not run <code>make metrics</code> over a
+    results directory containing more than one scenario form. Aggregate each stratum separately, by
+    hand. Note also that a multi-step trial's tokens-to-green is <em>cumulative across steps</em>, so
+    it is not denominator-comparable with a single-step figure even within one arm.</p>
+  </div>
+
+  <p><strong>Censoring convention.</strong> Every non-green trial is right-censored at the
+  administrative budget bound — <code>--max-tokens</code>, else the maximum observed
+  <code>tokens_total</code> in that cell — never at its own stopping point. Own-stopping-point
+  censoring exists only as a per-cell diagnostic; as a headline it would let an arm whose failures
+  quit cheaply report a low tokens-to-green regardless of how often it succeeded. Rows whose
+  <code>validity_class</code> is not <code>valid</code> are counted under
+  <code>n_excluded_invalid</code> and never pooled.</p>
+
+  <p><strong>Profile columns</strong> beside the headline: read-before-write and escape-hatch
+  incidence are built (<code>metrics/extract_signals.py</code>); blast radius is not, and needs the
+  plan or changeset persisted as a trial artifact.</p>
 </section>
 
 <section>
@@ -242,33 +649,33 @@
   <div class="scroll">
   <table>
     <thead><tr>
-      <th>Scenario</th><th class="num">Trials</th><th>Arms</th><th>Last run</th><th>Outcomes</th><th>What it produced</th>
+      <th>Spec</th><th class="num">Trials</th><th>Arms</th><th>Last run</th><th>Outcomes</th><th>What it produced</th>
     </tr></thead>
     <tbody>
       <tr class="measured">
-        <td class="id">named-resource-replacement</td><td class="num">20</td><td>all 3</td><td>2026-08-28</td>
-        <td><span class="chip ok">10 × 1.0</span> <span class="chip void">7 × 0.0</span> <span class="chip">3 exc</span></td>
-        <td>The brownfield stratum. 7 zeros and 3 exceptions (pre-Amendment-32) were harness defects, not agent failures. Amendment 32 battery, k=2: 6/6 valid, all 1.0, all first attempt.</td>
+        <td class="id">named-resource-replacement</td><td class="num">23</td><td>all 3</td><td>2026-09-09</td>
+        <td><span class="chip ok">12 × 1.0</span> <span class="chip void">9 × 0.0</span> <span class="chip">3 exc</span></td>
+        <td>23 <code>result.json</code> rows, not 24: one row (<code>live-brownfield-seed/2026-08-25__21-20-37/&hellip;awscd__Avxqde6</code>) carries <em>both</em> reward 0.0 and an <code>exception_info</code>, so 12 + 9 + 2 exception-only rows = 23 files. The brownfield stratum, and the only spec that has run under all three of Amendments 32, 33 and the shard split. Eight of the nine zeros and all three exceptions predate Amendment 32 and were harness defects. Amendment 32 battery k=2: 6/6 valid, all 1.0. Amendment 33 run: 2 of 3 arms 1.0, one agent-caused 0.0.</td>
       </tr>
       <tr class="measured">
         <td class="id">apigw-redeploy</td><td class="num">13</td><td>all 3</td><td>2026-08-28</td>
-        <td><span class="chip ok">12 × 1.0</span> <span class="chip">1 exc</span></td>
-        <td>The only multi-step evidence. Promoted Amendments 26/27. Amendment 32 battery, k=2: 6/6 valid, all 1.0, both steps, no harness archaeology in any trajectory.</td>
+        <td><span class="chip ok">12 × 1.0</span> <span class="chip void">1 × 0.0 &mdash; and it <em>is</em> the 1 exc</span></td>
+        <td>14 trial directories exist but only 13 carry a <code>result.json</code>: <code>claude-sonnet-5/2026-08-20__17-16-22/&hellip;-terraconstructs__W2J5uiF</code> has none and contributes no outcome, and the single 0.0 (<code>g-live-hcl/&hellip;hSvJQ5W</code>) is the exception row. The only multi-step evidence. Promoted Amendments 26/27. Amendment 32 battery, k=2: 6/6 valid, all 1.0, both steps, no harness archaeology in any trajectory.</td>
       </tr>
       <tr class="measured">
-        <td class="id">ecs-swappiness</td><td class="num">12</td><td>all 3</td><td>2026-08-27</td>
-        <td><span class="chip ok">7 × 1.0</span> <span class="chip void">4 × 0.0</span> <span class="chip">1 exc</span></td>
-        <td>The strongest thesis evidence in the corpus — see below. Replicated k=2 under Amendment 32: 6/6 valid rows in 6m54s wall-clock.</td>
+        <td class="id">ecs-swappiness</td><td class="num">13</td><td>all 3</td><td>2026-09-09</td>
+        <td><span class="chip ok">8 × 1.0</span> <span class="chip void">4 × 0.0</span> <span class="chip">1 exc</span></td>
+        <td>The strongest thesis evidence in the corpus — see below. Replicated k=2 under Amendment 32, and used again as Amendment 33's read-only co-runner (1.0 / 3,850 tok / 13 turns).</td>
+      </tr>
+      <tr class="measured">
+        <td class="id">sfn-jsonata</td><td class="num">4</td><td>2 of 3</td><td>2026-09-09</td>
+        <td><span class="chip ok">4 × 1.0</span></td>
+        <td>terraconstructs is <em>deliberately disabled</em> — no JSONata substrate exists on that arm. Amendment 34 promotion, k=1: awscdk 1.0 / 6,040 tok / 26 turns, hcl_raw 1.0 / 3,360 / 7, tier-1 PASS and live <code>pass</code> on both, 3 min 14 s wall, read-only, no reset.</td>
       </tr>
       <tr class="partial">
         <td class="id">s3-lambda-log-retention</td><td class="num">3</td><td>all 3</td><td>2026-08-20</td>
         <td><span class="chip ok">2 × 1.0</span> <span class="chip void">1 × 0.0</span></td>
         <td>One row per arm, single attempt. Directional only.</td>
-      </tr>
-      <tr class="partial">
-        <td class="id">sfn-jsonata</td><td class="num">2</td><td>2 of 3</td><td>2026-08-20</td>
-        <td><span class="chip ok">2 × 1.0</span></td>
-        <td>terraconstructs is <em>deliberately disabled</em> — no JSONata substrate exists on that arm.</td>
       </tr>
       <tr class="broken">
         <td class="id">apigw-openapi</td><td class="num">3</td><td>all 3</td><td>2026-08-20</td>
@@ -278,12 +685,17 @@
     </tbody>
   </table>
   </div>
+  <p style="font-size:13.5px;color:var(--ink-3);margin-top:10px">
+    Trial counts are the reward and exception tallies in every <code>result.json</code> under
+    <code>jobs/</code>; they are cumulative and mix harness generations; only the per-amendment batteries named in each row are within-stratum comparable.
+  </p>
 </section>
 
 <section>
   <div class="sechead">
     <h2>What the measured runs actually say</h2>
-    <p>Two scenarios carry essentially all of the thesis evidence.</p>
+    <p>Two scenarios carry essentially all of the thesis evidence, and a third now carries the
+    live-only tier.</p>
   </div>
 
   <div class="note good">
@@ -298,8 +710,13 @@
     awscdk 1.0 / 3,815 / 22 and 1.0 / 4,245 / 20 · terraconstructs 1.0 / 6,099 / 44 and 1.0 / 3,947 / 25 ·
     hcl-raw <strong>0.0 / 1,244 / 9</strong> and <strong>0.0 / 1,158 / 10</strong>. Same verdict on every
     arm, both attempts; on hcl-raw <code>terraform plan</code> was green against the real account on
-    the agent's first try and tier-1 caught the trap. The terraconstructs spread (44 vs 25 turns) is
+    the agent's first try and tier-1 caught the trap. The terraconstructs spread (44 vs 25) is
     vocabulary discovery in <code>node_modules/terraconstructs/**/*.d.ts</code>, not harness cost.</p>
+    <p style="font-size:13.5px;color:var(--ink-3)"><span class="chip unv">mislabelled unit</span> The second numbers in this battery are
+    <em>assistant-message counts</em>, not turns, even though <code>docs/live-results.md</code> heads the
+    column <code>num_turns</code>. The transcripts' own <code>num_turns</code> for the same six trials are
+    13 / 11 &middot; 26 / 14 &middot; 6 / 6. So these figures are <strong>not</strong> comparable with the
+    <code>num_turns</code> values in the Amendment 33 and 34 tables above; compare within a battery only.</p>
   </div>
 
   <div class="note good">
@@ -307,14 +724,32 @@
     <p><strong>Expectation:</strong> renaming a literally-named security group forces
     destroy-then-create, and an interface endpoint holding it raises
     <code>DependencyViolation</code>. <strong>Result:</strong> all three arms 1.0 —
-    awscdk 2,727 tok / 9 turns · hcl-raw 5,382 / 14 · terraconstructs 11,558 / 28.</p>
+    awscdk 2,727 tok / 9 turns · hcl-raw 5,382 / 14 · terraconstructs 11,558 / 28<span class="chip unv">28 unverified</span> —
+    28 is <code>docs/live-results.md</code>'s figure; that trial's transcript reports
+    <code>num_turns</code> 31 (52 assistant messages).</p>
     <p>The scenario does not discriminate on reward. It discriminates on cost: 4.2× spread, and
-    read-before-write of 22% / 19% / 4%. Brownfield is a separate stratum and is never pooled
-    with greenfield.</p>
+    read-before-write of 22% (awscdk) and 4% (terraconstructs), which
+    <code>docs/live-results.md</code>:117 states for this battery. The middle figure, hcl-raw's 19%
+    <span class="chip unv">unverified</span>, is carried from an earlier version of this page and no
+    source in the repo states it. Brownfield is a separate stratum and is never pooled with greenfield.</p>
     <p><strong>2026-08-27 (Amendment 32 harness, k=2, output tokens / turns):</strong> awscdk 1.0 / 3,103 / 18 and
     1.0 / 2,514 / 16 · hcl-raw 1.0 / 4,502 / 17 and 1.0 / 10,487 / 56 · terraconstructs 1.0 / 11,024 / 75 and
-    1.0 / 10,937 / 59. All first-attempt, no rerun needed. The hcl-raw pair (4,502 vs 10,487) is the largest
-    within-arm variance in the battery.</p>
+    1.0 / 10,937 / 59. All first-attempt. The hcl-raw pair (4,502 vs 10,487) is the largest
+    within-arm variance in that battery.</p>
+  </div>
+
+  <div class="note good">
+    <h3><code>sfn-jsonata</code> — the first catch that only the service can see</h3>
+    <p>Both enabled arms 1.0 with tier-1 PASS and live <code>pass</code>, 2026-09-09. The
+    <strong>negative proof</strong> is the part that matters and was run from the host inside the
+    hcl-raw image against the same account: the <code>jsonata-expression-correctness</code> broken
+    fixture — a flipped comparison — evaluated to <code>fail_stale</code>, with CheckBudget routing
+    the over-budget input to a <code>Succeed</code> state and the under-budget input to a
+    <code>Fail</code>, while the reference solution evaluated to <code>pass</code>. Tier 0 and tier 1
+    pass <em>both</em>. That is what live-only means, stated as a measurement rather than a claim.</p>
+    <p>The two broken fixtures now earn their live-only marker mechanically: each plans or synthesizes
+    the reference shape and its own flipped shape and requires the two graded artifacts to be
+    byte-identical once every <code>{% … %}</code> body is elided.</p>
   </div>
 
   <div class="note good">
@@ -332,53 +767,64 @@
   <div class="sechead">
     <h2>Attributes that vary across the corpus</h2>
     <p>Optional capabilities, opt-in oracle machinery, and per-task customizations — most used by
-    exactly one or a few scenarios.</p>
+    exactly one or a few specs.</p>
   </div>
 
   <div class="cols">
     <div class="attr"><h3>Mutating concurrency</h3>
-      <p style="margin:0">Triggers an automatic ~8 min account reset after every trial.</p>
-      <div class="who">5 scenarios — all with live checks</div></div>
+      <p style="margin:0">Holds the shard's exclusive gate for the trial and triggers an automatic
+      account reset — observed at ~10 min under Amendment 33.</p>
+      <div class="who">5 specs — the 4 brownfield + the multi-step one</div></div>
 
     <div class="attr"><h3>Hand-authored <code>live_check.py</code></h3>
-      <p style="margin:0">Behavioural oracle, byte-identical across arms by design.</p>
-      <div class="who">5 — the same five</div></div>
+      <p style="margin:0">Behavioural oracle, byte-identical across the arms of its spec — hash-checked
+      on all six. Every other task carries the generator's inert stub.</p>
+      <div class="who">6 — and all 6 are gating</div></div>
 
-    <div class="attr"><h3>Gating live check</h3>
-      <p style="margin:0">Anything not <code>pass</code> forces reward 0.0, fail-closed.</p>
-      <div class="who">5</div></div>
+    <div class="attr"><h3>Live check without mutation</h3>
+      <p style="margin:0">A live check does not imply a mutating trial. <code>sfn-jsonata</code>'s
+      TestState calls create nothing, so it stays read-only and needs no reset.</p>
+      <div class="who">1 — the standing example, since Amendment 34</div></div>
 
-    <div class="attr"><h3>Gating idempotence</h3>
-      <p style="margin:0">A second apply must be a no-op, or the row is void.</p>
-      <div class="who">2 — <code>named-resource-replacement</code>, <code>singleton-child-resource-clobber</code></div></div>
+    <div class="attr"><h3>Idempotence tier</h3>
+      <p style="margin:0">A second apply must be a no-op. Two gate reward; one is enabled but
+      non-gating; one spec declares the block and leaves it off.</p>
+      <div class="who">3 enabled — gating on <code>named-resource-replacement</code> and <code>singleton-child-resource-clobber</code></div></div>
+
+    <div class="attr"><h3>Seed-movement guard</h3>
+      <p style="margin:0">On a brownfield spec the harness wrote the state, so the "is there state?"
+      probe cannot fire. The tier compares the state identity on disk against
+      <code>/logs/seed-deploy-receipt.json</code> instead — and abstains loudly rather than
+      convicting when it cannot tell.</p>
+      <div class="who">every arm, on the 4 <code>workspace_seed.deploy</code> specs</div></div>
 
     <div class="attr"><h3>awscdk tier-1 on OPA/Rego</h3>
-      <p style="margin:0">Rather than cfn-guard, which cannot express a cross-resource join.</p>
-      <div class="who">3 — the M8 backport, not yet universal</div></div>
+      <p style="margin:0">Rather than cfn-guard, which cannot express a cross-resource join. The M8
+      backport, not yet universal.</p>
+      <div class="who">3 — <code>ddb-gsi-attribute-definitions</code>, <code>iam-managed-policy-exclusive-vs-attachment</code>, <code>s3-notification-authoritative-singleton</code></div></div>
 
     <div class="attr"><h3><code>hcl_traversal</code></h3>
       <p style="margin:0">hcl2json static traversal, resolving symbols a plan cannot.</p>
       <div class="who">1 — <code>s3-notification-authoritative-singleton</code></div></div>
 
-    <div class="attr"><h3><code>tier05_jsonata</code></h3>
-      <p style="margin:0">A whole tier used by one scenario.</p>
-      <div class="who">1 — <code>sfn-jsonata</code></div></div>
-
     <div class="attr"><h3><code>seeded_files</code></h3>
-      <p style="margin:0">Read-only reference inputs (0444), distinct from a writable seed.</p>
-      <div class="who">1 — <code>apigw-openapi</code>, and it is the cautionary example</div></div>
+      <p style="margin:0">Read-only reference inputs (0444), the opposite of a writable seed.</p>
+      <div class="who">1 — <code>sfn-jsonata</code> (<code>concurrency_mode: null</code>)</div></div>
 
-    <div class="attr"><h3>Prompt placeholders</h3>
-      <p style="margin:0">Runtime substitution into the ticket.</p>
-      <div class="who">2</div></div>
+    <div class="attr"><h3>Identity separation</h3>
+      <p style="margin:0"><code>workspace_id</code> hides a pitfall-naming spec id from the agent;
+      <code>workspace_title</code> replaces a title that would name the change.</p>
+      <div class="who">13 carry <code>workspace_id</code>; the 5 <em>mutating</em> ones — 4 brownfield + <code>apigw-redeploy</code> — carry <code>workspace_title</code></div></div>
 
     <div class="attr"><h3>Arm-specific catches</h3>
       <p style="margin:0"><code>applies_to</code> — a mistake unwritable on one arm is N/A, not a free pass.</p>
-      <div class="who">13 of 17 — the norm, not the exception</div></div>
+      <div class="who">the norm, not the exception</div></div>
 
-    <div class="attr"><h3>Identity separation</h3>
-      <p style="margin:0"><code>workspace_id</code> hides a pitfall-naming spec id from the agent.</p>
-      <div class="who">13 — <code>workspace_title</code> on the 5 live ones</div></div>
+    <div class="attr"><h3>Timeouts split by liveness</h3>
+      <p style="margin:0">A live-checked spec gets 3600 s agent / 900 s verifier; a static one gets
+      900 / 300. Brownfield adds a 1800–2400 s <code>pre_invoke</code> budget for the seed deploy.
+      <code>sfn-jsonata</code> now carries the live timeouts despite being read-only.</p>
+      <div class="who">6 specs on the live budget</div></div>
 
     <div class="attr"><h3>Per-arm memory</h3>
       <p style="margin:0">awscdk and terraconstructs 4096 MB; hcl-raw 2048. The TS arms compile.</p>
@@ -389,45 +835,53 @@
 <section>
   <div class="sechead">
     <h2>Things worth a second look</h2>
-    <p>Discrepancies surfaced while assembling this, not previously tracked.</p>
   </div>
 
   <div class="note bad">
-    <h3>Every task still declares <code>max_iters = 8</code></h3>
-    <p>CLAUDE.md records that 8 was raised to 100 under Amendment 22, because 8 was
-    "far too tight — the first live trial hit <code>error_max_turns</code> at 8". Every generated
-    <code>task.toml</code> still carries <code>[metadata] max_iters = 8</code>, emitted from
-    <code>spec.verifier.budget.max_iters</code>. Live runs pass <code>max_turns</code> explicitly and
-    are unaffected, so this is inert metadata — confirmed 2026-08-27: every job config carries
-    <code>max_turns: 100</code> and the longest trajectory to date is 116 turns
-    (<code>apigw-redeploy-terraconstructs</code>, two steps, <code>success</code>). It is still a
-    stale number in 51 files that contradicts the documented decision; the generator should stop
-    emitting it or emit 100.</p>
+    <h3>Every generated task still declares <code>max_iters = 8</code></h3>
+    <p><code>CLAUDE.md</code> records that 8 was raised to 100 under Amendment 22, because 8 was
+    "far too tight — the first live trial hit <code>error_max_turns</code> at 8". <strong>53 of the
+    54 task directories</strong> still carry <code>[metadata] max_iters = 8</code>, emitted from
+    <code>spec.verifier.budget.max_iters</code>; only the hand-maintained <code>smoke</code> task
+    does not. Live runs pass <code>max_turns</code> explicitly — every promotion job config carries
+    <code>max_turns: 100</code> — so this is inert metadata. It is still a stale number in 53 files
+    that contradicts a documented decision; the generator should stop emitting it or emit 100.</p>
   </div>
 
   <div class="note bad">
     <h3><code>lambda-alias-tracks-unpublished-latest</code> has zero tier-1 asserts</h3>
     <p>Deliberately — the spec argues that a tier which cannot fail for a reason the scenario is
-    about is decoration. But it ships a 61-line <code>policy.rego</code> that is an inert stub
-    (<code>allow if { false }</code>), and <code>make grading-proof</code> treats "no tier-1-graded
-    catch on any arm" as a hard failure. <strong>CI is red on this today.</strong> The scenario
-    argues for no tier-1, ships a stub tier-1, and the gate catches the gap.</p>
+    about is decoration. But it still ships a 61-line <code>policy.rego</code> that is an inert stub
+    (<code>default allow := false</code>, both rule bodies literally <code>false</code>), and
+    <code>make grading-proof</code> treats "no tier-1-graded catch on any arm" as a hard failure. The
+    spec argues for no tier-1, ships a stub tier-1, and the gate catches the gap.
+    <code>ci/run-ci.sh</code> runs <code>grading-proof</code> for every spec with no exclusion and
+    the gate exits 1 when no arm has a tier-1 catch, so <code>make ci</code> is red on this spec by
+    construction; ROADMAP.md §6b item 5 tracks the fix (accept an observed live-tier catch).</p>
   </div>
 
   <div class="note">
     <h3>Oracle depth varies by an order of magnitude</h3>
-    <p><code>sfn-jsonata</code> is inverted — 2 tier-0 asserts against 7 tier-1.
-    <code>asg-launch-template-tag-propagation</code> has 11 tier-0 and 1 tier-1.
-    <code>s3-notification-authoritative-singleton</code> carries 7 catches, 8 tier-0 and 5 tier-1 —
-    and its Rego is 2,677 lines for one scenario. Depth tracks how much trouble a scenario gave its
+    <p><code>s3-notification-authoritative-singleton</code> carries 7 catches — and its Rego is
+    2,677 lines for one scenario, on top of a 952-line shared library. <code>ecs-swappiness</code>
+    and <code>sfn-jsonata</code> carry 2 each. Depth tracks how much trouble a scenario gave its
     author, not how much signal it yields.</p>
   </div>
 
   <div class="note">
-    <h3>Timeouts split cleanly by liveness</h3>
-    <p>Live scenarios: 3600 s agent / 900 s verifier. Static: 900 / 300. The five live ones also
-    carry a 2400 s <code>pre_invoke</code> budget where they deploy a seed. Nothing anomalous —
-    worth knowing when a battery's wall-clock is being estimated.</p>
+    <h3>Reset is still the dominant cost, and still has no retry</h3>
+    <p>Reset restores an account to its POST_SETUP baseline by diffing against a snapshot, deleting
+    what is not in it, and re-hashing the scenario tree — 218 MB and ~8,291 files, 8,254 of them an
+    untracked <code>node_modules</code>, so any <code>npm install</code> or synth silently
+    invalidates the baseline. Durations of 4:00, 5:43 and 7:57 <span class="chip unv">unverified</span> were recorded on 2026-08-26 by an earlier version of this page and are not restated anywhere in the repo today; the three
+    Amendment 33 resets are recorded at 10:01, 10:18 and 10:28 in DECISIONS.md's promotion table
+    (the trials' own <code>result.json</code> timestamps give 10:01.2, 10:19.3 and 10:29.4). <code>Read timeout on endpoint URL: "None"</code>
+    failed three resets in one day on 2026-08-26 and there is no retry; a killed reset leaves no
+    contamination flag at all, because a process killed mid-run reaches neither handler.</p>
+    <p>Sharding cuts the blast radius of that failure from 51 tasks to 5 on a mutating shard (39 on
+    shard 0). It does not make the reset
+    faster, and the cheap fix — getting <code>node_modules</code>, <code>cdk.out</code> and
+    <code>dist</code> out of the scenario trees — is now four trees to keep clean instead of one.</p>
   </div>
 </section>
 
@@ -435,369 +889,99 @@
   <div class="sechead">
     <h2>The coverage problem</h2>
   </div>
-  <p><strong>Eleven of seventeen scenarios have never run against AWS.</strong> They pass every
-  credential-free host gate — falsifiability, seed-parity, grading-proof, tier-1 coverage — which proves each
-  <em>declared</em> catch fires against a hand-written fixture. It does not prove the scenario
-  discriminates between arms when a real agent meets it.</p>
-  <p>Both scenarios carrying the thesis evidence needed a re-run before they produced a valid row,
-  and in both cases the first attempt was invalidated by a harness defect rather than by anything
-  the agent did. The host gates did not catch either one. That is the base rate to assume for
-  the eleven unrun scenarios — not that they are fine because the gates are green.</p>
-  <p><strong>Update 2026-08-27.</strong> The defect class behind both re-runs was identified — the
-  workspace encoded an offline/live AWS switch that only the verifier flipped, so agents on the two
-  Terraform arms paid tokens rediscovering the harness (18 trajectories) — and removed under
-  Amendment 32: live AWS is the only trial mode, the mock servers and <code>skip_*</code>/dummy
-  credentials are gone from every workspace, and a credential failure voids the row instead of
-  scoring 0.0. The promotion battery produced 18/18 valid rows on the first attempt (12 mutating in 3h55m, 6 read-only in 7 min).
-  The eleven never-run scenarios remain never-run.</p>
+  <p><strong>Eleven of seventeen specs have never run against AWS.</strong> They pass every
+  credential-free host gate — falsifiability, seed-parity, grading-proof, tier-1 coverage — which
+  proves each <em>declared</em> catch fires against a hand-written fixture. It does not prove the
+  spec discriminates between arms when a real agent meets it.</p>
+  <p>Both specs carrying the thesis evidence needed a re-run before they produced a valid row, and in
+  both cases the first attempt was invalidated by a harness defect rather than by anything the agent
+  did. The host gates caught neither. That is the base rate to assume for the eleven unrun specs —
+  not that they are fine because the gates are green.</p>
+  <p><strong>Two amendments since have not moved that number.</strong> Amendment 32 removed the
+  defect class behind both re-runs (the workspace encoded an offline/live switch only the verifier
+  flipped, so agents on the Terraform arms paid tokens rediscovering the harness) and its battery
+  produced 18/18 valid rows on the first attempt. Amendments 33 and 34 were each promoted on their
+  first attempt too. The three batteries drew from only four specs between them &mdash; <code>ecs-swappiness</code>,
+  <code>named-resource-replacement</code> and <code>apigw-redeploy</code> (32), the first two again (33),
+  <code>sfn-jsonata</code> (34). <code>s3-lambda-log-retention</code> and <code>apigw-openapi</code>,
+  the other two of the six ever-run specs, appear in no battery. The eleven never-run specs
+  remain never-run, and the credential-free host gates now stand behind a two-operation stub
+  (<code>gates/aws_stub.py</code>: <code>sts:GetCallerIdentity</code> and
+  <code>states:ValidateStateMachineDefinition</code>) that answers nothing else.</p>
 </section>
 
 <section>
   <div class="sechead">
-    <h2>Terminology — four words that get overloaded</h2>
-    <p>The word "scenario" means two different things depending on which layer you are in. Nearly
-    every architectural confusion in this project traces back to that.</p>
-  </div>
-  <div class="scroll">
-  <table>
-    <thead><tr><th>Term</th><th>Layer</th><th>What it actually is</th><th>Count</th></tr></thead>
-    <tbody>
-      <tr><td class="id">spec</td><td>cdktn-bench</td><td><code>specs/&lt;id&gt;.yaml</code> — one task specification plus the arms it applies to. The authoring unit.</td><td class="num">17</td></tr>
-      <tr><td class="id">generator</td><td>cdktn-bench</td><td><code>generator/gen.py</code> — compiles one spec into one task directory <em>per arm</em>. Everything under <code>tasks/**</code> is its output; only <code>solution/**/solve.sh</code> and a declared <code>live_check.py</code> are hand-authored.</td><td class="num">—</td></tr>
-      <tr><td class="id">task</td><td>Harbor</td><td><code>tasks/anchor/&lt;id&gt;-&lt;arm&gt;/</code> — what a trial actually runs. Carries <code>task.toml</code>, <code>environment/</code>, <code>tests/</code>, <code>solution/</code>.</td><td class="num">51</td></tr>
-      <tr class="broken"><td class="id">scenario</td><td>aws-bench</td><td><strong>Not a spec.</strong> A pre-provisioned AWS <em>account state</em> — the unit of <code>env setup</code>, reset, contamination and admission control. Every task declares <code>scenario_id</code>.</td><td class="num">1</td></tr>
-      <tr><td class="id">arm</td><td>cdktn-bench</td><td><code>arms/&lt;arm&gt;/</code> — a toolchain under test: <code>awscdk</code>, <code>terraconstructs</code>, <code>hcl-raw</code>. Owns the image contract.</td><td class="num">3</td></tr>
-      <tr><td class="id">environment</td><td>Harbor</td><td><code>&lt;task&gt;/environment/</code> — the Docker build context. <strong>COPY'd into the agent image, so every byte is prompt surface.</strong></td><td class="num">51</td></tr>
-      <tr><td class="id">workspace</td><td>agent</td><td><code>/app/project</code> inside the container — what the agent edits. Greenfield: an empty skeleton. Brownfield: a hand-authored seed.</td><td class="num">—</td></tr>
-    </tbody>
-  </table>
-  </div>
-  <div class="note bad" style="margin-top:18px">
-    <h3>One scenario, seventeen specs</h3>
-    <p>All 51 tasks hardcode <code>scenario_id = "anchor"</code> against a single account
-    (<code>886312446417</code>). Upstream aws-bench runs 8 scenarios / 134 tasks, split by
-    <em>deployed infra shape</em>. The one-scenario choice is asserted as a premise in
-    <code>scenarios/anchor/README.md</code>, <code>scenario.toml</code>, <code>local-registry.json</code>
-    and <code>SCHEMA.md</code> §8.3 — and <strong>argued in none of them</strong>. No DECISIONS entry
-    has ever weighed one-vs-many.</p>
-  </div>
-</section>
-
-<section>
-  <div class="sechead">
-    <h2>Grading — oracles and their tiers</h2>
-    <p>An oracle decides whether a solution is correct. Tiers are ordered by cost and by how close
-    they sit to the truth.</p>
-  </div>
-  <div class="scroll">
-  <table>
-    <thead><tr><th>Tier</th><th>What it asks</th><th>awscdk</th><th>Terraform arms</th><th>Cost</th></tr></thead>
-    <tbody>
-      <tr><td class="id">tier 0</td><td>Does the synthesized artifact have the right shape? Structural asserts (jq) over a template or plan.</td><td><code>tsc</code> + <code>cdk synth</code> → CloudFormation JSON</td><td><code>validate</code> + <code>plan -json</code></td><td>seconds</td></tr>
-      <tr><td class="id">tier 0.5</td><td>Host-side JSONata evaluation. One scenario only.</td><td colspan="2"><code>tier05_jsonata</code> — <code>sfn-jsonata</code></td><td>seconds</td></tr>
-      <tr><td class="id">tier 1</td><td>A <em>quantified</em> statement a jq path cannot express — "no rule anywhere in this group may be open to the world".</td><td>cfn-guard, migrating to OPA/Rego (3 of 17 so far)</td><td>OPA/Rego</td><td>seconds</td></tr>
-      <tr class="measured"><td class="id">live</td><td>Does the deployed infrastructure actually behave? Hand-authored <code>live_check.py</code>, byte-identical across arms.</td><td colspan="2">Real AWS API calls — 5 of 17 specs</td><td>minutes + $</td></tr>
-      <tr class="measured"><td class="id">idempotence</td><td>Is a second apply a no-op? Plus a seed-movement guard so a do-nothing agent cannot inherit the seed's convergence.</td><td><code>cdk diff --fail</code> + completion marker</td><td><code>plan -detailed-exitcode</code></td><td>minutes</td></tr>
-    </tbody>
-  </table>
-  </div>
-  <p style="font-size:14px;color:var(--ink-2);margin-top:12px">
-    <strong>Same intent, different substrate.</strong> The generator compiles one spec's assertions
-    into per-arm forms — a <code>cfn_jsonpath</code> for CloudFormation and a <code>tf_jsonpath</code>
-    for a Terraform plan. The <em>intent</em> is shared; the <em>expression</em> is not, and that gap
-    is where arm-asymmetric grading bugs live. The live check is the one instrument that is
-    genuinely arm-agnostic: the account does not know which toolchain produced a resource, which is
-    why <code>live_check.py</code> is byte-identical across all three arms by construction.
-  </p>
-</section>
-
-<section>
-  <div class="sechead">
-    <h2>Static grading is cheap and hard to get right</h2>
-    <p>Every tier below "live" is fast and near-free (the static tiers plan against the real account
-    with staged credentials in a trial, and against a two-route stub in the credential-free host gates). The cost shows up as an unbounded stream of
-    corrections, each one closing a hole the previous fix opened.</p>
-  </div>
-
-  <div class="note good">
-    <h3>When static grading works: <code>ecs-swappiness</code></h3>
-    <p>The property is <em>structural and closed</em> — <code>swappiness</code> is either at the
-    right nesting level with <code>maxSwap</code> set, or it is not. The correct config is known in
-    advance, so no live observation adds anything. One tier-0 assert decides it, and the typed arms
-    make the error unwritable at compile time. This is the regime static grading is built for.</p>
-  </div>
-
-  <div class="note bad">
-    <h3>When it does not: a policy that could live anywhere</h3>
-    <p><strong>cfn-guard could not express a cross-resource join.</strong> No logical-id join between
-    a role and the policy naming it, so the awscdk tier-1 for
-    <code>iam-managed-policy-exclusive-vs-attachment</code> degraded into a count-equality proxy that
-    was unsound <em>in both directions</em>: a policy reaching only one role scored <strong>1.0</strong>
-    (false pass, defeating the scenario's own catch), while a policy attached to both roles from both
-    sides scored <strong>0.0</strong> (false fail, contradicted by the template). Byte-equivalent
-    terraconstructs solutions scored the opposite way in each case. Three fix rounds could not close
-    it — a tooling ceiling, which is what M8 (OPA everywhere) exists to remove.</p>
-    <p><strong>Terraform plans hide their own symbols.</strong> <code>terraform show -json</code> does
-    not carry the <code>locals</code> map, and an attribute of a resource being <em>created</em> is
-    unknown at plan time — so the plan shows <code>local.arns.media_bucket</code>, never its referent.
-    Lacking a way to resolve that, the Rego grew proximity heuristics
-    (<code>config_reaches_arn_of</code> and friends) that asked "does the plan depend on
-    <em>some</em> bucket ARN anywhere?". Proven wrong in both directions by execution. Retired and
-    replaced with <code>tmccombs/hcl2json</code> static traversal, which resolves the symbol to its
-    referent instead of guessing from proximity.</p>
-    <p><strong>The cost is a signal, not just a bill.</strong> One scenario's policy is 2,677 lines
-    plus a 952-line shared library — with no proof that a fifth review round would find nothing.
-    Falsifiability proves every <em>declared</em> catch fires; it never proves no undeclared hole
-    remains.</p>
-  </div>
-</section>
-
-<section>
-  <div class="sechead">
-    <h2>Emulated grading — when to revisit</h2>
-  </div>
-  <p><code>floci</code> (<code>ghcr.io/lex00/floci:awsbench</code>) and LocalStack/moto are
-  <strong>excluded by locked decision</strong>, on one specific ground: <em>they return false greens
-  on exactly the value-rejection class the study targets</em> — moto accepts invalid enums and
-  attributes, so an emulator would grade a wrong value as correct.</p>
-  <p>That reasoning is sound for v1, whose traps were largely <strong>value-acceptance</strong>
-  questions. It is a different question for day-2, where the traps are about
-  <strong>sequencing and dependency</strong>: does a rename force destroy-then-create, does an
-  in-use endpoint raise <code>DependencyViolation</code>, does a second apply converge. Those are
-  control-flow properties an emulator may model faithfully even while mis-modelling value validation.</p>
-  <div class="note">
-    <h3>What would tip the scale</h3>
-    <ul style="margin:0">
-      <li><strong>A measured false-green rate.</strong> Run a scenario whose live verdict is already
-      known against the emulator and count disagreements. Until that number exists, the exclusion
-      rests on an argument rather than evidence — the same criticism this project applies everywhere else.</li>
-      <li><strong>Live throughput becoming the binding constraint.</strong> Mutating trials serialize
-      account-wide with an ~8.5 min reset inside the lock. If day-2 coverage grows and the account is
-      the bottleneck, an emulator tier that is <em>demonstrably</em> sound for sequencing traps buys
-      parallelism a single account cannot.</li>
-      <li><strong>Evaluated and rejected as a gate backend (2026-08-27).</strong> The credential-free
-      host gates need exactly two plan-time answers (<code>sts:GetCallerIdentity</code>,
-      <code>states:ValidateStateMachineDefinition</code>); <code>gates/aws_stub.py</code> answers both
-      deterministically and rejects everything else, so floci's ~80 services would add fidelity
-      questions without adding coverage. The emulator question is now solely about
-      <em>emulated grading</em> of day-2 sequencing traps, gated on the false-green measurement below.</li>
-      <li><strong>Scoped adoption, never blanket.</strong> The defensible shape is a per-spec opt-in
-      — the same shape as <code>hcl_traversal</code> — declaring "this trap's truth is
-      sequencing, and the emulator models it", with a live run proving the agreement first. A blanket
-      emulator tier reintroduces the exact false-green class the exclusion was written against.</li>
-    </ul>
-  </div>
-</section>
-
-<section>
-  <div class="sechead">
-    <h2>Concurrency — why <code>-n</code> mostly does not help</h2>
-  </div>
-  <p>The trial queue takes the scenario admission gate <em>before</em> the concurrency semaphore:</p>
-  <pre style="background:var(--idle-w);padding:12px 14px;border-radius:3px;overflow-x:auto;font-family:'IBM Plex Mono',monospace;font-size:12.5px;margin:0 0 14px"><code style="background:none;padding:0">async with gate.hold(trial_config.concurrency_mode), self._semaphore:
-    return await self._execute_trial_with_retries(trial_config)</code></pre>
-  <ul>
-    <li><strong>READ_ONLY</strong> trials admit freely alongside one another — the 12 static specs
-    genuinely parallelize.</li>
-    <li><strong>MUTATING</strong> trials require no writer <em>and zero readers in flight</em>, and
-    the hold spans the whole trial <strong>including its reset</strong>. The 5 live specs are all
-    mutating, so they serialize account-wide at roughly one trial per ~10 minutes regardless of
-    <code>-n</code>. Measured: 3 trials, 1 h 09 wall-clock.</li>
-    <li>The gate is <strong>reader-preferring</strong> — a continuous stream of read-only trials can
-    park a waiting mutating one. Liveness holds only because a run is finite.</li>
-    <li><strong>Contamination is account-global.</strong> A failed reset tags the account and every
-    later trial on that scenario is refused — all 51 tasks, not just the mutating ones.</li>
-  </ul>
-</section>
-
-<section>
-  <div class="sechead">
-    <h2>Reset — cost and observed failure modes</h2>
-  </div>
-  <div class="tiles" style="margin-bottom:16px">
-    <div class="tile"><div class="n">4–8<span style="font-size:16px">min</span></div><div class="k">observed range</div></div>
-    <div class="tile alarm"><div class="n">3</div><div class="k">failures in one day</div></div>
-    <div class="tile"><div class="n">218<span style="font-size:16px">MB</span></div><div class="k">re-hashed per reset</div></div>
-    <div class="tile"><div class="n">8,289</div><div class="k">files in scenario tree</div></div>
-  </div>
-  <p>Reset restores the account to the POST_SETUP baseline by diffing against a snapshot, deleting
-  what is not in it, and re-hashing the scenario tree. Observed durations: 4:00, 5:43, 7:57.</p>
-  <ul>
-    <li><strong><code>Read timeout on endpoint URL: "None"</code> — three times in one day.</strong>
-    Two post-trial resets and one <code>env reset</code>. The reset that finally succeeded was the
-    third attempt of an unchanged command against an unchanged account. There is no retry.</li>
-    <li><strong>A killed reset leaves no contamination flag.</strong> A <code>ResetFailure</code>
-    sets the flag; a process killed mid-run never reaches either handler. The automatic pre-trial
-    guard reads an Organizations <em>tag</em>, not the account, so it cannot see the drift. Only a
-    hand-run <code>env verify</code> scans for real.</li>
-    <li><strong>The scenario hash has no blast-radius boundary.</strong> <code>compute_scenario_hash</code>
-    SHA256s every file under the scenario dir — 218 MB, 8,289 files, overwhelmingly
-    <code>node_modules</code> plus committed <code>cdk.out/</code> and <code>dist/</code>. Any
-    <code>npm install</code> silently invalidates the baseline.</li>
-  </ul>
-</section>
-
-<section>
-  <div class="sechead">
-    <h2>Environments and checksums</h2>
-  </div>
-  <ul>
-    <li><strong>One image contract per arm.</strong> <code>arms/&lt;arm&gt;/environment/</code> holds
-    the Dockerfile, the pinned toolchain and the workspace skeleton. The generator copies it into
-    every task of that arm, so a change to one arm Dockerfile propagates to all 17 of its tasks.</li>
-    <li><strong>One hand-maintained exception.</strong> <code>tasks/anchor/smoke/environment/</code>
-    is a byte-copy of the awscdk arm, guarded by <code>ci/check-smoke-drift.sh</code> (leading
-    comments stripped before comparison). It is the last step of <code>make check</code> and it
-    caught a real drift this session.</li>
-    <li><strong>Two independent hashes.</strong> The <em>equipping hash</em> covers what equips one
-    trial — instruction, image ref, skills/MCP config, and for brownfield the
-    <code>workspace_seed_sha256</code>. Rows under different equipping hashes are different strata
-    and are never pooled. The <em>scenario hash</em> covers the account substrate. They answer
-    different questions and are not interchangeable.</li>
-    <li><strong>Per-arm resources are deliberately asymmetric.</strong> awscdk and terraconstructs
-    get 4096 MB (both compile TypeScript); hcl-raw gets 2048. Both TS arms now bake the compile at
-    image build so the first in-trial compile is warm.</li>
-  </ul>
-</section>
-
-<section>
-  <div class="sechead">
-    <h2>The pre-run ladder</h2>
-    <p>Five rungs, ordered by scope. Each answers "what already exists when the agent starts?" —
-    and day-2 measurement lives entirely on the upper rungs.</p>
-  </div>
-  <div class="scroll">
-  <table>
-    <thead><tr><th>Rung</th><th>Scope</th><th>Runs</th><th>Creates</th><th>Used by</th></tr></thead>
-    <tbody>
-      <tr class="measured"><td class="id">env setup</td><td>account, persists</td><td>once per environment</td><td>Real AWS infra shared by every task on that scenario</td><td class="num">1 (anchor)</td></tr>
-      <tr class="measured"><td class="id">pre_invoke</td><td>per trial, in the agent container</td><td>before the agent's first token</td><td>Real AWS infra for this trial only — the seed deploy</td><td class="num">5</td></tr>
-      <tr class="broken"><td class="id">deploy_prior</td><td>per <em>step</em>, multi-step only</td><td>before that step's agent</td><td>The previous step's deployment</td><td class="num">0 real specs</td></tr>
-      <tr class="broken"><td class="id">post_invoke</td><td>per trial</td><td>after the agent</td><td>—</td><td class="num">0</td></tr>
-      <tr><td class="id">workspace_seed</td><td>files in the container</td><td>image build</td><td>Hand-authored config — <strong>no AWS</strong></td><td class="num">4</td></tr>
-    </tbody>
-  </table>
-  </div>
-  <p style="font-size:14px;color:var(--ink-2);margin-top:12px">The distinction that matters:
-  <code>workspace_seed</code> alone makes the workspace <em>describe</em> infrastructure;
-  <code>pre_invoke</code> makes that infrastructure <strong>exist</strong>. Shipping the first
-  without the second is exactly the defect that voided the earlier brownfield battery — the prompt
-  said "already deployed in this account" and nothing had deployed it.</p>
-</section>
-
-<section>
-  <div class="sechead">
-    <h2>Scenario splitting — what it would mean</h2>
-    <p>Not started. Needs a pre-registered amendment, not just a code change, because
-    <code>scenario_id</code> is part of trial identity.</p>
-  </div>
-  <p>A split means: more than one aws-bench scenario, each with its own account, its own
-  <code>env setup</code> deploying a different infra shape, its own reset, its own contamination
-  boundary and — critically — <strong>its own admission gate</strong>. Tasks choose a scenario by
-  <code>scenario_id</code>.</p>
-  <div class="cols">
-    <div class="attr"><h3>What it buys</h3>
-      <ul style="margin:0">
-        <li>Mutating trials on different scenarios run <em>concurrently</em> — the single biggest
-        throughput lever for day-2 coverage.</li>
-        <li>A failed reset stops one scenario's tasks, not all 51.</li>
-        <li>Hash blast radius becomes real: today "within a scenario" means everything.</li>
-      </ul></div>
-    <div class="attr"><h3>What forces it</h3>
-      <p style="margin:0 0 6px">Three Batch C items cannot be served by <code>workspace_seed</code>
-      (a file) or <code>pre_invoke</code> (per-trial):</p>
-      <ul style="margin:0">
-        <li><code>rds-blue-green</code> — a live RDS instance cannot live in a $0 anchor shared by 51 tasks.</li>
-        <li><code>cross-stack-export-deadly-embrace</code> — needs ≥2 deployed stacks with a live export/import edge.</li>
-        <li><code>s3-notification-on-unowned-bucket</code> — anchor's agent role is
-        <code>AdministratorAccess</code>, so "a bucket this principal does not own" is
-        <strong>unrepresentable in this account at all</strong>. Needs a second account by definition.</li>
-      </ul></div>
-    <div class="attr"><h3>Shape of a first split</h3>
-      <p style="margin:0">Split by <em>deployed infra shape</em>, as upstream does — not by task
-      count. The natural first cut is one scenario per mutating day-2 family, so the live specs stop
-      queueing behind each other, plus a second account for the ownership case.</p></div>
-    <div class="attr"><h3>Cheap first step, independent of any split</h3>
-      <p style="margin:0">Get <code>node_modules</code>, <code>cdk.out</code> and <code>dist</code>
-      out of <code>scenarios/anchor/</code>. Removes most spurious baseline invalidation and 218 MB
-      of I/O from every reset. No amendment needed.</p></div>
-  </div>
-</section>
-
-<section>
-  <div class="sechead">
-    <h2>Queued this session, not yet done</h2>
-    <p>Work identified today and deliberately deferred. Ordered by what has downside if left.</p>
-  </div>
-
-  <div class="scroll">
-  <table>
-    <thead><tr><th>Item</th><th>Why it was deferred</th><th>Downside if left</th></tr></thead>
-    <tbody>
-      <tr class="broken"><td><strong>CI red on <code>lambda-alias</code></strong><br><span class="mono" style="font-size:12px;color:var(--ink-3)">grading-proof, no tier-1 catch</span></td>
-        <td>Fixing it means either wiring a real tier-1 or changing gate semantics — neither is a patch.</td>
-        <td>A red <code>main</code> hides the next real regression. Three options open: withhold the scenario, wire tier-1, or leave red.</td></tr>
-      <tr class="broken"><td><strong>Batch B oracle debt</strong> — 8 majors<br><span class="mono" style="font-size:12px;color:var(--ink-3)">ROADMAP §5b.2</span></td>
-        <td>Fix round not yet run.</td>
-        <td>Two of the eight bias the headline metric, not just leak reward. No brownfield row from these three may be published.</td></tr>
-      <tr class="partial"><td><strong>Bounded retry on live oracles</strong><br><span class="mono" style="font-size:12px;color:var(--ink-3)">ROADMAP §5b.1</span></td>
-        <td>Postponed to the debt list.</td>
-        <td>Five instances in one day, including a correct solution scored 0.0 on a timed-out call with ground truth still in the account.</td></tr>
-      <tr class="partial"><td><strong><code>policy-json-string-normalization-diff</code></strong> unauthored</td>
-        <td>Its author marked it BLOCKED; the blocking evidence is itself unsound (no negative control, 50 provider crashes in the probe window).</td>
-        <td>Batch B stays 3 of 4. The blocked verdict is neither confirmed nor refuted.</td></tr>
-      <tr class="partial"><td><strong>Seed receipt not downloaded</strong><br><span class="mono" style="font-size:12px;color:var(--ink-3)">Amendment 31</span></td>
-        <td>Found while promoting 31.</td>
-        <td><code>/logs/seed-deploy-receipt.json</code> is the anti-vacuity channel and cannot be audited post-hoc from a finished job dir.</td></tr>
-      <tr class="partial"><td><strong>awscdk parity row</strong> never obtained</td>
-        <td>Run scored 0.0 on a CLI timeout.</td>
-        <td>The baked-<code>tsc</code> image change has no measured row; it is a new equipping stratum with n=0.</td></tr>
-      <tr class="unrun"><td><strong><code>make parity</code> absent from CI</strong></td>
-        <td>Found in the CI audit.</td>
-        <td>Cross-arm prompt parity — the property keeping tokens-to-green comparable — has zero CI coverage.</td></tr>
-      <tr class="unrun"><td><strong>CI runtime and hygiene</strong></td>
-        <td>Audit findings, not yet in §5b.</td>
-        <td><code>full-ci</code> ~45 min → ~3 h as the corpus grew; no <code>timeout-minutes</code> (6 h default), no npm/Terraform caching.</td></tr>
-      <tr class="unrun"><td><strong><code>max_iters = 8</code> in 51 files</strong></td>
-        <td>Found while assembling this page.</td>
-        <td>Contradicts Amendment 22 (raised to 100). Likely inert, but nobody should have to work out which wins.</td></tr>
-      <tr class="unrun"><td><strong>Multi-step still one scenario</strong></td>
-        <td>No driver until a scenario needs pre-deployed <em>state</em>.</td>
-        <td><code>pre_invoke.deploy_prior</code> is exercised by no real spec — only unit tests. Upstream aws-bench still refuses multi-step outright.</td></tr>
-    </tbody>
-  </table>
-  </div>
-</section>
-
-<section>
-  <div class="sechead">
-    <h2>Authoring queue</h2>
+    <h2>Pipeline status</h2>
     <p>Batch A is greenfield on today's harness; B is brownfield; C needs multi-step.</p>
   </div>
   <div class="cols">
-    <div class="attr"><h3>Batch A — 8 of 12</h3>
+    <div class="attr"><h3>Batch A — 8 of 12 authored</h3>
       <p style="margin:0 0 6px">Remaining four, blueprinted in <code>docs/design/batch-a-greenfield-blueprints.md</code>:</p>
       <div class="who">caller-identity-arn-as-principal · lambda-function-url-partner-scoped-invoke · apigwv2-route-settings-zero-vs-unset · ecr-repo-destroy-force-delete</div>
-      <p style="margin:8px 0 0;font-size:13.5px;color:var(--ink-2)">Needs: a literal AMI id, (the hcl-raw STS blocker is resolved by Amendment 32 — plans resolve <code>sts:GetCallerIdentity</code> against the real account in trials and the stub in gates), <code>verifier.teardown</code> (not built), and <code>hashicorp/archive</code> in the provider mirror.</p></div>
+      <p style="margin:8px 0 0;font-size:13.5px;color:var(--ink-2)">Still needs: a literal AMI id,
+      <code>verifier.teardown</code> (<strong>not built</strong>), and <code>hashicorp/archive</code> in the
+      provider mirror. The hcl-raw offline-STS blocker is resolved — plans resolve
+      <code>sts:GetCallerIdentity</code> against the real account in trials and against the stub in gates.</p></div>
 
-    <div class="attr"><h3>Batch B — 3 of 4</h3>
-      <p style="margin:0 0 6px">Unblocked 2026-08-26 by the seed-deploy mechanism. Authored today; all carry §5b.2 debt.</p>
+    <div class="attr"><h3>Batch B — 3 of 4 authored</h3>
+      <p style="margin:0 0 6px">Unblocked 2026-08-26 by the seed-deploy mechanism. All three carry the
+      §5b.2 oracle debt below.</p>
       <div class="who">s3-acl-vs-object-ownership-log-delivery · singleton-child-resource-clobber · lambda-alias-tracks-unpublished-latest · <em>policy-json-string-normalization-diff (not authored)</em></div></div>
 
     <div class="attr"><h3>Batch C — 0 of 5</h3>
-      <p style="margin:0 0 6px">Multi-step; <code>apigw-redeploy</code> is the template and the only working example.</p>
+      <p style="margin:0 0 6px">Multi-step; <code>apigw-redeploy</code> is the template and the only
+      working example. ROADMAP &sect;M7 names three of the five as unservable by
+      <code>workspace_seed</code> or per-trial <code>pre_invoke</code> because they need infra that
+      pre-exists the trial &mdash; <code>rds-blue-green</code>,
+      <code>cross-stack-export-deadly-embrace</code> and
+      <code>s3-notification-on-unowned-bucket</code>; only the last is argued there to need a
+      <em>second account</em> by definition. The split now supplies three.</p>
       <div class="who">drift-blindness · sg-inline-vs-standalone-rules · cross-stack-export-deadly-embrace · rds-blue-green · s3-notification-on-unowned-bucket</div></div>
 
     <div class="attr"><h3>Empirical gates</h3>
       <p style="margin:0 0 6px">Need AWS, run outside a measurement battery:</p>
       <div class="who">default-tags-vs-tags-all — does the perpetual diff still reproduce on provider v6? · auto-created-security-groups-allow-all-egress — does aws-cdk-lib still do this?</div></div>
   </div>
+
+  <h3 style="margin-top:26px">Blockers, in the order they have downside if left</h3>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Item</th><th>State</th><th>Downside if left</th></tr></thead>
+    <tbody>
+      <tr class="broken"><td><strong>Batch B oracle debt</strong> — 8 major findings<br><span class="mono" style="font-size:12px;color:var(--ink-3)">ROADMAP §5b.2</span></td>
+        <td>Open; fix round not run. All three verdicts were <code>sound_with_caveats</code>, zero blockers.</td>
+        <td><strong>No brownfield row from these three may be published.</strong> Two of the eight are measurement confounds, not oracle bugs: <code>s3-acl</code>'s two Terraform seeds contain the literal knob the change request targets while the awscdk seed synthesizes it invisibly; and <code>lambda-alias</code> defines green differently per arm (2 tier-0 asserts on awscdk, 3 on both TF arms), so an agent that fixes it with the AWS CLI and never touches IaC scores 1.0 on awscdk and 0.0 elsewhere.</td></tr>
+      <tr class="partial"><td><strong>Live oracles have no retry</strong><br><span class="mono" style="font-size:12px;color:var(--ink-3)">ROADMAP §5b.1</span></td>
+        <td>Open, well-evidenced, not fixed.</td>
+        <td>A single failed AWS call is treated as an answer. Measured 2026-08-26: seed deployed, idempotence converged, the rename correctly applied — scored <strong>0.0</strong> because one <code>describe-security-groups</code> timed out, with ground truth still in the account.</td></tr>
+      <tr class="partial"><td><strong><code>policy-json-string-normalization-diff</code></strong> unauthored</td>
+        <td>Its author marked it BLOCKED.</td>
+        <td>The blocking evidence is itself unsound — an offline probe with only identical-value controls, no negative control, inside a window containing 50 provider crashes. Batch B stays 3 of 4 and the verdict is neither confirmed nor refuted.</td></tr>
+      <tr class="partial"><td><strong>Seed receipt not downloaded</strong><br><span class="mono" style="font-size:12px;color:var(--ink-3)">Amendment 31</span></td>
+        <td>Open.</td>
+        <td><code>/logs/seed-deploy-receipt.json</code> is the anti-vacuity channel and the seed-movement guard's reference point, and it cannot be audited post-hoc from a finished job dir.</td></tr>
+      <tr class="unrun"><td><strong><code>make parity</code> absent from CI</strong></td>
+        <td>Open.</td>
+        <td>Cross-arm prompt parity — the property keeping tokens-to-green comparable — has zero CI coverage.</td></tr>
+      <tr class="unrun"><td><strong>CI runtime and hygiene</strong></td>
+        <td>Open.</td>
+        <td><code>full-ci</code> grew from ~45 min to ~3 h as the corpus grew; no <code>timeout-minutes</code> on either job (6 h default), no npm or Terraform caching.</td></tr>
+      <tr class="unrun"><td><strong><code>max_iters = 8</code> in 53 task dirs</strong></td>
+        <td>Open.</td>
+        <td>Contradicts Amendment 22. Inert, but nobody should have to work out which number wins.</td></tr>
+      <tr class="unrun"><td><strong><code>pre_invoke.deploy_prior</code> exercised by no real spec</strong></td>
+        <td>Open by design.</td>
+        <td>A whole schema capability with unit-test coverage only. Upstream aws-bench still refuses multi-step outright, so there is no external pressure to close it either.</td></tr>
+    </tbody>
+  </table>
+  </div>
 </section>
 
 <section>
   <div class="sechead">
     <h2>Measurement roadmap</h2>
-    <p>M1–M9. None started; several are cheap and need no new trials.</p>
+    <p>M1–M9. M7 is done; the rest are not started.</p>
   </div>
   <div class="scroll">
   <table>
@@ -806,12 +990,12 @@
       <tr class="unrun"><td class="id">M1</td><td>Finish the profile — land blast radius, wire <code>extract_signals.py</code> into the pipeline, make rbw / escape-hatch first-class result fields instead of post-hoc extraction.</td><td>Cheap, no new trials</td></tr>
       <tr class="unrun"><td class="id">M2</td><td>Equipping factorial — does materialized discovery erase the abstraction tax? <code>gates/equipping.py</code> already hashes skills/MCP into trial identity, so <code>arm × equipping</code> is a legitimate design today.</td><td>Battery</td></tr>
       <tr class="unrun"><td class="id">M3</td><td>The <code>hcl-modules</code> arm, as a <em>falsification test</em>. Raw HCL is arguably a strawman — practice is community modules. Without this, the most obvious practitioner objection to the headline stands.</td><td>New arm</td></tr>
-      <tr class="unrun"><td class="id">M4</td><td>Scale dose-response — the biggest live limitation. Every scenario is 1–2 files, the regime where abstraction pays off <em>least</em>. The maintainability argument is fundamentally about scale.</td><td>High</td></tr>
-      <tr class="unrun"><td class="id">M5</td><td>Oracle-authority inversion — decide after a full battery, on the measured divergence rate between static-green and live-green.</td><td>Decision</td></tr>
+      <tr class="unrun"><td class="id">M4</td><td>Scale dose-response — the biggest live limitation. Every spec is 1–2 files, the regime where abstraction pays off <em>least</em>. The maintainability argument is fundamentally about scale.</td><td>High</td></tr>
+      <tr class="unrun"><td class="id">M5</td><td>Oracle-authority inversion — decide after a full battery, on the measured divergence rate between static-green and live-green. Amendment 34 is a first, scoped instance of the inversion: one catch moved from a host-side re-implementation to the service's own evaluator.</td><td>Decision</td></tr>
       <tr class="unrun"><td class="id">M6</td><td>Closed-book knowledge probe — for each trap, ask the model the underlying question with no workspace, docs or tools, and record whether it knows. Operationalizes the §3 law.</td><td>Cheap, no AWS</td></tr>
-      <tr class="unrun"><td class="id">M7</td><td>Split the aws-bench scenario — throughput, isolation, hash blast radius. All 51 tasks hardcode <code>scenario_id = "anchor"</code>; a framework-sanctioned degenerate use, not a mistake.</td><td>Infra</td></tr>
-      <tr class="unrun"><td class="id">M8</td><td>OPA/Rego on all three arms; cfn-guard demoted to a measured capability. Proven necessary: cfn-guard cannot express a cross-resource join, and the resulting proxy was unsound <em>in both directions</em>. Backported to 3 scenarios so far.</td><td>Per-scenario</td></tr>
-      <tr class="unrun"><td class="id">M9</td><td>Brownfield <em>adoption</em> scenarios — import existing infrastructure. Distinct from Amendment 28 brownfield, which seeds <em>code</em>; adoption starts from resources with no config at all.</td><td>New form</td></tr>
+      <tr class="measured"><td class="id">M7</td><td><strong>DONE.</strong> Sharded at N = 4, <code>env setup</code> green on all four shards, Amendment 33 ACCEPTED on its first promotion run. The three new accounts were created by hand rather than by <code>env init</code>, because aws-bench derives a new account's root email from the management account's domain — and when that domain is a public mail provider, the generated address is claimable by anyone.</td><td>Paid</td></tr>
+      <tr class="unrun"><td class="id">M8</td><td>OPA/Rego on all three arms; cfn-guard demoted to a measured capability. Proven necessary: cfn-guard 3.2.0 cannot express a cross-resource join, and the resulting proxy was unsound <em>in both directions</em>. Backported to 3 specs so far.</td><td>Per-spec</td></tr>
+      <tr class="unrun"><td class="id">M9</td><td>Brownfield <em>adoption</em> — import existing infrastructure. Distinct from Amendment 28 brownfield, which seeds <em>code</em>; adoption starts from resources with no config at all, and now has spare shards to live on.</td><td>New form</td></tr>
     </tbody>
   </table>
   </div>
@@ -825,7 +1009,7 @@
     <div class="attr"><h3>Backlog</h3>
       <ul style="margin:0">
         <li><strong>#12</strong> community contribution path — CONTRIBUTING.md, proposal template, credential-free CI gates. Tension with M5: full behavioural oracles make the bench unrunnable without an AWS account.</li>
-        <li><strong>#17</strong> equipping-hash gap — the bare-tag image-digest fallback blinds the hash.</li>
+        <li><strong>#17</strong> equipping-hash gap — the bare-tag image-digest fallback blinds the hash to <code>environment/</code>-only changes when docker is absent.</li>
         <li><strong>#8</strong> differential oracle-strictness check.</li>
       </ul></div>
     <div class="attr"><h3>Open decisions</h3>
@@ -835,15 +1019,45 @@
         <li>Do rbw / escape-hatch / blast radius become pre-registered <strong>headline</strong> columns or exploratory secondary ones? They were found post-hoc — exactly the situation pre-registration exists to discipline.</li>
         <li>Does <code>hcl-modules</code> become a fourth arm, or a treatment on a subset?</li>
         <li>Is fresh-session-per-step pre-registered as <em>modelling maintenance by a different engineer</em>, and does an explicitly-cached variant become an M2 condition?</li>
+        <li>Does <code>cell_key</code> grow a scenario-form dimension, and in which amendment window?</li>
       </ul></div>
   </div>
 </section>
 
+<section>
+  <div class="sechead">
+    <h2>Provenance</h2>
+    <p>The promotion job directories this page draws its live numbers from. Every one is
+    claude-sonnet-5 at <code>max_turns = 100</code>.</p>
+  </div>
+  <div class="scroll">
+  <table>
+    <thead><tr><th>Job directory</th><th>Covers</th><th>Window</th><th class="num">Trials</th><th>Outcome</th></tr></thead>
+    <tbody>
+      <tr class="measured"><td class="id">jobs/amend32-promotion/2026-08-27__21-38-21</td><td>Amendment 32 — <code>ecs-swappiness</code>, 3 arms × k=2, read-only</td><td>2026-08-27 21:42 → 21:49</td><td class="num">6</td><td>0 errors; 4 × 1.0, 2 × 0.0 (hcl-raw, the trap)</td></tr>
+      <tr class="measured"><td class="id">jobs/amend32-promotion/2026-08-27__21-50-09</td><td>Amendment 32 — <code>named-resource-replacement</code> + <code>apigw-redeploy</code>, 3 arms × k=2, mutating</td><td>2026-08-27 21:53 → 2026-08-28 01:48</td><td class="num">12</td><td>0 errors; 12 × 1.0</td></tr>
+      <tr class="measured"><td class="id">jobs/amend33-promotion/2026-09-09__19-09-38</td><td>Amendment 33 — 4 shards, <code>-n 4</code>, one read-only co-runner + one spec's three arms</td><td>2026-09-09 19:13 → 19:34 (20 min 59 s)</td><td class="num">4</td><td>0 errors; 3 × 1.0, 1 × 0.0 (agent-caused); 3 clean resets, overlapping</td></tr>
+      <tr class="measured"><td class="id">jobs/amend34-promotion/2026-09-09__21-19-05</td><td>Amendment 34 — <code>sfn-jsonata-*</code>, both enabled arms, read-only on shard <code>anchor</code></td><td>2026-09-09 21:23 → 21:26 (3 min 14 s)</td><td class="num">2</td><td>0 errors; 2 × 1.0, tier-1 PASS and live <code>pass</code> on both</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p style="font-size:13.5px;color:var(--ink-3);margin-top:10px">
+    Earlier job directories under <code>jobs/</code> — <code>claude-sonnet-5</code>,
+    <code>g-live-*</code>, <code>live-brownfield-seed</code>, <code>rerun-*</code>,
+    <code>f-smoke</code> — predate Amendment 32 and are cited above only where a row names them.
+  </p>
+</section>
+
 <div class="foot">
-  Generated from <code>specs/*.yaml</code>, <code>tasks/anchor/*/task.toml</code>,
-  <code>specs/split.yaml</code> and every <code>result.json</code> under <code>jobs/</code>
-  at <code>main @ 6f1fed5</code>. Token counts are directional: n=1 per arm, and two runs of one
-  scenario on one arm have differed by 54%.
+  Assembled from <code>specs/*.yaml</code>, <code>specs/split.yaml</code>,
+  <code>specs/SCHEMA.md</code>, <code>generator/shards.py</code> and <code>shards.toml</code>,
+  <code>tasks/**/task.toml</code>, <code>arms/*/environment/</code>,
+  <code>scenarios/anchor/scenario/cdk_app/stacks/qa_roles_stack.ts</code>,
+  <code>metrics/tokens_to_green.py</code> and <code>result_schema.json</code>,
+  <code>DECISIONS.md</code> Amendments 22–34, <code>ROADMAP.md</code>, <code>CLAUDE.md</code>, and
+  the four promotion job directories above, at <code>main @ 4608901</code>. Token counts are
+  directional: n is 1 or 2 per cell, and two runs of one spec on one arm have differed by more than
+  2×.
 </div>
 
 </div>

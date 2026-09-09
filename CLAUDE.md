@@ -187,6 +187,25 @@ Full design: `aws-access.html`. Decision record: `DECISIONS.md` Amendment 32
   (evaluated and rejected for this — Amendment 32, Amendment 2) or re-add a
   workspace-level switch.
 
+## Comments
+
+Rules set by the owner on 2026-09-09; an opus "comment cleaner" pass applies
+them to every change, and every diff leaves the comments around it better.
+
+1. Comments are not journals. History lives in git; humans and agents reach it
+   through blame. No dates, run ids, "previously", "finding X", "round N".
+2. A comment adds information; it never re-explains the code below it.
+3. A comment block on a single line of code is ideally 3 lines and is rewritten
+   above 5. File headers are at most 20 lines; the rest moves to `docs/` and is
+   referenced. Pydantic field descriptions in `generator/spec_model.py` are
+   schema contracts and may run longer when every line states a constraint.
+4. No opaque reference codes ("D1-5", "Slice D", "§7.1 paragraph 3"). State the
+   meaning; an amendment may be cited only with its meaning alongside.
+
+Keep the constraint, the enforcement point (test or gate) and the consequence
+of breaking it. Generated files are never edited by hand: fix the generator
+template and regenerate.
+
 ## Never
 
 - Write AWS credentials to a file, or run boto/botocore at DEBUG (leaks session
