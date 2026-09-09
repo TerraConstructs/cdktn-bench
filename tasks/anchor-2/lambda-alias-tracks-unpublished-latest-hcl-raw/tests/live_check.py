@@ -67,12 +67,11 @@ OUTCOME CONTRACT (SCHEMA.md §5, gating): a JSON object on stdout with an
                         AWS failure that outlived tests/_live_lib.py's bounded
                         retry -- `not_verifiable_kind` says which).
                         Fail-closed: an unanswered check
-                        ("transient-exhausted", "api-error") VOIDS the row --
-                        the generated tests/test.sh writes no reward file, so
-                        harbor reports the trial INVALID -- and every other
-                        outcome that is not "pass" scores 0.0. An unverifiable
-                        claim never earns reward, and an outage is never scored
-                        as a wrong solution.
+                        ("transient-exhausted", "api-error") voids the row --
+                        tests/test.sh writes no reward file, so harbor reports
+                        the trial invalid -- and every other outcome that is
+                        not "pass" scores 0.0. An outage is never scored as a
+                        wrong solution.
 
 TWO CALL SHAPES, matching this repo's convention:
   * verifier-invoked, no args -- prints the JSON, always exits 0. The exit code

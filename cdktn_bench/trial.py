@@ -95,7 +95,7 @@ class TransientResetRetryMixin:
 
     A reset whose failure text carries a transient signature — a read/connect
     timeout, a connection reset, throttling, a 5xx — is re-run with bounded
-    backoff before the outcome is accepted. A RESOLVED failure (AccessDenied, a
+    backoff before the outcome is accepted. A resolved failure (AccessDenied, a
     stack that cannot be deleted, anything the service answered) is never
     retried: re-asking holds the scenario's exclusive gate for minutes to reach
     the same answer.
@@ -113,7 +113,7 @@ class TransientResetRetryMixin:
     async def _reset_scenario_account(self) -> None:
         """aws-bench's post-trial reset, wrapped in a transient-only retry.
 
-        The budget is attempts AND wall clock measured across whole attempts:
+        The budget is attempts and wall clock measured across whole attempts:
         a reset pass is minutes long, so a clock that counted only the sleeps
         between attempts would bound nothing an operator waits on.
 
@@ -136,7 +136,7 @@ class TransientResetRetryMixin:
                 or (time.monotonic() - started) + delay > MAX_RESET_RETRY_WALL_S
             )
             # The last attempt's reason is the only account of the failure an
-            # operator running at WARNING ever sees, so it is logged at ERROR.
+            # operator running at WARNING sees, so it is logged at ERROR.
             self.logger.log(
                 logging.ERROR if final else logging.INFO,
                 "Post-trial reset attempt %d/%d for %s failed, classified %s: %s",
@@ -151,8 +151,8 @@ class TransientResetRetryMixin:
             await asyncio.sleep(delay)
 
         # Upstream's two distinct endings, kept distinct. Contamination tags are
-        # applied INSIDE a reset pass, so a pass that raised before that point
-        # left the account UNflagged: telling the operator it is flagged would
+        # applied inside a reset pass, so a pass that raised before that point
+        # left the account unflagged: telling the operator it is flagged would
         # be false, and the exception text would be the only thing that says so.
         if kind == RESET_RAISED:
             self.logger.error(
@@ -169,15 +169,14 @@ class TransientResetRetryMixin:
     async def _attempt_scenario_reset(self, attempt: int) -> tuple[str, str] | None:
         """One reset pass: ``None`` on success, else ``(kind, failure text)``.
 
-        ``kind`` separates a pass that RAISED from one that reported failure,
+        ``kind`` separates a pass that raised from one that reported failure,
         because only the second flags the account.
 
         Attempt 1 keeps upstream's ``scenario-reset`` trial name, so the
         artifacts land in the ``<trial_dir>/scenario-reset/`` directory every
         existing tool reads; a retry gets its own name rather than overwriting
-        the evidence of why the first attempt failed. Every name starts with
-        ``RESET_TRIAL_NAME_PREFIX``, which is what tools distinguishing reset
-        artifacts from agent trials must match on.
+        the evidence of why the first attempt failed. Both start with
+        ``RESET_TRIAL_NAME_PREFIX``.
         """
         reset_config = ScenarioTrialConfig(
             scenario=self.config.scenario,

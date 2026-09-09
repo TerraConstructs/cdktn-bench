@@ -21,7 +21,7 @@ import random
 TRANSIENT = "transient"
 RESOLVED = "resolved"
 
-# Exception types the HARNESS raises when its own deadline expires. Matched on
+# Exception types the harness raises when its own deadline expires. Matched on
 # the type, never on the message, and always RESOLVED: a phase that ran out of
 # its configured seconds is a deterministic verdict, and re-running it spends
 # another full reset pass -- minutes with the shard's exclusive gate held -- to
@@ -36,7 +36,7 @@ HARNESS_TIMEOUT_TYPES = (
 # not listed is RESOLVED and is never retried: re-running a reset that failed
 # on AccessDenied or a deleted stack spends ten minutes reaching the same
 # answer while the shard's exclusive gate is still held. Every timeout marker
-# names the CLIENT side of a call; a bare "timed out" is forbidden, because it
+# names the client side of a call; a bare "timed out" is forbidden, because it
 # also matches a harness deadline and a stack-deletion deadline.
 TRANSIENT_MARKERS = (
     "read timeout",
@@ -70,13 +70,12 @@ TRANSIENT_MARKERS = (
     "(504)",
 )
 
-# One reset attempt is minutes of stack diffing -- measured at 7-13 minutes on
-# this corpus -- so counting sleeps would bound nothing. The wall budget covers
-# whole ATTEMPTS, their own duration included, and a retry starts only while it
-# is unspent: at most MAX_RESET_ATTEMPTS passes, and the retry adds at most
-# MAX_RESET_RETRY_WALL_S plus the one pass already running when the budget
-# runs out. Small enough that a retried reset cannot outlive the job it belongs
-# to while the scenario's exclusive gate is held.
+# One reset attempt is minutes of stack diffing (7-13 on this corpus), so a
+# budget over sleeps alone would bound nothing. The wall budget covers whole
+# attempts, their own duration included, and a retry starts only while it is
+# unspent: at most MAX_RESET_ATTEMPTS passes, adding at most
+# MAX_RESET_RETRY_WALL_S plus the pass already running when it runs out -- less
+# than the job the scenario's exclusive gate is held for.
 MAX_RESET_ATTEMPTS = 3
 MAX_RESET_RETRY_WALL_S = 900.0
 RESET_BACKOFF_BASE_S = 30.0

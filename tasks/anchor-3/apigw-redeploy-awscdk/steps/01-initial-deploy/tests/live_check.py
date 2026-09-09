@@ -57,9 +57,8 @@ TWO CALL SHAPES:
   sets SPEC_LIVE_CHECK_GATING=true on it): test.sh downgrades reward.txt to
   0.0 whenever `outcome` is not "pass", except that an unanswered check
   ("transient-exhausted") voids the row instead of scoring it. Without this
-  gate an agent could
-  author perfect IaC, never deploy at all, and still pass this step's static
-  tiers -- which grade the delivered file, not the account.
+  gate an agent could author perfect IaC, never deploy at all, and still pass
+  this step's static tiers -- which grade the delivered file, not the account.
 
   Fixture-invoked (steps/01-initial-deploy/solution/solve.sh, LIVE=1 only):
   `python3 live_check.py --api-url URL --expect ok`. Real, gating exit code.

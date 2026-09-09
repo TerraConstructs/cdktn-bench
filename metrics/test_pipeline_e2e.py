@@ -72,7 +72,7 @@ def test_gate_emitted_rows_flow_end_to_end_through_tokens_to_green(tmp_path: Pat
     for key in ("cells", "headline_cells", "train_cells", "split_composition", "tier_attribution"):
         assert key in report, f"benchmark.json is missing expected top-level key {key!r}"
 
-    # Every top-level block is a SINGLE form's numbers, so it exists only
+    # Every top-level block is a single form's numbers, so it exists only
     # while the fixture rows are all one form; assert that before indexing it.
     assert report["pooling_refused"] is False
     assert report["scenario_forms"] == ["greenfield"]

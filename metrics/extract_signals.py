@@ -30,9 +30,9 @@ MUTATORS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 
 # Post-trial reset artifacts sit beside the agent trials and are not trials:
 # cdktn_bench.trial names them `scenario-reset` and, per retry,
-# `scenario-reset-retry-N` (RESET_TRIAL_NAME_PREFIX there). Match the PREFIX --
-# walking one prints a row with no arm and reports the reset's own exception as
-# an INFRA-FAIL against a task that never failed.
+# `scenario-reset-retry-N` (RESET_TRIAL_NAME_PREFIX there). Match the prefix,
+# not the bare name -- walking one prints a row with no arm and reports the
+# reset's own exception as an INFRA-FAIL against a task that never failed.
 RESET_DIR_PREFIX = "scenario-reset"
 
 

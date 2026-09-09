@@ -161,16 +161,16 @@ if [ "${SPEC_LIVE_CHECK_ENABLED:-false}" = "true" ] \
     fi
     live_kind="$(jq -r '.not_verifiable_kind // ""' /logs/verifier/live_check-result.json 2>/dev/null)"
 
-    # AWS NEVER ANSWERED => THE ROW IS VOID, NOT A ZERO. Same rule as
+    # AWS never answered => the row is void, not a zero. Same rule as
     # the aws-unavailable marker above: "transient-exhausted" (every
     # attempt at a call timed out or was throttled) and "api-error"
-    # (the call itself could not be made -- no credentials, no CLI, an
-    # API refusal) are test-INFRASTRUCTURE failures, indistinguishable
-    # from a wrong solution once written as 0.0. Refuse to grade
-    # instead: no reward file, so harbor's RewardFileNotFoundError
-    # reports the trial INVALID and a regional throttle stays out of
-    # tokens-to-green. Every OTHER not_verifiable kind is a statement
-    # about the account and still gates to 0.0 below.
+    # (the call could not be made -- no credentials, no CLI, an API
+    # refusal) are test-infrastructure failures, indistinguishable from
+    # a wrong solution once written as 0.0. Writing no reward file makes
+    # harbor's RewardFileNotFoundError report the trial invalid, keeping
+    # a regional throttle out of tokens-to-green. Every other
+    # not_verifiable kind is a statement about the account and still
+    # gates to 0.0 below.
     case "$live_outcome:$live_kind" in
       not_verifiable:transient-exhausted|not_verifiable:api-error)
         echo "LIVE CHECK UNANSWERED ($live_kind): AWS never answered -- see" >&2

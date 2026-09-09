@@ -16,9 +16,9 @@ static_tiers.sh produces exactly one of them.
 OUTCOME CONTRACT (SCHEMA.md §5, gating): a JSON object on stdout whose
 `outcome` is "pass" (every case matched), "fail_stale" (a verdict about the
 agent's artifact) or "not_verifiable" (the check could not run at all -- never
-a statement about the solution). tests/test.sh VOIDS the row for an
-unanswered check ("transient-exhausted", "api-error") -- no reward file, trial
-INVALID -- and scores 0.0 for anything else that is not "pass", so `reason` and
+a statement about the solution). tests/test.sh voids the row for an unanswered
+check ("transient-exhausted", "api-error") -- no reward file, trial invalid --
+and scores 0.0 for anything else that is not "pass", so `reason` and
 `not_verifiable_kind` are what keep an infrastructure failure legible as one.
 """
 

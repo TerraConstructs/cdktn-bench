@@ -52,11 +52,10 @@ OUTCOME CONTRACT (SCHEMA.md §5, gating): a JSON object on stdout with an
                         that outlived tests/_live_lib.py's bounded retry --
                         `not_verifiable_kind` says which). Fail-closed: an
                         unanswered check ("transient-exhausted", "api-error")
-                        VOIDS the row -- the generated tests/test.sh writes no
-                        reward file at all, so harbor reports the trial INVALID
-                        -- and every other outcome that is not "pass" scores
-                        0.0. An unverifiable claim never earns reward, and an
-                        outage is never scored as a wrong solution.
+                        voids the row -- tests/test.sh writes no reward file,
+                        so harbor reports the trial invalid -- and every other
+                        outcome that is not "pass" scores 0.0. An outage is
+                        never scored as a wrong solution.
 
 TWO CALL SHAPES, matching this repo's existing convention (see
 apigw-redeploy's own live_check.py):
@@ -103,9 +102,9 @@ class AwsUnavailable(RuntimeError):
 def _aws(*args: str) -> Any:
     """One read of the account through the shared transient-retry runner.
 
-    A TRANSIENT failure is retried inside run_aws and only surfaces here, as
-    TransientExhausted, once its budget is spent; every RESOLVED failure is
-    AwsUnavailable exactly as before -- neither is ever a verdict."""
+    A transient failure is retried inside run_aws and surfaces here only as
+    TransientExhausted, once its budget is spent; every resolved failure is
+    AwsUnavailable. Neither is ever a verdict."""
     rc, stdout, stderr = run_aws(list(args))
     if rc != 0:
         raise AwsUnavailable(

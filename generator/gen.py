@@ -1929,17 +1929,14 @@ arm's tests/. Do not hand-edit; regenerate the owning scenario instead.
 The only sanctioned way for a hand-authored tests/live_check.py to run the
 `aws` CLI. A failed call is either TRANSIENT (the question was never answered:
 client-side timeout, connection reset, throttling, 5xx) and is retried with
-bounded backoff, or RESOLVED (the service answered with an error --
-AccessDenied, ValidationException, NoSuchBucket -- or there is no `aws` binary
-at all) and is handed back unretried for the caller to map exactly as it always
-has.
+bounded backoff, or RESOLVED (the service answered with an error, or there is
+no `aws` binary at all) and is handed back unretried for the caller to map.
 
 Exhausting the transient budget raises TransientExhausted, which every caller
 maps to outcome "not_verifiable" with kind "transient-exhausted"; the generated
-tests/test.sh then VOIDS the row rather than scoring it, because a question that
-was never answered is neither a right nor a wrong solution. Contract,
-classification table and budget rationale: specs/SCHEMA.md section 5,
-"Transient AWS failures".
+tests/test.sh then voids the row rather than scoring it, a question never
+answered being neither a right nor a wrong solution. Contract, classification
+table and budget rationale: specs/SCHEMA.md section 5, "Transient AWS failures".
 
 Stdlib only -- the arm images ship python3 without boto3.
 """
@@ -1959,7 +1956,7 @@ RESOLVED = "resolved"
 # live_check-result.json instead of reading as a claim about the agent.
 TRANSIENT_EXHAUSTED_KIND = "transient-exhausted"
 
-# Budget for ONE call: attempts stop at MAX_ATTEMPTS or when the next sleep
+# Budget for one call: attempts stop at MAX_ATTEMPTS or when the next sleep
 # would carry the call past MAX_TOTAL_WALL_S, whichever comes first.
 MAX_ATTEMPTS = 4
 MAX_TOTAL_WALL_S = 90.0
@@ -1968,14 +1965,13 @@ BACKOFF_BASE_S = 1.0
 BACKOFF_CAP_S = 8.0
 BACKOFF_JITTER = 0.25
 
-# What RETRYING may add across the whole process -- every retry attempt's own
-# duration plus every backoff sleep, summed over every call one live_check.py
-# makes. An oracle makes several sequential calls (the fattest in this corpus
-# makes six), so a per-call bound alone bounds nothing a verifier cares about:
-# six exhausted calls would outlive the 900s [verifier] timeout and the row
-# would be DESTROYED instead of reported as transient-exhausted. Only retry
-# cost is counted, never a check's own polling, so a legitimate slow verdict is
-# never turned into an infrastructure one.
+# What retrying may add across the whole process: every retry attempt's own
+# duration plus every backoff sleep, over every call one live_check.py makes.
+# A per-call bound alone bounds nothing a verifier cares about -- six exhausted
+# calls (the fattest oracle here makes six) would outlive the 900s [verifier]
+# timeout and destroy the row instead of reporting it transient-exhausted. Only
+# retry cost is counted, never a check's own polling, so a legitimately slow
+# verdict is never turned into an infrastructure one.
 MAX_PROCESS_RETRY_WALL_S = 240.0
 
 _retry_spent = 0.0
@@ -1986,15 +1982,14 @@ def reset_retry_budget() -> None:
     global _retry_spent
     _retry_spent = 0.0
 
-# Substrings matched case-insensitively against the CLI's stderr, or against an
-# exception's text, that mean the request never reached a decision. Anything
-# not listed here is RESOLVED and is never retried: re-asking after
-# AccessDenied or ValidationException spends the verifier's clock on the same
-# answer. Every timeout marker names the CLIENT side of a call
-# ("client call timed out" is this module's own spelling, below); a bare
-# "timed out" is forbidden, because it also matches a harness-imposed
-# deadline -- a phase timeout, a stack-deletion timeout -- which is a
-# deterministic verdict a retry can only re-earn.
+# Substrings matched case-insensitively against the CLI's stderr or an
+# exception's text, meaning the request never reached a decision. Anything not
+# listed here is RESOLVED and is never retried: re-asking after AccessDenied or
+# ValidationException spends the verifier's clock on the same answer. Every
+# timeout marker names the client side of a call ("client call timed out" is
+# this module's own spelling, below); a bare "timed out" is forbidden, because
+# it also matches a harness-imposed deadline -- a phase or stack-deletion
+# timeout -- which is a deterministic verdict a retry can only re-earn.
 TRANSIENT_MARKERS = (
     "read timeout",
     "connect timeout",
@@ -2090,7 +2085,7 @@ def run_aws(
     attempt = 0
     while True:
         attempt += 1
-        # Every call gets ONE honest attempt at full timeout; a RETRY is capped
+        # Every call gets one honest attempt at full timeout; a retry is capped
         # to what is left of the shared budget, so the cost of retrying is
         # bounded no matter how many calls a check makes.
         budget_left = MAX_PROCESS_RETRY_WALL_S - _retry_spent
@@ -3725,16 +3720,16 @@ def build_test_sh(spec: Spec, arm: Arm) -> str:
             fi
             live_kind="$(jq -r '.not_verifiable_kind // ""' /logs/verifier/live_check-result.json 2>/dev/null)"
 
-            # AWS NEVER ANSWERED => THE ROW IS VOID, NOT A ZERO. Same rule as
+            # AWS never answered => the row is void, not a zero. Same rule as
             # the aws-unavailable marker above: "transient-exhausted" (every
             # attempt at a call timed out or was throttled) and "api-error"
-            # (the call itself could not be made -- no credentials, no CLI, an
-            # API refusal) are test-INFRASTRUCTURE failures, indistinguishable
-            # from a wrong solution once written as 0.0. Refuse to grade
-            # instead: no reward file, so harbor's RewardFileNotFoundError
-            # reports the trial INVALID and a regional throttle stays out of
-            # tokens-to-green. Every OTHER not_verifiable kind is a statement
-            # about the account and still gates to 0.0 below.
+            # (the call could not be made -- no credentials, no CLI, an API
+            # refusal) are test-infrastructure failures, indistinguishable from
+            # a wrong solution once written as 0.0. Writing no reward file makes
+            # harbor's RewardFileNotFoundError report the trial invalid, keeping
+            # a regional throttle out of tokens-to-green. Every other
+            # not_verifiable kind is a statement about the account and still
+            # gates to 0.0 below.
             case "$live_outcome:$live_kind" in
               not_verifiable:transient-exhausted|not_verifiable:api-error)
                 echo "LIVE CHECK UNANSWERED ($live_kind): AWS never answered -- see" >&2

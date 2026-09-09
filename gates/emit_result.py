@@ -664,7 +664,7 @@ class TaskTomlUnreadable(ValueError):
 
 
 def _load_task_toml(task_dir: str | Path) -> dict[str, Any]:
-    """``<task_dir>/task.toml``, parsed. The ONLY parser of that file in this
+    """``<task_dir>/task.toml``, parsed. The only parser of that file in this
     module -- two parsers of one file can disagree after a schema change.
 
     Raises TaskTomlUnreadable when it is absent, unreadable or malformed.
@@ -707,10 +707,10 @@ MULTI_STEP_BROWNFIELD = "multi-step-brownfield"
 PRE_CONFIGURED_ACCOUNT = "pre-configured-account"
 PRE_CONFIGURED_ACCOUNT_BROWNFIELD = "pre-configured-account-brownfield"
 
-# The seeded (brownfield) variant of each unseeded base form. The seed
-# dimension is ORTHOGONAL to the step-shape dimension, so it is carried in the
-# label rather than collapsed into it: pooling a seeded row with an unseeded
-# one is what DECISIONS.md Amendment 36 / Amendment 28 §6 forbid.
+# The seeded (brownfield) variant of each unseeded base form. Seeding is
+# independent of step shape, so it rides in the label rather than replacing the
+# base: a seeded row must never share a cell with an unseeded one (DECISIONS.md
+# Amendment 36, scenario_form as a required, never-pooled row field).
 _BROWNFIELD_OF = {
     GREENFIELD: BROWNFIELD,
     MULTI_STEP: MULTI_STEP_BROWNFIELD,
@@ -731,38 +731,28 @@ def derive_scenario_form(task_dir: str | Path) -> str:
     """The row's ``scenario_form`` (metrics/result_schema.json), from the task
     directory alone -- never guessed from a spec id.
 
-    The label is COMPOSITE: a step-shape base, plus a ``-brownfield`` suffix
-    when the workspace is seeded. Both dimensions survive because they are
-    independent -- a multi-step task may also start from a seeded workspace
-    (specs/SCHEMA.md §9 documents exactly that spec), and collapsing either
-    into the other would pool a seeded row with an unseeded one
-    (DECISIONS.md Amendment 36; Amendment 28 §6).
-
     Base, most specific first:
 
     1. ``pre-configured-account`` -- some ``steps/<name>/pre_invoke/pre_invoke.sh``
-       exists, i.e. a step declares ``pre_invoke.deploy_prior`` (specs/SCHEMA.md
-       §2.6) and the harness deploys prior-step work into the ACCOUNT before that
-       step's agent runs. Outranks multi-step because it only ever occurs ON a
-       multi-step task and says strictly more about the starting condition -- a
-       refinement of the same dimension, not a second one. The BROWNFIELD seed
-       script lives at ``<task_dir>/pre_invoke/pre_invoke.sh`` (specs/SCHEMA.md
-       §2.7.1) and is deliberately not matched here.
+       exists (specs/SCHEMA.md §2.6: the harness deploys prior-step work into
+       the account before that step's agent runs). It outranks ``multi-step``
+       because it occurs only on a multi-step task and refines the same
+       dimension rather than adding a second one. The brownfield seed script at
+       ``<task_dir>/pre_invoke/pre_invoke.sh`` (§2.7.1) is not matched here.
     2. ``multi-step`` -- ``task.toml`` declares ``[[steps]]``. Its own stratum
-       because it changes what the headline metric IS: a multi-step trial's
-       tokens-to-green is the cumulative across-steps sum, so an N-step and a
-       1-step task are not comparable on it by construction (DECISIONS.md
-       Amendment 26 §4, Amendment 27 §2).
+       because a multi-step trial's tokens-to-green is the cumulative
+       across-steps sum, so N-step and 1-step tasks are not comparable on it.
     3. ``greenfield`` -- neither.
 
-    Seed suffix: ``task.toml [metadata] workspace_seed_sha256`` is set, so the
-    trial starts from a resource-bearing workspace and is graded on a change
-    rather than on authoring (Amendment 28 §6). On the ``greenfield`` base the
-    label is plain ``brownfield``.
+    ``[metadata] workspace_seed_sha256`` appends a ``-brownfield`` suffix rather
+    than replacing the base: seeding is independent of step shape and a task may
+    be both. On the ``greenfield`` base the label is plain ``brownfield``.
 
     Raises ScenarioFormUndeterminable when ``task.toml`` is absent or malformed:
-    that file is the only evidence, and rows of different forms are never
-    pooled, so an underivable form must stop the row rather than default.
+    it is the only evidence and the form is never defaulted.
+
+    Reasoning: DECISIONS.md Amendment 36, scenario_form as a required row field
+    whose forms are never pooled.
     """
     task_dir = Path(task_dir)
     try:
@@ -1033,7 +1023,7 @@ def build_result_record(
         equipping_hash_error = str(exc)
 
     # Recorded best-effort, exactly like equipping_hash above: an underivable
-    # form is carried as null + an error string here and REFUSED by
+    # form is carried as null plus an error string here and refused by
     # to_result_row, so it can never reach a published row as a default.
     try:
         scenario_form: str | None = derive_scenario_form(task_dir)

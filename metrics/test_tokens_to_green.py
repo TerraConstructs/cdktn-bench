@@ -863,11 +863,12 @@ class TestFindRowFiles:
 
 
 class TestScenarioFormStratification:
-    """Scenario form is the COARSEST pooling boundary: applied before the
+    """Scenario form is the coarsest pooling boundary: applied before the
     train/holdout split and before the (arm, model, harness) cell. Rows of
     different forms measure different tasks -- and, for multi-step, a
     different metric -- so no estimator may ever see them together
-    (DECISIONS.md Amendments 26 §4, 27 §2, 28 §6).
+    (DECISIONS.md Amendment 36, scenario_form as a required, never-pooled
+    row field).
     """
 
     def test_form_leads_the_cell_identity(self):

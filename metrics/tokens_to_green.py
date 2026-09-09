@@ -9,11 +9,11 @@ schema; a row failing validation is reported and excluded, never silently
 pooled. The per-cell measures, the train/holdout stratification and the prereg
 section each one implements: docs/generator.md "tokens-to-green aggregator".
 
-THE POOLING BOUNDARY: rows are split by `scenario_form` BEFORE the train/holdout
-split and before the (arm, model, harness) cell, and forms are never pooled --
-a results directory holding more than one form gets one section per form and no
-combined headline at all (DECISIONS.md Amendments 26 §4, 27 §2, 28 §6). A row
-without `scenario_form` is named and rejected; it is never backfilled.
+THE POOLING BOUNDARY: rows split by `scenario_form` before the train/holdout
+split and before the (arm, model, harness) cell; a directory holding two or
+more forms gets one section per form and no combined headline, and an
+unlabelled row aborts the run (DECISIONS.md Amendment 36, scenario_form as a
+required, never-pooled row field).
 
 THE CENSORING CONVENTION: every non-green trial is right-censored at the
 ADMINISTRATIVE budget bound (--max-tokens, else the max observed tokens_total
@@ -50,13 +50,10 @@ from metrics.validate_result import _iter_rows, load_schema, validate_result  # 
 # threshold later without touching every call site.
 GREEN_THRESHOLD = 1.0
 
-# Rendered in this order wherever per-form sections are emitted, so a report's
-# section order is stable regardless of which forms a results dir happens to
-# hold. Must stay a superset of result_schema.json's `scenario_form` enum.
 # Every scenario form, in report order: each step-shape base followed by its
-# seeded (`-brownfield`) variant. The seed dimension rides in the label instead
-# of collapsing into the base, so a seeded row can never share a cell with an
-# unseeded one (DECISIONS.md Amendment 36; Amendment 28 §6).
+# seeded (`-brownfield`) variant. Sections render in this order so a report's
+# shape does not depend on which forms a results dir happens to hold. Must stay
+# a superset of result_schema.json's `scenario_form` enum.
 SCENARIO_FORMS = (
     "greenfield",
     "brownfield",
@@ -281,14 +278,12 @@ def load_rows(results_dir: Path) -> tuple[list[dict[str, Any]], list[str]]:
             if not isinstance(row, dict):
                 errors.append(f"{label}: top-level value must be a JSON object")
                 continue
-            # An unlabelled row is KEPT, not dropped: build_report is the one
-            # refusal point and raises ScenarioFormMissing on it, so the run
-            # dies without writing a report rather than publishing a headline
-            # that silently lost the rows whose absence made it look poolable.
+            # An unlabelled row is kept rather than dropped so build_report,
+            # the one refusal point, can abort on it; dropping it here would
+            # publish a headline that looks poolable only because the offending
+            # rows are gone. The source label rides along under a reserved key
+            # because a published row carries no job or trial id to name it by.
             if not row.get("scenario_form"):
-                # The source label rides along under a reserved key so the
-                # refusal can NAME the file: a published row carries no
-                # job/trial id, so nothing else in it identifies the offender.
                 rows.append({**row, SOURCE_LABEL_KEY: label})
                 continue
             row_errors = validate_result(row, schema)
@@ -305,11 +300,12 @@ def load_rows(results_dir: Path) -> tuple[list[dict[str, Any]], list[str]]:
 
 
 def cell_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
-    """A cell's full identity, scenario_form FIRST.
+    """A cell's full identity, scenario_form first.
 
     The form leads because it is the coarsest pooling boundary: two rows of
     different forms measure different tasks (and, for multi-step, a different
-    metric), so no estimator may see them in one cell.
+    metric), so no estimator may see them in one cell. A row without one is
+    refused here rather than pooled.
     """
     if not row.get("scenario_form"):
         raise ScenarioFormMissing(
@@ -771,16 +767,15 @@ def _cell_report(
     admin_max_tokens: float | None,
     admin_max_iters: float | None,
 ) -> dict[str, Any]:
-    """One (scenario_form, arm, model, harness) cell's stat block, PLUS a
+    """One (scenario_form, arm, model, harness) cell's stat block, plus a
     per-scenario breakdown.
 
     cell_key() discards scenario identity, which leaves prereg §7's primary
-    test ("tokens-to-green,
-    tuned-CDK vs empty-HCL, per model, PAIRED BY SCENARIO") and its
-    main-effects decomposition underivable from this script's output.
-    ``scenario_coverage`` (counts) and ``by_scenario`` (a full
-    ``summarize_cell`` block per scenario) carry that identity without
-    changing benchmark.md's pooled table.
+    test ("tokens-to-green, tuned-CDK vs empty-HCL, per model, paired by
+    scenario") and its main-effects decomposition underivable from this
+    script's output. ``scenario_coverage`` (counts) and ``by_scenario`` (a full
+    ``summarize_cell`` block per scenario) carry that identity without changing
+    benchmark.md's pooled table.
     """
     summary = summarize_cell(cell_rows, admin_max_tokens=admin_max_tokens, admin_max_iters=admin_max_iters)
     scenario_groups = _group_by_scenario(cell_rows)
@@ -821,13 +816,12 @@ def _cells_for(
 def _stratified_block(
     rows: list[dict[str, Any]], *, max_iters: int | None, max_tokens: int | None
 ) -> dict[str, Any]:
-    """The train/holdout stratification for ONE scenario form's rows.
+    """The train/holdout stratification for one scenario form's rows.
 
     `headline_cells` (holdout only) is the pre-registered primary result;
     `train_cells` are the scenarios tuned equipping may be developed against
     and are never merged into it; `cells` pools all three split groups and is
-    diagnostic only (prereg §7.1). Every cell here shares one scenario_form --
-    build_report never hands this function a mixed set.
+    diagnostic only (prereg §7.1). Callers pass one form's rows only.
     """
     holdout_rows = [r for r in rows if r.get("split_group") == "holdout"]
     train_rows = [r for r in rows if r.get("split_group") == "train"]
@@ -852,9 +846,9 @@ def _forms_present(rows: list[dict[str, Any]]) -> list[str]:
     """The scenario forms in `rows`, in SCENARIO_FORMS order.
 
     A form outside SCENARIO_FORMS raises rather than sorting itself onto the
-    end: load_rows schema-validates every row against result_schema.json's
-    closed enum, so an unknown form means the two lists have drifted apart and
-    the report's per-form sections would silently omit it.
+    end: load_rows validates every row against result_schema.json's closed
+    enum, so an unknown form means this tuple and that enum have drifted apart
+    and the report would silently omit the form's section.
     """
     seen = {r["scenario_form"] for r in rows if r.get("scenario_form")}
     unknown = sorted(seen - set(SCENARIO_FORMS))
@@ -915,11 +909,10 @@ def build_report(
         "by_scenario_form": by_form,
     }
 
-    # The refusal, made structural. Top-level `cells`/`headline_cells`/
-    # `train_cells`/`split_composition`/`tier_attribution` are a single form's
-    # numbers, so they exist ONLY when the directory holds at most one form;
-    # with two or more they are null and `pooling_refused` is true, leaving
-    # by_scenario_form the only place a headline can be read from.
+    # The refusal, made structural: top-level `cells`/`headline_cells`/
+    # `train_cells`/`split_composition`/`tier_attribution` hold one form's
+    # numbers, so with two or more forms they are null, `pooling_refused` is
+    # true, and by_scenario_form is the only place a headline can be read.
     report["pooling_refused"] = len(forms) > 1
     if len(forms) > 1:
         report["cells"] = None
@@ -1038,8 +1031,8 @@ def _render_attribution(lines: list[str], attribution: dict[str, Any], heading: 
 
 def _render_form_section(lines: list[str], form: str, block: dict[str, Any]) -> None:
     """One scenario form's whole output: its holdout headline, its train
-    cells, its pooled reference table and its tier attribution. Nothing in
-    here is ever combined with another form's section."""
+    cells, its pooled reference table and its tier attribution. Nothing here is
+    ever combined with another form's section."""
     split_comp = block["split_composition"]
     lines.append(f"## Scenario form: {form} ({block['n_rows']} row(s))")
     lines.append("")

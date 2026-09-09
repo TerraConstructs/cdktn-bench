@@ -1056,7 +1056,7 @@ class TestScenarioFormDerivation:
     a step shipping pre_invoke/pre_invoke.sh > multi-step, [[steps]] >
     greenfield) plus a `-brownfield` suffix when [metadata]
     workspace_seed_sha256 is set. Rows of different forms are never pooled
-    (DECISIONS.md Amendment 36; Amendments 26 §4, 27 §2, 28 §6), so an
+    (DECISIONS.md Amendment 36, scenario_form as a required row field), so an
     underivable form stops the row instead of defaulting.
     """
 
@@ -1101,8 +1101,8 @@ class TestScenarioFormDerivation:
     def test_brownfield_seed_script_at_task_root_is_not_pre_configured_account(
         self, tmp_path: Path
     ) -> None:
-        # The BROWNFIELD seed deploy lives at <task_dir>/pre_invoke/pre_invoke.sh
-        # (specs/SCHEMA.md §2.7.1); only a per-STEP one is deploy_prior.
+        # The brownfield seed deploy lives at <task_dir>/pre_invoke/pre_invoke.sh
+        # (specs/SCHEMA.md §2.7.1); only a per-step one is deploy_prior.
         d = self._task_dir(
             tmp_path,
             "seed-deploy",
@@ -1157,7 +1157,7 @@ class TestScenarioFormDerivation:
         } == enum
 
     def test_pre_invoke_artifact_implies_deploy_prior_in_the_spec_model(self) -> None:
-        """`pre-configured-account` is keyed on the mere EXISTENCE of a
+        """`pre-configured-account` is keyed on the mere existence of a
         per-step pre_invoke.sh, which is only sound while deploy_prior is the
         one action a `steps[].pre_invoke` block can declare. This asserts that
         invariant from the gates side, so adding a second action breaks here

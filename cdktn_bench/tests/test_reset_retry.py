@@ -7,7 +7,7 @@ pin the rule's three halves — a transient failure is re-run under a wall-clock
 budget that counts whole attempts, a RESOLVED one (a harness deadline included)
 is not re-run at all, and the operator gets the failure's real ending.
 
-Contamination itself is upstream's and is deliberately NOT re-implemented here:
+Contamination itself is upstream's and is deliberately not re-implemented here:
 each reset pass flags on failure and clears on success, so a succeeding retry
 clears the flag its predecessor set.
 """

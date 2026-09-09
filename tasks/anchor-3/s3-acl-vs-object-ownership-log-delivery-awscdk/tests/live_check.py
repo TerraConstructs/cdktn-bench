@@ -76,9 +76,9 @@ OUTCOME CONTRACT (SCHEMA.md §5, gating): a JSON object on stdout with an
                         transient AWS failure that outlived tests/_live_lib.py's
                         bounded retry -- `not_verifiable_kind` says which).
                         Fail-closed: an unanswered check
-                        ("transient-exhausted", "api-error") VOIDS the row --
+                        ("transient-exhausted", "api-error") voids the row --
                         tests/test.sh writes no reward file, so harbor reports
-                        the trial INVALID -- and every other outcome that is
+                        the trial invalid -- and every other outcome that is
                         not "pass" scores 0.0.
 
 TWO CALL SHAPES, matching this repo's convention:
@@ -160,7 +160,7 @@ class AwsAbsent(RuntimeError):
 def _aws_raw(args: list[str]) -> tuple[int, str, str]:
     """`(returncode, stdout, stderr)` from the shared transient-retry runner.
 
-    A TRANSIENT failure never reaches a caller as a return code: run_aws
+    A transient failure never reaches a caller as a return code: run_aws
     retries it and raises TransientExhausted only once its budget is spent."""
     return run_aws(args)
 
