@@ -133,7 +133,7 @@ Full rules: `docs/adding-scenarios.md` §1 item 3a. The short form:
 - **Amendments 26/27 (multi-step), 28 (brownfield), 32 (live-only AWS
   access), 33 (four scenario shards), 34 (tier 0.5 retired; the `sfn-jsonata`
   JSONata check is a live `states:TestState` call from the verifier), 36
-  (`scenario_form` on every row) and 38 (agent commands run in the foreground;
+  (`scenario_form` on every row), 37 (the teardown tier) and 38 (agent commands run in the foreground;
   deploy counts as toolchain evidence) are ACCEPTED** (promotion runs under
   `jobs/amend3*-promotion`).
   Rows produced under them are publishable within

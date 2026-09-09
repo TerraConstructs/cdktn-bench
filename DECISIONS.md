@@ -7697,9 +7697,29 @@ headline number, at any n, in any estimator.
 * **No spec field and no generator behaviour change.** The form is read from
   the emitted task dir.
 
-## Amendment 37 (2026-09-10) — the teardown tier: the agent's own destroy is graded — DRAFT
+## Amendment 37 (2026-09-10) — the teardown tier: the agent's own destroy is graded — **ACCEPTED 2026-09-10**
 
-**Status: DRAFT.** In code, schema and docs; promotion needs a live run (below).
+**Status: ACCEPTED.** Both halves of "What promotes this" were met on the first
+live run.
+
+**Promotion run** (`jobs/amend37-promotion/2026-09-10__02-53-43`;
+claude-sonnet-5, k=1, the three arms of `named-resource-replacement` on their
+own shards concurrently, tier enabled and non-gating, 47 min 03 s wall):
+
+| arm | shard | reward | output tok | turns | cost $ | live_check | idempotence | teardown |
+|---|---|---:|---:|---:|---:|:---:|:---:|:---:|
+| awscdk | anchor-1 | 1.0 | 3,393 | 10 | 0.15 | pass | converged | clean |
+| hcl_raw | anchor-2 | 1.0 | 3,144 | 9 | 0.21 | pass | converged | clean |
+| terraconstructs | anchor-3 | 1.0 | 12,148 | 32 | 0.59 | pass | converged | clean |
+
+`teardown-result.json` reports `clean` on all three arms, so `awscdk`'s
+completion line (`✅  ScenarioStack: destroyed`) is now measured against the
+arm's pinned CLI rather than assumed. The host-side fixture proof
+(`generator/tests/test_teardown_tier.py`: `destroy_failed` and
+`not_verifiable` gate to 0.0, reward untouched when not gating) is the other
+half. A side effect worth knowing and not relying on: each framework reset
+afterwards found an already-empty stack and finished in about 4 min instead of
+10. The reset is still what guarantees baseline; the tier only grades.
 
 ### The finding
 

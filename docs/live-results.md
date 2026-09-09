@@ -233,3 +233,22 @@ and redeployed to `Apply complete`. The first attempt
 `FORCE_AUTO_BACKGROUND_TASKS`/`ENABLE_BACKGROUND_TASKS` are not read by Claude
 Code 2.1.266, so the deploy was still backgrounded at 900 s and killed at turn
 end.
+
+## Amendment 37 promotion run — 2026-09-10 (teardown tier, non-gating)
+
+`jobs/amend37-promotion/2026-09-10__02-53-43`; claude-sonnet-5, k=1, the three
+arms of `named-resource-replacement` on their shards concurrently, 47 min 03 s
+wall. The tier ran after the live check and idempotence on every arm and
+destroyed what the agent deployed; every reset afterwards found an already
+empty stack and finished in about 4 min instead of 10.
+
+| scenario | arm | shard | reward | output tok | turns | cost $ | live_check | idempotence | teardown |
+|---|---|---|---:|---:|---:|---:|:---:|:---:|:---:|
+| named-resource-replacement | awscdk | anchor-1 | 1.0 | 3,393 | 10 | 0.15 | pass | converged | clean |
+| named-resource-replacement | hcl_raw | anchor-2 | 1.0 | 3,144 | 9 | 0.21 | pass | converged | clean |
+| named-resource-replacement | terraconstructs | anchor-3 | 1.0 | 12,148 | 32 | 0.59 | pass | converged | clean |
+
+`awscdk`'s completion line `✅  ScenarioStack: destroyed` is now measured
+against the arm's pinned CLI; `teardown.log` on the Terraform arms ends in
+`Destroy complete! Resources: 4 destroyed` (hcl_raw) and `6 destroyed`
+(terraconstructs).
