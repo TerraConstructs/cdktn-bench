@@ -577,7 +577,41 @@ single scenario.
 
 ### M10 — one Rego engine for every tier; evaluate `microsoft/regorus`
 
-After the day-2 work. Two decisions, one independent of the other:
+After the day-2 work. Design memo: `docs/design/m10-one-rego-engine.md`
+(engine spike first, tier-0 translation second, parity gates before any
+removal). **Spike result (`docs/design/m10-regorus-spike-results.md`): stay on
+OPA 1.19.0.** regorus 0.12.0 diverged on 50 of 504 (policy, fixture, query)
+pairs: `sprintf` `%q` is unimplemented (22 pairs lose the whole deny set, so
+broken fixtures would score 1.0), its scheduler rejects `some _, x in v` inside
+comprehensions and comprehensions in `else :=` heads, and its strictness
+default is the inverse of OPA's; exit codes and the undefined-query envelope
+also differ. Its `--coverage` report is the one capability worth revisiting.
+Tier-0 translation therefore targets OPA. The `hcl2json` + locals question
+is answered in `docs/design/m10-opa-extension-hcl-locals.md`: the HCL parse
+cannot be replaced by plan JSON (no `locals` there) and must not be replaced
+by evaluation (the traversal reads raw `${…}` source because the referents
+are plan-time-unknown); a custom `opa` binary with Go builtins is possible
+(`rego.RegisterBuiltin`, seen by `opa eval` without a capabilities file) but
+rejected for one opt-in step on one arm; the recommended move is to lift the
+embedded merge Python out of the heredoc into a generated `tests/hcl_merge.py`.
+`docs/design/shell-inventory.md` lists the remaining shell surface.
+
+**Owner decisions 2026-09-11.** Decision A is approved in the memo's shape:
+`generator/jsonpath_rego.py` as a sibling of `jsonpath_jq.py` over the same
+grammar, emitting `tests/tier0.rego` under OPA 1.19.0, landing dark behind
+`oracle.tier0_engine` (default `jq`) with the three-way parity matrix and the
+all-artifacts parity target before the default flips. The generated Python
+verifier is part of the same track and starts with the `hcl2json` merge:
+the embedded merge Python leaves the shell heredoc for a generated
+`tests/hcl_merge.py`, gated on a byte-for-byte diff of
+`/logs/verifier/oracle-input.json` for the reference and six broken fixtures.
+**Clean-up is a required final step, not an option:** once the Rego tier 0 is
+verified (parity matrix green, all-artifacts parity green, one live battery
+graded under it), the jq backend, `_assert_lib.sh`, and the bash that hosted
+them are removed, and the arm images drop `jq` from the verifier toolchain.
+The track ends when the static oracle is Python, Rego and Go only.
+
+Two decisions, one independent of the other:
 
 * **Tier 0 is translated to Rego, compiled from the same spec YAML.** Today
   the generator compiles a spec's JSONPath asserts into jq and the three-valued
@@ -777,11 +811,17 @@ and the disarmed shape.
    stays in the corpus; results are reported per form and never pooled. The
    form label is mechanical: Amendment 36 (`scenario_form` REQUIRED on every
    row, first dimension of `cell_key`, composite `…-brownfield` labels,
-   mixed directories refuse a combined headline). Still to author:
-   `caller-identity-arn-as-principal` (static, tier 0),
-   `apigwv2-route-settings-zero-vs-unset` (live, mutating; terraconstructs
-   disabled), `ecr-repo-destroy-force-delete` (needs the teardown tier).
-   `lambda-function-url-partner-scoped-invoke` is dropped.
+   mixed directories refuse a combined headline). Batch A is authored:
+   `caller-identity-arn-as-principal` (static, tier 0; Amendment 40 moved the
+   gate stub to an assumed-role identity for it),
+   `apigwv2-route-settings-zero-vs-unset` (shipped STATIC, terraconstructs
+   disabled: the plan-shape probe showed an omitted burst limit is a known
+   null in `planned_values`, so the plausible-wrong solution is a tier-0
+   catch; see the blueprint's correction note), and
+   `ecr-repo-destroy-force-delete` — the teardown tier's first gating use
+   (Amendment 41), unpromoted until its first live run.
+   `lambda-function-url-partner-scoped-invoke` is dropped. The split was
+   re-run once for the three (Amendment 41, split re-computation).
 5. Before the first full battery, in this order:
    * ~~§5b.1 bounded retry on transient AWS errors~~ — Amendment 35, DRAFT
      until one observed retry succeeds.
@@ -800,6 +840,13 @@ and the disarmed shape.
      promotion needs one live trial writing `teardown-result.json` with outcome
      `clean` on at least one arm. First gating use:
      `ecr-repo-destroy-force-delete`.
+   * ~~`predicted_tier_caught: "teardown"`, and the first GATING teardown~~ —
+     Amendment 41, DRAFT until `ecr-repo-destroy-force-delete`'s first live
+     run: the reference scoring 1.0 with teardown `clean` on all three arms,
+     that scenario's hcl_raw `repository-not-emptied-on-delete` fixture 0.0
+     with `destroy_failed`, and the awscdk `cdk destroy --force` completion
+     line captured verbatim (Amendment 37 measured it for a different stack
+     shape).
    * ~~`grading-proof` accepting an observed live-tier catch as proof of
      gradeability~~ — Amendment 39, ACCEPTED 2026-09-10
      (`gates/grading_proof.py::live_tier_proof`,
