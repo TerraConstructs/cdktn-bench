@@ -1,0 +1,12 @@
+# Oracle intent: HTTP API for the orders service, throttled at 100 requests per second
+
+`apigwv2-route-settings-zero-vs-unset` — generated verbatim from `specs/apigwv2-route-settings-zero-vs-unset.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/apigwv2-route-settings-zero-vs-unset/policy.rego` and `../rego-cfn/apigwv2-route-settings-zero-vs-unset/policy.rego` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
+
+**Do not hand-edit this file.** It is regenerated from the spec on every `emit_oracles` call; edit `oracle.intent` in `specs/apigwv2-route-settings-zero-vs-unset.yaml` instead.
+
+---
+
+An HTTP API (API Gateway v2, `protocol_type`/`ProtocolType` HTTP) is created with a route whose route key is `GET /orders`, and that route is backed by a Lambda function this same configuration creates: the route targets an AWS_PROXY integration, and that integration's URI is derived from the created function rather than from a name or ARN typed out by hand. The API is published on a stage named `prod`.
+The settings that GOVERN `GET /orders` on the `prod` stage carry a throttling rate limit of 100 and a throttling burst limit of 200. Either location satisfies this — the stage's default route settings, or the stage's route settings keyed `GET /orders` — and where both are present the route-keyed entry is the one that governs, because that is what the service applies. Both halves must be present and non-zero: a rate limit with no burst limit is applied by the service as a burst limit of `0`, and `0` on either half rejects every request, so neither an omitted nor a zero limit satisfies the ticket's "short spikes must still be served".
+The route and the integration must be first-class resources: the API Gateway v2 quick-create shape (route key and target declared on the API itself) is rejected because it puts neither in the artifact and cannot carry per-route settings.
+Nothing else is graded. The handler's own response body is not read by any assert (this oracle is synth/plan-only), the number of stages and routes beyond the ones named is not constrained, and no logging, metrics, authorization or domain configuration is required or forbidden.

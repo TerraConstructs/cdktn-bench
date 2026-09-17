@@ -1,0 +1,497 @@
+# specs/apigwv2-route-settings-zero-vs-unset.yaml — design source:
+# docs/design/batch-a-greenfield-blueprints.md §5. That section's central
+# premise contradicts this spec on the tier the central catch is caught at;
+# §5's own correction note records what the pinned toolchain does, and this
+# file is the authority where the two differ.
+#
+# MECHANISM (operator-facing: `id` names the wrong answer outright, while
+# every agent-visible name states only the ticket's goal, SCHEMA.md §0.1).
+# `aws_apigatewayv2_stage`'s throttling limits are two independent optional
+# ints, and the API applies an OMITTED limit as `0` — "reject everything" —
+# rather than "not configured" (tfp-aws#30373). So a stage carrying only
+# `throttling_rate_limit = 100` deploys clean and then 429s every request,
+# and a literal reading of "no burst allowance" (`0`/`0`) does the same.
+#
+# THE TIER (SCHEMA.md §4.2.1 discipline; the shapes below are output from a
+# probe of the pinned toolchain, not inference from its docs):
+# an omitted `throttling_burst_limit` is NOT absent from `planned_values` —
+# hashicorp/aws 6.58.0 writes it there as a KNOWN JSON `null`:
+#   default_route_settings[0] = {"throttling_burst_limit": null,
+#                                "throttling_rate_limit": 100, ...}
+#   route_settings[0]         = {"route_key": "GET /orders",
+#                                "throttling_burst_limit": null, ...}
+#   resource_changes[].change.after_unknown.default_route_settings[0]
+#                             = {"logging_level": true}  — burst is KNOWN
+# tests/_assert_lib.sh drops nulls before applying an op, so the unset case
+# resolves to the empty set and CONTRADICTS a `set_eq [200]` assert. The
+# half-configured stage is therefore decidable at tier 0 on BOTH arms, this
+# scenario is STATIC, and no catch here is `predicted_tier_caught: "live"`.
+# What hides the unset limit is the HUMAN-READABLE plan (`terraform show`
+# prints no burst line at all), which is what tfp-aws#27674's "not reflected
+# in the displayed plan" refers to — not the JSON the oracle reads.
+#
+# NO PREDICTED ARM DIFFERENTIAL, for the same kind of reason: aws-cdk-lib
+# 2.263.0's `ThrottleSettings` declares BOTH halves optional
+# (aws-apigatewayv2/lib/common/stage.d.ts:119/124), and
+# `throttle: { rateLimit: 100 }` type-checks and synthesizes
+# `DefaultRouteSettings: {"ThrottlingRateLimit": 100}` with the burst key
+# absent — the same production bug, one optional field away, on both arms.
+
+id: apigwv2-route-settings-zero-vs-unset
+
+# workspace_id (SCHEMA.md §0.1.1): `id` spells out the diagnosis, so the
+# agent-visible workspace identity is declared separately. Names the
+# workload only.
+workspace_id: orders-http-api
+
+# title (agent-visible header — single-step greenfield, so `workspace_title`
+# is FORBIDDEN per SCHEMA.md §0.1; this string is stamped byte-for-byte into
+# lib/scenario-stack.ts, bin/app.ts's CFN description and main.tf). States
+# the requirement in outcome terms and repeats only a number the ticket
+# states anyway.
+title: "HTTP API for the orders service, throttled at 100 requests per second"
+difficulty: 2
+services: [apigatewayv2, lambda, iam]
+
+# This scenario's reserved vocabulary (SCHEMA.md §0.1): the words that name
+# the mechanism or its fix. Checked against the resolved agent-visible
+# identity and swept over every agent-visible byte with the prompt's own
+# text scrubbed out (generator/tests/test_scenario_identity.py). Every entry
+# is a term of art here; the bare English words this scenario's `id` is
+# built from ("unset", "zero") are deliberately NOT reserved, because the
+# arm images' own boilerplate uses both in unrelated senses ("zero network
+# access", `unset AWS_ACCESS_KEY_ID`) and reserving them would fire the
+# sweep on text no scenario author wrote.
+agent_deny_vocab:
+  - "not configured"
+  - "429"
+  - "route_settings"
+  - "default_route_settings"
+  - "throttling_burst_limit"
+
+arms:
+  awscdk: true
+  hcl_raw: true
+  terraconstructs:
+    enabled: false
+    reason: >
+      terraconstructs 0.2.13 (the version
+      arms/terraconstructs/environment/app/package.json pins) has no
+      apigatewayv2 L2 surface at all, so this scenario's subject — an HTTP
+      API stage's route settings — has no typed construct to exist in on
+      this arm. Checkable against the pinned package itself rather than
+      against a vendored tree, because node_modules is not committed here:
+      `npm pack terraconstructs@0.2.13` and read the tarball. `lib/aws/`
+      carries cloudwatch, compute, edge, encryption, iam, network, notify
+      and storage; `lib/aws/compute/` carries restapi, stage, deployment,
+      method, methodresponse, api-definition, api-key and apigateway-util —
+      API Gateway REST v1 only, and there is no `lib/aws/compute/http`
+      tree. The single apigatewayv2 reference in the whole package is
+      `Apigatewayv2ApiMapping`, an L1 escape hatch used inside
+      lib/aws/compute/domain-name.js. An L1-binding arm would measure "raw
+      @cdktn/provider-aws TypeScript vs HCL", which
+      arms/terraconstructs/README.md §4 already recommends against, and
+      which s3-lambda-log-retention's own history says is not the
+      comparison this benchmark wants.
+
+instruction:
+  shared_body: |
+    Publish the orders service behind an HTTP API (API Gateway v2) on a stage
+    called `prod`, backed by a Lambda function on `GET /orders` that returns
+    {"orders": []} with HTTP 200.
+
+    Sustained traffic must be limited to 100 requests per second across the
+    API. Short spikes are normal for this service and must still be served —
+    up to 200 requests in a burst.
+  placeholders: []
+  per_arm:
+    awscdk:
+      language_line: "Author this as an AWS CDK (TypeScript) app using aws-cdk-lib L2 constructs."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdk.out/ScenarioStack.template.json
+        build_command: "npm run build"
+        synth_command: "npx cdk synth --no-lookups --quiet -o cdk.out"
+        json_fields: []
+    hcl_raw:
+      language_line: "Author this as hand-written Terraform HCL (no modules)."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields: []
+
+# --- ORACLE MUST TOLERATE / DEFEND (operator-facing, adding-scenarios.md
+# §1 item 3a — never in prompt prose) ------------------------------------
+#
+# 1. TWO SHAPES throttle the only route that exists, and the oracle accepts
+#    either: `default_route_settings` on the prod stage, or `route_settings`
+#    keyed `GET /orders` on it. The graded fact is "the settings that GOVERN
+#    GET /orders carry rate 100 and burst 200". Route-specific settings win
+#    over the stage default at the service, so the tier-1 rule resolves the
+#    EFFECTIVE settings and grades those: a stage whose default says 100/200
+#    while its `GET /orders` entry says 0/0 is throttled to nothing and is
+#    denied, which an "at least one location is right" rule would pass.
+#    BOTH SHAPES SCORE GREEN: the `route_settings`-keyed spelling of the
+#    reference solution resolves [100] and [200] under the union paths and
+#    leaves the Rego package's `deny` empty, exactly as the
+#    `default_route_settings` shape does. The task tree carries the
+#    `default_route_settings` shape as its reference
+#    because the harness grades exactly one `solution/solve.sh` per arm
+#    (an accepted-shape variant cannot live under `solution/broken/`,
+#    where every fixture must score 0.0). On awscdk the choice does not
+#    arise: `StageOptions.throttle` renders only `DefaultRouteSettings`,
+#    and per-route settings would need a CfnStage escape hatch -- the CFN
+#    policy still reads the `RouteSettings` map, so the two bundles stay at
+#    equal strictness rather than one arm's rule being narrower.
+# 2. The tier-0 throttling asserts read a UNION over both locations
+#    (recursive descent scoped to the stage resource — generator/
+#    jsonpath_jq.py has no path-union operator) and use `set_eq`, not `eq`:
+#    a solution that writes BOTH locations resolves two nodes, which `eq`
+#    rejects on multiplicity alone, and the unset case resolves to zero
+#    nodes, which `eq`, `in` and `absent_or_eq` all mis-handle (`in` and
+#    `absent_or_eq` PASS on nothing at all). `set_eq [200]` holds for one or
+#    both locations spelling 200 and contradicts on {}, {0} and {null}.
+#    The consequence, accepted deliberately: the tier-0 asserts are
+#    stage-blind (they cannot join a value to a stage NAME), so settings
+#    attached to some other stage satisfy them — that is exactly the fact
+#    the tier-1 rule exists for, and the `settings-on-the-wrong-stage`
+#    fixture proves it fires.
+# 3. The burst number is in the ticket because the requirement has two
+#    halves — sustained rate and tolerated spikes — which is how a real
+#    throttling ticket is written. It is not there to defend the oracle:
+#    every catch below is reachable by an agent that read both numbers.
+# 4. Handler behaviour (`{"orders": []}`, HTTP 200) is stated because a
+#    ticket states what the endpoint returns. NO assert reads the handler
+#    code or the response body; this oracle is static (synth/plan-only).
+#    The packaging work it implies is asymmetric by nature — CDK bundles
+#    inline source, Terraform makes the author produce an archive — and
+#    that asymmetry is a measured differential, not a defect to coach away.
+# 5. Not demanded anywhere: access logging, detailed metrics, a custom
+#    domain, a `$default` route or stage, authorization, or a particular
+#    number of routes beyond the one the ticket names.
+#    REJECTED, deliberately: API Gateway v2 "quick create" (`route_key` +
+#    `target` on the API resource itself), which creates the route and the
+#    integration inside the API with no route or integration resource in
+#    the plan. It scores 0.0 on `route-get-orders-exists`,
+#    `proxy-integration-exists` and the tier-1 graph rule. The oracle wants
+#    the route and integration as first-class resources because quick create
+#    cannot carry per-route settings and pins the route into the API.
+# 6. NO anti-L2 catch is claimed. Prereg §5's fourth taxonomy slot needs a
+#    real, verified un-surfaced L2 property; nothing in aws-cdk-lib
+#    2.263.0's apigatewayv2 surface fits, and inventing one is what
+#    SCHEMA.md §3 forbids.
+
+catches:
+  - name: burst-limit-left-unset
+    taxonomy: typed-value-trap
+    description: >
+      THE PLAUSIBLE-WRONG SOLUTION: only the sustained rate is configured
+      (`throttling_rate_limit = 100` / `throttle: { rateLimit: 100 }`) and
+      the burst half is left out. It reads as "limit the API to 100 rps",
+      it plans and applies clean, and the API then applies the omitted
+      burst limit as `0`, which rejects every request with 429
+      (tfp-aws#30373, tfp-aws#14742). Caught at tier 0 on both arms: the
+      omitted attribute is a KNOWN `null` in `planned_values` (this file's
+      header records the shapes) and on awscdk the key is absent from the
+      synthesized template, so both resolve to the empty set under the
+      union path, which `set_eq [200]` contradicts.
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "0"
+      terraconstructs_override: null
+
+  - name: throttle-set-to-zero
+    taxonomy: typed-value-trap
+    description: >
+      Both limits are set to `0` — a literal reading of "no burst
+      allowance" and the shape a reader who knows the API applies `0`
+      arrives at from the wrong direction. `0` is not "unlimited" and not
+      "not configured": it is "reject everything", so the deployed API
+      429s exactly as the unset case does, and the ticket's stated 100 rps
+      is not honoured either. Distinct from the catch above in the
+      artifact (`0` is present and known where the omitted one is null)
+      and in the fix, which is why it is a separate fixture.
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "0"
+      terraconstructs_override: null
+
+  - name: settings-on-the-wrong-stage
+    taxonomy: graph-dependency
+    description: >
+      The throttling settings carry the right numbers but ride on a
+      different stage than the one the ticket deploys: a `$default` stage
+      holds 100/200 while the `prod` stage the API is published on holds no
+      settings at all. The values are present in the artifact and correct,
+      so every value-shaped check passes; only the join between a settings
+      block and the NAME of the stage carrying it separates this from a
+      correct answer, which is what makes it the tier-1 falsifier on both
+      arms. Reachable on awscdk without an escape hatch: `HttpStage`'s
+      `stageName` DEFAULTS to `$default`
+      (aws-apigatewayv2/lib/http/stage.d.ts's own `@default` tag), so a
+      stage construct whose id reads `Prod` but whose `stageName` was never
+      set throttles `$default` while `prod` is created elsewhere.
+    predicted_tier_caught:
+      awscdk: "1"
+      hcl: "1"
+      terraconstructs_override: null
+
+  - name: integration-targets-a-function-outside-this-plan
+    taxonomy: graph-dependency
+    description: >
+      The route's integration points at a Lambda function that this
+      configuration does not create — a hand-typed function ARN on hcl_raw,
+      `lambda.Function.fromFunctionArn(...)` on awscdk — while the function
+      the solution declares is left unwired. Every value-shaped check
+      passes: the integration exists, its type is AWS_PROXY, its URI IS a
+      syntactically valid Lambda ARN, and the stage is throttled correctly.
+      The deployed endpoint answers 500, because the target does not exist
+      and nothing granted API Gateway permission to invoke it. Only the
+      graph edge separates it from a correct answer, so it is the tier-1
+      falsifier for `route-reaches-a-function-in-this-plan` — without it
+      that rule would ship with no fixture proving it can fire.
+    predicted_tier_caught:
+      awscdk: "1"
+      hcl: "1"
+      terraconstructs_override: null
+
+oracle:
+  intent: >
+    An HTTP API (API Gateway v2, `protocol_type`/`ProtocolType` HTTP) is
+    created with a route whose route key is `GET /orders`, and that route is
+    backed by a Lambda function this same configuration creates: the route
+    targets an AWS_PROXY integration, and that integration's URI is derived
+    from the created function rather than from a name or ARN typed out by
+    hand. The API is published on a stage named `prod`.
+
+    The settings that GOVERN `GET /orders` on the `prod` stage carry a
+    throttling rate limit of 100 and a throttling burst limit of 200. Either
+    location satisfies this — the stage's default route settings, or the
+    stage's route settings keyed `GET /orders` — and where both are present
+    the route-keyed entry is the one that governs, because that is what the
+    service applies. Both halves must be present and non-zero: a rate limit
+    with no burst limit is applied by the service as a burst limit of `0`,
+    and `0` on either half rejects every request, so neither an omitted nor
+    a zero limit satisfies the ticket's "short spikes must still be served".
+
+    The route and the integration must be first-class resources: the API
+    Gateway v2 quick-create shape (route key and target declared on the API
+    itself) is rejected because it puts neither in the artifact and cannot
+    carry per-route settings.
+
+    Nothing else is graded. The handler's own response body is not read by
+    any assert (this oracle is synth/plan-only), the number of stages and
+    routes beyond the ones named is not constrained, and no logging,
+    metrics, authorization or domain configuration is required or forbidden.
+
+  # awscdk tier-1 engine (SCHEMA.md §4.5): Rego on both arms, because both
+  # tier-1 facts are joins cfn-guard 3.2.0 has no operator for — a settings
+  # block to the StageName of the stage carrying it (with one of the two
+  # locations keyed by a map key containing a space, `"GET /orders"`), and a
+  # two-hop logical-id walk Route.Target -> Integration -> Lambda function.
+  # Precedent for one policy language on every arm where the intent states a
+  # join: DECISIONS.md Amendment 29.
+  awscdk_tier1_engine: rego
+
+  structural_asserts:
+    # --- tier 0: values every arm's real artifact carries statically -----
+    - name: http-api-exists
+      description: "An API Gateway v2 HTTP API is created."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGatewayV2::Api')].Properties.ProtocolType"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_apigatewayv2_api')].values.protocol_type"
+      op: contains
+      expected: "HTTP"
+
+    - name: stage-named-prod-exists
+      description: >
+        A stage named exactly `prod` exists. `regex` with an anchored
+        pattern rather than `contains`, whose string form is a substring
+        test that would also accept `prod-canary`; and rather than `eq`,
+        which resolves >1 node and fails on multiplicity the moment a
+        solution also keeps the API's `$default` stage, which the ticket
+        neither asks for nor forbids.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGatewayV2::Stage')].Properties.StageName"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_apigatewayv2_stage')].values.name"
+      op: regex
+      expected: "^prod$"
+
+    - name: route-get-orders-exists
+      description: "A route whose route key is exactly `GET /orders` exists."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGatewayV2::Route')].Properties.RouteKey"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_apigatewayv2_route')].values.route_key"
+      op: regex
+      expected: "^GET /orders$"
+
+    - name: proxy-integration-exists
+      description: >
+        A Lambda proxy integration exists (AWS_PROXY), as opposed to a mock
+        integration or no integration at all. Existence-and-type only here;
+        WHICH function it reaches is the tier-1 graph fact below.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGatewayV2::Integration')].Properties.IntegrationType"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_apigatewayv2_integration')].values.integration_type"
+      op: contains
+      expected: "AWS_PROXY"
+
+    # The two throttling asserts read a UNION over the stage's default route
+    # settings and its per-route settings, as recursive descent scoped to the
+    # stage resource: generator/jsonpath_jq.py supports no path-union
+    # operator, and the ticket is satisfied by either location. `set_eq`
+    # rather than `eq`/`in`: see ORACLE MUST TOLERATE / DEFEND item 2 for
+    # why every other op either rejects a correct both-locations solution or
+    # passes vacuously on the omitted-limit fixture this scenario is about.
+    - name: throttling-rate-is-100
+      description: >
+        Every throttling rate limit the prod-carrying artifact states is
+        100, and at least one is stated.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGatewayV2::Stage')]..ThrottlingRateLimit"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_apigatewayv2_stage')]..throttling_rate_limit"
+      op: set_eq
+      expected: [100]
+
+    - name: throttling-burst-is-200
+      description: >
+        Every throttling burst limit the artifact states is 200, and at
+        least one is stated. THE CENTRAL ASSERT: an omitted burst limit
+        resolves to the empty set (a known `null` on the TF arms, an absent
+        key on awscdk, both dropped by tests/_assert_lib.sh), which
+        contradicts this `set_eq`; a `0` resolves to {0}, which contradicts
+        it too.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGatewayV2::Stage')]..ThrottlingBurstLimit"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_apigatewayv2_stage')]..throttling_burst_limit"
+      op: set_eq
+      expected: [200]
+
+    # --- tier 1: the two joins -------------------------------------------
+    # These entries are the SPEC for the hand-authored policies (SCHEMA.md
+    # §4.2: "this entry is the spec for that policy ... the policy file is
+    # still the thing that actually runs"):
+    #   oracles/rego/apigwv2-route-settings-zero-vs-unset/policy.rego     (TF)
+    #   oracles/rego-cfn/apigwv2-route-settings-zero-vs-unset/policy.rego (CFN)
+    # Their jsonpaths name the collection each rule reasons over — neither
+    # join is expressible as one flat path — and `make check-paths` resolves
+    # them for real, which is what keeps a tier-1 path from rotting into
+    # inert documentation.
+    - name: prod-stage-governs-get-orders-throttling
+      description: >
+        THE PLANTED CATCH's rule. The stage NAMED `prod` carries the
+        settings that govern `GET /orders`, and those settings state rate
+        100 and burst 200. The effective settings are the route-keyed entry
+        for `GET /orders` where one exists, else the stage's default route
+        settings; a prod stage with neither is denied, as is a plan with no
+        prod stage at all (fail-closed, so a too-narrow collection filter
+        cannot pass a real violation). Not expressible as a flat path: the
+        value must be joined to the stage's own name, and one of the two
+        source locations is a map keyed by a route key containing a space.
+      tier: "1"
+      applies_to: [awscdk, hcl_raw]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGatewayV2::Stage')].Properties"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_apigatewayv2_stage')].values"
+      op: exists
+
+    - name: route-reaches-a-function-in-this-plan
+      description: >
+        The `GET /orders` route targets an AWS_PROXY integration whose URI
+        is derived from a Lambda function this configuration creates — a
+        two-hop walk (route -> integration -> function) over the artifact's
+        own reference graph: `Fn::Join`/`Ref`/`Fn::GetAtt` logical ids on
+        awscdk, `.configuration...expressions.<attr>.references` on the TF
+        arms (SCHEMA.md §4.2.1, which is what makes this plan-time-known
+        even though the URI's VALUE is not). A hand-typed ARN carries a
+        `constant_value` and no reference, and an imported function
+        renders a plain string where a created one renders an intrinsic.
+      tier: "1"
+      applies_to: [awscdk, hcl_raw]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGatewayV2::Integration')].Properties.IntegrationUri"
+      tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_apigatewayv2_integration')].expressions.integration_uri.references[*]"
+      op: exists
+
+  rego_hints:
+    - >-
+      package cdktn_bench.apigwv2_route_settings_zero_vs_unset, graded
+      against `terraform show -json` PLAN output. prod stages are the
+      `.planned_values.root_module.resources` entries of type
+      `aws_apigatewayv2_stage` whose `.values.name == "prod"`. deny when
+      there is no such stage — a plan that throttles some other stage
+      correctly must not pass by having its prod stage overlooked.
+    - >-
+      prod-stage-governs-get-orders-throttling: for each prod stage,
+      `.values.route_settings` is a LIST of objects each carrying its own
+      `route_key` (not a map, unlike CloudFormation's `RouteSettings`), and
+      `.values.default_route_settings` is a list of at most one object. The
+      EFFECTIVE settings for `GET /orders` are the route_settings entry
+      whose `route_key == "GET /orders"` if present, else the single
+      default_route_settings entry. deny when there are no effective
+      settings, and deny when their `throttling_rate_limit != 100` or
+      `throttling_burst_limit != 200` — treating a missing key and a JSON
+      `null` as violations, never as "not stated, so not checked", since an
+      omitted limit is precisely the planted mistake.
+    - >-
+      route-reaches-a-function-in-this-plan: work over
+      `.configuration.root_module.resources`. Find the route resources of
+      type `aws_apigatewayv2_route` whose `.expressions.route_key.
+      constant_value == "GET /orders"`; deny when none exists. For each,
+      collect its `.expressions.target.references` and keep the ones
+      matching `^aws_apigatewayv2_integration\.` (references appear as both
+      `TYPE.NAME` and `TYPE.NAME.attr` — match by prefix, and normalise to
+      the bare `TYPE.NAME` address before comparing). deny when the route
+      references no integration, when a referenced integration is absent
+      from the configuration, and when a referenced integration's
+      `.expressions.integration_uri.references` contains nothing matching
+      `^aws_lambda_function\.`. The last clause is the one the
+      hand-typed-ARN fixture violates: its `integration_uri` expression
+      carries a `constant_value` and no `references` key at all.
+
+  cfn_guard_hints:
+    - >-
+      NOT USED — this scenario sets `oracle.awscdk_tier1_engine: rego`, so
+      the awscdk bundle is
+      oracles/rego-cfn/apigwv2-route-settings-zero-vs-unset/policy.rego and
+      no `.guard` file is emitted. Both tier-1 facts are joins: a settings
+      block to its stage's StageName (one location being `RouteSettings`, a
+      map keyed `"GET /orders"`), and the two-hop logical-id walk
+      Route.Target -> Integration -> Lambda function. cfn-guard 3.2.0 has
+      no cross-collection identity-join operator for either.
+
+verifier:
+  budget:
+    max_iters: 8
+  # STATIC. Only a `predicted_tier_caught: "live"` catch justifies
+  # `gating: true` (adding-scenarios.md §3), and every catch here is
+  # decidable offline — an unset burst limit included, per this file's
+  # header. A live tier would add a mutating deploy, the admin agent role
+  # and a ~9-minute post-trial account reset per trial, and decide nothing.
+  # The runtime consequence the deployed API shows — every request 429s —
+  # is a separate scenario if it is ever wanted, not a tier of this one.
+  # The design source §5 specs a gating live check; it rests on the plan
+  # shape §5's own correction note retracts.
+  live_check:
+    enabled: false
+    module: tests/live_check.py
+
+provenance:
+  author: "Vincent (via Claude Code, Batch A scenario-authoring task)"
+  date: "2026-09-10"
+  prereg_section_refs:
+    - "docs/design/batch-a-greenfield-blueprints.md §5 (apigwv2-route-settings-zero-vs-unset) — the design source for identity, prompt and catch list. Its §5(c)/(d)/(e) live-tier plan and awscdk arm prediction are NOT implemented: both rested on plan/template shapes that the pinned toolchain contradicts, re-measured at authoring time and recorded in this file's header and in §5's own correction note."
+    - "docs/design/batch-a-greenfield-blueprints.md §0.1-§0.2 (batch-wide conventions: identity separation, prompt-voice rules, static-oracle default, evidence-checked tiers)"
+    - "iac-abstraction-benchmark-prereg.md §5 (catch taxonomy: typed-value-trap, graph-dependency), §3 (oracle tiers, tier-1 Rego)"
+    - "specs/SCHEMA.md §4.2.1 (never tier a value assert on an attribute that can be plan-time-unknown) — the discipline that produced this scenario's tier measurement; here the attribute is plan-time-KNOWN-and-null, which is what moved the central catch from live to tier 0"
+    - "https://github.com/hashicorp/terraform-provider-aws/issues/30373 — 'Removal of the Default route throttling for an API GatewayV2 sets the limits to 0', OPEN, opened 2023-03-31, last activity 2026-06-17, 66 reactions: the service applies a removed/omitted limit as 0"
+    - "https://github.com/hashicorp/terraform-provider-aws/issues/27674 — 'default_route_settings.throttling_burst_limit results in 0, not not-configured', OPEN, opened 2022-11-07, last activity 2026-01-08, 15 reactions: a day-1 never-set report, and the source of the 'not reflected in the displayed plan' observation — which is the HUMAN-READABLE plan; `terraform show -json` carries the limit as a known null"
+    - "https://github.com/hashicorp/terraform-provider-aws/issues/14742 — CLOSED/not-planned, opened 2020-08-19, last activity 2026-01-30, 31 reactions: the same zero-vs-null behaviour producing 429s on a live endpoint (a WEBSOCKET stage; same resource and attributes)"
+    - "DECISIONS.md Amendment 29 (one policy language on every arm where the intent states a join) — the precedent for oracle.awscdk_tier1_engine: rego, set here because cfn-guard 3.2.0 cannot express either of this scenario's two joins"

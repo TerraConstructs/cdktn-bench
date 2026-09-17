@@ -80,8 +80,9 @@ enumeration of what not to do.
 
 **(3) Oracle default is static.** Batch A is the "ready with today's harness"
 bucket: prefer static-only wherever the trap is provable offline against the
-synthesized template / `terraform show -json` plan. Two blueprints need live
-(§5 apigwv2 zero-vs-unset, §12 ECR teardown) and each says why. Tier-0 asserts
+synthesized template / `terraform show -json` plan. One blueprint needs
+live (§12 ECR teardown) and says why; §5 apigwv2 zero-vs-unset was the second
+until its premise was measured and failed — see its own correction note. Tier-0 asserts
 must respect `SCHEMA.md` §4.2.1 (never target an attribute that can be
 plan-time-unknown); graph-edge facts go to
 `.configuration.root_module.resources[].expressions.<attr>.references`.
@@ -114,7 +115,7 @@ authoring rank in this table.
 | 8 | §11 `lambda-log-group-ownership-and-retention` | Cheap, but its graded evidence set was **falsified** (§0.5) — author only after the replacement issues below are folded into the spec's provenance. |
 | 9 | §3 `asg-launch-template-tag-propagation` | Largest plan in the batch, and needs the literal-AMI decision (§0.4 D2) so all three arms stay offline-synthable. |
 | 10 | §7 `lambda-function-url-partner-scoped-invoke` | **Re-scoped** (see §7): the graded trap does not exist on provider 6.x. Author only in its new shape. |
-| 11 | §5 `apigwv2-route-settings-zero-vs-unset` | Operator: *"high value"*, but live, and its tier-0 shape cannot be frozen before an empirical plan-shape probe (§5 (c)). |
+| 11 | §5 `apigwv2-route-settings-zero-vs-unset` | Operator: *"high value"*. Ranked here for being live and for needing an empirical plan-shape probe before its tier-0 shape could be frozen; the probe made it static, so this rank overstates its cost (§5's correction note). |
 | 12 | §12 `ecr-repo-destroy-force-delete` | Last: the batch's only harness-feature dependency (`verifier.teardown`, specced in §12). |
 
 ### 0.3 Provider-mirror delta
@@ -967,6 +968,32 @@ a high-value security-shaped task.
 
 Operator comment: **"High value"**.
 
+> **CORRECTION — this blueprint's central premise was falsified at spec time,
+> and the scenario shipped in a different shape.** (c)'s claim that "an unset
+> optional attribute is simply absent from `planned_values`" is FALSE against
+> the pinned toolchain: `hashicorp/aws` 6.58.0 writes an omitted
+> `throttling_burst_limit` into `planned_values` as a KNOWN JSON `null`
+> (`after_unknown` marks only `logging_level`), and `tests/_assert_lib.sh`
+> drops nulls before applying an op, so the omitted limit CONTRADICTS a
+> `set_eq [200]` assert instead of being indistinguishable from a correct
+> one. The `burst-limit-left-unset` catch is therefore decidable at **tier
+> 0**, on both arms, and (f)'s blocking authoring step — the one that says
+> plan both spellings before freezing a tier — is what found it. What hides
+> the unset limit is the HUMAN-READABLE plan (`terraform show` prints no
+> burst line at all), which is what `tfp-aws#27674`'s "not reflected in the
+> displayed plan" means; the JSON the oracle reads carries it.
+>
+> Consequences, all folded into `specs/apigwv2-route-settings-zero-vs-unset.yaml`:
+> the scenario is **STATIC** (no live check, no `gating`, read-only agent
+> role, `read-only` concurrency); the catch list gained a fourth,
+> `integration-targets-a-function-outside-this-plan`, so each enabled arm has
+> a tier-1 fixture and `make grading-proof` reports no SKIP; and (e)'s arm
+> prediction is withdrawn — see (e). Read the spec, not this section, for what
+> was built. Nothing here was weakened to keep the live shape alive:
+> `absent_or_eq` would have manufactured live-only-ness by passing the
+> plausible-wrong solution, which is the lenient-oracle anti-pattern
+> `docs/adding-scenarios.md` §6 forbids.
+
 ### (a) Identity
 
 | field | value |
@@ -1012,7 +1039,7 @@ Language lines: awscdk and hcl_raw as standard; terraconstructs **not enabled**
 - Handler behaviour (`{"orders": []}`) is stated so the live check has an
   outcome to assert. No static assert may read the handler's code.
 
-### (c) Oracle tier plan — **live is required; static is necessary but not sufficient**
+### (c) Oracle tier plan — **static** (this heading read "live is required; static is necessary but not sufficient" until the probe in the correction above)
 
 Tier-0 (static):
 
@@ -1024,37 +1051,67 @@ Tier-0 (static):
 | `throttle-burst-is-200` | same → `eq` 200 |
 | `integration-targets-the-function` | tier-1 graph edge: the integration's `integration_uri` references the Lambda created here |
 
-**The live tier is what makes this scenario worth building.** The graded
-evidence's sharpest fact is that *the plan does not reflect the drift*
-(`tfp-aws#27674`): an unset `throttling_burst_limit` is applied as `0` by the
-API, and `0` means "reject everything". A plan-only oracle can assert the
-happy-path values but **cannot** distinguish "unset" from "explicitly 0" in the
-one direction that matters, because an unset optional attribute is simply absent
-from `planned_values`.
+**~~The live tier is what makes this scenario worth building.~~ WITHDRAWN —
+see the correction above.** The reasoning was: an unset
+`throttling_burst_limit` is applied as `0` by the API, `0` means "reject
+everything", and a plan-only oracle cannot distinguish "unset" from
+"explicitly 0" because an unset optional attribute is absent from
+`planned_values`. The last clause is the false one. Measured under
+`gates/aws_stub.py::running_stub` with the arm's own pin:
 
-`verifier.live_check` (hand-authored, `gating: true`), asserting:
-1. `GET /orders` on the deployed stage returns **200** with the expected body;
-2. a short burst of 5 sequential requests returns **no 429**;
-3. the deployed stage's settings, read back with
-   `apigatewayv2:GetStage`, carry a **non-zero** burst limit.
+```
+d_both     default_route_settings[0] = {..., "throttling_burst_limit": 200, "throttling_rate_limit": 100}
+d_rateonly default_route_settings[0] = {..., "throttling_burst_limit": null, "throttling_rate_limit": 100}
+d_zeros    default_route_settings[0] = {..., "throttling_burst_limit": 0,    "throttling_rate_limit": 0}
+r_rateonly route_settings[0]         = {..., "route_key": "GET /orders", "throttling_burst_limit": null}
+resource_changes[].change.after_unknown.default_route_settings[0] = {"logging_level": true}
+```
 
-Assertion 3 is the actual catch. `concurrency_mode: "mutating"`;
-`agent_role_name` per Amendment 24 (`QALocalInvocationApplicationAdmin`).
+Both halves are plan-time KNOWN, so both mistakes are tier-0 facts. On awscdk
+the omitted half is absent from the template, which resolves to the empty set
+under the same union path and contradicts the same assert.
+
+~~`verifier.live_check` (hand-authored, `gating: true`)~~ **NOT BUILT.**
+`gating: true` is justified only by a `predicted_tier_caught: "live"` catch
+(`docs/adding-scenarios.md` §3), and there is none once every catch is
+decidable offline; a live tier here would add a mutating deploy, the admin
+agent role and a ~9-minute post-trial account reset per trial and decide
+nothing. The three assertions it would have made — `GET /orders` returns 200
+with the expected body, five sequential requests return no 429, and
+`apigatewayv2:GetStage` reads back a non-zero burst limit — describe a
+separate, live scenario if the deployed 429 behaviour is ever wanted
+measured.
 
 **Catches** (3):
 
 | name | taxonomy | broken fixture | predicted tier |
 |---|---|---|---|
-| `burst-limit-left-unset` | typed-value-trap | sets only `throttling_rate_limit = 100` — **the plausible-wrong solution**: plan-green, apply-green, and every request 429s because the omitted burst is applied as 0 | **live** / — (`applies_to: [hcl_raw]`) |
+| `burst-limit-left-unset` | typed-value-trap | sets only `throttling_rate_limit = 100` — **the plausible-wrong solution**: plan-green, apply-green, and every request 429s because the omitted burst is applied as 0 | ~~live / — (`[hcl_raw]`)~~ → **0 / 0, all enabled arms** |
 | `throttle-set-to-zero` | typed-value-trap | sets both limits to `0` (a literal reading of "no burst allowance") | 0 / 0 |
-| `settings-on-the-wrong-stage` | graph-dependency | attaches route settings to `$default` while deploying `prod` | 0 / 0 |
+| `settings-on-the-wrong-stage` | graph-dependency | attaches route settings to `$default` while deploying `prod` | ~~0 / 0~~ → **1 / 1** |
+| `integration-targets-a-function-outside-this-plan` | graph-dependency | ADDED at spec time: the integration URI is a hand-typed ARN / an imported function, so the route reaches a function nothing here creates while the declared one is left unwired | 1 / 1 |
 
-The first catch is `predicted_tier_caught: "live"` **by construction**, so
-`gates/oracle_falsifiability.py`'s `"live"` branch applies: the fixture must
-keep static reward `1.0` and its offline run must print
-`CDKTN_BENCH_LIVE_ONLY_CONFIRMED`, earned mechanically (here: a two-plan diff
-showing the burst attribute absent from `planned_values` in both the correct and
-the broken fixture — which *is* the proof that no static tier can separate them).
+Three corrections to that table, all measured rather than reasoned:
+
+1. **Catch 1 is tier 0 on both arms**, not live — see the correction at the top
+   of this section. Its `applies_to` widens to both enabled arms with it: the
+   mistake is expressible on awscdk (see (e)).
+2. **Catch 3 is tier 1, not tier 0.** The tier-0 throttling asserts read a
+   union over the two settings locations as recursive descent scoped to the
+   stage resource (`generator/jsonpath_jq.py` has no path-union operator), so
+   they are stage-BLIND: with the numbers on `$default` they resolve `{100}`
+   and `{200}` and pass. Joining a settings block to the NAME of the stage
+   carrying it is a tier-1 policy fact, and this catch is what proves that
+   rule fires.
+3. **A fourth catch was needed for gradeability.** With catches 1 and 2 landing
+   at tier 0, `gates/grading_proof.py` (Amendment 39) needs a fixture observed
+   at tier 1 on each enabled arm, and catch 3 alone would leave the
+   route→integration→function graph rule with no fixture proving it can fire.
+
+`gates/oracle_falsifiability.py`'s `"live"` branch does not apply to any
+fixture here, and no fixture prints `CDKTN_BENCH_LIVE_ONLY_CONFIRMED`: that
+marker's whole content would have been a two-plan diff showing the burst
+attribute absent from `planned_values`, which is the thing that is not true.
 
 ### (d) Trap mechanics + evidence
 
@@ -1069,50 +1126,91 @@ in **0** being applied rather than "not configured", and 0 throttles everything.
 `defaultRouteSettings: props.throttle || props.detailedMetricsEnabled ? {
 throttlingBurstLimit: props.throttle?.burstLimit, throttlingRateLimit:
 props.throttle?.rateLimit } : undefined` — so on the CDK arm an unset half is
-`undefined` and is simply **absent from the template**, i.e. genuinely "not
-configured". Note the same code preserves an explicit `0` (the branch tests the
-object, not the number), so the CDK arm is exposed to the *second* catch and not
-the first: a real, asymmetric, source-verified tier split.
+`undefined` and is absent from the template.
+
+**~~a real, asymmetric, source-verified tier split~~ — WITHDRAWN.** The
+sentence that used to close this paragraph said the CDK arm is exposed to the
+second catch and not the first. It is exposed to both: `ThrottleSettings`
+declares BOTH halves optional (`aws-apigatewayv2/lib/common/stage.d.ts` —
+`readonly rateLimit?: number; readonly burstLimit?: number`), so
+`throttle: { rateLimit: 100 }` type-checks and synthesizes
+`DefaultRouteSettings: {"ThrottlingRateLimit": 100}`. Synthesized directly
+against the pinned `aws-cdk-lib` 2.263.0, no CLI and no AWS:
+
+```
+Both     [["Prod7A5F3219", {"ThrottlingBurstLimit":200,"ThrottlingRateLimit":100}, "prod"]]
+RateOnly [["Prod7A5F3219", {"ThrottlingRateLimit":100},                            "prod"]]
+Zeros    [["Prod7A5F3219", {"ThrottlingBurstLimit":0,"ThrottlingRateLimit":0},     "prod"]]
+```
+
+An absent key resolves to zero nodes under the union path, which the
+`set_eq [200]` assert contradicts, so the mistake is caught statically on this
+arm too — one optional field away on both arms, and the same production bug.
 
 Evidence, all re-verified and all **SUPPORTING**:
 - **`tfp-aws#30373`** — *"Removal of the Default route throttling for an API
   GatewayV2 sets the limits to 0"*, **OPEN**, 2023-03-31 → 2026-06-17, **66 👍**,
   10 comments.
 - **`tfp-aws#27674`** — *"Empty `default_route_settings.throttling_burst_limit`
-  results in 0, not 'not configured'"*, **OPEN**, 2022-11-07 → 2026-01-08, 15 👍;
-  explicitly notes the plan does not reflect the drift.
+  results in 0, not 'not configured'"*, **OPEN**, 2022-11-07 → 2026-01-08, 15 👍.
+  A **day-1 never-set** report (its config sets `detailed_metrics_enabled` and
+  no limits at all), not a day-2 removal — cite `#30373` for the removal
+  shape. Its "not reflected in the displayed plan" is about the
+  HUMAN-READABLE plan, which prints no burst line; `terraform show -json`
+  carries the limit as a known `null`. That gap between the two plan
+  renderings is where this blueprint's own reasoning went wrong.
 - **`tfp-aws#14742`** — CLOSED/not-planned, 2020-08-19 → 2026-01-30, 31 👍:
   the same zero-vs-null behaviour producing 429s on a live endpoint.
 
 ### (e) Arm prediction
 
-**awscdk wins, and for a reason the type system genuinely owns**: `throttle?:
-{rateLimit, burstLimit}` is one optional object whose halves are either both
-supplied or both absent, so the "half-configured" state the provider punishes is
-awkward to express. hcl-raw's two independent optional ints make it the default
-state. Predicted outcome: awscdk green; hcl-raw green *at plan* and failing the
-live tier at a materially higher rate than any other scenario in the batch —
-which is exactly the "where in the pipeline does each arm's failure land"
-measurement that the excluded `ssm-securestring` candidate was going to provide.
+**~~awscdk wins, and for a reason the type system genuinely owns~~ —
+WITHDRAWN, and NOT REPLACED WITH A DIFFERENTIAL.** The withdrawn claim was
+that `throttle?: {rateLimit, burstLimit}` is one optional object whose halves
+are either both supplied or both absent, making the half-configured state
+awkward to express on awscdk while hcl-raw's two independent optional ints make
+it the default state. Both halves of `ThrottleSettings` are independently
+optional (see (d)), so the half-configured state is one optional field away on
+either arm and neither type system intercepts it.
+
+**Pre-registered prediction for the shape that shipped: no arm differential on
+correctness.** Both enabled arms are equally exposed to all four catches, and
+both are graded by the same two joins in the same policy language. Any
+difference the trials show should fall in tokens-to-green rather than in which
+arm goes green — awscdk bundles the handler inline where hcl-raw must produce a
+code archive, which is the packaging cost this batch already measures
+elsewhere. A differential in *failure kind* is no longer predicted at all, and
+if the results show one, it is a finding rather than a confirmation.
 
 ### (f) Effort / risk
 
-- **M**, and it is the batch's second-most expensive scenario after §12: live,
-  mutating, needs a real deploy and a hand-authored `live_check.py`.
-- **terraconstructs: recommend `enabled: false`**, reason: 0.2.13 has no
-  `aws-apigatewayv2` L2 surface at all (verified — `lib/aws/compute/` carries
-  `restapi.ts`, `stage.ts`, `deployment.ts` for REST v1 only; there is no
-  `http/` tree). An L1-binding arm would measure "raw `@cdktn/provider-aws`
-  TypeScript vs HCL", which `s3-lambda-log-retention`'s own history says is not
-  the comparison we want. Operator question **Q4**.
-- **Blocking authoring step:** before freezing any tier-0 assert, run a real
-  plan for both spellings (burst set / burst omitted) and record what
-  `planned_values` actually contains. Everything above assumes "absent when
-  unset"; if the provider marks it computed-and-known, the catch may be
-  partially static and the tier prediction changes. This is the §4.2.1
-  discipline, and it is a hard gate for this scenario.
-- Reuses `apigw-redeploy`'s live machinery wholesale (mutating concurrency,
-  reset, `TF_VAR_cdktn_bench_live`), so the marginal harness cost is zero.
+- ~~**M**, and it is the batch's second-most expensive scenario after §12:
+  live, mutating, needs a real deploy and a hand-authored `live_check.py`.~~
+  See the last bullet in this list: none of that shipped.
+- **terraconstructs: `enabled: false`** (shipped that way), reason: 0.2.13 has
+  no `aws-apigatewayv2` L2 surface at all — `lib/aws/compute/` carries
+  `restapi`, `stage`, `deployment`, `method`, `methodresponse`,
+  `api-definition`, `api-key` and `apigateway-util` for REST v1 only, there is
+  no `http/` tree, and the single apigatewayv2 reference in the package is
+  `Apigatewayv2ApiMapping`, an L1 escape hatch inside
+  `lib/aws/compute/domain-name.js`. Check it against `npm pack
+  terraconstructs@0.2.13` (the version
+  `arms/terraconstructs/environment/app/package.json` pins) rather than
+  against `node_modules`, which is not vendored in this repo. An L1-binding
+  arm would measure "raw `@cdktn/provider-aws` TypeScript vs HCL", which
+  `s3-lambda-log-retention`'s own history says is not the comparison we want.
+  Operator question **Q4**.
+- **Blocking authoring step — RUN, and it fired.** The step was: before
+  freezing any tier-0 assert, plan both spellings (burst set / burst omitted)
+  and record what `planned_values` actually contains, because everything above
+  assumed "absent when unset" and a computed-and-known answer changes the tier.
+  The answer is a known `null` (see the correction at the top of this
+  section), the catch is static, and the whole live design came off. This is
+  the §4.2.1 discipline paying for itself: the alternative was shipping a
+  gating live check whose gradeability proof could never pass.
+- ~~Reuses `apigw-redeploy`'s live machinery wholesale~~: not needed. As
+  shipped this is an **S**, not an **M** — a static, read-only scenario with
+  no post-trial account reset, two arms, and two Rego bundles.
 
 ---
 
@@ -2034,6 +2132,40 @@ prediction is registered before authoring.
 ---
 
 ## 12. `ecr-repo-destroy-force-delete` — the batch's only harness-feature dependency
+
+> **CORRECTION — the tier layout in (c) shipped differently, per arm.** This
+> section grades the ARGUMENT (`values.force_delete` -> `eq true` on the TF
+> arms) where the ticket states a REQUIREMENT ("removing this configuration
+> leaves the account clean"). A static assert that reads that attribute makes
+> the plausible-wrong solution a tier-0 catch, which is the proxy-grading the
+> teardown tier exists to end — and it cannot coexist with predicting
+> `repository-not-emptied-on-delete` at the teardown tier, as the Catches
+> table here does. What shipped:
+>
+> * **hcl_raw and terraconstructs:** the static assert on the attribute is
+>   WITHDRAWN. No assert of the spec reads it; the omission applies green,
+>   passes the live check, and fails the agent's own `terraform destroy`
+>   against the repository the live check pushed an image into. That is the
+>   `predicted_tier_caught: "teardown"` this section predicts, now with
+>   nothing statically shadowing it.
+> * **awscdk:** the assert is SPLIT across two tiers, because CDK's default
+>   removal policy is `Retain` and `cdk destroy --force` then exits 0 having
+>   LEFT the repository in the account — a teardown verdict of `clean` for the
+>   exact failure. `DeletionPolicy == "Delete"` is tier 0
+>   (`deletion-policy-is-delete`) and `EmptyOnDelete == true` with no
+>   `Custom::ECRAutoDeleteImages` resource is tier 1
+>   (`repository-empties-natively-on-delete`, cfn-guard). Both awscdk catches
+>   are therefore predicted at tier **1**, not at "0" and "teardown", and that
+>   tier-1 fixture is also what makes `make grading-proof` report no SKIP on
+>   that arm.
+>
+> Also shipped beyond this section: a `removal-policy-retained` fixture on
+> awscdk (the Retain case at tier 0), and the retained-count assert reads the
+> count of EVERY image-count lifecycle rule as a set rather than asking
+> whether some rule keeps 10 — a two-rule policy keeping 10 untagged and 100
+> tagged images satisfies the weaker reading while retaining 100. Read
+> `specs/ecr-repo-destroy-force-delete.yaml`, not this section, for what was
+> built.
 
 ### (a) Identity
 
