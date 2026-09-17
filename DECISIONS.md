@@ -8118,3 +8118,18 @@ and a registry-level BASIC scanning rule makes `DescribeRepositories` report
 scan-on-push for repositories that never set it, under which discovery is
 ambiguous and a correct solution reports `fail_stale`. Until all of that holds,
 no teardown-gated row may be published.
+
+### Split re-computation (same amendment, 2026-09-10)
+
+`uv run python generator/split.py --write` was run once after the three
+scenarios of this batch (`caller-identity-arn-as-principal`,
+`apigwv2-route-settings-zero-vs-unset`, `ecr-repo-destroy-force-delete`)
+were authored, as the separate, deliberate action `docs/adding-scenarios.md`
+§7 requires. 17 → 20 scenarios; train 10 → 12, holdout 7 → 8. New ids:
+`ecr-repo-destroy-force-delete` train (rank 0),
+`caller-identity-arn-as-principal` holdout (rank 13),
+`apigwv2-route-settings-zero-vs-unset` holdout (rank 16). One existing id
+flipped, **holdout → train**: `iam-managed-policy-exclusive-vs-attachment`
+(rank 10 → 11, now under the moved 60% cutoff). No train → holdout flip, so
+no equipping is tainted; no tuned equipping exists yet in any case. Every
+other id kept its group.

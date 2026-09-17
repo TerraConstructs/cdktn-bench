@@ -24,77 +24,89 @@
 algorithm_version: 1
 seed: 'cdktn-bench-split-v1'
 train_fraction: 0.6
-generated_at: '2026-09-09'
+generated_at: '2026-09-10'
 counts:
-  total: 17
-  train: 10
-  holdout: 7
+  total: 20
+  train: 12
+  holdout: 8
 assignments:
   acm-dns-validation-record-wiring:
     group: train
     score: '10c21300c461c8b3'
-    rank: 3
+    rank: 4
   apigw-openapi:
     group: train
     score: '3377d78a52b0edd8'
-    rank: 5
+    rank: 6
   apigw-redeploy:
     group: holdout
     score: 'e1c40a27324d48a8'
-    rank: 14
+    rank: 17
+  apigwv2-route-settings-zero-vs-unset:
+    group: holdout
+    score: 'c67fedad64d018ce'
+    rank: 16
   asg-launch-template-tag-propagation:
     group: holdout
     score: 'ff3d9ab763f6438b'
-    rank: 16
+    rank: 19
+  caller-identity-arn-as-principal:
+    group: holdout
+    score: 'af4bb5d430c2936c'
+    rank: 13
   ddb-gsi-attribute-definitions:
     group: train
     score: '5ad4d2b56e44a07e'
-    rank: 7
+    rank: 8
+  ecr-repo-destroy-force-delete:
+    group: train
+    score: '00d8623bb0c57c3e'
+    rank: 0
   ecs-swappiness:
     group: train
     score: '1afb4343b90f4a49'
-    rank: 4
+    rank: 5
   iam-managed-policy-exclusive-vs-attachment:
-    group: holdout
+    group: train
     score: 'a0201dbb718f2e79'
-    rank: 10
+    rank: 11
   lambda-alias-tracks-unpublished-latest:
     group: train
     score: '5a02f6ef380e5f40'
-    rank: 6
+    rank: 7
   lambda-log-group-ownership-and-retention:
     group: holdout
     score: 'c203ffbb9c4d2168'
-    rank: 13
+    rank: 15
   named-resource-replacement:
     group: train
     score: '05ab499efa4bcfcc'
-    rank: 1
+    rank: 2
   s3-acl-vs-object-ownership-log-delivery:
     group: holdout
     score: 'fbd578b7e3875fb9'
-    rank: 15
+    rank: 18
   s3-bucket-hardening-decomposition:
     group: train
     score: '0553983a5f8f7fc7'
-    rank: 0
+    rank: 1
   s3-lambda-log-retention:
     group: train
     score: '667898ba190928a0'
-    rank: 8
+    rank: 9
   s3-notification-authoritative-singleton:
     group: holdout
     score: 'a27cf854dd4368f6'
-    rank: 11
+    rank: 12
   s3-notification-custom-resource-tax:
     group: train
     score: '97676d193aad422a'
-    rank: 9
+    rank: 10
   sfn-jsonata:
     group: holdout
     score: 'b5c518e8a2acdfdc'
-    rank: 12
+    rank: 14
   singleton-child-resource-clobber:
     group: train
     score: '0cc669b51d16df5c'
-    rank: 2
+    rank: 3
