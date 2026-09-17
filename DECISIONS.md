@@ -8055,11 +8055,15 @@ Three authoring decisions depart from or narrow the blueprint:
   role ARN; a second identity is denied `GetObject`) is the closure and is a
   follow-on, not part of this landing.
 
-## Amendment 41 (2026-09-10) — `predicted_tier_caught: "teardown"`, and the first gating teardown — DRAFT
+## Amendment 41 (2026-09-10) — `predicted_tier_caught: "teardown"`, and the first gating teardown — ACCEPTED
 
-**Status: DRAFT until `ecr-repo-destroy-force-delete`'s first live run.** The
-schema value and both gate branches are enforced in code and covered by tests;
-what no host gate can produce is a real destroy verdict.
+**Status: ACCEPTED 2026-09-17.** Promotion run in `docs/live-results.md`
+("Amendment 41 promotion run"): the reference scored 1.0 with teardown `clean`
+on all three arms (awscdk's `✅  ScenarioStack: destroyed` captured for this
+stack shape), the hcl_raw `repository-not-emptied-on-delete` fixture scored 0.0
+with `destroy_failed` after every static tier and the live check passed it, and
+all three shard accounts report registry scanning `BASIC` with zero rules. The
+schema value and both gate branches are enforced in code and covered by tests.
 
 ### The finding
 

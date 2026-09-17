@@ -252,3 +252,42 @@ empty stack and finished in about 4 min instead of 10.
 against the arm's pinned CLI; `teardown.log` on the Terraform arms ends in
 `Destroy complete! Resources: 4 destroyed` (hcl_raw) and `6 destroyed`
 (terraconstructs).
+
+## Amendment 41 promotion run — 2026-09-17 (first gating teardown)
+
+`jobs/amend41-promotion/2026-09-17__12-33-18` (awscdk, hcl_raw) and
+`2026-09-17__13-00-13` (terraconstructs, rerun after the arm image lost its
+HashiCorp apt source; the first attempt was `invalid-infra`, Harbor's
+`apt-get update` failed on a rotated signing key before the agent ran);
+claude-sonnet-5, k=1, `ecr-repo-destroy-force-delete` on its shards. Reference
+half of the criterion:
+
+| scenario | arm | shard | reward | output tok | turns | live_check | teardown |
+|---|---|---|---:|---:|---:|:---:|:---:|
+| ecr-repo-destroy-force-delete | awscdk | anchor-2 | 1.0 | 3,542 | 22 | pass | clean |
+| ecr-repo-destroy-force-delete | hcl_raw | anchor-3 | 1.0 | 2,036 | 14 | pass | clean |
+| ecr-repo-destroy-force-delete | terraconstructs | anchor-1 | 1.0 | 3,282 | 26 | pass | clean |
+
+The live check pushed its probe image (`verifier-probe`) into every deployed
+repository and told it apart from the CDK bootstrap repository by scan-on-push;
+`ecr:GetRegistryScanningConfiguration` reports `BASIC` with zero rules on all
+three shard accounts, so repository-level scan-on-push is unambiguous there.
+`awscdk`'s `teardown.log` ends in `✅  ScenarioStack: destroyed` for this stack
+shape; the Terraform arms end in `Destroy complete! Resources: 2 destroyed`.
+
+Broken half (`2026-09-17__13-15-33`): the hcl_raw
+`repository-not-emptied-on-delete` fixture, applied through Harbor's oracle
+agent with a temporary solve.sh that runs `terraform apply` (not committed;
+the hand-authored file was restored afterwards), on anchor-3:
+
+| fixture | arm | static | live_check | teardown | reward |
+|---|---|:---:|:---:|:---:|---:|
+| repository-not-emptied-on-delete | hcl_raw | tier0_pass=1 | pass | destroy_failed (exit 1) | 0.0 |
+
+`teardown.log` carries the provider's own message: `ECR Repository
+(service-image-registry) not empty, consider using force_delete`. Every static
+tier and the live check passed this fixture, and only the teardown tier cost it
+the reward, which is the split Amendment 41 predicted. The oracle-agent route
+does not work for a mutating scenario as shipped: a hand-authored solve.sh runs
+`bash tests/static_tiers.sh` from a working directory that has no `tests/` in a
+trial, and it never applies, so the reference half used the real agent.

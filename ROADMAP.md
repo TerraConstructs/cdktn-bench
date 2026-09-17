@@ -864,7 +864,7 @@ and the disarmed shape.
    null in `planned_values`, so the plausible-wrong solution is a tier-0
    catch; see the blueprint's correction note), and
    `ecr-repo-destroy-force-delete` — the teardown tier's first gating use
-   (Amendment 41), unpromoted until its first live run.
+   (Amendment 41, ACCEPTED 2026-09-17).
    `lambda-function-url-partner-scoped-invoke` is dropped. The split was
    re-run once for the three (Amendment 41, split re-computation).
 5. Before the first full battery, in this order:
@@ -886,12 +886,9 @@ and the disarmed shape.
      `clean` on at least one arm. First gating use:
      `ecr-repo-destroy-force-delete`.
    * ~~`predicted_tier_caught: "teardown"`, and the first GATING teardown~~ —
-     Amendment 41, DRAFT until `ecr-repo-destroy-force-delete`'s first live
-     run: the reference scoring 1.0 with teardown `clean` on all three arms,
-     that scenario's hcl_raw `repository-not-emptied-on-delete` fixture 0.0
-     with `destroy_failed`, and the awscdk `cdk destroy --force` completion
-     line captured verbatim (Amendment 37 measured it for a different stack
-     shape).
+     Amendment 41, ACCEPTED 2026-09-17 (`jobs/amend41-promotion`: reference
+     1.0 with teardown `clean` on all three arms, hcl_raw fixture 0.0 with
+     `destroy_failed`, awscdk completion line captured).
    * ~~`grading-proof` accepting an observed live-tier catch as proof of
      gradeability~~ — Amendment 39, ACCEPTED 2026-09-10
      (`gates/grading_proof.py::live_tier_proof`,
