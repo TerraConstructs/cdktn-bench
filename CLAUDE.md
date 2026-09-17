@@ -133,9 +133,11 @@ Full rules: `docs/adding-scenarios.md` §1 item 3a. The short form:
 - **Amendments 26/27 (multi-step), 28 (brownfield), 32 (live-only AWS
   access), 33 (four scenario shards), 34 (tier 0.5 retired; the `sfn-jsonata`
   JSONata check is a live `states:TestState` call from the verifier), 36
-  (`scenario_form` on every row), 37 (the teardown tier) and 38 (agent commands run in the foreground;
-  deploy counts as toolchain evidence) are ACCEPTED** (promotion runs under
-  `jobs/amend3*-promotion`).
+  (`scenario_form` on every row), 37 (the teardown tier), 38 (agent commands
+  run in the foreground; deploy counts as toolchain evidence), 39
+  (`grading-proof` accepts a live-tier proof) and 40 (the gate stub is an
+  assumed-role identity answering `iam:GetRole`) are ACCEPTED** (promotion
+  runs for the harness-changing ones under `jobs/amend3*-promotion`).
   Rows produced under them are publishable within
   their own stratum. Any new amendment that changes the harness re-enters
   DRAFT until its own first live run.
@@ -173,9 +175,10 @@ Full design: `aws-access.html`. Decision record: `DECISIONS.md` Amendment 32
   `gates/aws_stub.py` once per gate process (prints `PORT=<n>` on stdout
   after binding `127.0.0.1:0`) and export `AWS_ENDPOINT_URL`,
   `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` for every
-  toolchain subprocess. It answers exactly two operations
-  (`sts:GetCallerIdentity`, `states:ValidateStateMachineDefinition`) — the
-  only two the gates ever need — and logs anything else as `400
+  toolchain subprocess. It answers exactly three operations
+  (`sts:GetCallerIdentity` — as an assumed-role identity, the shape a live
+  trial actually holds — plus `iam:GetRole` for the issuer of that identity
+  and `states:ValidateStateMachineDefinition`) and logs anything else as `400
   UnsupportedOperation` rather than silently accepting it.
 - **A credentials/network failure at trial time VOIDS the row.** The
   generated `static_tiers.sh` preflights `aws sts get-caller-identity` on
@@ -185,7 +188,7 @@ Full design: `aws-access.html`. Decision record: `DECISIONS.md` Amendment 32
 - Do **not** reintroduce a mode switch, an offline/dummy-credential branch,
   or a per-arm live env var anywhere in the generator or the toolchain — that
   is the exact defect Amendment 32 removes. If a host gate genuinely needs a
-  third AWS operation, extend `gates/aws_stub.py`; do not reach for `floci`
+  further AWS operation, extend `gates/aws_stub.py`; do not reach for `floci`
   (evaluated and rejected for this — Amendment 32, Amendment 2) or re-add a
   workspace-level switch.
 

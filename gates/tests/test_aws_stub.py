@@ -58,6 +58,42 @@ class TestRoutes:
         assert status == 200
         assert b"<Account>210987654321</Account>" in body
 
+    def test_caller_identity_is_an_assumed_role_not_an_iam_user(self):
+        """Every live trial runs under assume-role credentials, so a gate that
+        answered an IAM-user ARN would green-light artifacts embedding a
+        credential shape no real trial can produce."""
+        with running_stub() as env:
+            status, body = _post(env, b"Action=GetCallerIdentity")
+        assert status == 200
+        assert (
+            b"<Arn>arn:aws:sts::123456789012:assumed-role/"
+            b"cdktn-bench-gate/gate-session</Arn>" in body
+        )
+        assert b"<UserId>AROACKCEVSQ6C2EXAMPLE:gate-session</UserId>" in body
+
+    def test_get_role_answers_the_issuer_of_the_stub_identity(self):
+        """`data \"aws_iam_session_context\"` resolves the session ARN by
+        calling GetRole for the name it parsed out; an error there fails the
+        whole plan."""
+        with running_stub() as env:
+            status, body = _post(
+                env,
+                b"Action=GetRole&RoleName=cdktn-bench-gate&Version=2010-05-08",
+                {"Content-Type": "application/x-www-form-urlencoded"},
+            )
+        assert status == 200
+        assert b"<Arn>arn:aws:iam::123456789012:role/cdktn-bench-gate</Arn>" in body
+        assert b"<RoleName>cdktn-bench-gate</RoleName>" in body
+
+    def test_get_role_for_any_other_name_is_no_such_entity_not_a_fake_role(self):
+        """A stub that invented a role for every name asked would let a plan
+        resolve an issuer the account does not hold."""
+        with running_stub() as env:
+            status, body = _post(env, b"Action=GetRole&RoleName=some-other-role")
+        assert status == 404
+        assert b"<Code>NoSuchEntity</Code>" in body
+        assert b"some-other-role" in body
+
     def test_validate_state_machine_definition_answers_200(self):
         with running_stub() as env:
             status, body = _post(

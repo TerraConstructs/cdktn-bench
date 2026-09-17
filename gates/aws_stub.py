@@ -1,33 +1,68 @@
 #!/usr/bin/env python3
-"""Two-route AWS stub for credential-free host gates.
+"""Three-route AWS stub for credential-free host gates.
 
-Answers sts:GetCallerIdentity and states:ValidateStateMachineDefinition;
-everything else -> 400 UnsupportedOperation, logged. Binds an ephemeral port by
-default and prints `PORT=<n>` on stdout once listening.
+Answers sts:GetCallerIdentity, iam:GetRole and
+states:ValidateStateMachineDefinition; everything else -> 400
+UnsupportedOperation, logged. Binds an ephemeral port by default and prints
+`PORT=<n>` on stdout once listening.
+
+The identity is an assumed role, the shape every live trial holds; an IAM-user
+ARN would let an artifact embedding the caller ARN pass on a shape no trial
+produces. iam:GetRole answers that one role, since `aws_iam_session_context`
+resolves a session ARN through it and fails the plan on any error.
 
 `running_stub()` (bottom of file) is the process-level lifecycle its three host
 consumers (gates/oracle_falsifiability.py, gates/grading_proof.py,
 generator/check_reference_paths.py) use: it starts this script once per gate
-invocation and yields the environment every toolchain subprocess the gate runs
-must use. That is the only thing making those gates credential-free -- with no
-override, terraform/cdktn/the aws CLI reach for whatever `~/.aws/credentials`
-or `AWS_PROFILE` the operator's shell happens to have live, silently coupling
-gate correctness to one developer's machine state.
-
+invocation and yields the environment every toolchain subprocess must use.
+Without it, terraform/cdktn/the aws CLI reach for whatever credentials the
+operator's shell has live, coupling gate correctness to one machine's state.
 See docs/gates.md#aws-stub.
 """
 from __future__ import annotations
 import contextlib, os, shutil, stat, subprocess, sys, tempfile, json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote
 
 ACCOUNT = os.environ.get("AWS_STUB_ACCOUNT_ID", "123456789012")
+GATE_ROLE = "cdktn-bench-gate"
+GATE_SESSION = "gate-session"
+GATE_ROLE_ID = "AROACKCEVSQ6C2EXAMPLE"
 STS = f"""<GetCallerIdentityResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">
-  <GetCallerIdentityResult><Arn>arn:aws:iam::{ACCOUNT}:user/cdktn-bench-gate</Arn>
-  <UserId>AIDACKCEVSQ6C2EXAMPLE</UserId><Account>{ACCOUNT}</Account></GetCallerIdentityResult>
+  <GetCallerIdentityResult><Arn>arn:aws:sts::{ACCOUNT}:assumed-role/{GATE_ROLE}/{GATE_SESSION}</Arn>
+  <UserId>{GATE_ROLE_ID}:{GATE_SESSION}</UserId><Account>{ACCOUNT}</Account></GetCallerIdentityResult>
   <ResponseMetadata><RequestId>00000000-0000-0000-0000-000000000000</RequestId></ResponseMetadata>
 </GetCallerIdentityResponse>""".encode()
+
+# The trust policy is url-encoded in a real GetRoleResponse; the AWS SDKs
+# url-decode it before handing it to a caller, so a literal JSON body here
+# would decode into mojibake for any consumer that looks at it.
+_TRUST_POLICY = quote(
+    '{"Version":"2012-10-17","Statement":[{"Effect":"Allow",'
+    f'"Principal":{{"AWS":"arn:aws:iam::{ACCOUNT}:root"}},'
+    '"Action":"sts:AssumeRole"}]}'
+)
+IAM_ROLE = f"""<GetRoleResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/">
+  <GetRoleResult><Role>
+    <Path>/</Path><RoleName>{GATE_ROLE}</RoleName><RoleId>{GATE_ROLE_ID}</RoleId>
+    <Arn>arn:aws:iam::{ACCOUNT}:role/{GATE_ROLE}</Arn>
+    <CreateDate>2020-01-01T00:00:00Z</CreateDate>
+    <MaxSessionDuration>3600</MaxSessionDuration>
+    <AssumeRolePolicyDocument>{_TRUST_POLICY}</AssumeRolePolicyDocument>
+  </Role></GetRoleResult>
+  <ResponseMetadata><RequestId>00000000-0000-0000-0000-000000000000</RequestId></ResponseMetadata>
+</GetRoleResponse>""".encode()
+
+
+def _no_such_role(name: str) -> bytes:
+    return f"""<ErrorResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/">
+  <Error><Type>Sender</Type><Code>NoSuchEntity</Code>
+  <Message>The role with name {name} cannot be found.</Message></Error>
+  <RequestId>00000000-0000-0000-0000-000000000000</RequestId>
+</ErrorResponse>""".encode()
+
+
 SFN = b'{"result":"OK","diagnostics":[]}'
 
 class H(BaseHTTPRequestHandler):
@@ -38,8 +73,16 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get("Content-Length") or 0); raw = self.rfile.read(n) if n else b""
         target = self.headers.get("X-Amz-Target", "")
-        action = parse_qs(raw.decode(errors="replace")).get("Action", [""])[0]
+        form = parse_qs(raw.decode(errors="replace"))
+        action = form.get("Action", [""])[0]
         if action == "GetCallerIdentity": return self._send(200, "text/xml", STS)
+        if action == "GetRole":
+            name = form.get("RoleName", [""])[0]
+            # Only the one role this stub's own caller identity assumes exists.
+            # Answering any name would let a plan resolve an issuer role that
+            # the account does not hold, which is a fake success.
+            if name == GATE_ROLE: return self._send(200, "text/xml", IAM_ROLE)
+            return self._send(404, "text/xml", _no_such_role(name))
         if target.endswith(".ValidateStateMachineDefinition"): return self._send(200, "application/x-amz-json-1.0", SFN)
         print(f"UNSUPPORTED target={target!r} action={action!r} path={self.path}", file=sys.stderr, flush=True)
         self._send(400, "application/x-amz-json-1.0", json.dumps({"__type":"UnsupportedOperation","message":f"cdktn-bench aws_stub: {target or action or self.path}"}).encode())

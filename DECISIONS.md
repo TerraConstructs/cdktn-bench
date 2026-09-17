@@ -8002,3 +8002,55 @@ a comment.
   affected — this is a host gate reading runs it already made.
 * **`sfn-jsonata` and `named-resource-replacement` are unaffected**: both have
   tier-1 fixtures, which still win per arm.
+
+## Amendment 40 (2026-09-10) — the gate stub is an assumed-role identity; `caller-identity-arn-as-principal` lands on it — ACCEPTED
+
+**Status: ACCEPTED.** A host-gate change, enforced in code and covered by
+`gates/tests/test_aws_stub.py`; no trial behaviour moves, because live AWS is
+the only trial mode (Amendment 32) and the stub exists only for the offline
+gates.
+
+### The change
+
+`gates/aws_stub.py` answered `sts:GetCallerIdentity` with an IAM-user ARN
+(`arn:aws:iam::<acct>:user/cdktn-bench-gate`). Every live trial holds
+assumed-role credentials, so an artifact that embeds the caller ARN was being
+graded offline on a shape no trial produces. The stub now returns
+`arn:aws:sts::<acct>:assumed-role/cdktn-bench-gate/gate-session`, and answers
+`iam:GetRole` for that one role name (any other name is the IAM `NoSuchEntity`
+404; every other operation stays a logged 400), because hashicorp/aws 6.58.0's
+`data "aws_iam_session_context"` resolves a session ARN through `GetRole` and
+fails the plan on any error.
+
+Regression proof: `make falsifiability` on `ecs-swappiness` (all three arms;
+terraconstructs reads the caller identity implicitly for ARN formatting) and on
+`s3-bucket-hardening-decomposition` returned unchanged rewards under the new
+identity. No existing plan embeds the caller ARN.
+
+### The scenario
+
+`specs/caller-identity-arn-as-principal.yaml` (blueprint
+`docs/design/batch-a-greenfield-blueprints.md` §4) is static, all three arms,
+and depends on that identity: the plausible-wrong Terraform answer (the raw
+caller ARN as the bucket-policy principal) now plans to an
+`:sts::…:assumed-role/` principal and is caught at tier 0; the correct
+`aws_iam_session_context` answer resolves to `arn:aws:iam::<acct>:role/…`.
+Three authoring decisions depart from or narrow the blueprint:
+
+* **Blueprint §4(b)'s third accepted shape is retired.** A literal role ARN
+  built from `data.aws_caller_identity.current.account_id` names a role the
+  configuration neither creates nor resolves; the role name is invented, which
+  is the same defect as the `principal-hardcoded-to-a-foreign-arn` catch. It
+  scores 0.0 and the spec says so in its tolerate/defend list.
+* **awscdk tier 1 runs under Rego** (`oracle.awscdk_tier1_engine: rego`, the
+  Amendment 29 precedent): cfn-guard 3.2.0 cannot express the join from a
+  bucket-policy principal `Fn::GetAtt` to an `AWS::IAM::Role` in the same
+  template.
+* **A recorded plan-only limitation on hcl_raw.** A bucket policy written with
+  `jsonencode(...)` is unknown at plan time, so the resolved-value rules cannot
+  run; the Rego policy logs `not_verifiable` to the trial log instead of
+  passing silently, and a policy that carries a correct Allow plus a second
+  `:root` Allow in that shape scores 1.0. The `data "aws_iam_policy_document"`
+  idiom is fully graded. The blueprint's live variant (deployed principal is a
+  role ARN; a second identity is denied `GetObject`) is the closure and is a
+  follow-on, not part of this landing.
