@@ -63,6 +63,14 @@
         "path": "tasks/anchor-2/apigw-redeploy-terraconstructs"
       },
       {
+        "name": "apigwv2-route-settings-zero-vs-unset-awscdk",
+        "path": "tasks/anchor/apigwv2-route-settings-zero-vs-unset-awscdk"
+      },
+      {
+        "name": "apigwv2-route-settings-zero-vs-unset-hcl-raw",
+        "path": "tasks/anchor/apigwv2-route-settings-zero-vs-unset-hcl-raw"
+      },
+      {
         "name": "asg-launch-template-tag-propagation-awscdk",
         "path": "tasks/anchor/asg-launch-template-tag-propagation-awscdk"
       },
@@ -75,6 +83,18 @@
         "path": "tasks/anchor/asg-launch-template-tag-propagation-terraconstructs"
       },
       {
+        "name": "caller-identity-arn-as-principal-awscdk",
+        "path": "tasks/anchor/caller-identity-arn-as-principal-awscdk"
+      },
+      {
+        "name": "caller-identity-arn-as-principal-hcl-raw",
+        "path": "tasks/anchor/caller-identity-arn-as-principal-hcl-raw"
+      },
+      {
+        "name": "caller-identity-arn-as-principal-terraconstructs",
+        "path": "tasks/anchor/caller-identity-arn-as-principal-terraconstructs"
+      },
+      {
         "name": "ddb-gsi-attribute-definitions-awscdk",
         "path": "tasks/anchor/ddb-gsi-attribute-definitions-awscdk"
       },
@@ -85,6 +105,18 @@
       {
         "name": "ddb-gsi-attribute-definitions-terraconstructs",
         "path": "tasks/anchor/ddb-gsi-attribute-definitions-terraconstructs"
+      },
+      {
+        "name": "ecr-repo-destroy-force-delete-awscdk",
+        "path": "tasks/anchor-2/ecr-repo-destroy-force-delete-awscdk"
+      },
+      {
+        "name": "ecr-repo-destroy-force-delete-hcl-raw",
+        "path": "tasks/anchor-3/ecr-repo-destroy-force-delete-hcl-raw"
+      },
+      {
+        "name": "ecr-repo-destroy-force-delete-terraconstructs",
+        "path": "tasks/anchor-1/ecr-repo-destroy-force-delete-terraconstructs"
       },
       {
         "name": "ecs-swappiness-awscdk",

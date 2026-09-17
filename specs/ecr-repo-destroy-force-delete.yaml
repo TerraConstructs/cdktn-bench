@@ -1,0 +1,431 @@
+# Design source: docs/design/batch-a-greenfield-blueprints.md §12. `id` names
+# the fix; every agent-visible name states only the goal (SCHEMA.md §0.1).
+#
+# MECHANISM. `aws_ecr_repository` refuses to delete a repository that still
+# holds images unless `force_delete = true`, and CloudFormation's
+# `EmptyOnDelete` is the same switch. The ticket's requirement is "teardown
+# leaves the account clean", not that argument, and grading the argument
+# instead of the requirement is the mistake specs/s3-lambda-log-retention.yaml
+# warns about. So on the Terraform-shaped arms NO static assert reads that
+# attribute: the omission applies green, passes the live check, and fails the
+# agent's own `terraform destroy` -- the first gating use of the teardown tier
+# (SCHEMA.md §5.2, DECISIONS.md Amendment 37) and of `predicted_tier_caught:
+# "teardown"` (Amendment 41).
+#
+# awscdk IS GRADED STATICALLY INSTEAD, and that is not a softening: CDK's
+# default removal policy is Retain, so `cdk destroy --force` for a template
+# setting neither property exits 0 having LEFT THE REPOSITORY BEHIND, which a
+# teardown tier would record as `clean`. The template is the only place the
+# mistake is visible here, so `DeletionPolicy` is a tier-0 assert and
+# `EmptyOnDelete` the tier-1 rule.
+
+id: ecr-repo-destroy-force-delete
+
+# workspace_id (SCHEMA.md §0.1.1): optional for a single-step greenfield and
+# defaults to `id`, which here spells out the fix. `service-image-registry`
+# names the deliverable only.
+workspace_id: service-image-registry
+
+# title (agent-visible header — single-step greenfield, so `workspace_title`
+# is FORBIDDEN per SCHEMA.md §0.1; this string is stamped byte-for-byte into
+# lib/scenario-stack.ts, bin/app.ts's CFN description, main.tf and main.ts).
+# "rebuilt with each environment" is the lifecycle expectation an ops ticket
+# would state; it matches no deny pattern ("rebuilt" is not "re-create").
+title: "Container image registry for the service, rebuilt with each environment"
+difficulty: 2
+services: [ecr, iam]
+
+# This scenario's reserved vocabulary (SCHEMA.md §0.1): the exact spellings of
+# the one argument the agent must find, and of the error it produces when it is
+# missing. Enforced against the resolved agent-visible identity by
+# Spec._agent_visible_identity_is_deny_list_clean.
+agent_deny_vocab:
+  - "force_delete"
+  - "forceDelete"
+  - "emptyOnDelete"
+  - "RepositoryNotEmpty"
+
+arms:
+  awscdk: true
+  hcl_raw: true
+  terraconstructs:
+    enabled: true
+    reason: >
+      Verified against the pinned package this arm installs
+      (arms/terraconstructs/environment/app/package.json: terraconstructs
+      0.2.13), not inferred from the README. `lib/aws/storage/ecr-repository.d.ts`
+      declares `Repository` with `repositoryName`, `imageScanOnPush`,
+      `lifecycleRules` and `emptyOnDelete`, and `lib/aws/storage/ecr-lifecycle.d.ts`
+      declares `LifecycleRule.maxImageCount` — so the whole ticket is
+      expressible in typed L2 on this arm. `ecr-repository.js:391` maps the
+      typed prop straight onto the provider argument
+      (`forceDelete: props.emptyOnDelete`), and `:406-412` refuses the
+      deprecated `autoDeleteImages` with an explicit "deprecated and not
+      implemented" warning — so the anti-L2 catch below is structurally
+      unavailable here and is scoped to awscdk.
+
+instruction:
+  shared_body: |
+    The service needs its own ECR repository. Images are scanned on push, and
+    only the last 10 images are kept.
+
+    These environments are created and destroyed on a nightly cycle by the
+    platform pipeline, which has no manual steps: removing this configuration
+    has to leave the account clean, with the repository and its images gone.
+
+    Deploy the repository to this account with your toolchain's real deploy
+    command, and leave it in place when you are done.
+  placeholders: []
+  per_arm:
+    awscdk:
+      language_line: "Author this as an AWS CDK (TypeScript) app using aws-cdk-lib L2 constructs."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdk.out/ScenarioStack.template.json
+        build_command: "npm run build"
+        synth_command: "npx cdk synth --no-lookups --quiet -o cdk.out"
+        json_fields: []
+    hcl_raw:
+      language_line: "Author this as hand-written Terraform HCL (no modules)."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields: []
+    terraconstructs:
+      language_line: "Author this using terraconstructs (TypeScript) L2 constructs, synthesized via cdktn."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdktf.out/stacks/service-image-registry/plan.json
+        synth_command: "npx cdktn synth"
+        json_fields: []
+
+# --- ORACLE MUST TOLERATE / DEFEND (operator-facing, adding-scenarios.md
+# §1 item 3a — never in prompt prose) ------------------------------------
+#
+# 1. Scan-on-push and the 10-image retention rule are ordinary registry
+#    requirements, and they are what gives this scenario a body beyond its one
+#    trap argument. The retention fact is graded as a property of the WHOLE
+#    policy, not of one rule in it: some rule must expire by image count, and
+#    every rule that expires by image count must keep exactly 10. So an agent
+#    who adds a second rule the ticket never asked for (expire untagged images
+#    after 14 days, say) still scores 1.0, while a policy whose second rule
+#    keeps 100 tagged images scores 0.0 — it retains 100 images, which is the
+#    `lifecycle-policy-keeps-wrong-count` catch wearing a first rule that keeps
+#    10 as a disguise. "Some rule keeps 10" would score that 1.0 on every arm,
+#    and the teardown tier cannot see it either, so the strictness lives here.
+#    The count alone is not the whole fact: a count bounds only the tag class
+#    its rule selects. A policy whose one image-count rule is scoped to
+#    `untagged` keeps 10 untagged images and an unbounded number of tagged
+#    ones, with every count in the document reading 10, so the image-count
+#    rules' `tagStatus` is pinned to `any` as well. Accepted cost: an agent who
+#    writes an `any` rule keeping 10 AND a redundant narrower count rule also
+#    keeping 10 scores 0.0 although nothing is retained past 10. That shape is
+#    a lifecycle policy written twice; the shape it is indistinguishable from
+#    under a laxer assert is the unbounded one above.
+# 2. The teardown sentence is an outcome requirement stated the way a platform
+#    ticket states it. It names no argument, no property and no removal policy.
+# 3. Accepted shapes: hcl_raw `force_delete = true`; awscdk `emptyOnDelete: true`
+#    PLUS `removalPolicy: DESTROY` (the construct throws without it);
+#    terraconstructs `emptyOnDelete: true`, which the construct maps onto the
+#    provider's `forceDelete`. REJECTED: awscdk's deprecated `autoDeleteImages`,
+#    which routes through an added custom-resource Lambda instead of the
+#    registry's own native behaviour — a whole extra function, role and policy
+#    deployed into the account to do what one property does.
+# 4. The repository name is the agent's choice. Nothing in the oracle or the
+#    live check reads it: the live check finds the repository by the properties
+#    the ticket fixes, so a name assert would grade a decision the ticket never
+#    made.
+# 5. REJECTED, deliberately: satisfying "images are scanned on push" with
+#    registry-level enhanced scanning (`aws_ecr_registry_scanning_configuration`
+#    / `AWS::ECR::RegistryScanningConfiguration`), which is what the ECR console
+#    steers an engineer toward and under which the per-repository setting goes
+#    unused. The ticket asks for one repository, and that resource configures
+#    the whole account: it would leave behind state that no destroy of this
+#    stack removes and that the next mutating trial in the same shard account
+#    would read as its own. The oracle therefore requires the REPOSITORY-level
+#    setting, and the live check uses that same setting to tell the deployed
+#    repository apart from the account's CDK bootstrap one — so a
+#    registry-scanning solution scores 0.0 at tier 0 and reports fail_stale
+#    live. That is a real cost, accepted with its reason. The same setting as
+#    pre-existing ACCOUNT STATE would blunt that discriminator from the other
+#    side — a registry-level BASIC scanning rule makes DescribeRepositories
+#    report scan-on-push for repositories that never set it, and discovery
+#    turns ambiguous for a CORRECT solution — so the first live run records
+#    that the shard account carries no registry scanning configuration.
+# 6. The prompt's third paragraph ("deploy … and leave it in place") is this
+#    spec's addition, not the blueprint's, and it constrains scope rather than
+#    shape — the precedent is specs/named-resource-replacement.yaml and
+#    specs/apigw-redeploy.yaml. It is there because the teardown tier GATES: an
+#    agent who tidies up after itself by destroying its own deployment leaves
+#    the tier nothing to destroy, which records `not_verifiable` and scores 0.0
+#    for work that was correct.
+
+catches:
+  - name: repository-not-emptied-on-delete
+    taxonomy: typed-value-trap
+    description: >
+      THE PLAUSIBLE-WRONG SOLUTION, and the reason this scenario needs a
+      teardown tier. Everything the ticket asks for is present and deployed —
+      the repository exists, scanning is on, retention keeps 10 — and the
+      destroy that the nightly pipeline runs fails, because ECR refuses to
+      delete a repository that still holds images. On hcl_raw and
+      terraconstructs the plan carries no evidence of the difference that a
+      static assert may honestly read: `force_delete` is an ordinary boolean
+      whose absence is indistinguishable from a correct configuration for a
+      repository that happens to be empty, and grading it statically would
+      grade the argument rather than the requirement. Those arms therefore
+      predict "teardown": the fixture applies green, the live check passes, and
+      `terraform destroy` exits non-zero. On awscdk the same omission IS
+      visible, and must be: the CDK default removal policy is `Retain`, so an
+      agent who sets neither property leaves a stack whose `cdk destroy --force`
+      exits 0 having left the repository behind in the account — a teardown
+      verdict of `clean` for the failure this catch names. That arm predicts
+      "1": the fixture sets `removalPolicy: DESTROY` (which every tier-0 assert
+      accepts) and omits `emptyOnDelete`, so the tier-1 rule decides it. The
+      `removal-policy-retained` fixture next to it covers the Retain case at
+      tier 0 on that same arm.
+    predicted_tier_caught:
+      awscdk: "1"
+      hcl: "teardown"
+      terraconstructs_override: null
+
+  - name: auto-delete-images-custom-resource
+    taxonomy: anti-L2
+    description: >
+      aws-cdk-lib still ships `autoDeleteImages`, deprecated in favour of
+      `emptyOnDelete` (2.263.0, aws-ecr/lib/repository.ts: the prop is marked
+      `@deprecated Use emptyOnDelete instead` and is honoured only when
+      `emptyOnDelete` is unset, in which case it calls `enableAutoDeleteImages()`
+      and synthesizes a `Custom::ECRAutoDeleteImages` resource backed by a
+      Lambda function and its role). The teardown then succeeds — so the
+      requirement is met, by deploying a function, a role and a
+      custom-resource lifecycle to do what one native property does, and
+      through an API the library itself says not to use. Caught at tier 1 on
+      awscdk: the fixture's `removalPolicy: DESTROY` satisfies every tier-0
+      assert, and the
+      tier-1 rule fails on the missing `EmptyOnDelete` and on the presence of
+      the custom resource. Structurally unavailable on the other two arms —
+      terraconstructs 0.2.13 refuses the same prop as "deprecated and not
+      implemented" (`lib/aws/storage/ecr-repository.js:406-412`) and hcl_raw has
+      no L2 to reach for — so `applies_to` scopes it to awscdk.
+    applies_to: [awscdk]
+    predicted_tier_caught:
+      awscdk: "1"
+      # Unreachable: `applies_to` excludes both Terraform-shaped arms, so this
+      # value is never resolved. Kept equal to awscdk's rather than invented.
+      hcl: "1"
+      terraconstructs_override: null
+
+  - name: lifecycle-policy-keeps-wrong-count
+    taxonomy: nested-attribute
+    description: >
+      The retention count lives inside the lifecycle policy's own JSON
+      document, at `rules[].selection.countNumber` — a number nested two levels
+      below an attribute that both Terraform arms carry as an opaque
+      `jsonencode(...)` STRING, which `terraform validate` never inspects
+      below "is this valid JSON". A repository that keeps 100 images instead of
+      10 plans and deploys with no error anywhere; only an assert that decodes
+      the policy document sees it. Caught at tier 0 on every arm, by the
+      decoded-path assert below — which reads the count of EVERY rule that
+      expires by image count, because the two-rule form of this mistake (keep
+      10 untagged, keep 100 tagged) satisfies any assert that only asks whether
+      some rule keeps 10, while retaining 100 images. The hcl_raw fixture is
+      that two-rule form for exactly that reason.
+    predicted_tier_caught:
+      awscdk: "0"
+      hcl: "0"
+      terraconstructs_override: null
+
+oracle:
+  intent: >
+    One ECR repository exists. Image scanning on push is enabled on it, and a
+    lifecycle policy expires images by image count, keeping the most recent 10:
+    every rule that expires by image count keeps 10 and applies to images of
+    any tag status, so the repository retains 10 images — not 10 of one kind
+    alongside 100 of another, and not 10 untagged images alongside an
+    unbounded number of tagged ones.
+    Deleting the repository leaves the account clean: the delete succeeds even
+    though the repository still contains images, without deploying any
+    additional resource to make that true.
+
+    That last sentence is the requirement, and the three arms make it
+    observable in different places, which this oracle records rather than
+    flattens. On hcl_raw and terraconstructs the deployed configuration is what
+    proves it: the plan carries an ordinary boolean whose absence looks exactly
+    like a correct configuration for an empty repository, so NO static assert
+    reads it and the agent's own `terraform destroy` — run by the teardown tier
+    against a repository the live check has just pushed an image into — is the
+    oracle. On awscdk the template is what proves it, and must be: the CDK
+    default removal policy is `Retain`, under which `cdk destroy --force`
+    succeeds while leaving the repository in the account, so a destroy-based
+    verdict there would report a clean teardown for a repository that survived
+    it. That arm therefore requires `DeletionPolicy: Delete` at tier 0 and,
+    at tier 1, `EmptyOnDelete: true` with no `Custom::ECRAutoDeleteImages`
+    resource anywhere in the template — the registry's own native behaviour,
+    not an added custom-resource Lambda that empties the repository on the way
+    down.
+
+  structural_asserts:
+    - name: repository-exists-with-scan-on-push
+      description: >
+        An ECR repository exists and scans images on push.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ECR::Repository')].Properties.ImageScanningConfiguration.ScanOnPush"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_ecr_repository')].values.image_scanning_configuration[*].scan_on_push"
+      op: eq
+      expected: true
+
+    # The retention fact is split in two ON PURPOSE, and the two halves are
+    # deliberately asymmetric. `eq` resolves exactly one node, so it would
+    # score 0.0 for an agent who adds a second, perfectly reasonable lifecycle
+    # rule (expire untagged images after 14 days, say) — grading a decision the
+    # ticket never made. But `contains` on the count says only "some rule keeps
+    # 10", which a policy that ALSO keeps 100 tagged images satisfies while
+    # retaining 100. So EXISTENCE is `contains` (some rule expires by image
+    # count) and the COUNT is `set_eq` over the counts of the image-count rules
+    # only: every one of them keeps 10, and nothing else. Age-based rules carry
+    # a `countNumber` in DAYS and are excluded by the filter rather than
+    # punished by it, which is why the count path filters on `countType`.
+    # A count of 10 bounds only the tag class its rule selects, so the tag
+    # status of those same rules is pinned too — without it a lone
+    # `untagged`-scoped rule keeping 10 leaves tagged images unbounded and
+    # still scores 1.0.
+    - name: lifecycle-policy-expires-by-image-count
+      description: >
+        The repository's lifecycle policy expires images by IMAGE COUNT
+        (`imageCountMoreThan`), not by age — "the last 10 images" is a count,
+        and a days-based rule keeps a different set entirely.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ECR::Repository')].Properties.LifecyclePolicy.LifecyclePolicyText|fromjson.rules[*].selection.countType"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_ecr_lifecycle_policy')].values.policy|fromjson.rules[*].selection.countType"
+      op: contains
+      expected: "imageCountMoreThan"
+
+    - name: lifecycle-policy-keeps-ten
+      description: >
+        Every rule that expires by image count keeps 10 — so the policy as a
+        whole retains 10 images, not 10 of one kind and 100 of another.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ECR::Repository')].Properties.LifecyclePolicy.LifecyclePolicyText|fromjson.rules[?(@.selection.countType=='imageCountMoreThan')].selection.countNumber"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_ecr_lifecycle_policy')].values.policy|fromjson.rules[?(@.selection.countType=='imageCountMoreThan')].selection.countNumber"
+      op: set_eq
+      expected: [10]
+
+    - name: lifecycle-policy-count-rules-cover-every-tag
+      description: >
+        Every rule that expires by image count applies to images of ANY tag
+        status, so no tag class escapes the cap of 10. A policy whose only
+        image-count rule is scoped to `untagged` (or to a tag prefix) keeps 10
+        of that class and lets the other grow without bound — the retention
+        requirement failing while every count in the policy reads 10. Both CDK
+        `maxImageCount` and terraconstructs `maxImageCount` render this as
+        `any` unless a tag prefix is given.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ECR::Repository')].Properties.LifecyclePolicy.LifecyclePolicyText|fromjson.rules[?(@.selection.countType=='imageCountMoreThan')].selection.tagStatus"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_ecr_lifecycle_policy')].values.policy|fromjson.rules[?(@.selection.countType=='imageCountMoreThan')].selection.tagStatus"
+      op: set_eq
+      expected: ["any"]
+
+    # awscdk ONLY, and the arm asymmetry is the point (see oracle.intent). A
+    # `tf_jsonpath` here would read the very attribute this scenario refuses to
+    # grade statically on the Terraform arms, so this assert declares none and
+    # `applies_to` carries the restriction the schema checks
+    # (StructuralAssert._jsonpaths_required_per_applies_to).
+    - name: deletion-policy-is-delete
+      description: >
+        The repository is deleted with its stack, not retained. CDK's default
+        removal policy is `Retain`, under which `cdk destroy --force` exits 0
+        and leaves the repository in the account — the failure that no
+        destroy-based verdict can see, because the destroy itself succeeds.
+      tier: "0"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ECR::Repository')].DeletionPolicy"
+      op: eq
+      expected: "Delete"
+
+    # The tier-1 entry is the SPEC for oracles/cfn-guard/ecr-repo-destroy-force-delete/
+    # policy.guard, which enforces both halves of the intent's last sentence:
+    # EmptyOnDelete is true on every repository, AND no
+    # Custom::ECRAutoDeleteImages resource exists anywhere in the template. The
+    # jsonpath below names the first half, the half a structural_assert can
+    # express; the policy file is what actually runs (SCHEMA.md §4.2). There is
+    # no Rego counterpart because there is no TF-shaped counterpart: this fact
+    # is graded by the teardown tier on those arms.
+    - name: repository-empties-natively-on-delete
+      description: >
+        Deleting the repository succeeds while it still contains images, by the
+        registry's own native behaviour — no custom-resource Lambda added to
+        empty it on the way down.
+      tier: "1"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ECR::Repository')].Properties.EmptyOnDelete"
+      op: eq
+      expected: true
+
+  cfn_guard_hints:
+    - >-
+      Graded against the awscdk arm's synthesized CloudFormation template.
+      `let repos = Resources.*[ Type == "AWS::ECR::Repository" ]`, then require
+      `Properties.EmptyOnDelete == true` on every one of them.
+    - >-
+      Second rule, equal strictness, same intent: no resource of type
+      `Custom::ECRAutoDeleteImages` may exist in the template. The deprecated
+      `autoDeleteImages` prop satisfies the teardown requirement by deploying a
+      Lambda, its role and its policy to empty the repository from a
+      custom-resource delete handler; the native property needs none of them.
+      Written as a template-wide absence check rather than a per-repository one,
+      because the custom resource is a sibling of the repository, not a child.
+    - >-
+      There is deliberately NO Rego counterpart bundle for this scenario. The
+      Terraform-shaped arms declare no tier-1 assert at all: the same fact is
+      graded there by the teardown tier (verifier.teardown, gating), and a Rego
+      rule reading `force_delete` would be exactly the proxy-grading this spec's
+      header refuses.
+
+verifier:
+  budget:
+    # Unchanged from the pre-registered default. This is the longest-running
+    # scenario in the batch — deploy, live check, idempotence, destroy — and
+    # the agent's own work inside those cycles is small; lowering the cap would
+    # cut authoring cycles to pay for harness wall-clock.
+    max_iters: 8
+  live_check:
+    enabled: true
+    hand_authored: true
+    # GATING. The live check is what makes the teardown tier mean anything: it
+    # PUSHES an image into the repository the agent deployed, so the destroy
+    # that follows is a destroy of a NON-EMPTY repository. A non-gating live
+    # check would let a trial whose repository was never really created reach
+    # the teardown tier and be judged on it.
+    gating: true
+    # AdministratorAccess, per DECISIONS.md Amendment 24's arm-parity rule: all
+    # three arms deploy with equal authority (terraform on two, the standard
+    # `cdk deploy` bootstrap path on the third).
+    agent_role_name: "QALocalInvocationApplicationAdmin"
+    concurrency_mode: "mutating"
+  teardown:
+    # SCHEMA.md §5.2, and the FIRST GATING use of the tier. "Removing this
+    # configuration leaves the account clean" is this ticket's requirement, and
+    # running the agent's own destroy is the only honest oracle for it: a
+    # repository holding the image the live check just pushed is destroyed, or
+    # it is not. Gating, because a requirement no tier can cost a trial any
+    # reward for is not graded at all.
+    enabled: true
+    gating: true
+
+provenance:
+  author: "cdktn-bench batch-A authoring (blueprint §12)"
+  date: "2026-09-10"
+  prereg_section_refs:
+    - "docs/design/batch-a-greenfield-blueprints.md §12 (identity, prompt, accepted shapes, catches, evidence)"
+    - "§3 oracle tiers (the teardown tier is the fourth: DECISIONS.md Amendments 37 and 41)"
+    - "§5 catch taxonomy (typed-value-trap, anti-L2, nested-attribute) + falsifiability instruments"
+    - "https://github.com/hashicorp/terraform-provider-aws/issues/33523 (non-empty aws_ecr_repository refuses to delete; force_delete itself was buggy for a period)"
+    - "https://github.com/hashicorp/terraform-provider-aws/issues/9911 (the request that made force-delete explicit and opt-in rather than always-on)"
