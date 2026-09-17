@@ -37,7 +37,13 @@ TierStr = Literal["0", "1"]
 # construction -- the only discriminating signal comes from a real AWS API
 # call made by the scenario's hand-authored tests/live_check.py
 # (docs/apigw-redeploy-mechanics.md; DECISIONS.md Amendment 34).
-CatchTierStr = Literal["0", "1", "live"]
+# "teardown": a catch whose mistake survives every static tier AND the live
+# check, and is discriminated only by the generator-injected destroy of
+# `verifier.teardown` -- an agent's configuration that applies green and tears
+# down dirty (specs/SCHEMA.md §5.2; DECISIONS.md Amendment 41). Only a GATING
+# teardown may be named, which `Spec._teardown_tier_catch_requires_gating_teardown`
+# enforces.
+CatchTierStr = Literal["0", "1", "live", "teardown"]
 Arm = Literal["awscdk", "hcl_raw", "terraconstructs"]
 
 ID_RE = re.compile(r"^[a-z][a-z0-9-]*$")
@@ -1753,6 +1759,41 @@ class Spec(BaseModel):
                 "verifier.live_check.enabled=true -- the teardown tier destroys "
                 "what the agent's own deploy left behind, and a spec with no "
                 "live phase never produces one (SCHEMA.md §5.2)"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _teardown_tier_catch_requires_gating_teardown(self) -> "Spec":
+        """A catch may name the teardown tier only where that tier can cost a
+        reward.
+
+        `predicted_tier_caught: "teardown"` says: every static tier passes this
+        mistake, the live check passes it, and only the destroy separates it
+        from a correct solution. With the tier disabled nothing runs that
+        destroy; with it enabled but observational the verdict is written to
+        /logs/verifier/teardown-result.json and the trial still scores 1.0 --
+        so the catch would be recorded as graded while costing nothing, which
+        is the "grades the proxy" failure the tier exists to end (SCHEMA.md
+        §5.2).
+        """
+        td = self.verifier.teardown
+        named = sorted(
+            c.name
+            for c in self.catches
+            if "teardown"
+            in {
+                c.predicted_tier_caught.awscdk,
+                c.predicted_tier_caught.hcl,
+                c.predicted_tier_caught.terraconstructs_override,
+            }
+        )
+        if named and not (td.enabled and td.gating):
+            raise ValueError(
+                f"catches {named} declare predicted_tier_caught 'teardown', "
+                "which requires verifier.teardown.enabled=true AND "
+                "verifier.teardown.gating=true -- a tier that does not run, or "
+                "runs without gating, cannot cost a trial any reward, so it "
+                "cannot be the tier that catches anything (SCHEMA.md §5.2)"
             )
         return self
 

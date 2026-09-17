@@ -5,13 +5,28 @@ is referenced from the top of the file it describes.
 
 ## aws-stub
 
-`gates/aws_stub.py` — a two-route HTTP stub answering only
-`sts:GetCallerIdentity` and `states:ValidateStateMachineDefinition`, the only
-two operations the host gates need. Anything else is logged and answered with
-`400 UnsupportedOperation` rather than silently accepted. If a host gate needs
-a third operation, extend the stub (DECISIONS.md Amendment 32: live AWS is the
+`gates/aws_stub.py` — a three-route HTTP stub answering only
+`sts:GetCallerIdentity`, `iam:GetRole` and
+`states:ValidateStateMachineDefinition`, the only three operations the host
+gates need. Anything else is logged and answered with `400
+UnsupportedOperation` rather than silently accepted. If a host gate needs a
+fourth operation, extend the stub (DECISIONS.md Amendment 32: live AWS is the
 only trial mode, so no offline/dummy-credential branch may be reintroduced in
 the generator or the workspace).
+
+The identity it answers is an **assumed role** —
+`arn:aws:sts::<account>:assumed-role/cdktn-bench-gate/gate-session` — because
+that is the credential shape every live trial runs under. An IAM-user ARN here
+would let a scenario whose planned artifact embeds the caller ARN pass offline
+on a shape no real trial can produce.
+
+`iam:GetRole` follows from that: terraform-provider-aws
+`data "aws_iam_session_context"` parses the session ARN and then calls GetRole
+for the role name it extracted, failing the entire plan on any error. The stub
+answers a full `GetRoleResponse` for `cdktn-bench-gate` (the issuer of its own
+identity) and the IAM `NoSuchEntity` 404 for every other name — never an
+invented role, which would let a plan resolve an issuer the account does not
+hold.
 
 `running_stub()` starts the script as a subprocess once per gate invocation,
 waits for its `PORT=<n>` announcement, and yields the environment dict every
@@ -66,14 +81,17 @@ catch's `predicted_tier_caught` for the arm:
   proves something caught the violation, never that it was caught at the tier
   the spec records, and the per-catch tier-attribution table depends on that
   tier being right.
-* **"live"** — reward is expected to stay 1.0 (that invisibility to the static
-  tiers IS the catch; the host gate cannot run a live tier, so it never claims
-  tier 0/1 caught the fixture). The falsifying evidence is instead the fixture
-  printing `LIVE_ONLY_CONFIRMED_MARKER` after mechanically confirming the
-  static-indistinguishability property it claims — a two-plan triggers-hash
-  diff showing no change, or two synthesized artifacts that are byte-identical
-  once every `{% ... %}` expression body is elided. There is no static tool for
-  this tier by definition. See docs/apigw-redeploy-mechanics.md.
+* **"live" / "teardown"** — reward is expected to stay 1.0 (that invisibility
+  to the static tiers IS the catch; the host gate can run neither tier, so it
+  never claims tier 0/1 caught the fixture). The falsifying evidence is instead
+  the fixture printing `LIVE_ONLY_CONFIRMED_MARKER` after mechanically
+  confirming the static-indistinguishability property it claims — a two-plan
+  triggers-hash diff showing no change, two synthesized artifacts that are
+  byte-identical once every `{% ... %}` expression body is elided, or two plans
+  differing only in the one attribute no `structural_assert` of the spec reads.
+  There is no static tool for either tier by definition. Both share one verdict
+  in `oracle_falsifiability.apply_live_family_verdict`. See
+  docs/apigw-redeploy-mechanics.md and `specs/SCHEMA.md` §5.2.
 
 Extra `solution/broken/<dir>/` directories that match no declared catch name
 are discovered and required to score 0.0 the same way, so widened tier-1
@@ -89,9 +107,9 @@ free, not offline. `main()` hoists one stub for the whole gate process.
 
 `gates/grading_proof.py` — the end-to-end proof that each arm is GRADEABLE: a
 correct reference solution scores 1.0 and a negative fixture that genuinely
-exercises the arm's grading chain is shown to be discriminated by it. Two kinds
-of proof are accepted (see "Live-tier proof" below); at least one enabled arm
-must produce one, or the spec fails outright.
+exercises the arm's grading chain is shown to be discriminated by it. Three
+kinds of proof are accepted (see "Live-tier proof" and "Teardown-tier proof"
+below); at least one enabled arm must produce one, or the spec fails outright.
 
 Deliberately thin: it reuses `oracle_falsifiability.check_arm` (the same
 sandbox-preparation path `make falsifiability` runs) rather than a second,
@@ -155,6 +173,26 @@ so a spec that has one is unaffected. A live-predicted fixture that a static
 tier DOES catch is a tier-attribution failure in `make falsifiability` exactly
 as before, and reaches neither selector here. The run's final line names which
 proof satisfied each arm.
+
+### Teardown-tier proof
+
+The same argument one tier further out (`specs/SCHEMA.md` §5.2, DECISIONS.md
+Amendment 41): a configuration that applies green, passes the live check and
+then fails its own `destroy` is invisible to every static tier by construction,
+so the arm owns no tier-1 fixture and the generator-injected destroy is what
+decides it. `teardown_tier_proof()` accepts that, on the conditions
+`live_tier_proof()` uses with one substitution — `verifier.teardown` must be
+`enabled` AND `gating` (an observational teardown writes its verdict to
+`/logs/verifier/teardown-result.json` and leaves the reward alone, so it proves
+nothing about grading), and the catch must declare `predicted_tier_caught:
+"teardown"` on this arm. `teardown.enabled` already requires an enabled,
+hand-authored live check, which is what makes a destroy exist to grade.
+
+Tried after the tier-1 selector and after the live-tier one, so an arm holding
+either of those still produces it. `ecr-repo-destroy-force-delete` is the first
+user: its Terraform-shaped arms are proven this way, while `awscdk` — where the
+CDK default removal policy `Retain` makes a silent no-op destroy report clean —
+keeps a static assert and a tier-1 fixture.
 
 ## emit-result
 

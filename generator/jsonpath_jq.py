@@ -18,6 +18,8 @@ close a gap the taxonomy actually needs -- see below):
     ..Field                         -> recursive descent to every Field key
                                        at any depth (jq `.. | objects | .Field?`)
     [?(@.F=='V')]                   -> filter, single equality condition
+    [?(@.F.G=='V')]                 -> filter on a NESTED field of the
+                                       current element (jq `select(.F.G=="V")`)
     [?(@.F=='V' || @.F=='V2')]      -> filter, OR'd equality conditions
     [?(@=='V')]                     -> filter, bare VALUE equality (no
                                        field -- the current element itself
@@ -38,6 +40,15 @@ policy-resource-scoped-not-wildcard is the worked example, see its entry in
 specs/_toy/toy-ssm-parameter.yaml) needs to test each individual resolved
 value against the literal `"*"`, not just "does this path exist at all" --
 that needs a bare-value filter predicate, not a field-keyed one.
+
+Why a filter condition may name a NESTED field: a policy document carried as a
+`jsonencode(...)` string often keys the value under test off a sibling
+sub-object rather than off a top-level field of the same element. An ECR
+lifecycle rule's retained count lives at `selection.countNumber`, and is a
+retained count only for the rules whose `selection.countType` is
+`imageCountMoreThan`; without a nested condition the strongest expressible
+fact is "some rule keeps 10", which a second rule keeping 100 satisfies while
+violating the requirement.
 """
 
 from __future__ import annotations
@@ -49,7 +60,9 @@ _FIELD_RE = re.compile(r"^\.([A-Za-z0-9_]+)")
 _RECURSIVE_FIELD_RE = re.compile(r"^\.\.([A-Za-z0-9_]+)")
 _FILTER_RE = re.compile(r"^\[\?\(([^\]]*)\)\]")
 _WILDCARD_RE = re.compile(r"^\[\*\]")
-_FIELD_COND_RE = re.compile(r"^@\.([A-Za-z0-9_]+)\s*==\s*'([^']*)'$")
+# The field side may be a dot-separated path (`@.selection.countType`), which
+# jq accepts verbatim as a chain of field accesses.
+_FIELD_COND_RE = re.compile(r"^@\.([A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)\s*==\s*'([^']*)'$")
 _VALUE_COND_RE = re.compile(r"^@\s*==\s*'([^']*)'$")
 
 
@@ -73,8 +86,9 @@ def _translate_filter(inner: str) -> str:
             continue
         raise ValueError(
             f"jsonpath_jq: unsupported filter condition {cond!r} "
-            "(only \"@.Field=='literal'\" or bare \"@=='literal'\", "
-            "combined with '||', is supported)"
+            "(only \"@.Field=='literal'\" -- optionally with further "
+            "\".Nested\" field hops -- or bare \"@=='literal'\", combined "
+            "with '||', is supported)"
         )
     return " or ".join(jq_conds)
 

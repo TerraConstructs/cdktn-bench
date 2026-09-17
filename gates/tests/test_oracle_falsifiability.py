@@ -80,3 +80,62 @@ def test_hcl_raw_broken_fixtures_score_reward_0() -> None:
     for r in broken:
         assert r.reward == 0.0, f"{r.label}: expected reward 0.0, got {r.reward!r} -- detail:\n{r.detail}"
         assert r.ok
+
+
+class TestLiveFamilyVerdict:
+    """`apply_live_family_verdict` grades the two tiers this gate cannot run.
+
+    "live" and "teardown" share one rule and must keep sharing it: the host has
+    neither a real AWS call nor a real destroy, so the only falsifying evidence
+    either tier can offer is a static reward that stayed 1.0 plus a marker the
+    fixture earned mechanically. A verdict that accepted a missing marker would
+    let a fixture assert its own tier in a comment.
+    """
+
+    @staticmethod
+    def _run(detail: str, reward: float | None = 1.0):
+        from gates.oracle_falsifiability import RunResult  # noqa: PLC0415
+
+        return RunResult("arm/solution/broken/c/solve.sh", reward, True, detail)
+
+    @pytest.mark.parametrize("tier", ["live", "teardown"])
+    def test_marker_and_reward_1_is_the_only_pass(self, tier: str) -> None:
+        from gates.oracle_falsifiability import (  # noqa: PLC0415
+            LIVE_ONLY_CONFIRMED_MARKER,
+            apply_live_family_verdict,
+        )
+
+        ok = apply_live_family_verdict(self._run(f"{LIVE_ONLY_CONFIRMED_MARKER} earned"), tier)
+        assert ok.ok
+
+    @pytest.mark.parametrize("tier", ["live", "teardown"])
+    def test_missing_marker_fails_and_says_why(self, tier: str) -> None:
+        from gates.oracle_falsifiability import (  # noqa: PLC0415
+            LIVE_ONLY_CONFIRMED_MARKER,
+            apply_live_family_verdict,
+        )
+
+        bad = apply_live_family_verdict(self._run("plan ran, nothing confirmed"), tier)
+        assert not bad.ok
+        assert LIVE_ONLY_CONFIRMED_MARKER in bad.detail
+        assert tier in bad.detail
+
+    @pytest.mark.parametrize("tier", ["live", "teardown"])
+    def test_a_static_tier_that_scored_it_0_is_not_a_pass(self, tier: str) -> None:
+        from gates.oracle_falsifiability import (  # noqa: PLC0415
+            LIVE_ONLY_CONFIRMED_MARKER,
+            apply_live_family_verdict,
+        )
+
+        bad = apply_live_family_verdict(
+            self._run(f"{LIVE_ONLY_CONFIRMED_MARKER}", reward=0.0), tier
+        )
+        assert not bad.ok
+
+
+def test_the_two_unrunnable_tiers_are_the_declared_family() -> None:
+    """Widening this tuple changes which catches the gate stops grading
+    statically, so it is pinned rather than left to a reader's inference."""
+    from gates.oracle_falsifiability import LIVE_FAMILY_TIERS  # noqa: PLC0415
+
+    assert LIVE_FAMILY_TIERS == ("live", "teardown")

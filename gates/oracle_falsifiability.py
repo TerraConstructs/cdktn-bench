@@ -53,6 +53,13 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # gate and every fixture agree on the exact string.
 LIVE_ONLY_CONFIRMED_MARKER = "CDKTN_BENCH_LIVE_ONLY_CONFIRMED"
 
+# The catch tiers no host-side gate can run, and which therefore share one
+# verdict rule: "live" (only a real AWS call discriminates the mistake) and
+# "teardown" (only the generator-injected destroy does -- specs/SCHEMA.md §5.2,
+# DECISIONS.md Amendment 41). Both expect the fixture to keep static reward 1.0
+# and to earn LIVE_ONLY_CONFIRMED_MARKER mechanically.
+LIVE_FAMILY_TIERS = ("live", "teardown")
+
 _MIRROR_CACHE: dict[str, dict[str, set[str]] | None] = {}
 
 
@@ -175,8 +182,8 @@ def observed_tier(stdout: str) -> str | None:
     """Recover, from a run's stdout, the tier its `tests/static_tiers.sh`
     actually caught a violation at -- the mechanical backstop for
     `predicted_tier_caught`. Returns `"0"`, `"1"`, or `None` (never caught by
-    any static tier: the expected outcome for a "live"-predicted catch, and a
-    mismatch for anything else)."""
+    any static tier: the expected outcome for a "live"- or "teardown"-predicted
+    catch, and a mismatch for anything else)."""
     if _TOOLCHAIN_FAILED_RE.search(stdout):
         return "0"
     m = _SUMMARY_RE.search(stdout)
@@ -188,6 +195,32 @@ def observed_tier(stdout: str) -> str | None:
     if tier1_status == "FAIL":
         return "1"
     return None
+
+
+def apply_live_family_verdict(bad: RunResult, tier: str) -> RunResult:
+    """Grade one broken fixture whose catch names a tier this gate cannot run.
+
+    Two such tiers exist and they share this verdict exactly: "live", where the
+    mistake is discriminated only by a real AWS call the hand-authored
+    tests/live_check.py makes, and "teardown", where it is discriminated only
+    by the generator-injected destroy (specs/SCHEMA.md §5.2). In neither case
+    may the gate claim a static tier caught the fixture, so the expected static
+    reward is 1.0 -- the same one a correct solution earns -- and the falsifying
+    evidence is LIVE_ONLY_CONFIRMED_MARKER, printed by the fixture only after it
+    mechanically confirms the indistinguishability it claims.
+
+    Mutates and returns `bad`, so the caller's list holds one row per fixture.
+    """
+    bad.ok = bad.ok and bad.reward == 1.0 and LIVE_ONLY_CONFIRMED_MARKER in bad.detail
+    if bad.reward == 1.0 and LIVE_ONLY_CONFIRMED_MARKER not in bad.detail:
+        bad.detail = (
+            f"predicted_tier_caught={tier!r} (no static tier can see it) but this "
+            f"fixture's stdout never printed {LIVE_ONLY_CONFIRMED_MARKER!r} -- such "
+            "a catch's gate run must mechanically confirm the "
+            "static-indistinguishability property it claims, not just assert it "
+            "in a comment\n" + bad.detail
+        )
+    return bad
 
 
 def predicted_tier(catch: Catch, arm: Arm) -> str:
@@ -532,28 +565,14 @@ def check_arm(spec: Spec, arm: Arm, env: dict[str, str] | None = None) -> list[R
             results.append(RunResult(label, None, False, "MISSING -- every catch needs a broken/ fixture once solve.sh is authored"))
             continue
         tier = predicted_tier(catch, arm)
-        if tier == "live":
-            # A mistake only a real AWS call discriminates -- an
-            # apply->modify->re-apply->curl loop, or an evaluating API such as
-            # stepfunctions test-state (docs/apigw-redeploy-mechanics.md;
-            # DECISIONS.md Amendment 34). The host gate CANNOT run a live tier,
-            # so it never claims tier 0/1 caught the fixture. Reward is
-            # EXPECTED to stay 1.0; the falsifying evidence is instead
-            # LIVE_ONLY_CONFIRMED_MARKER, printed by the fixture after it
-            # mechanically confirms the property it claims.
-            bad = _run_solve(
-                task, arm, broken_solve, label,
-                artifact_rel=artifact_rel, step=final_step, env=env,
+        if tier in LIVE_FAMILY_TIERS:
+            bad = apply_live_family_verdict(
+                _run_solve(
+                    task, arm, broken_solve, label,
+                    artifact_rel=artifact_rel, step=final_step, env=env,
+                ),
+                tier,
             )
-            bad.ok = bad.ok and bad.reward == 1.0 and LIVE_ONLY_CONFIRMED_MARKER in bad.detail
-            if bad.reward == 1.0 and LIVE_ONLY_CONFIRMED_MARKER not in bad.detail:
-                bad.detail = (
-                    f"predicted_tier_caught={tier!r} (live-only) but this fixture's "
-                    f"stdout never printed {LIVE_ONLY_CONFIRMED_MARKER!r} -- a "
-                    "live-only catch's gate run must mechanically confirm the "
-                    "static-indistinguishability property it claims, not just "
-                    "assert it in a comment\n" + bad.detail
-                )
         else:
             bad = _run_solve(
                 task, arm, broken_solve, label,

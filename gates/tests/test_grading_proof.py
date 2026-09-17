@@ -193,6 +193,10 @@ def _catch(name="live-catch", *, awscdk="live", hcl="0", override=None, applies_
 
 
 def _spec(catches, *, enabled=True, gating=True, hand_authored=True, arms=("awscdk",)):
+    # `verifier.teardown` is present and OFF, which is what spec_model gives a
+    # spec that declares no teardown block (`Teardown` is a required field with
+    # a default). A double that omitted it would let the gate read the
+    # attribute defensively and never be told when it stops existing.
     return SimpleNamespace(
         id="fake-spec",
         arms=SimpleNamespace(enabled_arms=lambda: list(arms)),
@@ -200,7 +204,8 @@ def _spec(catches, *, enabled=True, gating=True, hand_authored=True, arms=("awsc
         verifier=SimpleNamespace(
             live_check=SimpleNamespace(
                 enabled=enabled, gating=gating, hand_authored=hand_authored
-            )
+            ),
+            teardown=SimpleNamespace(enabled=False, gating=False),
         ),
     )
 
@@ -324,13 +329,99 @@ class TestMainProofKinds:
         detail = f"{LIVE_ONLY_CONFIRMED_MARKER}\n== summary: tier0_pass=0 tier1_status=SKIP =="
         gate(_spec([_catch()]), {"awscdk": _live_results(detail=detail, reward=0.0)})
         assert main(["grading_proof.py", "specs/fake.yaml"]) == 1
-        assert "no enabled arm produced EITHER" in capsys.readouterr().err
+        assert "no enabled arm produced any" in capsys.readouterr().err
 
     @pytest.mark.parametrize("field", ["enabled", "gating", "hand_authored"])
-    def test_failure_message_names_both_accepted_proof_kinds(self, gate, capsys, field):
+    def test_failure_message_names_every_accepted_proof_kind(self, gate, capsys, field):
         gate(_spec([_catch()], **{field: False}), {"awscdk": _live_results()})
         assert main(["grading_proof.py", "specs/fake.yaml"]) == 1
         err = capsys.readouterr().err
         assert 'observed caught at tier "1"' in err
-        assert "live-tier proof" in err
+        assert "live-tier or teardown-tier proof" in err
         assert LIVE_ONLY_CONFIRMED_MARKER in err
+
+
+# ---------------------------------------------------------------------------
+# teardown_tier_proof(): the THIRD accepted proof of gradeability
+# ---------------------------------------------------------------------------
+# A configuration that applies green, passes the live check and then fails its
+# own destroy is invisible to every static tier by construction, so the arm owns
+# no tier-1 fixture and the generator-injected destroy is what decides it
+# (specs/SCHEMA.md §5.2; DECISIONS.md Amendment 41). The conditions are
+# live_tier_proof()'s with one substitution: the TEARDOWN tier must be enabled
+# and gating.
+
+
+def _teardown_spec(catches, *, enabled=True, gating=True, live_gating=True):
+    spec = _spec(catches, gating=live_gating)
+    spec.verifier.teardown = SimpleNamespace(enabled=enabled, gating=gating)
+    return spec
+
+
+def _teardown_catch(**kw):
+    kw.setdefault("awscdk", "teardown")
+    return _catch(**kw)
+
+
+class TestTeardownTierProof:
+    def test_accepted_when_every_condition_holds(self):
+        proof = grading_proof.teardown_tier_proof(
+            _live_results(), _teardown_spec([_teardown_catch()]), "awscdk"
+        )
+        assert proof is not None
+        assert proof.label == "awscdk/solution/broken/live-catch/solve.sh"
+
+    @pytest.mark.parametrize("field", ["enabled", "gating"])
+    def test_the_tier_must_be_enabled_and_gating(self, field):
+        # An observational teardown records its verdict and leaves the reward
+        # alone, so it proves nothing about grading.
+        spec = _teardown_spec([_teardown_catch()], **{field: False})
+        assert grading_proof.teardown_tier_proof(_live_results(), spec, "awscdk") is None
+
+    def test_a_live_predicted_catch_is_not_a_teardown_proof(self):
+        spec = _teardown_spec([_catch()])  # predicts "live" on awscdk
+        assert grading_proof.teardown_tier_proof(_live_results(), spec, "awscdk") is None
+
+    def test_marker_absent(self):
+        detail = "== summary: tier0_pass=1 tier1_status=SKIPPED_NO_ASSERTS =="
+        spec = _teardown_spec([_teardown_catch()])
+        assert grading_proof.teardown_tier_proof(_live_results(detail=detail), spec, "awscdk") is None
+
+    def test_caught_by_a_static_tier(self):
+        detail = f"{LIVE_ONLY_CONFIRMED_MARKER}\n== summary: tier0_pass=0 tier1_status=SKIP =="
+        spec = _teardown_spec([_teardown_catch()])
+        assert (
+            grading_proof.teardown_tier_proof(
+                _live_results(detail=detail, reward=0.0), spec, "awscdk"
+            )
+            is None
+        )
+
+    def test_the_live_check_need_not_gate_for_a_teardown_proof(self):
+        # The teardown tier's own gating is what makes the destroy cost a
+        # reward; `teardown.enabled` already requires an enabled live check.
+        spec = _teardown_spec([_teardown_catch()], live_gating=False)
+        assert grading_proof.teardown_tier_proof(_live_results(), spec, "awscdk") is not None
+
+
+class TestMainAcceptsTheTeardownProof:
+    def test_teardown_tier_proof_accepted_and_named(self, gate, capsys):
+        gate(
+            _teardown_spec([_teardown_catch()]),
+            {"awscdk": _live_results()},
+        )
+        assert main(["grading_proof.py", "specs/fake.yaml"]) == 0
+        out = capsys.readouterr().out
+        assert "teardown-tier catch" in out
+        assert "every arm is GRADEABLE" in out
+
+    def test_the_live_proof_still_wins_when_both_would_apply(self, gate, capsys):
+        """A catch resolves to ONE tier per arm, so an arm cannot hold both
+        proofs for the same fixture -- the live selector running first is what
+        keeps a spec from silently changing which chain it claims to prove."""
+        spec = _teardown_spec([_catch()])  # predicts "live" on awscdk
+        gate(spec, {"awscdk": _live_results()})
+        assert main(["grading_proof.py", "specs/fake.yaml"]) == 0
+        out = capsys.readouterr().out
+        assert "live-tier catch" in out
+        assert "teardown-tier catch" not in out

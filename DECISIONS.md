@@ -8054,3 +8054,67 @@ Three authoring decisions depart from or narrow the blueprint:
   idiom is fully graded. The blueprint's live variant (deployed principal is a
   role ARN; a second identity is denied `GetObject`) is the closure and is a
   follow-on, not part of this landing.
+
+## Amendment 41 (2026-09-10) — `predicted_tier_caught: "teardown"`, and the first gating teardown — DRAFT
+
+**Status: DRAFT until `ecr-repo-destroy-force-delete`'s first live run.** The
+schema value and both gate branches are enforced in code and covered by tests;
+what no host gate can produce is a real destroy verdict.
+
+### The finding
+
+Amendment 37 gave the teardown tier three outcomes and a gating composition,
+but no catch could name it. `predicted_tier_caught` stopped at `"live"`, so the
+plausible-wrong solution of `ecr-repo-destroy-force-delete` — a repository that
+applies green, passes the live check and refuses to be destroyed because it
+still holds images — had to be recorded at a tier that does not describe it, or
+graded through a static assert on the argument rather than on the requirement.
+
+### The decision
+
+1. **A fourth catch tier, `"teardown"`** (`spec_model.CatchTierStr`), valid only
+   where `verifier.teardown` is both `enabled` and `gating`
+   (`Spec._teardown_tier_catch_requires_gating_teardown`). An observational
+   teardown records a verdict and leaves the reward alone, so a catch named
+   there would be recorded as graded while costing a trial nothing.
+2. **The host gates treat it exactly as `"live"`**, because they can run neither:
+   `oracle_falsifiability.apply_live_family_verdict` requires the fixture's
+   static reward to stay `1.0` and its run to print
+   `CDKTN_BENCH_LIVE_ONLY_CONFIRMED` after a MECHANICAL confirmation, and
+   `grading_proof.teardown_tier_proof` accepts that same run as the arm's proof
+   of gradeability.
+3. **The per-arm split on the first user.** On `hcl_raw` and `terraconstructs`
+   no structural assert reads the force-delete attribute at all: the fixture
+   applies green, the live check passes, and `terraform destroy` fails on the
+   non-empty repository — the honest oracle for "teardown leaves the account
+   clean". On `awscdk` the same omission stays STATIC, because the CDK default
+   removal policy is `Retain`: `cdk destroy --force` then exits 0 having left
+   the repository behind, and a teardown tier would report `clean` for it. The
+   template is the only place that mistake is visible, so that arm keeps
+   `DeletionPolicy` at tier 0 and `EmptyOnDelete` plus the absence of an
+   auto-delete custom resource at tier 1.
+
+### Why fail-closed is preserved
+
+The new tier only ever ADDS a conjunct to a reward that was already 1.0, and
+both gate branches withdraw their verdict rather than granting it: a fixture
+with no tier-0 summary, a missing marker, or a static tier that did catch it all
+fail. A spec that does not use the value generates and grades byte-identically.
+
+### What promotes this
+
+A live trial of `ecr-repo-destroy-force-delete` in which the reference solution
+scores 1.0 with `teardown-result.json` reporting `clean` on all three arms, AND
+the `hcl_raw` broken fixture scores 0.0 with that file reporting
+`destroy_failed`. That trial must also record the awscdk arm's
+`/logs/verifier/teardown.log` verbatim, as Amendment 37 did for the pilot: the
+`clean` verdict there depends on `cdk destroy --force` printing
+`ScenarioStack: destroyed`, and this stack shape's completion line has never
+been measured — without it a correct solution records `not_verifiable` and
+scores 0.0. It must record one fact about the shard account as well: that no
+registry-level scanning configuration is set there. The live check tells the
+deployed repository apart from the account's CDK bootstrap one by scan-on-push,
+and a registry-level BASIC scanning rule makes `DescribeRepositories` report
+scan-on-push for repositories that never set it, under which discovery is
+ambiguous and a correct solution reports `fail_stale`. Until all of that holds,
+no teardown-gated row may be published.

@@ -88,6 +88,49 @@ class TestTeardownValidators:
         with pytest.raises(ValidationError, match="gating=true requires enabled=true"):
             _mutated(pilot_raw, mutate)
 
+    # `match=` names a phrase unique to THIS validator, not the "gating=true"
+    # that `_teardown_gating_requires_enabled`'s message also carries: a
+    # regression routing the failure to that other validator would otherwise
+    # still pass these.
+    CATCH_TIER_MESSAGE = "cannot be the tier that catches anything"
+
+    def test_a_teardown_tier_catch_requires_a_gating_teardown(self, pilot_raw: dict) -> None:
+        """`predicted_tier_caught: "teardown"` names the destroy as the tier
+        that decides. The pilot's tier is observational, so naming it there
+        would record a catch as graded while costing a trial nothing."""
+        def mutate(d: dict) -> None:
+            d["catches"][0]["predicted_tier_caught"]["hcl"] = "teardown"
+        with pytest.raises(ValidationError, match=self.CATCH_TIER_MESSAGE):
+            _mutated(pilot_raw, mutate)
+
+    def test_a_teardown_tier_catch_requires_the_tier_to_run_at_all(
+        self, pilot_raw: dict
+    ) -> None:
+        """The other half of the same condition: with no teardown block the
+        tier is off, so no destroy runs and nothing can be caught by one."""
+        def mutate(d: dict) -> None:
+            d["verifier"].pop("teardown", None)
+            d["catches"][0]["predicted_tier_caught"]["hcl"] = "teardown"
+        with pytest.raises(ValidationError, match=self.CATCH_TIER_MESSAGE):
+            _mutated(pilot_raw, mutate)
+
+    def test_a_teardown_tier_catch_is_accepted_once_the_tier_gates(
+        self, pilot_raw: dict
+    ) -> None:
+        def mutate(d: dict) -> None:
+            d["verifier"]["teardown"] = {"enabled": True, "gating": True}
+            d["catches"][0]["predicted_tier_caught"]["hcl"] = "teardown"
+        spec = _mutated(pilot_raw, mutate)
+        assert spec.catches[0].predicted_tier_caught.hcl == "teardown"
+
+    def test_the_terraconstructs_override_is_checked_too(self, pilot_raw: dict) -> None:
+        """The override is a third place the value can appear, and the arm it
+        speaks for is the one whose destroy differs most from the others."""
+        def mutate(d: dict) -> None:
+            d["catches"][0]["predicted_tier_caught"]["terraconstructs_override"] = "teardown"
+        with pytest.raises(ValidationError, match=self.CATCH_TIER_MESSAGE):
+            _mutated(pilot_raw, mutate)
+
     def test_defaults_are_off(self, pilot_raw: dict) -> None:
         def mutate(d: dict) -> None:
             d["verifier"].pop("teardown", None)

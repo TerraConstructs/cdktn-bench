@@ -1177,9 +1177,9 @@ catches:
     taxonomy: typed-value-trap | graph-dependency | nested-attribute | anti-L2
     description: <string — the natural-language catch, no thresholds pasted into instruction.shared_body>
     predicted_tier_caught:
-      awscdk: "0" | "1" | "live"
-      hcl: "0" | "1" | "live"
-      terraconstructs_override: "0" | "1" | "live" | null   # optional, default null
+      awscdk: "0" | "1" | "live" | "teardown"
+      hcl: "0" | "1" | "live" | "teardown"
+      terraconstructs_override: "0" | "1" | "live" | "teardown" | null   # optional, default null
     applies_to: [awscdk, hcl_raw, terraconstructs]   # optional, default: all 3 (every enabled arm)
 ```
 
@@ -1194,9 +1194,10 @@ spec is exempt (its header says so) and does not need taxonomy diversity.
   table methodology); do not fabricate one for a fixture that isn't chasing
   H2 evidence.
 - `predicted_tier_caught.awscdk` / `.hcl` are **required**, string-typed
-  (`"0"`, `"1"` or `"live"` — strings, not YAML numbers). `"0"` and `"1"` are
-  the two STATIC tiers a generated `tests/static_tiers.sh` runs; a catch no
-  static tier can see is `"live"`.
+  (`"0"`, `"1"`, `"live"` or `"teardown"` — strings, not YAML numbers). `"0"`
+  and `"1"` are the two STATIC tiers a generated `tests/static_tiers.sh` runs; a
+  catch no static tier can see is `"live"`, or `"teardown"` when not even the
+  live check sees it.
 - **`.hcl` means "the Terraform-shaped arms as a group"** — `hcl_raw` and,
   when enabled, `terraconstructs` — because both synthesize to plain
   Terraform and are graded by **the same** `terraform show -json` plan shape
@@ -1234,6 +1235,28 @@ spec is exempt (its header says so) and does not need taxonomy diversity.
   here means *no real account*, not *no AWS calls*: since Amendment 32 the
   toolchain always uses ambient credentials, and the gates supply them from
   the loopback `gates/aws_stub.py`.)
+- **`"teardown"`** (DECISIONS.md Amendment 41): a catch whose mistake survives
+  every static tier AND the live check, and is discriminated only by the
+  generator-injected destroy of `verifier.teardown` (§5.2) — the
+  configuration applies green, the account is exactly what the ticket asked
+  for, and the agent's own `destroy` then fails. It requires
+  `verifier.teardown.enabled: true` **and** `gating: true`
+  (`spec_model.Spec._teardown_tier_catch_requires_gating_teardown`): an
+  observational teardown records its verdict and leaves the reward alone, so a
+  catch named at that tier would be recorded as graded while costing a trial
+  nothing — the "grading the proxy" failure the tier exists to end. The host
+  gate cannot run a destroy any more than it can run a live check, so
+  `gates/oracle_falsifiability.py` grades such a fixture by exactly the `"live"`
+  rule (`apply_live_family_verdict`): static reward stays `1.0` and the run must
+  print `LIVE_ONLY_CONFIRMED_MARKER` after MECHANICALLY confirming that the only
+  difference from the reference is an attribute no `structural_assert` of this
+  spec reads. `gates/grading_proof.py::teardown_tier_proof` accepts the same run
+  as this arm's proof of gradeability. First user:
+  `specs/ecr-repo-destroy-force-delete.yaml`, on its Terraform-shaped arms only
+  — on `awscdk` the same mistake is visible in the template (the CDK default
+  removal policy `Retain` makes `cdk destroy --force` exit 0 having deleted
+  nothing, which a teardown tier would report `clean`), so it is graded
+  statically there.
 - `applies_to` (optional, default: all three enabled arms — 100% backward
   compatible with every pre-Slice-G spec): restricts which arms
   `gates/oracle_falsifiability.py` requires a
@@ -2226,6 +2249,13 @@ contract with one more conjunct: final reward is 1.0 iff the static tiers say
 **Emission is generation-conditional, not a runtime-gated branch** — §5.1's
 regression guarantee, verified the same way: with `teardown` disabled, every
 pre-existing task's `tests/test.sh` is byte-identical.
+
+**A catch may name this tier** — `predicted_tier_caught: "teardown"` (§3) — only
+where the tier is `enabled` AND `gating`, so the mistake it names actually costs
+a trial its reward. The host gates cannot run a destroy, so such a fixture is
+graded by the `"live"` rule: static reward `1.0` plus a mechanically-earned
+`LIVE_ONLY_CONFIRMED_MARKER`, and `gates/grading_proof.py::teardown_tier_proof`
+accepts that run as the arm's proof of gradeability (DECISIONS.md Amendment 41).
 
 Multi-step composition: the block rides the **final** step's `[steps.verifier]
 env` only, for a stronger reason than idempotence's — a destroy after an
