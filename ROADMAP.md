@@ -575,6 +575,51 @@ joins the M7 cases forcing a **second aws-bench scenario** — and is arguably t
 most compelling of them, since a whole task family depends on it rather than a
 single scenario.
 
+### M11 — agent access mode as a measured dimension (after M10; opt-in per spec)
+
+Owner alignment 2026-09-11 and 2026-09-17. Today `verifier.live_check.enabled`
+welds two things together: whether the verifier makes AWS calls, and whether
+the agent gets the admin role in mutating mode. `sfn-jsonata` already breaks
+the weld (a read-only evaluating live check, agent deploys nothing) and the
+generator disambiguates with a second condition. The measurement wants them
+separate: the same spec, prompt body and tier-0/tier-1 oracles, run once with
+validate/plan only (read-only role, shard co-run) and once with apply and
+iterate (admin role, mutating, shard-exclusive with reset), so that the
+difference per arm is the deploy tax and nothing else.
+
+The amendment that opens this milestone says:
+
+1. `agent_access` is a run dimension with values `read-only` and `read-write`,
+   declared per SPEC (never per arm: every arm is judged with identical
+   metrics even where one arm's catch cannot fire in a mode). A spec lists the
+   modes it supports; the generator emits one task per (arm, mode); the
+   read-write ticket carries the self-verify sentence, so prompt parity is
+   checked within a mode.
+2. Verification depth is separate from agent access. Tier 0 and tier 1 run in
+   both modes. `live_check` gains `needs_deployment` (false only for evaluating
+   checks such as `states:TestState`); a check that needs a deployment runs in
+   read-write cells only. Idempotence (deploy, then re-plan) and the teardown
+   tier are read-write-only by definition; declaring them on a spec that also
+   supports read-only means "in read-write cells".
+3. `cell_key` gains `agent_access`, derived from task.toml (role + concurrency),
+   never from `live_check.enabled`. A results directory holding both modes is
+   sectioned per (scenario_form, agent_access) with no combined headline, the
+   same refusal `scenario_form` already applies. The mode-1-versus-mode-2
+   contrast is an explicit secondary contrast paired by (spec, arm) within one
+   form, not a pooling. The prereg's "no real apply in v1" and "green = tier
+   stack" lines are superseded per mode; the output-token headline stays so
+   deploy output verbosity does not leak into the measure.
+4. A (spec, arm, mode) cell is graded only where `make grading-proof` proves
+   the arm gradeable under that mode; a mode where an arm has no reachable
+   catch records that in tier attribution rather than dropping the arm.
+
+Migration of today's 20 specs is mechanical: 14 declare `[read-only]`, 6
+declare `[read-write]`, `sfn-jsonata`'s check sets `needs_deployment: false`,
+nothing regenerates differently. Adding `read-write` to a static spec is a
+per-spec decision with its own self-verify sentence and promotion trial;
+`apigwv2-route-settings-zero-vs-unset`'s behavioural live check is the first
+candidate. Sequenced after the current runs and after M10's clean-up.
+
 ### M10 — one Rego engine for every tier; evaluate `microsoft/regorus`
 
 After the day-2 work. Design memo: `docs/design/m10-one-rego-engine.md`
