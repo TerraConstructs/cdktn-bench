@@ -1,0 +1,479 @@
+# specs/caller-identity-arn-as-principal.yaml — design source:
+# docs/design/batch-a-greenfield-blueprints.md §4.
+#
+# MECHANISM (operator-facing: `id` names the wrong answer outright, while
+# every agent-visible name states only the ticket's goal, SCHEMA.md §0.1).
+# `data.aws_caller_identity.current.arn` is whatever STS says the CURRENT
+# CREDENTIALS are. Under an assumed role — every CI pipeline and every
+# trial here — that is `arn:aws:sts::<acct>:assumed-role/<Role>/<Session>`,
+# an ephemeral session identity IAM refuses as a policy principal
+# (tfp-aws#16657, `InvalidPrincipal`); the provider's own answer is
+# `data "aws_iam_session_context"`, which maps a session ARN back to its
+# ISSUER role (tfp-aws#42545 was closed not-planned for that reason).
+# CloudFormation has no caller-identity data source, so the CDK-shaped
+# answer reaches for account-scoped principals instead: the invalid
+# principal is the Terraform arms' characteristic failure, the account-root
+# over-grant is awscdk's.
+#
+# The host gates must answer an assumed-role caller identity plus the
+# `iam:GetRole` that resolves its issuer, or these fixtures are graded
+# against a credential shape no live trial can hold: docs/gates.md#aws-stub.
+
+id: caller-identity-arn-as-principal
+
+# workspace_id (SCHEMA.md §0.1.1): optional for a single-step greenfield and
+# defaults to `id`, but `id` here spells out the wrong answer, so it is set.
+# `release-artifact-store` names the workload only — no mechanism word (note
+# `\breplacements?\b` does not match "release") and nothing foreshadowed.
+workspace_id: release-artifact-store
+
+# title (agent-visible header — single-step greenfield, so `workspace_title`
+# is FORBIDDEN per SCHEMA.md §0.1; this string is stamped byte-for-byte into
+# lib/scenario-stack.ts, bin/app.ts's CFN description, main.tf and main.ts).
+# States the requirement in outcome terms and names neither the data source
+# the answer needs nor the credential shape that breaks the wrong one.
+title: "Artifact bucket writable only by the pipeline identity that deploys it"
+difficulty: 2
+services: [s3, iam, sts]
+
+# This scenario's reserved vocabulary (SCHEMA.md §0.1): the words that would
+# hand over either the trap or its fix. Enforced against the resolved
+# agent-visible identity by Spec._agent_visible_identity_is_deny_list_clean.
+agent_deny_vocab:
+  - "caller_identity"
+  - "caller identity"
+  - "session_context"
+  - "assumed-role"
+  - "MalformedPolicyDocument"
+
+arms:
+  awscdk: true
+  hcl_raw: true
+  terraconstructs:
+    enabled: true
+    reason: >
+      Verified directly against the pinned packages this arm installs
+      (arms/terraconstructs/environment/app/package.json: terraconstructs
+      0.2.13, @cdktn/provider-aws 24.8.0), not inferred from the README.
+      `terraconstructs/lib/aws/storage/bucket.d.ts` declares
+      `addToResourcePolicy(permission: iam.PolicyStatement)`;
+      `lib/aws/iam/policy-statement.d.ts` declares `PolicyStatement` and
+      `lib/aws/iam/principals.d.ts` declares `ArnPrincipal` (line 258) and
+      `AccountRootPrincipal` (line 482) — so both the correct shape and the
+      arm's own characteristic over-grant are expressible in typed L2.
+      The one thing the L2 does not carry is a caller-identity data source,
+      which is an L1 escape hatch on this arm:
+      `@cdktn/provider-aws/lib/data-aws-iam-session-context`
+      (`DataAwsIamSessionContext`) and
+      `@cdktn/provider-aws/lib/data-aws-caller-identity`
+      (`DataAwsCallerIdentity`) are both present in the installed package.
+      Confirmed end to end at authoring time by synthesizing and planning a
+      reference-shaped stack offline: `storage.Bucket.addToResourcePolicy`
+      emits a `data "aws_iam_policy_document"` whose planned
+      `statement[*].principals[*].identifiers` resolves to the issuer role
+      ARN. Note the arm reads caller identity IMPLICITLY as well
+      (`AwsStack` emits `data "aws_caller_identity"` for ARN formatting),
+      so the data source is already in this arm's plan for every scenario —
+      this one adds no new offline hazard there.
+
+instruction:
+  shared_body: |
+    Create the release-artifact bucket for the delivery pipeline.
+
+    Only the pipeline identity — the IAM role this configuration is deployed
+    with — may read or write objects in it. No other principal in the account
+    may, including other roles and users; the bucket policy is the control we
+    are relying on, so it has to name that role and nothing broader.
+  placeholders: []
+  per_arm:
+    awscdk:
+      language_line: "Author this as an AWS CDK (TypeScript) app using aws-cdk-lib L2 constructs."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdk.out/ScenarioStack.template.json
+        build_command: "npm run build"
+        synth_command: "npx cdk synth --no-lookups --quiet -o cdk.out"
+        json_fields: []
+    hcl_raw:
+      language_line: "Author this as hand-written Terraform HCL (no modules)."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields: []
+    terraconstructs:
+      language_line: "Author this using terraconstructs (TypeScript) L2 constructs, synthesized via cdktn."
+      output_contract:
+        entry_file: lib/scenario-stack.ts
+        artifact_path: cdktf.out/stacks/release-artifact-store/plan.json
+        synth_command: "npx cdktn synth"
+        json_fields: []
+
+# --- ORACLE MUST TOLERATE / DEFEND (operator-facing, adding-scenarios.md
+# §1 item 3a — never in prompt prose) ------------------------------------
+#
+# 1. Both TF policy-document shapes are accepted — a raw `jsonencode({...})`
+#    and `data "aws_iam_policy_document"` — and the Rego package resolves
+#    the principal through either: the policy resource's own reference set,
+#    or one hop into a policy-document data source it is built from.
+#    terraconstructs' L2 always emits the data-source shape. The two are not
+#    equally OBSERVABLE; item 4 states where that bites.
+# 2. "the IAM role this configuration is deployed with" is satisfied on the
+#    TF arms by the session-context issuer and, on every arm, by a pipeline
+#    role the configuration declares. awscdk cannot resolve the deploying
+#    identity at synth time — CloudFormation has no equivalent data source —
+#    so the role-it-declares shape is that arm's whole answer, and the arms
+#    are measured on different-but-equivalent work. A third shape the design
+#    source lists — a literal role ARN built from
+#    `data.aws_caller_identity.current.account_id` — is REJECTED, on the
+#    role NAME: the account digits are learnable, but the name is invented,
+#    so the grant hangs off a typed string exactly like the
+#    `principal-hardcoded-to-a-foreign-arn` catch. The two stay
+#    distinguishable in the artifact — the deny message prints the reference
+#    set, which carries `…current.account_id` for one and only bucket
+#    references for the other — and are graded alike because they fail the
+#    same requirement, not because the oracle cannot tell them apart.
+# 3. "the bucket policy is the control we are relying on" is the one in-world
+#    motivating sentence: it puts "attach an identity policy to the role
+#    instead" out of scope for a reason the TICKET states rather than one the
+#    oracle invents. It constrains which control carries the grant, not the
+#    implementation shape of that control.
+# 4. Extra statements are tolerated as long as every principal they name is
+#    a role: the oracle denies on any RESOLVED principal that is not a role
+#    ARN. A principal string resolves in plan JSON only for a
+#    `data "aws_iam_policy_document"` — a hand-written `jsonencode(...)`
+#    renders a `policy` attribute that is plan-time-unknown the moment it
+#    embeds the created bucket's `.arn`, which every correct answer does. So
+#    "and nothing broader" GATES on awscdk (static template; every Allow
+#    principal must be an `Fn::GetAtt` on a declared role), GATES on
+#    terraconstructs and on hcl_raw's policy-document shape, and is NOT
+#    DECIDABLE for a `jsonencode(...)` policy, where a second Allow naming
+#    `:root` or `"*"` beside a correct grant is invisible. That case fires
+#    the Rego `not_verifiable` rule, which the generated static_tiers.sh tees
+#    to `/logs/verifier/tier1-not-verifiable` (SCHEMA.md §4.2.1) rather than
+#    passing it off as checked. Plan-only tier 1 cannot close it:
+#    `.configuration…expressions.policy` collapses a `jsonencode(...)` call
+#    to a bare reference list with no statement structure, and both
+#    alternatives — demanding the policy-document idiom, or denying on
+#    unknown — would reject correct solutions for their authoring shape. The
+#    GATED requirement (the principal names a role tied to this plan, and the
+#    session ARN is refused) is graph-derived and equally strict on all three
+#    arms. Nothing demands a particular Sid, statement count, action list
+#    beyond read+write, or `Condition`. A policy that only DENIES — a
+#    `NotPrincipal` deny with no Allow anywhere — scores 0.0, because it
+#    grants the pipeline nothing and the ticket says the policy has to name
+#    that role.
+# 5. Not demanded anywhere: encryption, versioning, public-access blocking,
+#    a deny-by-default statement. The ticket asks for one thing and the
+#    oracle asks for exactly that thing.
+
+catches:
+  - name: sts-session-arn-as-principal
+    taxonomy: typed-value-trap
+    description: >
+      THE PLAUSIBLE-WRONG SOLUTION, and the reason this scenario exists: the
+      bucket policy's principal is `data.aws_caller_identity.<name>.arn`
+      used directly. It reads as exactly what the ticket asked for — the
+      identity this configuration is deployed with — and it plans clean.
+      What it actually produces under any assume-role credential is
+      `arn:aws:sts::<acct>:assumed-role/<Role>/<Session>`, an ephemeral
+      session identity that IAM rejects as a policy principal
+      (tfp-aws#16657, `InvalidPrincipal`) or, where a stale ARN is accepted,
+      that silently matches nobody. Confirmed offline against real plan
+      output under the assumed-role stub identity: the resolved
+      `data "aws_iam_policy_document"` principal identifier is the literal
+      `arn:aws:sts::123456789012:assumed-role/cdktn-bench-gate/gate-session`.
+      Not reachable on awscdk — CloudFormation has no caller-identity data
+      source, so there is no session ARN for that arm to reach for; hence
+      `applies_to` below.
+    applies_to: [hcl_raw, terraconstructs]
+    predicted_tier_caught:
+      # `.awscdk` is required by the schema but this mistake cannot be made
+      # on that arm (`applies_to` excludes it). "0", not "1", deliberately:
+      # generator/check_tier1_coverage.py reads this field WITHOUT
+      # consulting applies_to, so a stray "1" would satisfy the awscdk
+      # tier-1 coverage floor with a catch that arm can never reach.
+      awscdk: "0"
+      hcl: "1"
+      terraconstructs_override: "1"
+
+  - name: account-root-principal-over-grant
+    taxonomy: graph-dependency
+    description: >
+      The principal is the ACCOUNT ROOT — `arn:aws:iam::<acct>:root`,
+      spelled `new iam.AccountRootPrincipal()` / `AccountPrincipal(account)`
+      on the typed arms and interpolated from
+      `data.aws_caller_identity.<name>.account_id` on hcl_raw. It plans and
+      deploys clean everywhere, and it hands the bucket to EVERY principal
+      in the account, directly contradicting "no other principal in the
+      account may, including other roles and users". This is awscdk's
+      characteristic failure precisely because it is the first-class, typed,
+      autocompleted idiom on that arm, which is what makes this scenario
+      three-armed rather than a Terraform quirk. Caught by the same rule
+      that states the positive requirement: the principal names no role that
+      the plan contains (awscdk: `Principal.AWS` is an `Fn::Join` building
+      a `:root` ARN, never an `Fn::GetAtt` on an `AWS::IAM::Role`; TF: the
+      policy's principal references only an account id, never an
+      `aws_iam_role` or an `aws_iam_session_context` issuer).
+    predicted_tier_caught:
+      awscdk: "1"
+      hcl: "1"
+      terraconstructs_override: null
+
+  - name: principal-hardcoded-to-a-foreign-arn
+    taxonomy: anti-L2
+    description: >
+      The principal is a hand-typed, entirely plausible role ARN
+      (`arn:aws:iam::<some-account>:role/delivery-pipeline`) that no
+      resource in this configuration creates and that no data source ties to
+      the deploying identity. It passes every value-shaped check there is —
+      it IS a syntactically valid IAM role ARN — and it grants the bucket to
+      a principal nobody in this plan controls, while granting the actual
+      pipeline nothing. Only the graph edge separates it from a correct
+      answer, which is what makes it the tier-1 falsifier for the positive
+      rule on all three arms: awscdk renders it as a plain
+      `Principal.AWS` STRING rather than an `Fn::GetAtt`, and on the TF arms
+      the policy's principal expression carries a `constant_value` and no
+      reference to any role source. Verified directly at authoring time
+      against the real synthesized template and real plan output for both.
+    predicted_tier_caught:
+      awscdk: "1"
+      hcl: "1"
+      terraconstructs_override: null
+
+oracle:
+  intent: >
+    The configuration creates exactly one S3 bucket for release artifacts and
+    attaches a bucket policy to that same bucket. The policy grants object
+    read and write on the bucket's objects to a principal that is an IAM
+    ROLE, and that role is tied to something the configuration itself
+    contains: either the ISSUER ROLE of the identity this configuration is
+    deployed with (resolved from the deploying session, which is an
+    ephemeral STS session identity and not itself a usable policy
+    principal), or an IAM role this configuration declares. No statement in
+    the policy names any other principal — not the account root
+    (`arn:aws:iam::<acct>:root`, which grants every principal in the
+    account), not a wildcard, not the raw session ARN of the deploying
+    identity, and not a role ARN that is merely typed out and tied to
+    nothing in the plan. SCOPE OF THAT LAST SENTENCE, stated so it is not
+    read as a promise the artifact cannot keep: the principal a statement
+    NAMES is graph-derived and is checked on every arm and every authoring
+    shape; whether some OTHER statement quietly names something broader is
+    decidable only where the rendered principal strings survive into the
+    graded artifact — always on awscdk, and on the Terraform-shaped arms
+    only when the document is a policy-document data source. For a
+    hand-written `jsonencode(...)` policy embedding the created bucket's
+    computed ARN the rendered value is plan-time-unknown, and that
+    sub-fact is recorded as not-verifiable rather than assumed satisfied.
+    Two further limits of the same kind: the bucket COUNT is not graded, only
+    that a release-artifact bucket exists, and the object read/write action
+    asserts are graded on awscdk alone, because a hand-written
+    `jsonencode(...)` document hides the action list behind the same
+    plan-time-unknown value that hides the principal.
+
+  # awscdk tier-1 engine (SCHEMA.md §4.5): Rego, because the fact is a
+  # cross-resource logical-id join — the principal's `Fn::GetAtt` target must
+  # be a resource of Type `AWS::IAM::Role` — and cfn-guard 3.2.0 cannot state
+  # one: its `keys ==` form flags every other logical id, and `keys in` passes
+  # a template whose principal targets the bucket. Precedent for one policy
+  # language on all three arms where the intent states a join: DECISIONS.md
+  # Amendment 29.
+  awscdk_tier1_engine: rego
+
+  structural_asserts:
+    # --- tier 0: the facts every arm's real artifact honestly carries -----
+    - name: artifact-bucket-exists
+      description: "One S3 bucket for the release artifacts is created."
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')]"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket')]"
+      op: exists
+
+    - name: bucket-policy-exists
+      description: >
+        A bucket policy resource exists. The ticket names the bucket policy
+        as the control being relied on, so its absence is a tier-0 failure
+        rather than something the tier-1 principal rules have to infer from
+        an empty input.
+      tier: "0"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::BucketPolicy')]"
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_policy')]"
+      op: exists
+
+    # The policy's EDGE to the bucket, which survives the unknown-value
+    # contagion that hides the policy's own contents: on the TF arms the
+    # `bucket` argument's reference list is plan-time-known whichever
+    # attribute (`.id`, `.bucket`, `.arn`) the expression derives from,
+    # because Terraform emits the bare resource address alongside every
+    # specific-attribute reference.
+    # Split by arm because the two artifacts state the edge in different
+    # types and the op table has one op per assert: CloudFormation names the
+    # target with a `Ref` INTRINSIC (an object), Terraform with a reference
+    # STRING. A literal bucket name fails both — on CFN there is no `Ref`
+    # key, on Terraform there is a `constant_value` and no `references`.
+    - name: bucket-policy-targets-the-artifact-bucket-cfn
+      description: >
+        The bucket policy is attached to a bucket this template creates: its
+        `Bucket` property is a `Ref` to a resource, not a literal name.
+      tier: "0"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::BucketPolicy')].Properties.Bucket.Ref"
+      op: exists
+
+    - name: bucket-policy-targets-the-artifact-bucket-tf
+      description: >
+        The bucket policy is attached to a bucket this configuration
+        creates, not to a literal bucket name or to an unrelated bucket.
+      tier: "0"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_s3_bucket_policy')].expressions.bucket.references[*]"
+      op: regex
+      expected: "^aws_s3_bucket\\."
+
+    # awscdk-only, and a scope limit rather than a preference: the synthesized
+    # CloudFormation template states the action list literally, while on the
+    # TF arms a `jsonencode(...)`-shaped policy hides it behind the same
+    # unknown value that hides the principal, so an assert demanding it there
+    # would reject a correct solution for its authoring shape.
+    - name: policy-grants-object-write
+      description: "The grant includes writing objects (s3:PutObject)."
+      tier: "0"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::BucketPolicy')].Properties.PolicyDocument.Statement[*].Action"
+      op: contains
+      expected: "s3:PutObject"
+
+    - name: policy-grants-object-read
+      description: "The grant includes reading objects (s3:GetObject)."
+      tier: "0"
+      applies_to: [awscdk]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::BucketPolicy')].Properties.PolicyDocument.Statement[*].Action"
+      op: contains
+      expected: "s3:GetObject"
+
+    # --- tier 1: every principal fact ------------------------------------
+    # Every principal fact is graded here, over the GRAPH, because
+    # `aws_s3_bucket_policy.values.policy` is ABSENT from `.planned_values`
+    # whenever the document embeds the created bucket's computed `.arn` —
+    # which every correct answer does (SCHEMA.md §4.2.1's unknown-value
+    # contagion; the sibling s3-bucket-hardening-decomposition records the
+    # same fact for its TLS condition). A tier-0 `not_regex` on that path
+    # resolves to zero nodes and passes VACUOUSLY there
+    # (tests/_assert_lib.sh's op table), on the reference solution and on the
+    # session-ARN fixture alike.
+    #
+    # These two entries are the SPEC for the hand-authored policies
+    # (SCHEMA.md §4.2: "this entry is the spec for that policy ... the policy
+    # file is still the thing that actually runs"):
+    #   oracles/rego/caller-identity-arn-as-principal/policy.rego     (TF)
+    #   oracles/rego-cfn/caller-identity-arn-as-principal/policy.rego (awscdk)
+    # The jsonpaths below name the artifact location each rule reasons over,
+    # and `make check-paths` resolves them for real, which is what keeps a
+    # tier-1 path from rotting into inert documentation.
+    - name: bucket-policy-principal-names-a-role-in-this-plan
+      description: >
+        Every principal the bucket policy grants to is an IAM role that this
+        plan ties to itself — the issuer role of the deploying session, or a
+        role this configuration declares. Rejects the account root, a
+        wildcard, the raw session ARN, and a role ARN typed out and tied to
+        nothing. On awscdk the same fact is the join "the principal is an
+        `Fn::GetAtt` whose target resource has Type `AWS::IAM::Role`"; the
+        session-context half has no CloudFormation equivalent, so that arm's
+        accepted shape is the declared role alone.
+      tier: "1"
+      applies_to: [awscdk, hcl_raw, terraconstructs]
+      cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::BucketPolicy')].Properties.PolicyDocument.Statement[*].Principal.AWS"
+      tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_s3_bucket_policy')].expressions.policy.references[*]"
+      op: exists
+
+    - name: bucket-policy-principal-is-not-the-deploying-session
+      description: >
+        The principal is not the deploying session's own ARN. Stated
+        separately from the rule above because it is a different mistake
+        with a different remedy — the session ARN IS the identity the ticket
+        names, it is simply not expressible as a policy principal, and the
+        fix is to resolve its issuer rather than to pick a different
+        identity. TF-shaped arms only: `applies_to` matches the
+        `sts-session-arn-as-principal` catch, which awscdk cannot commit.
+      tier: "1"
+      applies_to: [hcl_raw, terraconstructs]
+      tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_s3_bucket_policy')].expressions.policy.references[*]"
+      op: exists
+
+  rego_hints:
+    - >-
+      package cdktn_bench.caller_identity_arn_as_principal, graded against
+      `terraform show -json` PLAN output for hcl_raw AND terraconstructs.
+      Collect every `aws_s3_bucket_policy` from
+      `.planned_values.root_module.resources`, and for each one gather TWO
+      independent views of its principals, because the policy VALUE itself
+      is unknown at plan time whenever the grant names the created bucket's
+      ARN: (a) RESOLVED principal strings — from
+      `.values.policy` decoded with json.unmarshal when it is present at
+      all, and from the planned
+      `statement[*].principals[*].identifiers[*]` of any
+      `data "aws_iam_policy_document"` the policy resource references; (b)
+      PRINCIPAL REFERENCES — the `references` list of that data source's
+      `principals[*].identifiers` expression where the data-source shape is
+      used, else the whole policy expression's reference list, which is the
+      only thing a `jsonencode(...)`-shaped policy exposes.
+    - >-
+      deny when a bucket policy names no role source at all: no reference
+      matching `^aws_iam_role\.` and none matching
+      `^data\.aws_iam_session_context\..*\.issuer_arn$`. This is the
+      positive requirement stated fail-closed, and it is what catches BOTH
+      the account-root over-grant (which references only an account id) and
+      the hardcoded foreign ARN (which references nothing). Do NOT accept "a
+      resolved principal string that looks like a role ARN" as a substitute:
+      the hardcoded-foreign-ARN catch IS a syntactically valid role ARN, so
+      a value-shaped test would pass exactly the fixture it must fail.
+    - >-
+      deny when any RESOLVED principal string is not a role ARN
+      (`^arn:aws:iam::[0-9]{12}:role/`). Skip null identifiers rather than
+      denying on them — a principal built from a role this configuration
+      creates resolves to null at plan time, which is a correct solution,
+      not a violation. This rule is what stops a correct grant from
+      laundering a second, broader principal alongside it.
+    - >-
+      deny when the principal is the deploying session: a resolved principal
+      string containing `:sts::` or `assumed-role`, or a principal reference
+      matching `^data\.aws_caller_identity\..*\.arn$`. Match the `.arn`
+      attribute specifically — `.account_id` is a different, unremarkable
+      reference and denying on the bare `data.aws_caller_identity.<name>`
+      address would fire on the terraconstructs arm's own implicit
+      caller-identity data source.
+
+  cfn_guard_hints:
+    - >-
+      NOT USED — this scenario sets `oracle.awscdk_tier1_engine: rego`, so
+      the awscdk bundle is `oracles/rego-cfn/caller-identity-arn-as-principal/
+      policy.rego` and no `.guard` file is emitted. The reason is in this
+      file's header comment: the rule is a cross-resource logical-id join
+      and cfn-guard 3.2.0 has no operator for one.
+
+verifier:
+  budget:
+    max_iters: 8
+  # Static. A live variant would reproduce the `InvalidPrincipal` failure
+  # itself and show a second, non-pipeline identity's GetObject denied; that
+  # is a follow-on scenario, deliberately not part of this one.
+  live_check:
+    enabled: false
+    module: tests/live_check.py
+
+provenance:
+  author: "Vincent (via Claude Code, Batch A scenario-authoring task)"
+  date: "2026-09-10"
+  prereg_section_refs:
+    - "docs/design/batch-a-greenfield-blueprints.md §4 (caller-identity-arn-as-principal) — the design source: identity, prompt, catch list, arm prediction. Its §4(c) tier-0 value-check plan is not implemented as written; this spec's header comment records the offline probe that falsified it and the tier-1 graph design that replaced it."
+    - "docs/design/batch-a-greenfield-blueprints.md §0.1-§0.2 (batch-wide conventions: identity separation, prompt-voice rules, static-oracle default, evidence-checked tiers)"
+    - "docs/design/batch-a-greenfield-blueprints.md §0.4 D1 / §0.6 Q2 — the harness precondition this spec lands with: gates/aws_stub.py answers an assumed-role caller identity plus the iam:GetRole call that resolves its issuer, so the offline fixtures are graded against the credential shape every live trial actually holds."
+    - "iac-abstraction-benchmark-prereg.md §5 (catch taxonomy: typed-value-trap, graph-dependency, anti-L2), §3 (oracle tiers)"
+    - "tfp-aws#16657 — 'service/ec2: Using STS GetCallerIdentity ARN As Principal Can Fail', CLOSED/not-planned, opened 2020-12-09, closed 2024-02-05: the assumed-role ARN is rejected as InvalidPrincipal"
+    - "tfp-aws#42545 — 'provider-defined function parsing session arn from AssumeRole operation into Role Arn', CLOSED/not-planned, opened 2025-05-08, closed 2026-01-27: closed because aws_iam_session_context already exists, i.e. the maintainers confirming the problem and its one blessed workaround"
+    - "specs/SCHEMA.md §4.2.1 (plan-time-unknown attributes) and specs/s3-bucket-hardening-decomposition.yaml's own record of the same unknown-value contagion on aws_s3_bucket_policy.values.policy — the evidence that moved this scenario's principal checks from tier 0 to tier 1"
+    - "DECISIONS.md Amendment 29 (one policy language on all three arms where the intent states a join) — the precedent for oracle.awscdk_tier1_engine: rego, set here because cfn-guard 3.2.0 cannot express the principal-to-role logical-id join"

@@ -1,0 +1,5 @@
+{
+  "language": "typescript",
+  "app": "npx tsc -p tsconfig.json && node main.js",
+  "sendCrashReports": "false"
+}
