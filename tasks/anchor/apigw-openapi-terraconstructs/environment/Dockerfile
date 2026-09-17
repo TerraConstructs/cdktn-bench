@@ -58,22 +58,16 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # --- baseline agent-container utilities + terraform CLI (HashiCorp apt repo,
 # --- pinned exact version) ---
-# terraform is used by the arm's tests/test.sh oracle (`terraform validate` +
-# `terraform plan`, no apply — see docs/aws-bench-guide.md §7c) AND by this
-# image's own preflight, which now exercises offline `cdktn synth` ->
-# `terraform init` -> `terraform validate` end-to-end (see "provider mirror"
-# below). jq/git/curl/unzip match the common agent-container baseline shared
-# with arms/awscdk and arms/hcl-raw — see ../../DECISIONS.md "Agent-container
-# baseline contract".
-# python3 (stdlib only, no pip package ever installed): added fix-round-3
-# (benchmark-integrity review finding G2, 2026-08-07) -- same rationale as
-# arms/awscdk/environment/Dockerfile's identical addition: this arm's
-# generated tests/test.sh invokes `python3 "$DIR/live_check.py"` for any
-# spec with verifier.live_check.enabled: true, and this image previously
-# had no python3 at all, silently downgrading a perfect live-checked
-# solution to reward 0.0 via a shell "command not found" misread as a
-# legitimate not_verifiable live-check outcome. Amends DECISIONS.md
-# "Agent-container baseline contract".
+# terraform serves the generated tests/static_tiers.sh (`validate` + `plan`)
+# and this image's own preflight (`cdktn synth` -> `terraform init` ->
+# `validate`, offline against the provider mirror below). jq/git/curl/unzip
+# and python3 (stdlib only; tests/test.sh runs `python3 live_check.py`) are
+# the agent-container baseline shared with arms/awscdk and arms/hcl-raw
+# (DECISIONS.md "Agent-container baseline contract").
+# The HashiCorp apt source and keyring are removed once terraform is
+# installed: Harbor runs `apt-get update` in this image at trial start to
+# install the agent CLI, and a rotated HashiCorp signing key then fails that
+# update (NO_PUBKEY) and voids every trial on this arm before the agent runs.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       curl \
       gnupg \
@@ -89,6 +83,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       > /etc/apt/sources.list.d/hashicorp.list \
     && apt-get update \
     && apt-get install -y --no-install-recommends terraform=${TERRAFORM_VERSION}-* \
+    && rm -f /etc/apt/sources.list.d/hashicorp.list /usr/share/keyrings/hashicorp-archive-keyring.gpg \
     && rm -rf /var/lib/apt/lists/* /tmp/hashicorp.gpg
 
 # --- opa (Open Policy Agent) 1.19.0: static pinned binary, sha256-verified
