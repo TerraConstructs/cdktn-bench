@@ -527,5 +527,29 @@ class TestExecTarget:
         argv = proc.stdout.splitlines()[0]
         assert argv == (
             "uv run cdktn-bench run -a claude-code -m claude-sonnet-5 "
-            "-o jobs/claude-sonnet-5 -k 2 --yes --ak max_turns=100"
+            "-o jobs/claude-sonnet-5 -k 2 --yes --ak max_turns=100 "
+            "--ae CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1 "
+            "--ae BASH_DEFAULT_TIMEOUT_MS=1800000 --ae BASH_MAX_TIMEOUT_MS=3000000"
         ), argv
+
+
+class TestForegroundAgentCommands:
+    """Every trial disables Claude Code's auto-backgrounding and raises its
+    Bash timeouts (DECISIONS.md Amendment 38: print mode kills background
+    tasks at turn end, so a backgrounded deploy can never be awaited, and a
+    destroy-first replacement legitimately runs past the 120 s default)."""
+
+    def test_disable_background_tasks_and_long_bash_timeouts_are_always_passed(
+        self, tmp_path: Path
+    ) -> None:
+        proc = run_dry([], env={}, tmp_path=tmp_path)
+
+        assert proc.returncode == 0, proc.stderr
+        argv = proc.stdout.splitlines()[0]
+        assert "--ae CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1" in argv
+        assert "--ae BASH_DEFAULT_TIMEOUT_MS=1800000" in argv
+        assert "--ae BASH_MAX_TIMEOUT_MS=3000000" in argv
+        # Harbor's own switches are not read by the CLI; passing them would
+        # be a silent no-op that looks like the fix.
+        assert "FORCE_AUTO_BACKGROUND_TASKS" not in argv
+        assert "ENABLE_BACKGROUND_TASKS" not in argv
