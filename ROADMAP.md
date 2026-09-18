@@ -656,6 +656,30 @@ graded under it), the jq backend, `_assert_lib.sh`, and the bash that hosted
 them are removed, and the arm images drop `jq` from the verifier toolchain.
 The track ends when the static oracle is Python, Rego and Go only.
 
+**Status — Rego tier 0 evaluated and NOT adopted (DECISIONS.md Amendment
+42).** `generator/jsonpath_rego.py` compiles the same grammar to
+`tests/tier0.rego`, and the emitted policy was then read against the jq script
+it would replace: five asserts unroll into hundreds of lines of node chains
+where jq is one readable line per assert. jq stays the shipped grader and the
+default never flips. What remains available: the compiler, the emitted-policy
+path behind `oracle.tier0_engine: rego` (no spec selects it, so no task dir
+ships a policy), and `make tier0-parity`, which compiles one on the fly for any
+spec — an ON-DEMAND cross-check, removed from `make ci`, with zero divergences
+over 305 artifacts. `oracles/tests/test_op_parity.py` keeps its three columns.
+One divergence class the artifact gate cannot see was found and closed by
+refusal: Oniguruma's `$` also matches before one trailing newline and its
+`\w`/`\d` are Unicode-aware where RE2's are neither, so the compiler screens
+each pattern and reports UNRESOLVABLE for a resolved value the two flavours
+would read differently. The `hcl2json` merge Python lift to a generated
+`tests/hcl_merge.py` landed and stays.
+
+**Next, in order.** (1) The bash op table is replaced by a generated stdlib
+`tests/tier0.py` driver over the same jq filters — the readable-grader half of
+this milestone, its own amendment (`docs/design/tier0-assert-libraries.md`).
+(2) `jq` is pinned by sha256 in the arm images: `apt-get install jq` gives
+bookworm's 1.6 while the host gates run 1.7.x, so the grader a trial runs is
+not the grader the gates prove. (3) Then the bash removal.
+
 Two decisions, one independent of the other:
 
 * **Tier 0 is translated to Rego, compiled from the same spec YAML.** Today
@@ -900,8 +924,13 @@ and the disarmed shape.
    "Comments"); remaining hot spots are `generator/gen.py` bodies, the
    emitted template strings, hand-authored `solve.sh` files, `arms/*/README.md`,
    `scripts/run-bench.sh` and `oracles/rego*`.
-7. After the day-2 work: M10 (tier 0 compiled to Rego from the same YAML;
-   `microsoft/regorus` evaluated against the existing policy set).
+7. After the day-2 work: M10. Decision A (tier 0 compiled to Rego from the
+   same YAML) was built and NOT adopted — the emitted policy is unreadable
+   beside the jq script, so jq stays the grader; see M10's status note for what
+   stays available and what comes next (a generated `tests/tier0.py` driver,
+   then a sha256-pinned `jq` in the arm images, then the bash removal).
+   `microsoft/regorus` was evaluated and rejected against the existing policy
+   set (`docs/design/m10-regorus-spike-results.md`).
 
 ## 7. Open decisions
 

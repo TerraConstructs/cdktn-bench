@@ -8137,3 +8137,96 @@ flipped, **holdout → train**: `iam-managed-policy-exclusive-vs-attachment`
 (rank 10 → 11, now under the moved 60% cutoff). No train → holdout flip, so
 no equipping is tainted; no tuned equipping exists yet in any case. Every
 other id kept its group.
+
+## Amendment 42 — `oracle.tier0_engine`: tier 0 compiled to Rego from the same YAML — NOT ADOPTED
+
+Tier 0 grades `oracle.structural_asserts` through jq, tier 1 Rego through
+`opa`; one assert source can feed one policy language, so
+`generator/jsonpath_rego.py` compiles the same entries to `tests/tier0.rego` as
+a sibling of `generator/jsonpath_jq.py`, selected by
+`oracle.tier0_engine: "jq" | "rego"`, default `"jq"` (specs/SCHEMA.md §4.5.1).
+Only `static_tiers.sh`'s tier-0 block reads it; `tests/tier0.rego` is emitted
+for BOTH values so any spec can be graded by both backends without flipping it,
+and under the default every already-generated task regenerates byte-identically.
+The summary line, `tier0_pass`'s derivation and the reward gate are unchanged,
+so `observed_tier()`, `grading-proof` and `metrics/result_schema.json` do not
+move; a missing or aborting `opa` fails closed through its own marker file.
+
+The three-valued outcome is the property being preserved: `held`,
+`contradicted` and `unresolvable` stay disjoint and exhaustive per assert. Rego
+turns most errors into silent undefined, collapsing "the question could not be
+asked" into "the path found no node" — a vacuous pass on the absence proofs tier
+0 exists for — so every situation jq RAISES on is an EXPLICIT rule contributing a
+reason string, enumerated in §4.5.1. Where a PATH would mean
+different things per engine the shared grammar refuses it at generation time
+instead: a field name starts with a letter or underscore, because jq reads `.0`
+as the number `0` and `.v.0` as a syntax error where every other backend reads
+the key `"0"` (§4.2).
+
+### Two gates and the flip criterion
+
+1. `oracles/tests/test_op_parity.py` — nine ops × 44 document shapes across
+   three columns (bash/jq, a Python reference, Rego under `opa`) agreeing on the
+   three-valued outcome cell by cell, plus per-column pins where they CANNOT.
+2. `make tier0-parity` (`gates/tier0_parity.py`) — every reference and
+   broken-fixture artifact of every spec, graded by both backends, requiring
+   identical per-assert outcomes and identical `tier0_pass`. Gating per spec in
+   `make ci`, where it collects its own artifacts and so roughly doubles a pass;
+   the follow-up is `gates/oracle_falsifiability.py` keeping
+   `gates/artifact_collector.py`'s layout so the CI row becomes a `--regrade`.
+
+The default moves to `rego` only when both gates are green corpus-wide, the
+value precondition below holds, and one live read-only trial of the pilot
+(`specs/ecs-swappiness.yaml`, the only spec set to `rego` here) scores the reward
+and the per-assert outcomes the jq engine produces on that same trial's
+artifact, checked by grading it with both backends.
+
+**Value precondition.** The all-artifacts gate grades the artifacts that EXIST,
+so it is blind to any class depending on a value no fixture produces. §4.5.1
+enumerates them with their directions — three regex/`|fromjson` classes the
+compiler refuses per resolved value, and `in` over a doubly-nested node, the one
+case where Rego reaches the OPPOSITE verdict rather than refusing — and no spec
+may carry a tier-0 assert depending on any.
+
+### The HCL pre-parser is lifted out of the shell
+
+`build_hcl_merge_block`'s embedded Python becomes a generated
+`tests/hcl_merge.py`, invoked as `python3 "$DIR/hcl_merge.py" "$ARTIFACT"
+"$HCL_MERGED"`, emitted only for the `hcl_raw` arm of an `oracle.hcl_traversal`
+spec; a missing file is `LIB_MISSING`, the fail-closed status a missing resolver
+already has. The lift also closes an oracle-hijack vector: `python3 -` puts the
+AGENT-WRITABLE `/app/project` at `sys.path[0]`, where naming the file puts the
+oracle-owned `tests/` there — a property any future generated filename in
+`tests/` keeps. `gates/hcl_merge_bytes.py` gates the lift:
+`/logs/verifier/oracle-input.json` must be byte-for-byte what a baseline copy of
+the program from a named revision writes, for the reference fixture and every
+broken fixture the spec ships. Against HEAD's heredoc over all 43 fixtures of
+`s3-notification-authoritative-singleton`: 0 differing.
+
+### REQUIRED clean-up after promotion
+
+Not optional and not this amendment's work; the amendment is not ACCEPTED until
+it is done. Flip the default to `rego`; delete the jq backend
+(`generator/jsonpath_jq.py`), `tests/_assert_lib.sh` and the bash that hosted the
+calls; drop `jq` from the arm images' verifier toolchain; delete the switch and
+its two branches. Port `generator/check_reference_paths.py` (it imports
+`jsonpath_to_jq` and sources `tests/_assert_lib.sh`) in the same step, and retire
+`gates/tier0_parity.py`, `test_op_parity.py`'s bash/jq column and
+`generator/tests/test_jsonpath_jq.py` deliberately: a parity gate with one
+backend passes vacuously, and two graders kept permanently agree today and drift
+later.
+
+### Outcome
+
+The emitted policy was reviewed against the jq script it would replace: five
+asserts became hundreds of lines of unrolled node chains, versus one readable
+line per assert. jq stays the shipped grader and the default never flips.
+
+What remains available: the compiler, the emitted-policy path behind
+`oracle.tier0_engine: rego` (no spec selects it, so no task dir ships a
+`tests/tier0.rego`), and `make tier0-parity`, which compiles a policy on the fly
+for any spec. It is an ON-DEMAND cross-check, removed from `make ci`; it found
+zero divergences over 305 artifacts. The HCL pre-parser lift landed and stays.
+
+The clean-up above is superseded: the bash op table is replaced by a generated
+stdlib `tests/tier0.py` driver over the same jq filters (next amendment).
