@@ -30,6 +30,24 @@ the library it imports. The `_hcl` MERGE that library reads is emitted for
 `hcl_raw` ONLY — terraconstructs has no `.tf` files — see
 `build_static_tiers_sh`'s `hcl_lib`/`hcl_merge` comment.
 
+Two generated files under `tests/` are worth naming because a reader meets
+them inside a task dir rather than here:
+
+    tests/tier0.rego     the tier-0 structural asserts compiled to Rego
+                         (generator/jsonpath_rego.py). Written only for a spec
+                         whose `oracle.tier0_engine` is `rego`, the one engine
+                         whose static_tiers.sh reads it (specs/SCHEMA.md
+                         §4.5.1). No spec selects it, so no task dir carries
+                         one; `make tier0-parity` compiles its own.
+    tests/hcl_merge.py   the `.tf`/`.tf.json` -> JSON pre-parse, `hcl_raw` arm
+                         of an `oracle.hcl_traversal` spec only. Invoked as
+                         `python3 "$DIR/hcl_merge.py" "$ARTIFACT" "$HCL_MERGED"`;
+                         a missing file is the fail-closed `LIB_MISSING` status,
+                         never a verdict. It was a heredoc inside
+                         static_tiers.sh until DECISIONS.md Amendment 42, and
+                         `generator/tests/test_hcl_merge.py` pins both the
+                         emitted bytes and the invocation.
+
 ### Live verifier tiers in `tests/test.sh`
 
 Two optional live tiers are emitted into `tests/test.sh`, both
@@ -103,6 +121,11 @@ step this repo cannot perform.
 3. `seed-parity` — `make seed-parity SPEC=…`, BROWNFIELD only
    (specs/SCHEMA.md §2.7). SKIP (rc=3) for a greenfield spec.
 4. `tier1-coverage`, `falsifiability`, `grading-proof`.
+
+`make tier0-parity` is deliberately NOT in this battery: jq is the shipped
+tier-0 grader, so cross-checking it against the Rego compiler is an on-demand
+check run when the compiler or the shared grammar changes
+(docs/gates.md#tier0-parity).
 
 `specs/_toy/toy-ssm-parameter.yaml` is not a benchmark scenario and runs a
 lighter smoke set (gen-sync + check-paths + tier1-coverage + falsifiability).
@@ -215,6 +238,12 @@ requirements that the target comments reference:
   `TOOL_MISSING` — a hard failure by design, so the gate goes red rather than
   silently grading that scenario on plan JSON alone. The pin and checksum live
   in `arms/hcl-raw/environment/Dockerfile`.
+- **`make tier0-parity`** (on demand, not part of `make ci`) runs every
+  fixture of the spec for real, so it needs the same toolchain as
+  `make falsifiability` and takes the same order of
+  time. `OUT=<dir>` keeps the collected artifacts so
+  `gates/tier0_parity.py --regrade <dir>` can re-check a compiler change
+  against them with no toolchain at all.
 - **`make check-paths`** runs the arm's real toolchain against a hand-authored,
   oracle-correct reference fixture at
   `generator/tests/fixtures/<spec-id>/<arm>/`, so it needs the same toolchain

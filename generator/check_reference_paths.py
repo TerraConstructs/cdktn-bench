@@ -62,7 +62,7 @@ def _prepare_project(
     COPYs into WORKDIR /app/project -- flattened, no 'workspace'/'app' prefix,
     matching real container layout) with the fixture file dropped in at
     entry_file, plus that task's own tests/ for its real, already-generated
-    static_tiers.sh and _assert_lib.sh."""
+    static_tiers.sh, _assert_lib.sh and compiled tier0.rego."""
     task = task_dir(spec, arm)
     project = tmp / "project"
     shutil.copytree(task / "environment" / ARM_WORKSPACE_SUBDIR[arm], project)
@@ -105,6 +105,13 @@ def _prepare_project(
     tests_dst = project / "tests"
     tests_dst.mkdir(exist_ok=True)
     shutil.copy2(task / "tests" / "_assert_lib.sh", tests_dst / "_assert_lib.sh")
+    # The compiled tier-0 Rego, for a spec whose `oracle.tier0_engine` is
+    # `rego`: static_tiers.sh loads it from its own directory, and without it
+    # `opa eval` ABORTS -- no per-assert line is printed at all, and the script
+    # reports the tier-0 engine error rather than anything about the fixture.
+    tier0_rego = task / "tests" / "tier0.rego"
+    if tier0_rego.exists():
+        shutil.copy2(tier0_rego, tests_dst / "tier0.rego")
     static_text = (task / "tests" / "static_tiers.sh").read_text()
     # Repoint the two absolute, in-container paths static_tiers.sh bakes in at
     # this host-side scratch dir (same technique gates/oracle_falsifiability.py

@@ -7,10 +7,10 @@ gates/oracle_falsifiability.py::_run_solve under gates/aws_stub.py's
 credential-free environment, exactly as `make falsifiability` does, and copies
 each run's artifact into an output tree plus a manifest.
 
-The one behaviour change over the gate is that each run's working copy is kept
-(under --work-dir) instead of being deleted, because an `oracle.hcl_traversal`
-scenario's real tier-1 input is the merged document static_tiers.sh writes into
-the run's logs dir, not the plan.json under the project dir.
+Fixture enumeration and the kept working copies come from
+gates/artifact_collector.py, which is the one implementation of that; what is
+here is the tier-1 half -- parsing the `opa eval` queries out of the generated
+static_tiers.sh and preferring the merged document over the plan.
 
 Usage:
     uv run python scripts/spike/collect_artifacts.py --out <dir> --work-dir <dir>
@@ -23,7 +23,6 @@ import json
 import re
 import shutil
 import sys
-import types
 import time
 from pathlib import Path
 
@@ -32,6 +31,7 @@ sys.path.insert(0, str(REPO_ROOT / "generator"))
 sys.path.insert(0, str(REPO_ROOT / "gates"))
 
 import oracle_falsifiability as of  # noqa: E402
+from artifact_collector import KeptTempDir, fixtures, install, prune, tests_dir  # noqa: E402
 from aws_stub import running_stub  # noqa: E402
 from gen import ARM_DIRNAME, task_dir  # noqa: E402
 from spec_model import load_spec  # noqa: E402
@@ -46,33 +46,6 @@ _OPA_EVAL_RE = re.compile(
 )
 
 
-class KeptTempDir:
-    """`tempfile.TemporaryDirectory` shape that does not delete on exit."""
-
-    def __init__(self, root: Path):
-        self._root = root
-        self._n = 0
-        self.last: Path | None = None
-
-    def __call__(self, prefix: str = "", dir: str | None = None):  # noqa: A002
-        self._n += 1
-        path = self._root / f"{prefix}{self._n:04d}"
-        path.mkdir(parents=True, exist_ok=True)
-        self.last = path
-        return _Kept(path)
-
-
-class _Kept:
-    def __init__(self, path: Path):
-        self.path = path
-
-    def __enter__(self) -> str:
-        return str(self.path)
-
-    def __exit__(self, *exc) -> bool:
-        return False
-
-
 def parse_queries(static_tiers: Path) -> list[dict]:
     """The tier-1 evaluations this arm's generated verifier performs, as
     `{query, data_vars}` in emission order (deny first, then not_verifiable)."""
@@ -84,35 +57,6 @@ def parse_queries(static_tiers: Path) -> list[dict]:
     return out
 
 
-def tests_dir(task: Path, step) -> Path:
-    """A multi-step task's oracle lives under its step, never at the task root
-    (the shared root `tests/` must stay oracle-free)."""
-    return task / "steps" / step.name / "tests" if step is not None else task / "tests"
-
-
-def fixtures(task: Path) -> list[tuple[str, Path]]:
-    out = [("reference", task / "solution" / "solve.sh")]
-    broken = task / "solution" / "broken"
-    if broken.is_dir():
-        for d in sorted(broken.iterdir()):
-            if (d / "solve.sh").exists():
-                out.append((f"broken/{d.name}", d / "solve.sh"))
-    return [(name, p) for name, p in out if p.exists()]
-
-
-# Kept working copies are for reproducing a divergence by hand; the installed
-# dependency trees are ~600 MB per run and reproducible from the lockfiles.
-PRUNE = ("node_modules", ".terraform", ".git")
-
-
-def prune(work: Path | None) -> None:
-    if work is None:
-        return
-    for sub in work.rglob("*"):
-        if sub.is_dir() and sub.name in PRUNE:
-            shutil.rmtree(sub, ignore_errors=True)
-
-
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", required=True, type=Path)
@@ -122,10 +66,7 @@ def main(argv: list[str]) -> int:
 
     args.out.mkdir(parents=True, exist_ok=True)
     args.work_dir.mkdir(parents=True, exist_ok=True)
-    keep = KeptTempDir(args.work_dir)
-    # Only this module's view of `tempfile` is swapped; the real module keeps
-    # its deleting behaviour for every other caller in the process.
-    of.tempfile = types.SimpleNamespace(TemporaryDirectory=keep)
+    keep = install(args.work_dir)
 
     spec_paths = sorted(REPO_ROOT.glob("specs/*.yaml")) + sorted(REPO_ROOT.glob("specs/_toy/*.yaml"))
     manifest: list[dict] = []

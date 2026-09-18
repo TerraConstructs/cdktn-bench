@@ -7,10 +7,12 @@
 #   make falsifiability SPEC=specs/_toy/toy-ssm-parameter.yaml
 #   make check-paths SPEC=specs/_toy/toy-ssm-parameter.yaml
 #   make grading-proof SPEC=specs/_toy/toy-ssm-parameter.yaml
+#   make tier0-parity SPEC=specs/_toy/toy-ssm-parameter.yaml
+#   make hcl-merge-bytes SPEC=specs/foo.yaml REUSE=dir
 #   make gen-all      # regenerate every specs/*.yaml (skips specs/_toy/)
 #   make parity-all    # parity-check every specs/*.yaml (skips specs/_toy/)
 
-.PHONY: gen parity falsifiability check-paths tier1-coverage grading-proof gen-all parity-all validate-spec
+.PHONY: gen parity falsifiability check-paths tier1-coverage grading-proof gen-all parity-all validate-spec tier0-parity tier0-parity-all hcl-merge-bytes
 
 # Validate a spec against generator/spec_model.py without generating anything.
 validate-spec:
@@ -64,6 +66,32 @@ tier1-coverage:
 grading-proof:
 	@if [ -z "$(SPEC)" ]; then echo "usage: make grading-proof SPEC=specs/foo.yaml [CATCH=catch-name]" >&2; exit 2; fi
 	uv run python gates/grading_proof.py $(SPEC) $(if $(CATCH),--catch $(CATCH),)
+
+# Grade every reference and broken-fixture artifact with BOTH tier-0 backends
+# -- the jq compiler in tests/_assert_lib.sh and the Rego one compiled from the
+# same spec entries -- and require identical per-assert outcomes and identical
+# tier0_pass. ON DEMAND, not in `make ci`: jq is the shipped grader and the
+# Rego engine was not adopted (DECISIONS.md Amendment 42). Run it when the
+# compilers or the shared grammar change; any spec works, whatever
+# `oracle.tier0_engine` says. Same host toolchain and runtime class as
+# `make falsifiability`: it runs every fixture for real. `OUT=<dir>` keeps the
+# collected artifacts so `--regrade <dir>` can re-check a compiler change in
+# seconds without them. Exit 3 = NOT_AUTHORED (nothing gradeable).
+tier0-parity:
+	@if [ -z "$(SPEC)" ]; then echo "usage: make tier0-parity SPEC=specs/foo.yaml [OUT=dir]" >&2; exit 2; fi
+	uv run python gates/tier0_parity.py $(SPEC) $(if $(OUT),--out $(OUT),)
+
+tier0-parity-all:
+	uv run python gates/tier0_parity.py --all $(if $(OUT),--out $(OUT),)
+
+# Byte gate on the lifted HCL pre-parser: /logs/verifier/oracle-input.json must
+# be byte-for-byte what a baseline copy of the program from REV writes, for the
+# reference fixture and every broken fixture an `oracle.hcl_traversal` spec
+# ships. `REUSE=<dir>` compares a tree `make tier0-parity OUT=` collected
+# and runs no toolchain; without it the fixtures are collected here.
+hcl-merge-bytes:
+	uv run python gates/hcl_merge_bytes.py $(SPEC) \
+	  $(if $(REV),--baseline-rev $(REV),) $(if $(REUSE),--reuse $(REUSE),)
 
 # Regenerate every real spec. specs/_toy/ is a generator-testing fixture, not a
 # benchmark scenario (specs/SCHEMA.md §7), so the bulk targets skip it; run it

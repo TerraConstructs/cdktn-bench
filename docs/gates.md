@@ -286,6 +286,17 @@ for tier 0 — `generator/jsonpath_jq.py`'s jq compilation plus
 `oracles/lib/structural.py` uses `jsonpath_ng`, which cannot parse the `||`-OR'd
 filter syntax several tier-1 CFN paths use at all.
 
+This gate is **engine-independent by design**: it grades every assert through
+the jq compiler whatever a spec's `oracle.tier0_engine` says, because the
+question it answers is "does this declared path resolve against a real
+artifact", which is a property of the shared grammar and not of either
+backend. Whether the two backends reach the SAME outcome on an artifact is a
+different question, answered by `make tier0-parity` (below) and by
+`oracles/tests/test_op_parity.py`. The gate stages a `tests/tier0.rego` beside
+`_assert_lib.sh` when the task ships one, because a `rego`-engine spec's
+`static_tiers.sh` — which this gate runs for real to produce the artifact —
+aborts its `opa eval` without it. No spec ships one today.
+
 ### Fixtures
 
 `generator/tests/fixtures/<spec-id>/<arm-dirname>/<entry_file>` — one
@@ -342,3 +353,75 @@ invocation and threads its env into every toolchain subprocess. The generated
 Terraform-shaped arms and voids the run without it; the stub answers that
 preflight, so the check needs no ambient credentials and can never reach a real
 account.
+
+## tier0-parity
+
+`gates/tier0_parity.py` — `make tier0-parity SPEC=… [OUT=dir]`,
+`make tier0-parity-all`. **On demand, NOT in `make ci`**: jq is the shipped
+tier-0 grader and the Rego engine was evaluated and not adopted (DECISIONS.md
+Amendment 42), so nothing here gates a commit. Run it when the compiler, the
+shared grammar or `_assert_lib.sh` changes.
+
+Grades every artifact a spec's own fixtures produce with BOTH tier-0 backends
+and requires identical per-assert three-valued outcomes and identical
+`tier0_pass`:
+
+| backend | what runs |
+|---|---|
+| jq | the generated `tests/_assert_lib.sh::assert_check`, sourced from the task dir, one call per assert — the grader a trial runs today |
+| Rego | one `opa eval` of a `tests/tier0.rego`: the task's own under `oracle.tier0_engine: rego`, otherwise compiled into the run's scratch dir, so any spec can be graded |
+
+Fixtures are produced through `gates/artifact_collector.py`, which drives
+`gates/oracle_falsifiability.py::_run_solve` under the aws-stub, so a fixture
+runs here exactly as `make falsifiability` runs it — same toolchain
+requirements and the same runtime class.
+
+Producing an artifact costs 25–60s; grading one with both backends costs
+milliseconds. `OUT=<dir>` keeps the collected tree and a manifest, and
+`--regrade <dir>` re-grades it with no toolchain at all, which is how a
+compiler change is checked against the whole corpus in seconds.
+
+### What it cannot prove
+
+**It grades the artifacts that exist.** A divergence reachable only through a
+value no fixture produces is invisible to it however many specs it covers — a
+regex subject with a trailing newline, a non-ASCII subject under a `\w`
+shorthand or a `[[:alpha:]]` POSIX class, a `|fromjson` string only jq's lenient
+decoder reads or one carrying an unpaired `\uD800`-`\uDBFF` escape, and an `in`
+node nested one level deeper than the op's single flatten, where jq's `index`
+reads an array argument as a SUBSEQUENCE and Rego reaches the OPPOSITE verdict.
+Those are pinned per column in `oracles/tests/test_op_parity.py` and, bar the
+`in` one, refused per resolved value by the compiler itself (specs/SCHEMA.md
+§4.2, §4.5.1). Agreement here is evidence about the artifacts in hand, never a
+proof that the two engines are interchangeable.
+
+### Exit codes
+
+`0` = every graded cell agrees. `1` = a divergence, or an artifact that could
+not be graded at all. `3` = `NOT_AUTHORED`: no fixture produced a gradeable
+artifact, the repo's convention for "non-gating because its prerequisite is not
+authored yet".
+
+## hcl-merge-bytes
+
+`gates/hcl_merge_bytes.py` — `make hcl-merge-bytes SPEC=… [REUSE=dir] [REV=rev]`,
+the byte gate on the lifted HCL pre-parser
+(DECISIONS.md Amendment 42). The Python that merges an arm's parsed `.tf`
+documents into the plan JSON is now a generated `tests/hcl_merge.py` rather
+than a heredoc inside `tests/static_tiers.sh`, and the lift is only safe if the
+document it writes to `/logs/verifier/oracle-input.json` — the real tier-1
+input for an `oracle.hcl_traversal` spec — is unchanged. So the gate runs a
+baseline copy of the program taken from a git revision
+(`REV=`/`--baseline-rev`, default `HEAD`) against each fixture's kept working
+copy and compares the two documents by sha256, for the spec's reference fixture
+and every broken fixture it ships. Only a revision predating the lift carries
+the heredoc, so once it is committed the baseline is that commit's parent.
+
+The program reads only its two arguments and the `*.tf`/`*.tf.json` files in
+its working directory, so `--reuse <dir>` compares a tree
+`tier0-parity`'s `OUT=` already collected and runs no toolchain at all;
+without it the gate collects its own through `gates/artifact_collector.py`.
+
+`0` = every fixture's document is identical. `1` = a difference, a baseline run
+that failed, or nothing comparable. Not wired into `make ci`: it is a gate on a
+one-time lift, run when the pre-parser or its invocation changes.

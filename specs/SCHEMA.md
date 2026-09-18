@@ -1288,6 +1288,7 @@ oracle:
   rego_hints: [<string>, ...]        # optional, default []
   cfn_guard_hints: [<string>, ...]   # optional, default []
   awscdk_tier1_engine: cfn_guard | rego   # optional, default cfn_guard — §4.5
+  tier0_engine: jq | rego            # optional, default jq — §4.5.1 (every arm)
   hcl_traversal: false | true        # optional, default false — §4.6 (hcl_raw only)
 ```
 
@@ -1502,6 +1503,52 @@ guiding it is exempt from ever being checked against reality.
 | `absent_or_eq` | scalar | the path resolves to 0 nodes, OR to exactly 1 node equal to `expected` (>1 resolved node FAILS, same ambiguity rule as `eq`). Added by a residual-findings fix (2026-08-06): a bare `not_exists` used for "an enum-typed property was left at its implied default" false-negatives an equally-correct solution that wrote the semantically-identical value *explicitly* instead of omitting it (arm idioms differ in how readily they emit explicit defaults, so this is a real per-arm scoring bias, not a theoretical one). Neither `not_exists` alone (rejects the explicit form) nor `eq` alone (rejects the omitted form) can express "either form is fine" -- use `absent_or_eq` for any "left at its implied default, not set to some OTHER wrong value" catch, never bare `not_exists`, whenever the property's implied default has a concrete literal value a correct solution could also legitimately spell out. |
 | `not_regex` | string (pattern) | NONE of the resolved string values match `expected` as a regex (an unanchored search, same semantics as `regex` — matches ANYWHERE in the string, not a full-string match) -- 0 resolved nodes vacuously PASSES (nothing to violate), unlike `regex`'s own `>= 1 node` requirement. Added for `specs/sfn-jsonata.yaml`'s mode-mixing catch (the "no raw un-evaluated JSONPath string anywhere in this JSONata-mode ASL" fact, mirroring `tc-ai-pdlc-coding-features/tests/helpers.py::contains_jsonpath_artifact`'s own `r'"\$\.'` pattern): `regex` alone can only assert a pattern IS present, never that it is ABSENT, and no combination of the other seven ops can express "this string must never contain X" for an arbitrary substring (as opposed to "this key must be absent", which `not_exists` already covers structurally). Both evaluators implement it as the literal negation of `regex`'s own per-value match test -- `oracles/lib/structural.py::apply_op`'s `re.search`, `generator/gen.py`'s compiled-jq `test($e)` -- so no new regex engine/dialect is introduced. |
 
+A field name in a path segment (`.Field`, `..Field`, a filter's `@.F.G`) must
+start with a letter or underscore. `generator/jsonpath_jq.py`'s regexes are the
+grammar for both backends and raise `ValueError` at generation time on anything
+else, digit-leading names included: jq reads `.0` as the number `0` and `.v.0`
+as a syntax error, where Rego and `jsonpath_ng` read the key `"0"`, so such a
+path would hold under one grader and be contradicted or unresolvable under
+another. A digit-keyed field (an OpenAPI `responses.200`) therefore has no
+spelling in this subset — reach it through `[?(@.…)]` on a sibling field, or
+widen the grammar in both compilers at once.
+
+The `expected` column is a **type requirement**, enforced by
+`generator/spec_model.py` at spec load: `in` and `set_eq` require a list,
+`regex` and `not_regex` a string. jq coerces rather than refusing (`index` with
+a string argument silently becomes a SUBSTRING search, so a scalar `expected`
+on `in` grades something the author did not write) and the Rego backend cannot
+coerce at all — `regex.match(5, v)` is a type error that refuses to compile the
+whole arm's policy. A mistyped `expected` is a spec defect either way.
+
+The two regex ops also depend on what the grading engine's own regex flavour
+accepts, and the three implementations do not share one: jq uses Oniguruma,
+Rego RE2, and `oracles/lib/structural.py` Python's `re`. They diverge in two
+ways, and the second is not about what compiles:
+
+- **What a pattern can even be.** Lookaround and backreferences are Oniguruma
+  only; a Go-style named group `(?P<name>...)` is RE2 only; POSIX and
+  `\p{...}` classes, the `(?<name>...)` spelling of a named group, and
+  `\z`/`\Z` Python's `re` misreads or rejects.
+- **What a pattern MEANS on a given subject.** `$` matches at end of text
+  under RE2 and *also* just before one trailing newline under Oniguruma and
+  Python `re`; the character-class shorthands `\w`/`\d`/`\s`/`\b` and every
+  POSIX bracket expression but `[[:ascii:]]` are ASCII-only under RE2 and
+  Unicode-aware under Oniguruma. Both engines compile such a pattern and both
+  reach a verdict, and on the wrong subject those verdicts are **opposite** —
+  `^1$` against `"1\n"` is a match for jq and not for Rego.
+
+Corpus patterns are anchors, escaped literals, character classes and at most
+one alternation, and five of them are `$`-anchored, so the second class is
+live, not hypothetical. It is closed by refusing to grade rather than by
+agreement: the Rego compiler screens each pattern for the construct and emits
+a rule that makes the assert **unresolvable** when a value it actually resolved
+to is one the two flavours would read differently — a subject ending in a
+newline for `$`, a non-ASCII subject for a shorthand or POSIX class. Where an
+engine cannot apply a pattern at all the assert is unresolvable too. Never a
+verdict either way — see §4.5.1. Keep patterns inside the shared subset, and prefer
+`contains`/`eq` wherever the claim is not really about a pattern.
+
 Every `cfn_jsonpath`/`tf_jsonpath` may contain one or more `|fromjson`
 markers splitting the path into segments, e.g.
 `$.values.container_definitions|fromjson[*].linuxParameters.swappiness`.
@@ -1627,6 +1674,76 @@ marker; writes `/logs/verifier/tier1-unauthored`; **hard failure**), `PASS`,
 `FAIL`. Selecting `rego` only changes which binary is probed with `command -v`
 and which policy filename is read.
 
+### 4.5.1 `tier0_engine` (optional, default `jq`)
+
+Which engine grades tier-`"0"` on **every** arm. The asserts themselves do not
+change: the same `structural_asserts` entries, paths and ops are compiled from
+one grammar to either target.
+
+**Available and unused.** No spec sets this field: the emitted policy was
+reviewed against the jq script and jq stays the shipped grader (DECISIONS.md
+Amendment 42, NOT ADOPTED). The compiler and this field stay so
+`make tier0-parity` can cross-check any spec on demand.
+
+| value | what runs in the trial |
+|---|---|
+| `jq` (default) | each path becomes a jq filter (`generator/jsonpath_jq.py`), applied by `tests/_assert_lib.sh::assert_check`. Every already-generated task regenerates byte-identically under the default. |
+| `rego` | the same asserts are compiled to `tests/tier0.rego` (`generator/jsonpath_rego.py`) and evaluated by one `opa eval` — the engine tier 1 already runs on all three arms. |
+
+`tests/tier0.rego` is written into a task dir only under `rego`, the one engine
+whose `static_tiers.sh` reads it; a spec that goes back to `jq` has the stale
+policy removed. `make tier0-parity` needs no emitted file — it compiles one
+into its own scratch directory for whichever spec it is grading.
+
+The three-valued outcome is the property the translation preserves: `held`,
+`contradicted` and `unresolvable` are disjoint and exhaustive per assert, and
+`unresolvable` is reached only through rules that name a situation jq raises on
+(a field access into a scalar, iterating a non-collection, `|fromjson` over a
+non-string, over invalid JSON or over a string carrying an unpaired
+`\uD800`-`\uDBFF` escape — jq's decoder rejects that string where Go's accepts
+it and substitutes U+FFFD — and an unknown op). Rego turns those into silent
+undefined otherwise, which would read as "the path found no node" — a vacuous
+pass. `tier0_pass` is derived exactly as the jq backend derives it and the
+`== summary: tier0_pass=N tier1_status=X ==` line is unchanged, so
+`observed_tier()`, `grading-proof` and the result schema do not move. A missing
+`opa` writes `/logs/verifier/tier0-unavailable` and an `opa eval` that aborts
+writes `/logs/verifier/tier0-engine-error`; both fail closed, matching the
+tier-1 block's own `TOOL_MISSING`/`ENGINE_ERROR` discipline.
+
+Five situations are unresolvable under `rego` where jq still reaches a verdict,
+so a spec flipping the field should know them. The direction is what matters
+and it is the same in all five: refusing to grade is safe, whereas Rego's
+silent undefined would have made `not_regex` report "this string appears
+nowhere" for a pattern it never applied.
+
+| situation | why jq still answers |
+|---|---|
+| a mistyped `expected` (a non-list on `in`/`set_eq`, a non-string on the pattern ops) | jq coerces; a spec defect `generator/spec_model.py` refuses at load — §4.2 |
+| a pattern RE2 cannot compile (a lookaround, a backreference, an unbalanced class) | Oniguruma compiles it, or jq's `test` failure collapses into "no value matched" |
+| a `$`-anchored pattern whose resolved value ends in a newline, or a pattern using a character-class shorthand (`\w`/`\d`/`\s`/`\b`) or a POSIX bracket expression (`[[:alpha:]]`, `[[:alnum:]]`, …, every one but `[[:ascii:]]`) over a non-ASCII resolved value | both engines compile and both answer — with OPPOSITE verdicts (§4.2) |
+| a Go-style named group `(?P<name>...)` | RE2 accepts it and Oniguruma cannot compile it, so no subject makes the two agree |
+| `\|fromjson` over a string only a lenient decoder reads: `NaN`, `Infinity`, a leading-zero or bare-point number (`01`, `1.`, `.1`, `+1`), a UTF-8 BOM prefix, nesting past 10000 levels | jq's decoder accepts all of them; Go's `json.is_valid` is strict RFC 8259 |
+
+One situation runs the other way — Rego reaches a DIFFERENT VERDICT rather than
+refusing — and it is the reason `in` carries the same "no fixture produces such
+a value" caveat the pattern rows do. The bash grader asks `in` as
+`$e | index($x) != null`, and jq's `index` with an ARRAY argument is a
+SUBSEQUENCE search rather than an element test, so a node still nested one level
+deeper than `in`'s single flatten (`[["a"]]` against `expected: ["a"]`) is
+jq=held and rego=contradicted. Rego's is what §4.2 defines. Every corpus `in`
+assert resolves to numbers or to lists of strings, so one flatten always leaves
+scalars and no artifact reaches it; the bash side is corrected by the removal of
+the jq backend rather than ahead of it, because fixing it would move every
+generated `tests/_assert_lib.sh`.
+
+The flavour and named-group rows are screened per pattern at generation time and
+decided per resolved value at evaluation time, so a pattern in the shared subset
+grades exactly as it does under jq. Those two, the lenient-decoder row and the
+`in` verdict above are why the `make tier0-parity` cross-check is not on its own
+evidence that the two engines agree: it grades the artifacts that EXIST, and a
+class that depends on a value no fixture produces is invisible to it. Every one
+of them is pinned cell by cell in `oracles/tests/test_op_parity.py` instead.
+
 ### 4.6 `hcl_traversal` (optional, default `false`)
 
 Turns on **HCL symbol resolution** for the `hcl_raw` arm's tier-`"1"`.
@@ -1729,6 +1846,10 @@ on a *correct* solution, in either direction:
 `generator/gen.py::build_static_tiers_sh` calls these `hcl_lib` and
 `hcl_merge`; the terraconstructs branch emits
 `build_hcl_lib_only_block()` (library path + `LIB_MISSING` check, no parse).
+The parse itself is a generated `tests/hcl_merge.py` (`build_hcl_merge_py()`),
+invoked as `python3 "$DIR/hcl_merge.py" "$ARTIFACT" "$HCL_MERGED"` and written
+for the hcl_raw arm only. A missing file is the same fail-closed `LIB_MISSING`
+status as a missing resolver — never a verdict about a solution.
 
 #### Why not conftest
 

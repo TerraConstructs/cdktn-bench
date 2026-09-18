@@ -970,6 +970,22 @@ class StructuralAssert(BaseModel):
             raise ValueError(
                 f"structural_assert {self.name!r}: op={self.op!r} must not set 'expected'"
             )
+        # The member/set ops are defined over a list and the pattern ops over a
+        # string (SCHEMA.md §4.2). jq coerces rather than refusing -- `index`
+        # with a string argument silently becomes a SUBSTRING search, so a
+        # scalar `expected` on `in` grades as something the author did not
+        # write -- and the Rego backend cannot coerce at all: a mistyped
+        # `expected` there is an unresolvable assert. Refusing at spec load is
+        # the only place the author sees it.
+        for ops, wanted, label in (
+            ({"in", "set_eq"}, list, "a list"),
+            ({"regex", "not_regex"}, str, "a string"),
+        ):
+            if self.op in ops and not isinstance(self.expected, wanted):
+                raise ValueError(
+                    f"structural_assert {self.name!r}: op={self.op!r} requires "
+                    f"{label} 'expected', got {type(self.expected).__name__}"
+                )
         return self
 
 
@@ -994,6 +1010,25 @@ class Oracle(BaseModel):
     #       logical-id join), or when cross-arm equal-strictness grading needs
     #       one policy language on all three arms (DECISIONS.md Amendment 29).
     awscdk_tier1_engine: Literal["cfn_guard", "rego"] = "cfn_guard"
+    # Which engine grades tier-"0" on EVERY arm (specs/SCHEMA.md §4.5.1). The
+    # asserts, their paths and their ops are unchanged either way -- the same
+    # YAML entries are compiled to jq or to Rego from one grammar.
+    #
+    #   "jq" (DEFAULT) -- each cfn_jsonpath/tf_jsonpath becomes a jq filter
+    #       (generator/jsonpath_jq.py) applied by tests/_assert_lib.sh's
+    #       assert_check. The default is the incumbent so every
+    #       already-generated task regenerates BYTE-IDENTICALLY.
+    #   "rego" -- the same asserts are compiled to tests/tier0.rego
+    #       (generator/jsonpath_rego.py) and evaluated by one `opa eval`, the
+    #       engine tier-1 already runs. The three-valued outcome (held /
+    #       contradicted / unresolvable) and the `== summary:` line are
+    #       identical; what changes is that no bash sits between the spec and
+    #       the verdict.
+    #
+    # Flipping this on a spec is only sound while both backends agree on every
+    # assert of every fixture, which `make tier0-parity`
+    # (gates/tier0_parity.py) checks per spec and `make ci` runs per spec.
+    tier0_engine: Literal["jq", "rego"] = "jq"
     # HCL symbol resolution for the hcl_raw arm's tier-1 (specs/SCHEMA.md §4.6;
     # docs/design/conftest-hcl-traversal-spike.md).
     #

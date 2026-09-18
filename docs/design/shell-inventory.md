@@ -33,7 +33,7 @@ lowest-priority item on the M10 track. Nothing here is scheduled.
 | emitter | lands as | size |
 |---|---|---|
 | `ASSERT_LIB_SH` (gen.py ~1754) | `tests/_assert_lib.sh`, copied to `pre_invoke/_assert_lib.sh` | ~178 lines |
-| `build_static_tiers_sh` (~2435) with `build_hcl_merge_block` (~2213) | `tests/static_tiers.sh` | ~126 lines; calls `terraform`, `npx`, `opa`, `cfn-guard`, `jq`, `hcl2json`, `aws` |
+| `build_static_tiers_sh` with `build_hcl_merge_block` | `tests/static_tiers.sh` | ~126 lines; calls `terraform`, `npx`, `opa`, `cfn-guard`, `jq`, `hcl2json`, `aws`. The ~160-line HCL pre-parser is `build_hcl_merge_py()` -> `tests/hcl_merge.py`, which the script invokes; the shell block is the toolchain check and the invocation only. |
 | `build_test_sh` (~3868) with `build_idempotence_block` (~3460) and `build_teardown_block` (~3698) folded in | `tests/test.sh` | ~192 lines; calls `bash`, `python3` |
 | `build_seed_pre_invoke_sh` (~4426), `build_step_pre_invoke_sh` (~4143), `build_seed_movement_guard` (~3355) | `pre_invoke/*.sh` | ~268 lines on a brownfield task |
 | `build_solve_sh_stub` (~4832), `build_seed_unchanged_solve_sh` (~4857) | `solution/solve.sh` scaffold, the generator-owned negative | small |

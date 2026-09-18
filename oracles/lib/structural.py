@@ -84,6 +84,15 @@ def resolve(document: dict, expression: str) -> list[Any]:
     JSON document. Returns every matched value, in document order (may be
     empty).
 
+    This is a real JSONPath engine, so an expression that reaches into a
+    scalar or iterates a non-collection resolves to NO MATCH. jq raises there,
+    and the tier-0 grader reports the raise as UNRESOLVABLE rather than as a
+    verdict -- so this function cannot express the three-valued outcome on its
+    own, and the differential test drives resolution through
+    generator/jsonpath_rego.py::resolve_nodes (jq's own raise conditions, one
+    grammar, both backends) while keeping `apply_op` below as the op table's
+    reference implementation.
+
     Raises `jsonpath_ng.exceptions.JsonPathParserError` on a syntax the
     parser can't handle. That is a deliberate signal, not a bug to work
     around: a tier-"1"-only expression reaching this function is itself the
@@ -133,12 +142,76 @@ def _flatten_once(values: list[Any]) -> list[Any]:
     return flat
 
 
+def _json_key(value: Any) -> Any:
+    """`value` rewritten so that Python `==` over the result is JSON equality.
+
+    Two crossings make plain `==` the wrong test, and both are reachable from a
+    Terraform plan or a CFN template:
+
+    - `True == 1` and `False == 0` hold in Python and in NEITHER grader (jq and
+      Rego both keep `true` and `1` distinct), so every bool is tagged.
+    - an integral float and the int of the same magnitude are ONE number in
+      JSON, and both graders agree (jq's `unique|sort`, Rego set equality), so
+      `1.0` narrows to `1`.
+
+    Containers are rewritten through, because a resolved `Statement` element
+    can carry either crossing several levels down."""
+    if isinstance(value, bool):
+        return ("bool", value)
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, dict):
+        return {k: _json_key(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_key(v) for v in value]
+    return value
+
+
+def _json_eq(left: Any, right: Any) -> bool:
+    """JSON equality, which Python `==` is not -- see `_json_key`. Reading a
+    plan-JSON `false` as equal to an `expected` of `0` tells a spec author an
+    assert holds that every trial contradicts."""
+    return _json_key(left) == _json_key(right)
+
+
+def _value_set(values: Any) -> set[str]:
+    """Set membership by VALUE, for `set_eq`. A plain `set()` raises TypeError
+    on an object- or list-valued node (a resolved `Statement` element, an
+    `Action` list nested one level deeper than `in`/`set_eq` flatten), which is
+    a crash where jq's own `unique` returns a set; canonical JSON is hashable
+    for every value a JSON document can hold, and keying it keeps `true` and
+    `1` the distinct members both graders treat them as."""
+    return {json.dumps(_json_key(value), sort_keys=True) for value in values}
+
+
+# Pattern syntax Python's `re` reads differently from the two engines that
+# actually grade (jq/Oniguruma, Rego/RE2): POSIX and `\p{...}` classes, both
+# spellings of a named group, and `\z`/`\Z`. Compiling one here anyway makes
+# this reference answer "holds" where the graders contradict or refuse -- an
+# authoring-time false PASS, which is worse than refusing. The construct-by-
+# construct split is specs/SCHEMA.md §4.2, pinned by
+# oracles/tests/test_op_parity.py::TestRegexFlavourDivergence.
+_UNREPRESENTABLE_PATTERN = re.compile(r"\[\[:|\\[pP]\{|\\[zZ]|\(\?P?<")
+
+
+def _compile(pattern: Any) -> re.Pattern:
+    if not isinstance(pattern, str):
+        raise ValueError(f"a regex `expected` must be a string, got {type(pattern).__name__}")
+    if _UNREPRESENTABLE_PATTERN.search(pattern):
+        raise ValueError(
+            f"pattern {pattern!r} uses syntax Python's re cannot represent as the "
+            "grading engines read it (a POSIX class, a \\p{...} Unicode class, a "
+            "named group, or \\z/\\Z)"
+        )
+    return re.compile(pattern)
+
+
 def _contains_one(value: Any, expected: Any) -> bool:
     if isinstance(value, str) and isinstance(expected, str):
         return expected in value
     if isinstance(value, (list, tuple, set)):
-        return expected in value
-    return value == expected
+        return any(_json_eq(element, expected) for element in value)
+    return _json_eq(value, expected)
 
 
 def apply_op(op: str, expected: Any, actual: list[Any]) -> bool:
@@ -158,20 +231,27 @@ def apply_op(op: str, expected: Any, actual: list[Any]) -> bool:
         # SCHEMA §4.2: "the (single) resolved value equals `expected`" — a
         # path resolving to 0 or >1 nodes fails 'eq' outright rather than
         # picking one arbitrarily; that ambiguity is itself a failure.
-        return len(actual) == 1 and actual[0] == expected
+        return len(actual) == 1 and _json_eq(actual[0], expected)
 
     if op == "in":
         if not isinstance(expected, (list, tuple, set)):
             raise ValueError("op 'in' requires a list `expected`")
         flat = _flatten_once(actual)
-        return len(flat) > 0 and all(value in expected for value in flat)
+        return len(flat) > 0 and all(
+            any(_json_eq(value, candidate) for candidate in expected) for value in flat
+        )
 
     if op == "contains":
         return any(_contains_one(value, expected) for value in actual)
 
     if op == "regex":
-        pattern = re.compile(expected)
-        return len(actual) > 0 and all(
+        # ANY resolved string matching is a pass, per SCHEMA.md §4.2's own
+        # wording ("a resolved string matches expected") and per the jq grader
+        # that actually runs it. `all` would additionally require every other
+        # resolved node to be a matching string, which silently strengthens
+        # every multi-node regex assert in the corpus.
+        pattern = _compile(expected)
+        return len(actual) > 0 and any(
             isinstance(value, str) and pattern.search(value) is not None
             for value in actual
         )
@@ -188,7 +268,7 @@ def apply_op(op: str, expected: Any, actual: list[Any]) -> bool:
         # absence) and `not_exists` cannot express either (that checks for
         # an absent KEY, not an absent substring inside an arbitrary
         # string value) -- see specs/SCHEMA.md §4.2's op table entry.
-        pattern = re.compile(expected)
+        pattern = _compile(expected)
         return all(
             not (isinstance(value, str) and pattern.search(value) is not None)
             for value in actual
@@ -204,7 +284,7 @@ def apply_op(op: str, expected: Any, actual: list[Any]) -> bool:
         # correct, and in fact more common per-arm) omitted-field form.
         # Ambiguity (>1 resolved node) is a failure here too, same
         # rationale as bare `eq`.
-        return len(actual) == 0 or (len(actual) == 1 and actual[0] == expected)
+        return len(actual) == 0 or (len(actual) == 1 and _json_eq(actual[0], expected))
 
     if op == "set_eq":
         # SCHEMA §4.2: exact set equality (flattened one level, same
@@ -216,7 +296,7 @@ def apply_op(op: str, expected: Any, actual: list[Any]) -> bool:
         if not isinstance(expected, (list, tuple, set)):
             raise ValueError("op 'set_eq' requires a list `expected`")
         flat = _flatten_once(actual)
-        return set(flat) == set(expected)
+        return _value_set(flat) == _value_set(expected)
 
     raise AssertionError(f"unreachable: op {op!r} in VALID_OPS but unhandled")
 

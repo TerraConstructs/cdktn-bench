@@ -847,19 +847,19 @@ def test_the_shipped_merge_program_produces_the_hcl_shape_this_suite_assumes() -
     the exact path `_topic_policy_doc` claims, with its leaves still raw
     `"${...}"` source.
     """
+    # The GENERATED pre-parser, read off disk rather than reconstructed: this
+    # test is about what the shipped oracle really does to a `.tf` file.
     generated = (
         REPO_ROOT
         / "tasks"
         / "anchor"
         / "s3-notification-authoritative-singleton-hcl-raw"
         / "tests"
-        / "static_tiers.sh"
+        / "hcl_merge.py"
     )
     if not generated.exists():  # pragma: no cover - generated tree not built
         pytest.skip(f"{generated} not generated yet")
-    text = generated.read_text()
-    start = text.index("<<'CDKTN_HCL_MERGE_PY'\n") + len("<<'CDKTN_HCL_MERGE_PY'\n")
-    merge_py = text[start : text.index("\nCDKTN_HCL_MERGE_PY", start)]
+    merge_py = generated.read_text()
 
     tf = (
         'resource "aws_sns_topic_policy" "audit" {\n'

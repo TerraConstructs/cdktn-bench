@@ -14,7 +14,8 @@ Supported grammar (SCHEMA.md §4.2's examples, plus two extensions added to
 close a gap the taxonomy actually needs -- see below):
 
     $                               -> root
-    .Field                          -> field access
+    .Field                          -> field access; a field name starts with
+                                       a letter or underscore
     ..Field                         -> recursive descent to every Field key
                                        at any depth (jq `.. | objects | .Field?`)
     [?(@.F=='V')]                   -> filter, single equality condition
@@ -56,13 +57,22 @@ from __future__ import annotations
 import json
 import re
 
-_FIELD_RE = re.compile(r"^\.([A-Za-z0-9_]+)")
-_RECURSIVE_FIELD_RE = re.compile(r"^\.\.([A-Za-z0-9_]+)")
+# A field name must start with a letter or underscore: jq reads `.0` as the
+# NUMBER 0 and `.v.0` as a syntax error, while every other backend reads both
+# as the key "0", so a digit-leading segment would mean different things per
+# engine -- refused here, in the grammar both compilers share, so no backend
+# can grade it. A digit-keyed field (`responses.200`) needs a quoting syntax
+# this subset does not have.
+_FIELD_NAME = r"[A-Za-z_][A-Za-z0-9_]*"
+_FIELD_RE = re.compile(rf"^\.({_FIELD_NAME})")
+_RECURSIVE_FIELD_RE = re.compile(rf"^\.\.({_FIELD_NAME})")
 _FILTER_RE = re.compile(r"^\[\?\(([^\]]*)\)\]")
 _WILDCARD_RE = re.compile(r"^\[\*\]")
 # The field side may be a dot-separated path (`@.selection.countType`), which
 # jq accepts verbatim as a chain of field accesses.
-_FIELD_COND_RE = re.compile(r"^@\.([A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)\s*==\s*'([^']*)'$")
+_FIELD_COND_RE = re.compile(
+    rf"^@\.({_FIELD_NAME}(?:\.{_FIELD_NAME})*)\s*==\s*'([^']*)'$"
+)
 _VALUE_COND_RE = re.compile(r"^@\s*==\s*'([^']*)'$")
 
 

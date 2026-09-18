@@ -41,6 +41,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from jsonpath_jq import jsonpath_to_jq  # noqa: E402
+from jsonpath_rego import build_tier0_rego  # noqa: E402
 from spec_model import Arm, Spec, Step, load_spec  # noqa: E402
 from oracles.emit import emit_oracles  # noqa: E402
 from gates.equipping import _discover_equipping_files  # noqa: E402
@@ -2184,10 +2185,88 @@ def build_assert_calls(
     return tier0_lines, tier1_names
 
 
+def tier0_rego_pkg(spec: Spec) -> str:
+    """The `data.cdktn_bench.<pkg>.tier0` package tests/tier0.rego declares.
+
+    Same `<pkg>` the tier-1 policy uses, so one scenario is one package with
+    one sub-package per tier rather than two unrelated namespaces.
+    """
+    return spec.id.replace("-", "_")
+
+
+def build_tier0_rego_file(spec: Spec, arm: Arm, step: Step | None = None) -> str:
+    """tests/tier0.rego for one arm: the same tier-"0" asserts
+    build_assert_calls compiles to jq, compiled to Rego from the same YAML.
+
+    Written into a task dir only when `oracle.tier0_engine` is `rego`, the
+    engine static_tiers.sh's tier-0 block then reads it with. Every other
+    caller -- gates/tier0_parity.py, the compiler's own tests -- calls this
+    function directly and compiles into a working copy, so a jq spec ships no
+    policy it never evaluates.
+    """
+    assert_names = None if step is None else set(spec.step_assert_names(step))
+    entries: list[tuple[str, str, str, object]] = []
+    for a in spec.oracle.structural_asserts:
+        if assert_names is not None and a.name not in assert_names:
+            continue
+        if arm not in a.applies_to or a.tier != "0":
+            continue
+        jsonpath = a.cfn_jsonpath if arm == "awscdk" else a.tf_jsonpath
+        assert jsonpath is not None
+        entries.append((a.name, jsonpath, a.op, a.expected))
+    return build_tier0_rego(tier0_rego_pkg(spec), entries)
+
+
+# The tier-0 block `oracle.tier0_engine: rego` substitutes for the jq
+# assert_check call list (specs/SCHEMA.md §4.5.1). ONE `opa eval` per trial
+# returns the whole tier-0 report, because the compiled rules already hold
+# every assert and per-assert shelling out would only re-add the bash layer
+# this engine exists to remove.
+#
+# The verdict is the FIRST line and is compared as a WHOLE STRING. The log
+# lines after it quote resolved artifact values, which the agent controls, so a
+# substring search for "TIER0_PASS=1" anywhere in the output would let a
+# planned resource NAME spoof a tier-0 pass.
+#
+# Both failure branches mirror the tier-1 block's own discipline: a missing
+# `opa` is TOOL_MISSING (a broken arm image), an `opa eval` that aborts is an
+# ORACLE defect, and each drops its own marker under /logs/verifier rather than
+# passing silently. Neither writes a verdict of its own -- they set
+# tier0_pass=0, which the final reward gate already maps to 0.0.
+TIER0_REGO_BLOCK = textwrap.dedent(
+    """\
+    TIER0_POLICY="$DIR/tier0.rego"
+    if ! command -v opa >/dev/null 2>&1; then
+      tier0_pass=0
+      {
+        echo "opa is not installed in this image, but this scenario's tier-0"
+        echo "asserts are graded by Rego (oracle.tier0_engine) -- this is a"
+        echo "run-invalidating condition, not a silent pass."
+      } | tee /logs/verifier/tier0-unavailable
+    elif ! TIER0_OUT="$(opa eval -f raw -I -d "$TIER0_POLICY" \\
+          "data.cdktn_bench.__PKG__.tier0.render" \\
+          < "$ARTIFACT" 2>/logs/verifier/tier0-opa-stderr.log)"; then
+      tier0_pass=0
+      {
+        echo "opa eval ABORTED instead of returning tier-0 outcomes, so not one"
+        echo "structural assert was evaluated. This is a defect in the ORACLE"
+        echo "(a Rego runtime error), NOT a judgement about this solution."
+        cat /logs/verifier/tier0-opa-stderr.log 2>/dev/null
+      } | tee /logs/verifier/tier0-engine-error
+    else
+      printf '%s\\n' "$TIER0_OUT"
+      if [ "${TIER0_OUT%%$'\\n'*}" != "TIER0_PASS=1" ]; then
+        tier0_pass=0
+      fi
+    fi
+    """
+)
+
+
 # The `.tf`/`.tf.json` -> JSON pre-parse the `oracle.hcl_traversal` opt-in
-# adds to the hcl_raw arm's generated tests/static_tiers.sh (specs/SCHEMA.md
-# §4.6). Emitted as ONE column-0 shell block, substituted into the tier-1
-# block after its dedent.
+# adds to the hcl_raw arm's oracle (specs/SCHEMA.md §4.6). Emitted as its own
+# tests/hcl_merge.py, invoked by the shell block build_hcl_merge_block()
+# substitutes into the tier-1 block.
 #
 # WHY PYTHON AND NOT A SHELL LOOP: the merged document has to be valid JSON
 # with the parsed files under one key, and `jq -s` over a shell-built list is
@@ -2203,16 +2282,14 @@ def build_assert_calls(
 # can observe the change, and only rules that reach for `input._hcl` see
 # anything new.
 #
-# NOTE ON THE EMBEDDED PYTHON: it deliberately contains no backslash escape
-# sequences at all (every message goes through `print(..., file=sys.stderr)`
-# rather than an explicit newline escape). It is emitted through a
-# textwrap.dedent'd template into a quoted heredoc, and a literal escape in
-# this position has to survive two levels of source quoting to arrive intact
-# -- which it did not, the first time this was written. Keeping the emitted
-# program escape-free removes the hazard instead of managing it.
-def build_hcl_merge_block() -> str:
-    py = textwrap.dedent(
-        """\
+# NO BACKSLASH ESCAPE SEQUENCE APPEARS IN THIS PROGRAM: every message goes
+# through `print(..., file=sys.stderr)` rather than an explicit newline escape.
+# An escape here has to survive the template's own quoting to arrive intact, so
+# an escape-free program removes the hazard instead of managing it -- and keeps
+# the emitted bytes comparable against any other delivery of the same program
+# (gates/hcl_merge_bytes.py).
+HCL_MERGE_PY = textwrap.dedent(
+    """\
         import glob
         import json
         import os
@@ -2229,14 +2306,14 @@ def build_hcl_merge_block() -> str:
                 )
             # terraform accepts main.tf.json and a "*.tf" glob misses it. It
             # is already JSON, so hcl2json is neither needed nor correct here.
-            # NOTE (2026-08-24): the two routes do NOT produce the same shape
-            # for `locals` -- hcl2json emits a LIST of blocks, terraform's own
-            # JSON syntax an OBJECT of name -> value (it accepts the list form
-            # too). That difference is normalised in the SHARED LIBRARY, not
-            # here (oracles/rego/lib/hcl_traversal.rego::locals_blocks), so a
-            # policy sees one contract regardless of route. Reading only the
-            # list spelling silently dropped every local in an object-spelled
-            # .tf.json and scored a CORRECT solution 0.0.
+            # The two routes do NOT produce the same shape for `locals`:
+            # hcl2json emits a LIST of blocks, terraform's own JSON syntax an
+            # OBJECT of name -> value (it accepts the list form too). That
+            # difference is normalised in the SHARED LIBRARY, not here
+            # (oracles/rego/lib/hcl_traversal.rego::locals_blocks), so a policy
+            # sees one contract regardless of route. Reading only the list
+            # spelling silently drops every local in an object-spelled .tf.json
+            # and scores a CORRECT solution 0.0.
             for f in sorted(glob.glob("*.tf.json")):
                 with open(f) as fh:
                     docs[f] = json.load(fh)
@@ -2256,18 +2333,18 @@ def build_hcl_merge_block() -> str:
 
         # --- RECOVER POSITION INSIDE A `jsonencode(...)` ARGUMENT --------
         #
-        # *** EXECUTED REWARD-1.0 LAUNDER THIS CLOSES (round 16). An IAM
+        # *** WITHOUT THIS STEP A MENTION TEST IS LAUNDERABLE. An IAM
         # policy document written `policy = jsonencode({...})` is ONE opaque
         # expression: `terraform show -json` reports a FLAT union of every
         # reference anywhere inside it, with NO position at all. A policy
         # rule can therefore only ask "does the document mention the bucket
-        # SOMEWHERE", and a checked-in 0.0 fixture
+        # SOMEWHERE", and the checked-in 0.0 fixture
         # (sns-topic-policy-not-scoped-to-bucket, which grants
         # s3.amazonaws.com sns:Publish with no aws:SourceArn condition of
-        # any kind) was laundered to REWARD 1.0 by ONE cosmetic line:
+        # any kind) reaches REWARD 1.0 on ONE cosmetic line:
         #     Sid = "AllowS3Publish"  ->  Sid = "AllowS3Publish${aws_s3_bucket.media.id}"
-        # The bucket reference in a `Sid` string satisfied a mention test.
-        # The same one-line edit flipped the inline-policy fixture too. ***
+        # A bucket reference in a `Sid` string satisfies a mention test, and
+        # the same one-line edit flips the inline-policy fixture too. ***
         #
         # hcl2json hands back the argument as its raw SOURCE, re-wrapped as
         # exactly "${jsonencode(<body>)}". Stripping that fixed prefix and
@@ -2365,15 +2442,47 @@ def build_hcl_merge_block() -> str:
             file=sys.stderr,
         )
         """
-    )
-    body = textwrap.dedent(
+)
+
+
+# tests/hcl_merge.py's own header, for a reader who meets the file inside a
+# task dir rather than here.
+HCL_MERGE_PY_HEADER = """\
+#!/usr/bin/env python3
+# Generated -- generator/gen.py. Do not hand-edit; regenerate the owning
+# scenario instead. Builds the tier-1 input document for `oracle.hcl_traversal`
+# (specs/SCHEMA.md §4.6): plan JSON plus the agent's own .tf/.tf.json files,
+# parsed by hcl2json, under the single reserved key `_hcl`.
+#
+# Usage: python3 hcl_merge.py <plan.json> <merged-out.json>, cwd = the project
+# directory whose *.tf it globs. Stdlib only, and no backslash escape sequence
+# anywhere in it.
+"""
+
+
+def build_hcl_merge_py() -> str:
+    """tests/hcl_merge.py: the HCL pre-parse, as a standalone file the
+    generated static_tiers.sh invokes.
+
+    A file rather than a heredoc inside that script: it is readable in a
+    failing trial's logs, runnable by hand against a kept working copy, and
+    carries no second level of source quoting between this template and the
+    emitted bytes. generator/tests/test_hcl_merge.py pins the emitted program
+    and its invocation; gates/hcl_merge_bytes.py pins the document it writes.
+    """
+    return HCL_MERGE_PY_HEADER + "\n" + HCL_MERGE_PY
+
+
+def build_hcl_merge_block() -> str:
+    return textwrap.dedent(
         """\
         # --- tier-1 input: plan JSON + the agent's own parsed .tf files ------
         # (oracle.hcl_traversal, specs/SCHEMA.md §4.6). See generator/gen.py's
-        # build_hcl_merge_block() and the block comment above the tier-1 rego
+        # build_hcl_merge_py() and the block comment above the tier-1 rego
         # branch for why this exists, why the glob is here and not in the
         # policy, and why every failure below is loud rather than a score.
         HCL_LIB="$DIR/hcl_traversal.rego"
+        HCL_MERGE_PY="$DIR/hcl_merge.py"
         HCL_MERGED="/logs/verifier/oracle-input.json"
         HCL_MERGE_STATUS="OK"
         if ! command -v hcl2json >/dev/null 2>&1; then
@@ -2382,10 +2491,15 @@ def build_hcl_merge_block() -> str:
           HCL_MERGE_STATUS="LIB_MISSING"
           echo "shared traversal library not found at $HCL_LIB" \\
             > /logs/verifier/tier1-hcl-merge.log
-        elif python3 - "$ARTIFACT" "$HCL_MERGED" \\
-              > /logs/verifier/tier1-hcl-merge.log 2>&1 <<'CDKTN_HCL_MERGE_PY'
-        __MERGE_PY__
-        CDKTN_HCL_MERGE_PY
+        elif [ ! -f "$HCL_MERGE_PY" ]; then
+          # Same class as LIB_MISSING and reported through the same status: the
+          # pre-parser is part of the oracle, and a task dir missing it can only
+          # produce an unreadable document, never a judgement about a solution.
+          HCL_MERGE_STATUS="LIB_MISSING"
+          echo "HCL pre-parser not found at $HCL_MERGE_PY" \\
+            > /logs/verifier/tier1-hcl-merge.log
+        elif python3 "$HCL_MERGE_PY" "$ARTIFACT" "$HCL_MERGED" \\
+              > /logs/verifier/tier1-hcl-merge.log 2>&1
         then
           # Every rule that ever read `input` keeps reading the same bytes;
           # the document just carries one extra top-level key now.
@@ -2395,7 +2509,6 @@ def build_hcl_merge_block() -> str:
         fi
         """
     )
-    return body.replace("__MERGE_PY__\n", py)
 
 
 # The terraconstructs half of `oracle.hcl_traversal`: the shared library is
@@ -2586,7 +2699,17 @@ def build_static_tiers_sh(spec: Spec, arm: Arm, step: Step | None = None) -> str
         )
     toolchain_block = "\n".join(step_blocks)
 
-    tier0_block = "\n".join(tier0_lines) if tier0_lines else "true  # no tier-0 asserts apply"
+    # `jq` (the default) keeps the assert_check call list every already-
+    # generated task carries; `rego` replaces the whole block with one
+    # `opa eval` of the compiled tests/tier0.rego. The applicable-assert COUNT
+    # is the same either way, so the header line and every consumer of the
+    # `== summary:` line are untouched.
+    if spec.oracle.tier0_engine == "rego":
+        tier0_block = TIER0_REGO_BLOCK.replace("__PKG__", tier0_rego_pkg(spec)).rstrip("\n")
+    elif tier0_lines:
+        tier0_block = "\n".join(tier0_lines)
+    else:
+        tier0_block = "true  # no tier-0 asserts apply"
     tier0_total = len(tier0_lines)
 
     tier1_comment = (
@@ -4938,6 +5061,12 @@ _GENERATED_TESTS_FILES = (
     "live_check.py",
     "policy.guard",
     "policy.rego",
+    # The tier-0 asserts compiled to Rego (generator/jsonpath_rego.py), written
+    # only for a spec whose `oracle.tier0_engine` is `rego` -- the one engine
+    # static_tiers.sh's tier-0 block reads it with. Listed here so a spec that
+    # goes back to jq has the stale policy removed rather than left behind
+    # claiming a grader the emitted script no longer runs.
+    "tier0.rego",
     # The shared HCL traversal resolver (oracles/rego/lib/hcl_traversal.rego),
     # copied in only for a spec that sets `oracle.hcl_traversal` on the
     # hcl_raw arm. Listed here so it is treated as GENERATED material -- a
@@ -4945,6 +5074,12 @@ _GENERATED_TESTS_FILES = (
     # the stale copy removed rather than left behind claiming a grader the
     # emitted script no longer loads.
     "hcl_traversal.rego",
+    # The HCL pre-parser build_hcl_merge_py() emits, written only for the
+    # hcl_raw arm of an `oracle.hcl_traversal` spec -- the one arm with .tf
+    # files to parse. Listed for the same reason as the resolver above: turning
+    # the flag off must remove it, not leave a script static_tiers.sh no longer
+    # calls.
+    "hcl_merge.py",
     "README.md",
 )
 
@@ -4967,6 +5102,15 @@ def write_tests_dir(spec: Spec, arm: Arm, tests_dir: Path, step: Step | None = N
     tests_dir.mkdir(parents=True, exist_ok=True)
     (tests_dir / "_assert_lib.sh").write_text(ASSERT_LIB_SH)
     (tests_dir / "static_tiers.sh").write_text(build_static_tiers_sh(spec, arm, step))
+    # Only the `rego` engine's static_tiers.sh sources this policy; under the
+    # default `jq` the task dir must not carry one, and a leftover from a spec
+    # that has since gone back to jq is stale generated material -- same
+    # discipline as the unselected policy.guard/policy.rego sibling below.
+    tier0_rego_dest = tests_dir / "tier0.rego"
+    if spec.oracle.tier0_engine == "rego":
+        tier0_rego_dest.write_text(build_tier0_rego_file(spec, arm, step))
+    elif tier0_rego_dest.exists():
+        tier0_rego_dest.unlink()
     (tests_dir / "test.sh").write_text(build_test_sh(spec, arm))
     # live_check.py is destructive-safe (like solution/solve.sh, SCHEMA.md
     # §8.2 point 8) iff the spec declares it hand_authored. hand_authored=False
@@ -5105,6 +5249,16 @@ def write_tests_dir(spec: Spec, arm: Arm, tests_dir: Path, step: Step | None = N
         shutil.copy2(ORACLES_DIR / "rego" / "lib" / "hcl_traversal.rego", lib_dest)
     elif lib_dest.exists():
         lib_dest.unlink()
+    # Only hcl_raw: terraconstructs synthesizes cdk.tf.json and has no .tf
+    # source to pre-parse, and emitting the parser there would glob nothing and
+    # write an EMPTY `_hcl` -- which the policy's own fail-closed deny reads as
+    # "no .tf source was supplied", scoring a correct solution 0.0.
+    merge_py_dest = tests_dir / "hcl_merge.py"
+    if arm == "hcl_raw" and spec.oracle.hcl_traversal:
+        merge_py_dest.write_text(build_hcl_merge_py())
+        make_executable(merge_py_dest)
+    elif merge_py_dest.exists():
+        merge_py_dest.unlink()
 
 
 def _clear_generated_tests_files(spec: Spec, tests_dir: Path) -> None:
