@@ -934,6 +934,21 @@ and the disarmed shape.
      Unblocks `lambda-alias-tracks-unpublished-latest`, red in `make ci`
      because it declares no tier-1 catch and a tier-1 rule there is vacuous on
      awscdk.
+   * **Queued: rows lost to Harbor's trajectory conversion.** Harbor converts
+     Claude Code's `claude-code.txt` stream into `agent/trajectory.json` and
+     rejects the result when a step id is skipped (`steps[16].step_id:
+     expected 17, got 18`); the row then has no trajectory, the audit gate
+     cannot read the agent's tool calls, and `gates/emit_result.py` voids it
+     as `invalid-infra` / `audit-unavailable` even though the transcript on
+     disk is complete (seen twice: `jobs/amend32-promotion/…/named-resource-
+     replacement-terra__saaxzSo`, `jobs/amend43-promotion/…/ecs-swappiness-
+     awscdk__vg96pLR`). Fix: when `trajectory.json` is absent and
+     `claude-code.txt` is present, the audit gate reads the tool calls from
+     the stream transcript (same `tool_use` events Harbor converts) and the
+     existing `_tokens_from_claude_code_stream` fallback supplies the token
+     fields, so the row is audited and counted; a row with neither file stays
+     `audit-unavailable`. Pin with a test built from the awscdk trial above.
+     Raise the step-id gap upstream in aws-bench/Harbor as well.
 6. Comment clean-up continues as part of every change (rules in CLAUDE.md
    "Comments"); remaining hot spots are `generator/gen.py` bodies, the
    emitted template strings, hand-authored `solve.sh` files, `arms/*/README.md`,
