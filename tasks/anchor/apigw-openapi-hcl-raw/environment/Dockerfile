@@ -8,6 +8,8 @@
 # Grading tools installed here, all pinned + sha256-verified, all offline:
 #   terraform 1.15.8  — the arm's own toolchain (plan/validate/show)
 #   opa       1.19.0  — tier-1 engine (`opa eval -d policy.rego 'data.<pkg>.deny'`)
+#   jq        1.7.1   — tier-0 engine: generated tests/ops.py runs every
+#                       structural assert through it
 #   hcl2json  0.6.9   — tier-1 HCL pre-parse, 4.1 MB. Turns the `*.tf` in
 #                       the working directory into JSON so a Rego policy can
 #                       resolve a `local.` symbol to the resource attribute
@@ -55,7 +57,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       curl \
       gnupg \
       unzip \
-      jq \
       git \
       less \
       python3 \
@@ -111,6 +112,25 @@ RUN set -eu; \
     echo "${OPA_SHA256}  /usr/local/bin/opa" | sha256sum -c -; \
     chmod 0755 /usr/local/bin/opa; \
     opa version
+
+# --- jq 1.7.1: pinned prebuilt binary, sha256-verified against the release's
+# --- own sha256sum.txt. jq is a GRADING ENGINE, not a convenience: the
+# --- generated tests/ops.py runs every tier-0 structural assert through it,
+# --- so it is pinned exactly like opa. Debian bookworm's apt jq is 1.6,
+# --- whose behaviour differs from the 1.7.x the host gates run
+# --- (../../../docs/gates.md). Same version, URL and checksums in all three
+# --- arms, so one jq behaviour grades tier 0 everywhere.
+RUN set -eu; \
+    case "${TARGETARCH}" in \
+      amd64) JQ_SHA256="5942c9b0934e510ee61eb3e30273f1b3fe2590df93933a93d7c58b81d19c8ff5" ;; \
+      arm64) JQ_SHA256="4dd2d8a0661df0b22f1bb9a1f9830f06b6f3b8f7d91211a1ef5d7c4f06a8b4a5" ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /usr/local/bin/jq \
+      "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-${TARGETARCH}"; \
+    echo "${JQ_SHA256}  /usr/local/bin/jq" | sha256sum -c -; \
+    chmod 0755 /usr/local/bin/jq; \
+    jq --version
 
 # --- hcl2json (tmccombs/hcl2json) 0.6.9: static pinned binary, sha256-
 # --- verified. UNLIKE the opa pin above, this one CAN be cross-checked

@@ -21,6 +21,9 @@
 #                          pinned version as arms/hcl-raw and
 #                          arms/terraconstructs, so one OPA behaviour grades
 #                          all three arms.)
+#   jq          1.7.1     (tier-0 grading engine -- the generated tests/ops.py
+#                          runs every structural assert through it. Same pin
+#                          in all three arms; apt's bookworm jq is 1.6.)
 #
 # BOTH tier-1 graders ship here on purpose. cfn-guard 3.2.0 cannot express a
 # cross-resource logical-id join, so it cannot be the grading AUTHORITY in a
@@ -40,7 +43,8 @@ FROM node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b8
 
 # --- OS packages -------------------------------------------------------
 # Same baseline utility set as the upstream dataset's Dockerfile
-# (ca-certificates/curl/unzip/less/groff/jq/zip), plus git (Claude Code
+# (ca-certificates/curl/unzip/less/groff/zip; jq comes from the pinned
+# binary below, not apt), plus git (Claude Code
 # harness installs/uses it per-trial per aws-bench-guide.md §5).
 #
 # python3 (stdlib only, no pip package ever installed): added fix-round-3
@@ -57,7 +61,7 @@ FROM node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b8
 # "Agent-container baseline contract", which previously (deliberately)
 # excluded python3 from the shared baseline.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl unzip less groff jq zip git python3 \
+    ca-certificates curl unzip less groff zip git python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # --- AWS CLI v2 ----------------------------------------------------------
@@ -143,6 +147,25 @@ RUN set -eu; \
     echo "${OPA_SHA256}  /usr/local/bin/opa" | sha256sum -c -; \
     chmod 0755 /usr/local/bin/opa; \
     opa version
+
+# --- jq 1.7.1: pinned prebuilt binary, sha256-verified against the release's
+# --- own sha256sum.txt. jq is a GRADING ENGINE, not a convenience: the
+# --- generated tests/ops.py runs every tier-0 structural assert through it,
+# --- so it is pinned exactly like opa. Debian bookworm's apt jq is 1.6,
+# --- whose behaviour differs from the 1.7.x the host gates run
+# --- (../../../docs/gates.md). Same version, URL and checksums in all three
+# --- arms, so one jq behaviour grades tier 0 everywhere.
+RUN set -eu; \
+    case "${TARGETARCH}" in \
+      amd64) JQ_SHA256="5942c9b0934e510ee61eb3e30273f1b3fe2590df93933a93d7c58b81d19c8ff5" ;; \
+      arm64) JQ_SHA256="4dd2d8a0661df0b22f1bb9a1f9830f06b6f3b8f7d91211a1ef5d7c4f06a8b4a5" ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /usr/local/bin/jq \
+      "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-${TARGETARCH}"; \
+    echo "${JQ_SHA256}  /usr/local/bin/jq" | sha256sum -c -; \
+    chmod 0755 /usr/local/bin/jq; \
+    jq --version
 
 # --- Workspace scaffold ---------------------------------------------------
 # /app/project is the agent's working directory: a starting CDK TypeScript

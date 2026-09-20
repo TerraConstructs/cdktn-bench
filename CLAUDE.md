@@ -136,8 +136,10 @@ Full rules: `docs/adding-scenarios.md` §1 item 3a. The short form:
   (`scenario_form` on every row), 37 (the teardown tier), 38 (agent commands
   run in the foreground; deploy counts as toolchain evidence), 39
   (`grading-proof` accepts a live-tier proof), 40 (the gate stub is an
-  assumed-role identity answering `iam:GetRole`) and 41 (a catch may be
-  predicted at the teardown tier; first gating teardown) are ACCEPTED** (promotion
+  assumed-role identity answering `iam:GetRole`), 41 (a catch may be
+  predicted at the teardown tier; first gating teardown) and 43 (tier 0 is
+  graded by a generated Python driver over the jq filters; jq pinned at 1.7.1)
+  are ACCEPTED** (promotion
   runs for the harness-changing ones under `jobs/amend3*-promotion`).
   Rows produced under them are publishable within
   their own stratum. Any new amendment that changes the harness re-enters
