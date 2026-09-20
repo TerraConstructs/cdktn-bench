@@ -457,9 +457,9 @@ class SeedAssert(BaseModel):
 
     Reuses `StructuralAssert`'s vocabulary verbatim -- same `op`/`expected`
     table (§4.2), same `{cfn,tf}_jsonpath` split, same
-    `generator/jsonpath_jq.py` compilation, resolved by the same
-    `_assert_lib.sh::assert_check` a real trial's tier-0 runs. A second path
-    language would be a new drift surface for zero gain.
+    `generator/jsonpath_jq.py` compilation, resolved by the same `tests/ops.py`
+    a real trial's tier-0 runs. A second path language would be a new drift
+    surface for zero gain.
 
     No `tier` field, unlike `StructuralAssert`: a seed assert is never graded
     during a trial. It is a GENERATION-TIME parity gate run by
@@ -778,7 +778,7 @@ class WorkspaceSeedDeploy(BaseModel):
     """`workspace_seed.deploy` -- turn the premise's "it is already deployed in
     this account" from a claim into a fact (SCHEMA.md §2.7.1).
 
-    Presence makes the generator emit `pre_invoke/{pre_invoke.sh,_assert_lib.sh}`
+    Presence makes the generator emit `pre_invoke/{pre_invoke.sh,ops.py}`
     into every enabled arm's task dir. `AwsBenchSingleStepTrial._prepare` runs it
     inside the AGENT container, after the container is up and before the agent's
     first token, with `~/.aws/credentials` staged for
@@ -1015,9 +1015,10 @@ class Oracle(BaseModel):
     # YAML entries are compiled to jq or to Rego from one grammar.
     #
     #   "jq" (DEFAULT) -- each cfn_jsonpath/tf_jsonpath becomes a jq filter
-    #       (generator/jsonpath_jq.py) applied by tests/_assert_lib.sh's
-    #       assert_check. The default is the incumbent so every
-    #       already-generated task regenerates BYTE-IDENTICALLY.
+    #       (generator/jsonpath_jq.py) carried in tests/tier0.py's assert
+    #       table and applied by tests/ops.py. The default is the incumbent, so
+    #       selecting an engine is never needed to keep a task regenerating
+    #       byte-identically.
     #   "rego" -- the same asserts are compiled to tests/tier0.rego
     #       (generator/jsonpath_rego.py) and evaluated by one `opa eval`, the
     #       engine tier-1 already runs. The three-valued outcome (held /

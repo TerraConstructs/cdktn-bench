@@ -59,7 +59,7 @@ test-gates:
 #      DECLARED BEHAVIOURAL FACTS: each `workspace_seed.seed_asserts` entry is
 #      resolved against the artifact that arm's own toolchain just produced,
 #      through the SAME generator/jsonpath_jq.py compilation and the SAME
-#      `_assert_lib.sh::assert_check` bash function a real trial's tier-0 runs.
+#      `tests/ops.py` driver a real trial's tier-0 runs.
 #
 # Implemented as a MODE of generator/check_reference_paths.py rather than a new
 # gate: that script already drops a fixture at entry_file, runs the real

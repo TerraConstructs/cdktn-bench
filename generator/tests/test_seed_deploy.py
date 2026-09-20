@@ -14,7 +14,7 @@ empty account. The rest keeps that assert emitted, reachable and undroppable:
   1. **Emission**, read off the REAL generated task dirs and off the emitters.
   2. **Validators** -- one test per hard error, each a one-line mutation of the
      real spec, so they stay valid as the schema evolves.
-  3. **Execution**, the emitted `assert_check` calls run in a real bash against
+  3. **Execution**, the emitted `ops.py --one` calls run for real against
      checked-in AWS CLI response fixtures.
 
 Offline and toolchain-free: no docker, no AWS, no npm; `bash` and `jq` only.
@@ -39,7 +39,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "generator"))
 
 from gen import (  # noqa: E402
-    ASSERT_LIB_SH,
+    OPS_PY,
     SEED_DEPLOY_RECEIPT_PATH,
     SEED_DEPLOY_REQUIRED_ENV_KEY,
     SEED_STATE_IDENTITY_JQ,
@@ -53,6 +53,7 @@ from gen import (  # noqa: E402
     task_dir,
 )
 from jsonpath_jq import jsonpath_to_jq  # noqa: E402
+from tier0_py import Tier0Entry, build_tier0_py  # noqa: E402
 from spec_model import Spec, load_spec  # noqa: E402
 
 SPEC_PATH = REPO_ROOT / "specs" / "named-resource-replacement.yaml"
@@ -103,18 +104,21 @@ def test_every_arm_ships_an_executable_seed_deploy_script(spec: Spec) -> None:
         assert script.read_text().startswith("#!/usr/bin/env bash\n")
 
 
-def test_assert_lib_has_one_owner_and_is_byte_identical(spec: Spec) -> None:
-    """ONE owner (gen.py::ASSERT_LIB_SH), two destinations.
+def test_ops_py_has_one_owner_and_is_byte_identical(spec: Spec) -> None:
+    """ONE owner (gen.py::OPS_PY), two destinations.
 
     A forked copy is exactly the drift surface that would let the seed proof
     and tier-0 disagree about what `set_eq` means -- with nothing to notice.
     """
     for arm in ARMS:
         root = task_dir(spec, arm)
-        seed_lib = (root / "pre_invoke" / "_assert_lib.sh").read_bytes()
-        tests_lib = (root / "tests" / "_assert_lib.sh").read_bytes()
-        assert seed_lib == tests_lib, f"{arm}: seed/tests _assert_lib.sh diverged"
-        assert seed_lib == ASSERT_LIB_SH.encode(), f"{arm}: neither matches gen.py"
+        seed_lib = (root / "pre_invoke" / "ops.py").read_bytes()
+        tests_lib = (root / "tests" / "ops.py").read_bytes()
+        assert seed_lib == tests_lib, f"{arm}: seed/tests ops.py diverged"
+        assert seed_lib == OPS_PY.encode(), f"{arm}: neither matches gen.py"
+        assert not (root / "pre_invoke" / "_assert_lib.sh").exists(), (
+            f"{arm}: the retired bash library is still in pre_invoke/"
+        )
 
 
 def test_the_script_is_valid_bash(spec: Spec) -> None:
@@ -174,20 +178,17 @@ def test_the_script_carries_its_arms_state_proof(spec: Spec) -> None:
     assert "describe-stacks" in build_seed_pre_invoke_sh(spec, "awscdk")
 
 
-def test_one_assert_check_per_declared_live_assert(spec: Spec) -> None:
+def test_one_driver_call_per_declared_live_assert(spec: Spec) -> None:
     seed = spec.workspace_seed
     assert seed is not None and seed.deploy is not None
+    prefix = "python3 /pre_invoke/ops.py --one "
     for arm in ARMS:
         body = build_seed_pre_invoke_sh(spec, arm)
-        # Command lines only -- the surrounding comments name the function too.
-        calls = [
-            line
-            for line in body.splitlines()
-            if line.startswith("assert_check ")
-        ]
+        # Command lines only -- the surrounding comments name the runner too.
+        calls = [line for line in body.splitlines() if line.startswith(prefix)]
         assert len(calls) == len(seed.deploy.live_asserts)
         for a in seed.deploy.live_asserts:
-            assert any(line.startswith(f"assert_check {a.name} ") for line in calls)
+            assert any(line.startswith(f"{prefix}{a.name} ") for line in calls)
         # Each one three-valued: rc 2 = could not resolve, rc 1 =
         # contradicted. Collapsed into one code, a malformed AWS response reads
         # as "the account does not hold the seed".
@@ -439,29 +440,30 @@ def test_workspace_seed_deploy_is_a_legal_consumer(spec: Spec) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _run_assert_check(name: str, jq_filter: str, op: str, expected, artifact: Path) -> int:
-    """Source the REAL generated _assert_lib.sh in a bare shell and run one
-    assert exactly as the emitted pre_invoke.sh runs it.
+# The generated tests/ops.py, written once: every execution cell below runs the
+# SAME bytes a task ships rather than importing the template as a module.
+_OPS_PY_UNDER_TEST = REPO_ROOT / "generator" / "tests" / ".ops_under_test.py"
 
-    Bare on purpose: `pre_invoke.sh` sources this library with nothing else
-    loaded, unlike `static_tiers.sh` which it was written as a companion to. If
-    `assert_check` ever grows a dependency on something that script sets, this
-    test is what catches it.
+
+def _run_assert_check(name: str, jq_filter: str, op: str, expected, artifact: Path) -> int:
+    """Run the REAL generated ops.py on one assert, exactly as the emitted
+    pre_invoke.sh runs it, and return its three-valued exit status.
+
+    The driver is invoked as its own process with nothing else loaded, which is
+    how both callers reach it: nothing about the surrounding script can be
+    relied on.
     """
-    lib = REPO_ROOT / "generator" / "tests" / ".assert_lib_under_test.sh"
-    lib.write_text(ASSERT_LIB_SH)
+    _OPS_PY_UNDER_TEST.write_text(OPS_PY)
     try:
-        script = (
-            "set -uo pipefail\n"
-            f". {lib}\n"
-            f"assert_check {json.dumps(name)} {json.dumps(jq_filter)} "
-            f"{json.dumps(op)} {json.dumps(json.dumps(expected))} {artifact}\n"
-        )
         return subprocess.run(
-            ["bash", "-c", script], capture_output=True
+            [
+                sys.executable, str(_OPS_PY_UNDER_TEST), "--one", name, jq_filter,
+                op, json.dumps(expected), str(artifact),
+            ],
+            capture_output=True,
         ).returncode
     finally:
-        lib.unlink(missing_ok=True)
+        _OPS_PY_UNDER_TEST.unlink(missing_ok=True)
 
 
 def test_the_vacuity_case_is_caught_mechanically(spec: Spec) -> None:
@@ -475,7 +477,7 @@ def test_the_vacuity_case_is_caught_mechanically(spec: Spec) -> None:
     The seed's `old-group-is-live` assert is that assertion's exact negation, so
     it must PASS against a real seeded account and FAIL against an empty one.
     Compiled and executed here through the same jsonpath_jq translator and the
-    same _assert_lib.sh a real trial uses.
+    same ops.py a real trial uses.
     """
     if shutil.which("jq") is None:  # pragma: no cover - jq is assumed
         pytest.skip("jq not on PATH")
@@ -604,7 +606,7 @@ def test_the_old_substring_semantics_would_still_have_passed_the_m2_case() -> No
     """The trap itself, kept executable.
 
     `contains` stays SHARED with tier-0, where its substring behaviour on
-    strings is deliberate (see ASSERT_LIB_SH's own table). A `SeedLiveAssert`
+    strings is deliberate (see gen.py's OPS_PY). A `SeedLiveAssert`
     may not rely on it for an exact-membership claim. This test pins WHY, so an
     author who
     "simplifies" the spec back to `contains` sees the trap spelled out in a
@@ -621,7 +623,7 @@ def test_the_old_substring_semantics_would_still_have_passed_the_m2_case() -> No
         FIXTURES / "describe-vpc-endpoints-renamed-only.json",
     )
     assert rc == 0, (
-        "if this ever fails, ASSERT_LIB_SH's `contains` stopped being a "
+        "if this ever fails, OPS_PY's `contains` stopped being a "
         "substring test on strings and the M2 rationale needs rewriting"
     )
     # ...and no LIVE assert relies on it (structural_asserts legitimately do --
@@ -649,7 +651,7 @@ def test_set_eq_collapses_duplicates_and_eq_cannot(fixture: str, jsonpath: str) 
     kept alive beside the rule it justifies.
 
     `set_eq`'s compiled filter is `... | unique | sort` on both sides
-    (gen.py::ASSERT_LIB_SH), so N nodes carrying the SAME value collapse to one
+    (gen.py::OPS_PY), so N nodes carrying the SAME value collapse to one
     element and compare EQUAL to a one-element `expected`. `eq` is
     `($v | length) == 1 and ($v[0] == $e)` -- it pins the COUNT as well as the
     value, so the multiplicity survives into the verdict.
@@ -1451,10 +1453,10 @@ def _seed_sandbox(tmp_path: Path, arm: str) -> dict:
 
 
 def _run_seed_pre_invoke(
-    box: dict, *, assert_lib: str | None = ASSERT_LIB_SH, path_only_stubs: bool = False
+    box: dict, *, ops_py: str | None = OPS_PY, path_only_stubs: bool = False
 ) -> tuple[int, dict | None, str]:
-    if assert_lib is not None:
-        (box["pre"] / "_assert_lib.sh").write_text(assert_lib)
+    if ops_py is not None:
+        (box["pre"] / "ops.py").write_text(ops_py)
     env = {
         **os.environ,
         "STUB_DIR": str(box["stub"]),
@@ -1586,29 +1588,28 @@ def test_a_response_with_no_stack_status_is_unverifiable(tmp_path: Path) -> None
 
 
 @pytest.mark.parametrize("arm", ARMS)
-def test_a_missing_assert_lib_is_unverifiable_and_never_reaches_the_account(
+def test_a_missing_ops_py_is_unverifiable_and_never_reaches_the_account(
     tmp_path: Path, arm: str
 ) -> None:
     """FINDING F, reproduced and closed.
 
-    `. /pre_invoke/_assert_lib.sh` was sourced with no `set -e` and its result
-    was never checked. With the library absent -- ScriptRunner uploads
-    pre_invoke/ at RUN time, so a partial upload or a future rename reaches
-    this -- the source failed silently, every `assert_check` became
-    `command not found` (rc 127), and the emitted dispatch's `elif rc -ne 0`
-    bucketed that as CONTRADICTED. The run then exited 2 with "the account does
-    not hold EXACTLY the seed this workspace describes": a false statement
-    about a real AWS account, in the one file whose job is to be believed.
+    With the runner absent -- ScriptRunner uploads pre_invoke/ at RUN time, so
+    a partial upload or a rename reaches this -- every assert would exit
+    outside the three-valued contract, and the emitted dispatch's original
+    `elif rc -ne 0` bucketed that as CONTRADICTED. The run then exited 2 with
+    "the account does not hold EXACTLY the seed this workspace describes": a
+    false statement about a real AWS account, in the one file whose job is to
+    be believed.
 
     Two properties are asserted, and the second is the one that costs money:
     the verdict is seed_unverifiable (3), and the DEPLOY NEVER RAN.
     """
     _needs_bash_and_jq()
     box = _seed_sandbox(tmp_path, arm)
-    rc, proof, out = _run_seed_pre_invoke(box, assert_lib=None)
+    rc, proof, out = _run_seed_pre_invoke(box, ops_py=None)
     assert rc == 3, f"{arm}: exit {rc}, wanted 3 (seed_unverifiable)\n{out}"
     assert proof is not None and proof["outcome"] == "seed_unverifiable", proof
-    assert "_assert_lib.sh" in proof["reason"]
+    assert "ops.py" in proof["reason"]
     assert not (box["stub"] / "deploy-ran.log").exists(), (
         f"{arm}: the deploy ran even though the proof harness was already "
         "broken -- a seed that cannot be checked must never be spent against "
@@ -1617,38 +1618,64 @@ def test_a_missing_assert_lib_is_unverifiable_and_never_reaches_the_account(
 
 
 @pytest.mark.parametrize("arm", ARMS)
-def test_a_library_that_defines_no_assert_check_is_unverifiable(
-    tmp_path: Path, arm: str
-) -> None:
-    """A library that sources cleanly and defines nothing is the truncated-upload
-    case: `. file` succeeds, and every assert would still be `command not
-    found`."""
+def test_a_truncated_ops_py_is_unverifiable(tmp_path: Path, arm: str) -> None:
+    """The truncated-upload case, and the one a bash library could not reach:
+    a half-written Python file RUNS, ignores its own argv and exits 0, which
+    the dispatch would read as "held" -- a seed announced as proven that was
+    never checked. Comparing `--selftest`'s stdout, not its exit status, is
+    what refuses it."""
     _needs_bash_and_jq()
     box = _seed_sandbox(tmp_path, arm)
     rc, proof, out = _run_seed_pre_invoke(
-        box, assert_lib="#!/usr/bin/env bash\n# truncated upload\n"
+        box, ops_py="#!/usr/bin/env python3\n# truncated upload\n"
     )
     assert rc == 3, f"{arm}: exit {rc}, wanted 3\n{out}"
     assert proof is not None and proof["outcome"] == "seed_unverifiable", proof
-    assert "assert_check" in proof["reason"]
+    assert "--selftest" in proof["reason"]
     assert not (box["stub"] / "deploy-ran.log").exists()
 
 
-def test_an_assert_check_rc_outside_the_contract_is_unresolvable_not_contradicted(
+@pytest.mark.parametrize("arm", ARMS)
+def test_an_ops_py_with_a_wrong_op_table_is_unverifiable(
+    tmp_path: Path, arm: str
+) -> None:
+    """A runner that loads and answers, but answers WRONG. `--selftest`
+    resolves one assert per outcome, so a driver whose `eq` no longer holds on
+    a value equal to `expected` never gets to speak about the account."""
+    _needs_bash_and_jq()
+    box = _seed_sandbox(tmp_path, arm)
+    rc, proof, out = _run_seed_pre_invoke(
+        box, ops_py=OPS_PY.replace('if op == "eq":', 'if op == "never-eq":')
+    )
+    assert rc == 3, f"{arm}: exit {rc}, wanted 3\n{out}"
+    assert proof is not None and proof["outcome"] == "seed_unverifiable", proof
+    assert "--selftest" in proof["reason"]
+    assert not (box["stub"] / "deploy-ran.log").exists()
+
+
+def test_a_driver_rc_outside_the_contract_is_unresolvable_not_contradicted(
     tmp_path: Path,
 ) -> None:
-    """FINDING F's second half: the per-assert dispatch.
+    """The per-assert dispatch, not the guard ahead of it.
 
-    `_assert_lib.sh`'s contract defines exactly three codes (0/1/2). Anything
-    else is the harness, not the account, and the dispatch used to sweep it
-    into the CONTRADICTED bucket. 127 is the value the missing-library case
-    produced, which is why it is the one exercised here.
+    ops.py's contract defines exactly three codes (0/1/2). Anything else is the
+    harness rather than the account, so it must land in the UNRESOLVABLE
+    bucket, never the CONTRADICTED one. 127 is what a missing runner exits
+    with, which is why it is the code exercised here -- through a stand-in that
+    PASSES the selftest and then exits 127 on a real assert.
     """
     _needs_bash_and_jq()
     box = _seed_sandbox(tmp_path, "hcl_raw")
     rc, proof, out = _run_seed_pre_invoke(
         box,
-        assert_lib="#!/usr/bin/env bash\nassert_check() { return 127; }\n",
+        ops_py=(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            'if sys.argv[1:] == ["--selftest"]:\n'
+            '    print("OPS_SELFTEST_OK")\n'
+            "    raise SystemExit(0)\n"
+            "raise SystemExit(127)\n"
+        ),
     )
     assert rc == 3, f"exit {rc}, wanted 3 (seed_unverifiable)\n{out}"
     assert proof is not None and proof["outcome"] == "seed_unverifiable", proof
@@ -1694,8 +1721,8 @@ def test_a_missing_jq_is_unverifiable_and_never_reaches_the_account(
     tmp_path: Path,
 ) -> None:
     """The guard that has to run FIRST, because everything after it -- the
-    verdict file, the compiled asserts, `_assert_lib.sh` itself -- is written
-    in jq. Without jq the old script sourced a library it could not use and
+    verdict file, the seed receipt, every compiled live assert -- is resolved
+    through jq. Without jq the old script loaded a runner it could not use and
     then spent a real apply against the account before discovering it."""
     _needs_bash_and_jq()
     box = _seed_sandbox(tmp_path, "hcl_raw")
@@ -2120,34 +2147,44 @@ def test_an_unknown_op_is_unresolvable_not_contradicted() -> None:
     ],
 )
 def test_tier0_still_treats_an_unresolvable_assert_as_a_failure(
-    artifact: str, why: str
+    artifact: str, why: str, tmp_path: Path
 ) -> None:
-    """_assert_lib.sh is SHARED with tier-0, so rc 2 must behave there exactly
-    as rc 1 did.
+    """ops.py is SHARED with tier-0, so rc 2 must behave there exactly as rc 1
+    does.
 
-    Both existing callers test `!= 0` -- `assert_check ... || tier0_pass=0` in
-    the generated static_tiers.sh, and `ok = proc.returncode == 0` in
-    generator/check_reference_paths.py::_assert_check_via_bash. This runs the
-    tier-0 call shape verbatim and pins that tier0_pass still goes to 0.
+    Both callers test `!= 0` -- `python3 tier0.py "$ARTIFACT" || tier0_pass=0`
+    in the generated static_tiers.sh, and `proc.returncode == 0` in
+    generator/check_reference_paths.py::_assert_check_via_driver. This runs the
+    generated tier-0 pair in the tier-0 call shape verbatim and pins that
+    tier0_pass still goes to 0.
     """
     if shutil.which("jq") is None:  # pragma: no cover - jq is assumed
         pytest.skip("jq not on PATH")
-    lib = REPO_ROOT / "generator" / "tests" / ".assert_lib_tier0_under_test.sh"
-    lib.write_text(ASSERT_LIB_SH)
-    try:
-        jq_filter = jsonpath_to_jq("$.SecurityGroups[*].GroupName")
-        script = (
-            "set -uo pipefail\n"
-            f". {lib}\n"
-            "tier0_pass=1\n"
-            f"assert_check n {json.dumps(jq_filter)} set_eq "
-            f'{json.dumps(json.dumps(["internal-services-ssm-endpoint"]))} '
-            f"{FIXTURES / artifact} || tier0_pass=0\n"
-            'echo "tier0_pass=$tier0_pass"\n'
+    jsonpath = "$.SecurityGroups[*].GroupName"
+    (tmp_path / "ops.py").write_text(OPS_PY)
+    (tmp_path / "tier0.py").write_text(
+        build_tier0_py(
+            "under-test",
+            "hcl_raw",
+            [
+                Tier0Entry(
+                    name="n",
+                    jsonpath=jsonpath,
+                    jq_filter=jsonpath_to_jq(jsonpath),
+                    op="set_eq",
+                    expected=["internal-services-ssm-endpoint"],
+                )
+            ],
         )
-        proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
-    finally:
-        lib.unlink(missing_ok=True)
+    )
+    script = (
+        "set -uo pipefail\n"
+        "tier0_pass=1\n"
+        f"{sys.executable} {tmp_path / 'tier0.py'} {FIXTURES / artifact} "
+        "|| tier0_pass=0\n"
+        'echo "tier0_pass=$tier0_pass"\n'
+    )
+    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
     assert "tier0_pass=0" in proc.stdout, (
         f"tier-0 must still fail on an assert that is {why}: {proc.stdout}"
     )
@@ -2169,22 +2206,14 @@ def test_the_seed_proof_writes_no_probe_artifacts_the_agent_will_inherit(
     """
     for arm in ARMS:
         body = build_seed_pre_invoke_sh(spec, arm)
-        stray = sorted(
-            {
-                m.group(0)
-                for m in re.finditer(r"/tmp/[\w.\-]+", body)
-                if m.group(0) != "/tmp/assert-jq-err.txt"
-            }
-        )
+        stray = sorted({m.group(0) for m in re.finditer(r"/tmp/[\w.\-]+", body)})
         assert not stray, (
             f"{arm}: the seed proof writes {stray} under /tmp, which survives "
             "into the agent's own container"
         )
-        # The one /tmp path that is NOT this generator's to move -- it is
-        # written by the SHARED _assert_lib.sh, whose behaviour tier-0 depends
-        # on -- must be removed explicitly instead.
-        assert "rm -f /tmp/assert-jq-err.txt" in body
-        assert "/tmp/assert-jq-err.txt" in ASSERT_LIB_SH
+        # The driver keeps jq's stderr in memory and reports it on its own FAIL
+        # line, so there is no scratch file left for the agent to read either.
+        assert "/tmp" not in OPS_PY
 
 
 def test_the_header_claims_only_what_is_enforced(spec: Spec) -> None:

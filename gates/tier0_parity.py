@@ -1,36 +1,40 @@
 #!/usr/bin/env python3
-"""All-artifacts tier-0 parity gate: the jq backend vs the Rego one.
+"""All-artifacts tier-0 parity gate: the retired bash library vs the Python
+driver that replaced it, with the Rego backend as an opt-in third column.
 
-Grade every artifact a spec's fixtures produce with BOTH tier-0 backends --
-generator/jsonpath_jq.py compiled into the generated tests/_assert_lib.sh, and
-generator/jsonpath_rego.py compiled from the same spec entries -- and require
-the same three-valued outcome per assert and the same `tier0_pass`. This is an
-ON-DEMAND cross-check, not a `make ci` gate: jq is the shipped grader
-(DECISIONS.md Amendment 42), so nothing here can block a commit, and it grades
-only the artifacts that exist -- a divergence reachable solely through a value
-no fixture produces is invisible to it. Those values are pinned column by
-column in oracles/tests/test_op_parity.py; docs/gates.md#tier0-parity has the
-rest.
+Grade every artifact a spec's fixtures produce with both graders -- the
+`assert_check` bash function as it stood before DECISIONS.md Amendment 43,
+recovered from git rather than from the working tree, and the generated
+tests/{tier0,ops}.py -- and require the same three-valued outcome per assert
+and the same `tier0_pass`. The landing condition for the driver, and an
+ON-DEMAND cross-check after it, never a `make ci` gate: only artifacts that
+exist are graded, so a divergence no fixture value reaches is invisible here
+and is pinned per column in oracles/tests/test_op_parity.py instead.
 
-Any spec can be graded, whatever its `oracle.tier0_engine` says: a task dir
-that ships no tests/tier0.rego (every jq spec, i.e. all of them today) has one
-compiled into the run's scratch directory here.
+Two divergences are known, and named in the summary rather than tolerated
+silently: the regex ops move from jq's Oniguruma to Python `re`, and jq's
+`index` read `in` as a subsequence test over a doubly-nested node. `--rego`
+adds generator/jsonpath_rego.py as a third column, compiling a policy into
+scratch for a task dir that ships no tests/tier0.rego.
 
 Exit 0 = every graded cell agrees. 1 = a divergence, or an artifact that could
 not be graded at all. 3 = nothing was gradeable, the repo's NOT_AUTHORED
 convention, so a caller can keep that non-gating without reading it as a pass.
 
-Usage: a spec path, `--all`, or `--regrade DIR` over a tree `--out` kept.
+Usage: a spec path, `--all`, or `--regrade DIR` over a tree `--out` kept; the
+rest is docs/gates.md#tier0-parity.
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import shlex
 import subprocess
 import sys
 import tempfile
+import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -50,15 +54,20 @@ _BY_RC = {0: HELD, 1: CONTRADICTED, 2: UNRESOLVABLE}
 
 @dataclass
 class Cell:
-    """One (spec, arm, fixture) artifact graded by both backends."""
+    """One (spec, arm, fixture) artifact graded by every enabled column."""
 
     label: str
     spec_id: str
     arm: str
     fixture: str
     asserts: int = 0
-    jq_pass: int | None = None
+    bash_pass: int | None = None
+    driver_pass: int | None = None
     rego_pass: int | None = None
+    # (assert name, op, bash outcome, driver outcome) for every regex assert
+    # graded here: the flavour change from Oniguruma to Python `re` is the one
+    # deliberate divergence surface, so it is reported rather than assumed.
+    regex_rows: list[tuple[str, str, str, str]] = field(default_factory=list)
     divergences: list[str] = field(default_factory=list)
     note: str = ""
 
@@ -73,8 +82,65 @@ class Cell:
             return f"[FAIL] {self.label}:\n" + "\n".join(f"        {d}" for d in self.divergences)
         return (
             f"[PASS] {self.label}: {self.asserts} assert(s) agree, "
-            f"tier0_pass={self.jq_pass} on both backends"
+            f"tier0_pass={self.driver_pass} on every column"
         )
+
+
+# The bash library the driver replaced. Recovered from git, never from the
+# working tree: a copy edited into the tree alongside the driver would make
+# this gate compare the driver against itself.
+def baseline_assert_lib(rev: str, scratch: Path) -> Path:
+    """`ASSERT_LIB_SH` out of `<rev>:generator/gen.py`, written to a file.
+
+    Read with `ast` rather than by importing that revision's module, which
+    would pull in the whole generator's imports. Walks back through gen.py's
+    own history when `rev` no longer defines the symbol, so the gate keeps
+    working after the removal is committed.
+    """
+    for candidate in _revs_to_try(rev):
+        source = subprocess.run(
+            ["git", "show", f"{candidate}:generator/gen.py"],
+            cwd=REPO_ROOT, capture_output=True, text=True, check=False,
+        )
+        if source.returncode != 0:
+            continue
+        literal = _assert_lib_literal(source.stdout)
+        if literal is None:
+            continue
+        scratch.mkdir(parents=True, exist_ok=True)
+        path = scratch / "_assert_lib.sh"
+        path.write_text(literal)
+        return path
+    raise RuntimeError(
+        f"no revision reachable from {rev!r} defines ASSERT_LIB_SH in "
+        "generator/gen.py, so the retired bash grader cannot be recovered"
+    )
+
+
+def _revs_to_try(rev: str) -> list[str]:
+    log = subprocess.run(
+        ["git", "log", "--format=%H", "-40", rev, "--", "generator/gen.py"],
+        cwd=REPO_ROOT, capture_output=True, text=True, check=False,
+    )
+    return [rev] + [line for line in log.stdout.split() if line]
+
+
+def _assert_lib_literal(source: str) -> str | None:
+    """The dedented value of a module-level `ASSERT_LIB_SH = textwrap.dedent(
+    "...")` assignment, or None if that revision has no such assignment."""
+    for node in ast.parse(source).body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(
+            isinstance(t, ast.Name) and t.id == "ASSERT_LIB_SH" for t in node.targets
+        ):
+            continue
+        value = node.value
+        if isinstance(value, ast.Call) and value.args:
+            value = value.args[0]
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            return textwrap.dedent(value.value)
+    return None
 
 
 def tier0_asserts(spec: Spec, arm: Arm, step) -> list[tuple[str, str, str, object]]:
@@ -93,15 +159,12 @@ def tier0_asserts(spec: Spec, arm: Arm, step) -> list[tuple[str, str, str, objec
     return out
 
 
-def grade_jq(
+def grade_bash(
     assert_lib: Path, asserts: list[tuple[str, str, str, object]], artifact: Path
 ) -> dict[str, str]:
-    """Outcomes from the REAL generated `assert_check`, one call per assert.
-
-    The generated tests/_assert_lib.sh is sourced rather than reimplemented, so
-    this column is the grader a trial runs today and there is no third
-    implementation of the op table to keep in sync.
-    """
+    """Outcomes from the retired `assert_check`, one call per assert -- the
+    grader every trial ran before the driver, sourced rather than
+    reimplemented."""
     out: dict[str, str] = {}
     for name, jsonpath, op, expected in asserts:
         script = (
@@ -117,6 +180,29 @@ def grade_jq(
         if proc.returncode not in _BY_RC:
             raise RuntimeError(
                 f"assert_check returned {proc.returncode} for {name!r}, outside the "
+                f"three-valued contract: {proc.stdout}{proc.stderr}"
+            )
+        out[name] = _BY_RC[proc.returncode]
+    return out
+
+
+def grade_driver(
+    ops_py: Path, asserts: list[tuple[str, str, str, object]], artifact: Path
+) -> dict[str, str]:
+    """Outcomes from the task's own generated tests/ops.py, one `--one` call
+    per assert -- the shipped grader, not a host-side reimplementation of it."""
+    out: dict[str, str] = {}
+    for name, jsonpath, op, expected in asserts:
+        proc = subprocess.run(
+            [
+                sys.executable, str(ops_py), "--one", name,
+                jsonpath_to_jq(jsonpath), op, json.dumps(expected), str(artifact),
+            ],
+            capture_output=True, text=True, check=False,
+        )
+        if proc.returncode not in _BY_RC:
+            raise RuntimeError(
+                f"ops.py returned {proc.returncode} for {name!r}, outside the "
                 f"three-valued contract: {proc.stdout}{proc.stderr}"
             )
         out[name] = _BY_RC[proc.returncode]
@@ -167,37 +253,52 @@ def grade_rego(policy: Path, pkg: str, artifact: Path) -> tuple[dict[str, str], 
 
 def grade_cell(
     spec: Spec, arm: Arm, step, label: str, fixture: str, tests: Path, artifact: Path,
-    scratch: Path,
+    scratch: Path, assert_lib: Path, with_rego: bool = False,
 ) -> Cell:
     cell = Cell(label=label, spec_id=spec.id, arm=ARM_DIRNAME[arm], fixture=fixture)
     asserts = tier0_asserts(spec, arm, step)
     cell.asserts = len(asserts)
-    jq = grade_jq(tests / "_assert_lib.sh", asserts, artifact)
-    policy = tier0_policy(spec, arm, step, tests, scratch)
-    rego, rego_pass = grade_rego(policy, tier0_rego_pkg(spec), artifact)
-    cell.rego_pass = rego_pass
-    # Both backends derive the verdict the same way: every applicable assert
-    # held. The jq path starts `tier0_pass=1` and lets each non-zero
-    # assert_check drop it, so an arm with no tier-0 assert passes tier 0.
-    cell.jq_pass = 1 if all(v == HELD for v in jq.values()) else 0
-    # Both directions: an assert only one backend knows about would otherwise
+    bash = grade_bash(assert_lib, asserts, artifact)
+    driver = grade_driver(tests / "ops.py", asserts, artifact)
+    columns = {"bash": bash, "driver": driver}
+    if with_rego:
+        policy = tier0_policy(spec, arm, step, tests, scratch)
+        rego, cell.rego_pass = grade_rego(policy, tier0_rego_pkg(spec), artifact)
+        columns["rego"] = rego
+    # Every column derives the verdict the same way: every applicable assert
+    # held. The shell path starts `tier0_pass=1` and lets each non-zero assert
+    # drop it, so an arm with no tier-0 assert passes tier 0.
+    cell.bash_pass = 1 if all(v == HELD for v in bash.values()) else 0
+    cell.driver_pass = 1 if all(v == HELD for v in driver.values()) else 0
+    for name, _jsonpath, op, _expected in asserts:
+        if op in ("regex", "not_regex"):
+            cell.regex_rows.append(
+                (name, op, bash.get(name, "?"), driver.get(name, "?"))
+            )
+    # Both directions: an assert only one column knows about would otherwise
     # show up nowhere, since neither the per-assert comparison below nor
     # `tier0_pass` moves for it.
-    for side, other, where in (
-        (jq, rego, "the compiled tier-0 Rego"), (rego, jq, "the jq assert calls"),
-    ):
-        extra = sorted(set(side) - set(other))
+    for this, that in ((a, b) for a in columns for b in columns if a != b):
+        extra = sorted(set(columns[this]) - set(columns[that]))
         if extra:
             cell.divergences.append(
-                f"{where} reports no outcome for {extra} -- the two backends "
-                "were compiled from different assert sets"
+                f"the {that} column reports no outcome for {extra} -- the "
+                "columns were compiled from different assert sets"
             )
-    for name in jq:
-        if name in rego and jq[name] != rego[name]:
-            cell.divergences.append(f"{name}: jq={jq[name]} rego={rego[name]}")
-    if cell.jq_pass != cell.rego_pass:
+    for name in bash:
+        reached = {
+            col: outcomes[name] for col, outcomes in columns.items() if name in outcomes
+        }
+        if len(set(reached.values())) > 1:
+            rendered = " ".join(f"{col}={outcome}" for col, outcome in reached.items())
+            cell.divergences.append(f"{name}: {rendered}")
+    if cell.bash_pass != cell.driver_pass:
         cell.divergences.append(
-            f"tier0_pass: jq={cell.jq_pass} rego={cell.rego_pass}"
+            f"tier0_pass: bash={cell.bash_pass} driver={cell.driver_pass}"
+        )
+    if with_rego and cell.driver_pass != cell.rego_pass:
+        cell.divergences.append(
+            f"tier0_pass: driver={cell.driver_pass} rego={cell.rego_pass}"
         )
     return cell
 
@@ -208,9 +309,10 @@ def grade_cell(
 
 
 def run_spec(spec: Spec, spec_path: Path, env: dict[str, str], keep: ac.KeptTempDir,
-             out: Path | None, manifest: list[dict]) -> list[Cell]:
+             out: Path | None, manifest: list[dict], assert_lib: Path,
+             with_rego: bool) -> list[Cell]:
     cells: list[Cell] = []
-    for c in ac.collect(spec, env, keep, require_tests=("_assert_lib.sh",)):
+    for c in ac.collect(spec, env, keep, require_tests=("ops.py", "tier0.py")):
         if c.plan is None:
             cells.append(Cell(label=c.label, spec_id=spec.id, arm=ARM_DIRNAME[c.arm],
                               fixture=c.fixture,
@@ -221,11 +323,12 @@ def run_spec(spec: Spec, spec_path: Path, env: dict[str, str], keep: ac.KeptTemp
         # the several hours of collection the other fixtures cost.
         try:
             cell = grade_cell(spec, c.arm, c.step, c.label, c.fixture, c.tests, c.plan,
-                              scratch=(c.workdir or c.plan.parent) / "tier0-parity")
+                              scratch=(c.workdir or c.plan.parent) / "tier0-parity",
+                              assert_lib=assert_lib, with_rego=with_rego)
         except (RuntimeError, ValueError, OSError) as exc:
             cell = Cell(label=c.label, spec_id=spec.id, arm=ARM_DIRNAME[c.arm],
                         fixture=c.fixture)
-            cell.divergences.append(f"could not grade with both backends: {exc}")
+            cell.divergences.append(f"could not grade with every column: {exc}")
         cells.append(cell)
         if out is not None:
             dest = out / f"{cell.label.replace('/', '__')}.json"
@@ -242,8 +345,8 @@ def run_spec(spec: Spec, spec_path: Path, env: dict[str, str], keep: ac.KeptTemp
     return cells
 
 
-def regrade(tree: Path) -> list[Cell]:
-    """Re-grade a tree `--out` wrote, with no toolchain: the compilers are read
+def regrade(tree: Path, assert_lib: Path, with_rego: bool) -> list[Cell]:
+    """Re-grade a tree `--out` wrote, with no toolchain: the graders are read
     from the working copy, the artifacts from disk."""
     manifest = json.loads((tree / "manifest.json").read_text())
     cells: list[Cell] = []
@@ -257,37 +360,51 @@ def regrade(tree: Path) -> list[Cell]:
                 spec, row["arm"], step, row["label"], row["fixture"],
                 REPO_ROOT / row["tests"], tree / row["artifact"],
                 scratch=tree / "tier0-rego" / row["label"].replace("/", "__"),
+                assert_lib=assert_lib, with_rego=with_rego,
             )
         except (RuntimeError, ValueError, OSError) as exc:
             cell = Cell(label=row["label"], spec_id=spec.id, arm=row["arm"],
                         fixture=row["fixture"])
-            cell.divergences.append(f"could not grade with both backends: {exc}")
+            cell.divergences.append(f"could not grade with every column: {exc}")
         cells.append(cell)
         print(f"  {cell.render()}", flush=True)
     return cells
 
 
-def summarise(cells: list[Cell]) -> int:
+def summarise(cells: list[Cell], with_rego: bool) -> int:
     graded = [c for c in cells if not c.note]
     bad = [c for c in cells if c.divergences]
     skipped = [c for c in cells if c.note]
+    columns = "bash vs driver" + (" vs rego" if with_rego else "")
     print("")
-    print("=== tier0-parity: tier-0 jq vs rego, per spec/arm/fixture ===")
+    print(f"=== tier0-parity: tier-0 {columns}, per spec/arm/fixture ===")
     for c in cells:
         print(c.render())
+    # The regex ops are the flavour change this migration makes, so their
+    # verdicts are listed rather than merely found non-divergent: a reader has
+    # to be able to see WHICH asserts crossed from Oniguruma to Python `re` and
+    # what each one came out as under both.
+    regex_rows = [(c.label, *row) for c in graded for row in c.regex_rows]
+    print("")
+    print(f"=== regex/not_regex asserts graded ({len(regex_rows)}) ===")
+    for label, name, op, bash, driver in regex_rows:
+        flag = "OK  " if bash == driver else "DIFF"
+        print(f"  {flag} {label} {name} ({op}): bash={bash} driver={driver}")
+    if not regex_rows:
+        print("  (none reached by a fixture artifact)")
     print("")
     print(
         f"graded {len(graded)} artifact(s), "
-        f"{sum(c.asserts for c in graded)} assert evaluation(s) per backend; "
+        f"{sum(c.asserts for c in graded)} assert evaluation(s) per column; "
         f"{len(skipped)} skipped, {len(bad)} divergent"
     )
     if bad:
-        print("tier0-parity: FAILED -- the two tier-0 backends disagree", file=sys.stderr)
+        print("tier0-parity: FAILED -- the tier-0 columns disagree", file=sys.stderr)
         return 1
     if not graded:
         print("tier0-parity: NOT_AUTHORED -- no fixture produced a gradeable artifact")
         return 3
-    print("tier0-parity: OK -- both tier-0 backends agree on every graded artifact")
+    print("tier0-parity: OK -- every column agrees on every graded artifact")
     return 0
 
 
@@ -298,10 +415,19 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--out", type=Path, help="keep the collected artifacts here")
     ap.add_argument("--work-dir", type=Path, help="keep each fixture's working copy here")
     ap.add_argument("--regrade", type=Path, help="re-grade a tree --out wrote; runs no toolchain")
+    ap.add_argument(
+        "--baseline-rev", default="HEAD",
+        help="revision to recover the retired assert_check bash library from",
+    )
+    ap.add_argument(
+        "--rego", action="store_true",
+        help="also grade with the compiled tier-0 Rego (available, not adopted)",
+    )
     args = ap.parse_args(argv)
 
     if args.regrade:
-        return summarise(regrade(args.regrade))
+        lib = baseline_assert_lib(args.baseline_rev, args.regrade / "tier0-baseline")
+        return summarise(regrade(args.regrade, lib, args.rego), args.rego)
 
     if args.all:
         spec_paths = [
@@ -317,6 +443,7 @@ def main(argv: list[str]) -> int:
     fallback = Path(tempfile.gettempdir()) / "tier0-parity-work"
     work = args.work_dir or (args.out / "work" if args.out else fallback)
     keep = ac.install(work)
+    lib = baseline_assert_lib(args.baseline_rev, work / "tier0-baseline")
 
     cells: list[Cell] = []
     manifest: list[dict] = []
@@ -326,8 +453,9 @@ def main(argv: list[str]) -> int:
         for spec_path in spec_paths:
             spec = load_spec(spec_path)
             print(f"==> tier0-parity: {spec.id}", flush=True)
-            cells.extend(run_spec(spec, spec_path.resolve(), env, keep, args.out, manifest))
-    return summarise(cells)
+            cells.extend(run_spec(spec, spec_path.resolve(), env, keep, args.out,
+                                  manifest, lib, args.rego))
+    return summarise(cells, args.rego)
 
 
 if __name__ == "__main__":

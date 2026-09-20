@@ -16,17 +16,15 @@ set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # ---- BROWNFIELD SEED DEPLOY, FAIL-CLOSED (SCHEMA.md §2.7.1) ---------
-# Finding M3 (adversarial review, 2026-08-25). Every anti-vacuity layer
-# of the seed-deploy mechanism lives inside
+# Every anti-vacuity layer of the seed-deploy mechanism lives inside
 # pre_invoke/pre_invoke.sh, and aws_bench/task/aws_trial.py runs that
 # file if and only if it is on disk -- `if
 # self.task.has_phase_script(ScriptType.PRE_INVOKE):`, no else branch,
 # no log line, and has_phase_script is pure file existence. A task tree
 # that lost its pre_invoke/ directory (stale generator, bad image
-# layer, truncated upload) therefore ran the whole trial against an
-# EMPTY account in total silence, and this scenario's live oracle
-# passes for free on an empty account -- which is the original defect,
-# docs/brownfield-seed-not-deployed.md, restored by a missing file.
+# layer, truncated upload) therefore runs the whole trial against an
+# EMPTY account in total silence, on which this scenario's live oracle
+# passes for free (docs/brownfield-seed-not-deployed.md).
 #
 # The verifier is the one component that always runs, so it is the one
 # that refuses. SPEC_SEED_DEPLOY_REQUIRED comes from this task's own
@@ -94,30 +92,21 @@ fi
 
 if [ "${SPEC_LIVE_CHECK_ENABLED:-false}" = "true" ] \
    && [ -f "$DIR/live_check.py" ]; then
-  # REGION (2026-08-25). The verifier container is handed
-  # credentials but NOT a region, so every `aws` call a
-  # live_check.py makes died with exit 253 (`NoRegion`: "You must
-  # specify a region") BEFORE reaching AWS. live_check.py cannot
-  # tell that apart from a real API error, so it reported
-  # "not_verifiable" -- which gating below fails closed to reward
-  # 0.0. The result is an INFRASTRUCTURE failure wearing the
-  # costume of an agent failure: a correct, deployed, converged
-  # solution scores 0.0 with `"failures": []`, and nothing in
-  # result.json's exception_info marks the trial as invalid.
-  # Observed on all three arms of named-resource-replacement's
-  # first live run (jobs/rerun-named-resource-replacement/
-  # 2026-08-25__00-42-05); the same latent bug sits under every
-  # apigw-redeploy live_check.py, which only ever passed because
-  # its proofs were driven host-side with an operator shell that
-  # had a region configured.
+  # REGION. The verifier container is handed credentials but NOT a
+  # region, so without these two lines every `aws` call a
+  # live_check.py makes dies with exit 253 (`NoRegion`) BEFORE
+  # reaching AWS. live_check.py cannot tell that apart from a real
+  # API error, reports "not_verifiable", and the gating below fails
+  # closed to 0.0 -- an infrastructure failure wearing the costume
+  # of an agent failure: a correct, deployed, converged solution
+  # scores 0.0 with `"failures": []` and nothing marks the trial
+  # invalid.
   #
-  # Set here, in the GENERATOR, and not in the nine hand-authored
-  # live_check.py files: the region is a property of the
-  # environment the verifier runs in, not of any one oracle, and a
-  # per-file fix would have to be repeated for every scenario
-  # authored from now on. `:=` so a region the harness DOES inject
-  # always wins; the literal is the region this bench is pinned to
-  # by its own SCP.
+  # Set in the GENERATOR, not in the hand-authored live_check.py
+  # files: the region is a property of the environment the verifier
+  # runs in, not of any one oracle. `:=` so a region the harness
+  # DOES inject always wins; the literal is the region this bench is
+  # pinned to by its own SCP.
   : "${AWS_DEFAULT_REGION:=us-east-1}"
   export AWS_DEFAULT_REGION
   if command -v python3 >/dev/null 2>&1; then
@@ -143,7 +132,7 @@ if [ "${SPEC_LIVE_CHECK_ENABLED:-false}" = "true" ] \
   # this spec declares never reached the container. It prints no
   # `outcome`, so the gating block below would read "not_verifiable"
   # and score EVERY solution 0.0, correct ones included. Same rule as
-  # _assert_lib.sh's is_stub_policy: a missing oracle VOIDS the row,
+  # static_tiers.sh's is_stub_policy: a missing oracle VOIDS the row,
   # it never grades it. No reward file is written, so harbor's own
   # RewardFileNotFoundError reports the trial INVALID.
   if [ "$(jq -r '.status // ""' /logs/verifier/live_check-result.json 2>/dev/null)" = "not_implemented" ]; then
@@ -207,7 +196,7 @@ if [ "${SPEC_IDEMPOTENCE_ENABLED:-false}" = "true" ]; then
     idem_outcome="not_verifiable"
     idem_reason="nothing was applied (no deploy state at /app/project/terraform.quote-service.tfstate), so there is no converged state to re-check. An offline plan with no state ALWAYS reports pending changes, so this is reported as unverifiable rather than as a real pending-changes verdict."
   else
-    # SEED MOVEMENT GUARD (specs/SCHEMA.md §2.7.1, finding H). The state
+    # SEED MOVEMENT GUARD (specs/SCHEMA.md §2.7.1). The state
     # probe above cannot fire on a spec whose seed the HARNESS deployed
     # before the agent's first token, so a do-nothing agent would inherit
     # the seed's own convergence as a `converged` verdict. The seed's

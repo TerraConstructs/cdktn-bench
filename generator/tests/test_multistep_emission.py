@@ -353,7 +353,10 @@ def test_every_step_has_its_own_prompt_and_oracle(spec: Spec) -> None:
             assert (step_dir / "instruction.md").is_file()
             assert (step_dir / "tests" / "test.sh").is_file()
             assert (step_dir / "tests" / "static_tiers.sh").is_file()
-            assert (step_dir / "tests" / "_assert_lib.sh").is_file()
+            # This step's own assert projection, and the op table it drives.
+            assert (step_dir / "tests" / "tier0.py").is_file()
+            assert (step_dir / "tests" / "ops.py").is_file()
+            assert not (step_dir / "tests" / "_assert_lib.sh").exists()
 
 
 def test_apigw_redeploy_emits_no_pre_invoke(spec: Spec) -> None:

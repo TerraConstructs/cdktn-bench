@@ -8,8 +8,21 @@
 # (harbor/verifier/verifier.py::_parse_reward_text).
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$DIR/_assert_lib.sh"
 mkdir -p /logs/verifier
+
+is_stub_policy() {
+  local f="$1"
+  [ ! -s "$f" ] && return 0
+  # Two markers, either of which means un-authored: GENERATOR-STUB, the
+  # line every oracles/emit.py skeleton carries (emit.py is the sole
+  # writer of policy.rego/policy.guard -- see generate_oracles), and the
+  # literal "TODO(Slice D)" those skeletons also carry, matched as a
+  # fallback so stripping the first line alone cannot make a placeholder
+  # look authored.
+  grep -q -e "GENERATOR-STUB" -e "TODO(Slice D)" "$f" 2>/dev/null && return 0
+  return 1
+}
+
 
 cd /app/project
 
@@ -37,14 +50,18 @@ fi
 echo
 echo "== tier-0: structural asserts (8 applicable) =="
 tier0_pass=1
-assert_check asg-exists '.Resources | .[] | select(.Type=="AWS::AutoScaling::AutoScalingGroup")' exists null "$ARTIFACT" || tier0_pass=0
-assert_check launch-template-exists '.Resources | .[] | select(.Type=="AWS::EC2::LaunchTemplate")' exists null "$ARTIFACT" || tier0_pass=0
-assert_check asg-min-size-cfn '.Resources | .[] | select(.Type=="AWS::AutoScaling::AutoScalingGroup") | .Properties.MinSize' eq '"2"' "$ARTIFACT" || tier0_pass=0
-assert_check asg-max-size-cfn '.Resources | .[] | select(.Type=="AWS::AutoScaling::AutoScalingGroup") | .Properties.MaxSize' eq '"6"' "$ARTIFACT" || tier0_pass=0
-assert_check launch-template-instance-type '.Resources | .[] | select(.Type=="AWS::EC2::LaunchTemplate") | .Properties.LaunchTemplateData.InstanceType' eq '"t3.small"' "$ARTIFACT" || tier0_pass=0
-assert_check launch-template-image-id-present-cfn '.Resources | .[] | select(.Type=="AWS::EC2::LaunchTemplate") | .Properties.LaunchTemplateData.ImageId' exists null "$ARTIFACT" || tier0_pass=0
-assert_check volume-tag-costcenter-present '.Resources | .[] | select(.Type=="AWS::EC2::LaunchTemplate") | .Properties.LaunchTemplateData.TagSpecifications | .[] | select(.ResourceType=="volume") | .Tags | .[] | select(.Key=="CostCenter") | .Value' eq '"platform-42"' "$ARTIFACT" || tier0_pass=0
-assert_check volume-tag-environment-present '.Resources | .[] | select(.Type=="AWS::EC2::LaunchTemplate") | .Properties.LaunchTemplateData.TagSpecifications | .[] | select(.ResourceType=="volume") | .Tags | .[] | select(.Key=="Environment") | .Value' eq '"prod"' "$ARTIFACT" || tier0_pass=0
+if ! command -v python3 >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+  tier0_pass=0
+  {
+    echo "python3 and jq are both required to evaluate the tier-0"
+    echo "structural asserts (tests/tier0.py drives tests/ops.py, which"
+    echo "invokes jq); at least one is missing from this image, so no"
+    echo "assert was evaluated -- a run-invalidating condition, not a"
+    echo "silent pass."
+  } | tee /logs/verifier/tier0-unavailable
+elif ! python3 "$DIR/tier0.py" "$ARTIFACT"; then
+  tier0_pass=0
+fi
 
 echo
 echo "== tier-1: cfn-guard =="

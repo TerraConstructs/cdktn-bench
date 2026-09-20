@@ -274,7 +274,7 @@ def read_tier1_not_verifiable(trial_dir: str | Path) -> tuple[bool, str | None]:
 
 
 # `  PASS [name]` / `  FAIL [name]: ...` -- the shape generator/gen.py's
-# `_assert_lib.sh::assert_check()` echoes for every tier-"0" structural_assert,
+# tests/ops.py::report() echoes for every tier-"0" structural_assert,
 # captured by Harbor at `<trial_dir>/verifier/test-stdout.txt`. `[^\]]+` is safe
 # because an assert name is generator-enforced kebab-case (specs/SCHEMA.md §4.2
 # structural_asserts) and so contains no `]`.
@@ -300,7 +300,7 @@ def read_tier_evidence(trial_dir: str | Path) -> dict[str, Any] | None:
 
     - **tier-0 is per-catch-real**: each tier-"0" `structural_assert` is
       independently invoked and independently echoes its own PASS/FAIL
-      (`assert_check()`, see `_TIER0_ASSERT_LINE_RE` above) -- this
+      (tests/ops.py::report, see `_TIER0_ASSERT_LINE_RE` above) -- this
       function returns the real per-assert-name verdict, keyed by
       `structural_assert.name` (specs/SCHEMA.md §4.2), under `"tier0"`.
     - **tier-1 is bundle-only**: every tier-"1" `structural_assert` for a

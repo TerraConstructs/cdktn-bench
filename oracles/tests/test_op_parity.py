@@ -2,19 +2,29 @@ r"""Differential test over THREE implementations of the tier-0 op table
 (`specs/SCHEMA.md` §4.2), compared on the THREE-VALUED outcome -- held,
 contradicted, unresolvable -- not on a pass/fail bool:
 
-  bash/jq  generator/gen.py's ASSERT_LIB_SH over jsonpath_jq.py's compiled
-           filter -- the grader a trial runs; its exit status IS the outcome.
+  driver   generator/tier0_py.py's OPS_PY, the generated tests/ops.py, over
+           jsonpath_jq.py's compiled filter -- the grader a trial runs; its
+           exit status IS the outcome.
   Python   oracles/lib/structural.py's `apply_op`, over nodes from
            jsonpath_rego.py::resolve_nodes -- NOT `structural.resolve`, whose
-           jsonpath-ng answers "no match" where jq raises.
-  Rego     jsonpath_rego.py's compiled tests/tier0.rego under `opa`.
+           jsonpath-ng answers "no match" where jq raises. The spec-authoring-
+           time reference.
+  Rego     jsonpath_rego.py's compiled tests/tier0.rego under `opa`
+           (available behind `oracle.tier0_engine`, not adopted).
 
 Rego turns most errors into silent undefined, so a `|fromjson` over a number, a
 filter applied to a scalar or an unknown op would each read as "the path found
 no node" -- a vacuous pass -- unless the compiler emits an explicit rule for
-it. Cells the three engines CANNOT agree on (§4.2's three regex flavours, jq's
-subsequence `index`) are pinned per column instead, in the direction where an
-inapplicable pattern is unresolvable, never a verdict.
+it. Cells the three engines CANNOT agree on are pinned per column instead, in
+the direction where an inapplicable pattern is unresolvable, never a verdict.
+
+The driver's regex flavour is Python `re` (DECISIONS.md Amendment 43), which is
+the SINGLE tier-0 flavour: a pattern means whatever `re` reads it as, and a
+pattern `re` will not compile is unresolvable rather than a verdict. The
+reference column still refuses the constructs Python and RE2 read differently,
+because it is what tells a spec author their pattern is unsafe for the Rego
+column; the driver does not, and the classes where the two therefore part are
+named below.
 
 Requires `jq`, `bash` and `opa` on PATH.
 """
@@ -23,10 +33,10 @@ from __future__ import annotations
 
 import json
 import re
-import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -35,8 +45,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT / "generator"))
 
-from gen import ASSERT_LIB_SH  # noqa: E402
 from jsonpath_jq import jsonpath_to_jq  # noqa: E402
+from tier0_py import OPS_PY  # noqa: E402
 from jsonpath_rego import (  # noqa: E402
     Unresolvable,
     build_tier0_rego,
@@ -94,22 +104,29 @@ def _expected_for(op: str, shape: Shape) -> object:
 # ---------------------------------------------------------------------------
 
 
-def _bash_outcome(tmp_path: Path, jsonpath: str, op: str, expected: object, document: object) -> str:
-    """Run the REAL assert_check() bash function, as generated into every
-    task's tests/_assert_lib.sh, and read its three-valued exit status."""
+# The generated tests/ops.py, written once per session: every driver cell runs
+# the SAME bytes a task ships, rather than importing the template as a module.
+_OPS_PY_PATH = Path(tempfile.mkdtemp(prefix="op-parity-driver-")) / "ops.py"
+_OPS_PY_PATH.write_text(OPS_PY)
+
+
+def _driver_outcome(
+    tmp_path: Path, jsonpath: str, op: str, expected: object, document: object
+) -> str:
+    """Run the REAL generated tests/ops.py, as every task's tier-0 driver ships
+    it, and read its three-valued exit status."""
     tmp_path.mkdir(parents=True, exist_ok=True)
-    lib_path = tmp_path / "_assert_lib.sh"
-    lib_path.write_text(ASSERT_LIB_SH)
     doc_path = tmp_path / "doc.json"
     doc_path.write_text(json.dumps(document))
-    script = (
-        f"source {shlex.quote(str(lib_path))}\n"
-        f"assert_check name {shlex.quote(jsonpath_to_jq(jsonpath))} {shlex.quote(op)} "
-        f"{shlex.quote(json.dumps(expected))} {shlex.quote(str(doc_path))}\n"
+    proc = subprocess.run(
+        [
+            sys.executable, str(_OPS_PY_PATH), "--one", "name",
+            jsonpath_to_jq(jsonpath), op, json.dumps(expected), str(doc_path),
+        ],
+        capture_output=True, text=True, check=False,
     )
-    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False)
     assert proc.returncode in _BY_RC, (
-        f"assert_check returned {proc.returncode}, which is outside the "
+        f"ops.py returned {proc.returncode}, which is outside the "
         f"three-valued contract: {proc.stdout}{proc.stderr}"
     )
     return _BY_RC[proc.returncode]
@@ -160,16 +177,16 @@ def _rego_outcomes(
 
 
 def _agree(tmp_path: Path, jsonpath: str, op: str, expected: object, document: object) -> str:
-    """Assert all three graders reach the same three-valued outcome, and
+    """Assert all three columns reach the same three-valued outcome, and
     return it so a caller can pin WHICH outcome that is."""
-    bash = _bash_outcome(tmp_path, jsonpath, op, expected, document)
+    driver = _driver_outcome(tmp_path, jsonpath, op, expected, document)
     py = _python_outcome(jsonpath, op, expected, document)
     rego = _rego_outcomes(tmp_path, [("probe", jsonpath, op, expected)], document)["probe"]
-    assert bash == py == rego, (
+    assert driver == py == rego, (
         f"op parity violation: op={op!r} expected={expected!r} jsonpath={jsonpath!r} "
-        f"bash={bash} python={py} rego={rego}"
+        f"driver={driver} python={py} rego={rego}"
     )
-    return bash
+    return driver
 
 
 # ---------------------------------------------------------------------------
@@ -199,15 +216,7 @@ SHAPES = (
     # is the member under test.
     Shape("list-valued-node", "$.Items[*].Name", {"Items": [{"Name": ["a", "b"]}]}),
     Shape("list-valued-node-single", "$.Items[*].Name", {"Items": [{"Name": ["a"]}]}),
-    # `in` is excluded here and pinned on its own below: it is the one cell
-    # where the three columns cannot be reconciled without moving every
-    # already-generated tests/_assert_lib.sh.
-    Shape(
-        "doubly-nested-list",
-        "$.Items[*].Name",
-        {"Items": [{"Name": [["a"]]}]},
-        ops=tuple(op for op in OPS if op != "in"),
-    ),
+    Shape("doubly-nested-list", "$.Items[*].Name", {"Items": [{"Name": [["a"]]}]}),
     Shape("object-valued-node", "$.Items[*].Name", {"Items": [{"Name": {"k": "a"}}]}),
     Shape("number-valued-node", "$.Items[*].Name", {"Items": [{"Name": 42}]}, probe=42),
     Shape("bool-valued-node", "$.Items[*].Name", {"Items": [{"Name": True}]}, probe=True),
@@ -292,11 +301,12 @@ def test_every_op_agrees_on_this_shape(shape: Shape, tmp_path: Path) -> None:
     rego = _rego_outcomes(tmp_path, asserts, shape.document)
     divergences = []
     for name, jsonpath, op, expected in asserts:
-        bash = _bash_outcome(tmp_path / op, jsonpath, op, expected, shape.document)
+        driver = _driver_outcome(tmp_path / op, jsonpath, op, expected, shape.document)
         py = _python_outcome(jsonpath, op, expected, shape.document)
-        if not bash == py == rego[name]:
+        if not driver == py == rego[name]:
             divergences.append(
-                f"  op={op} expected={expected!r}: bash={bash} python={py} rego={rego[name]}"
+                f"  op={op} expected={expected!r}: driver={driver} python={py} "
+                f"rego={rego[name]}"
             )
     assert not divergences, (
         f"shape {shape.label!r} ({shape.jsonpath}) diverges:\n" + "\n".join(divergences)
@@ -312,39 +322,31 @@ def test_an_unknown_op_is_unresolvable_in_all_three(tmp_path: Path) -> None:
 
 
 def test_a_non_list_expected_is_unresolvable_for_the_set_ops(tmp_path: Path) -> None:
-    """`in` and `set_eq` are defined over a list. jq reaches for `index`, which
-    on a STRING silently becomes a substring search and returns a verdict; both
-    other columns refuse, so this is checked as a two-column agreement and
-    documented as the one place the engines cannot be reconciled."""
+    """`in` and `set_eq` are defined over a list, and a non-list `expected` is
+    a spec defect rather than a fact about the artifact.
+
+    The retired bash grader reached for jq's `index`, which on a STRING
+    silently becomes a substring search and returned a VERDICT. All three
+    columns now refuse.
+    """
     doc = {"Items": [{"Name": "a"}]}
     for op in ("in", "set_eq"):
-        assert _python_outcome("$.Items[*].Name", op, "a", doc) == UNRESOLVABLE
-        rego = _rego_outcomes(tmp_path, [("probe", "$.Items[*].Name", op, "a")], doc)
-        assert rego["probe"] == UNRESOLVABLE
+        assert _agree(tmp_path / op, "$.Items[*].Name", op, "a", doc) == UNRESOLVABLE
 
 
-def test_jq_in_reads_an_array_member_as_a_subsequence(tmp_path: Path) -> None:
-    """THE ONE KNOWN DIVERGENCE, pinned here so it cannot be discovered as a
-    grading surprise.
+def test_in_asks_element_membership_not_a_subsequence(tmp_path: Path) -> None:
+    """`in` flattens one level and asks whether each remaining value is a
+    MEMBER of `expected`, which is what SCHEMA.md §4.2 defines.
 
-    `in` flattens one level and asks whether each remaining value is a member
-    of `expected`. The bash grader asks it as `$e | index($x) != null`, and
-    jq's `index` with an ARRAY argument is a SUBSEQUENCE search, not an element
-    test: `["a"] | index(["a"])` is 0, so a doubly-nested node passes. The
-    Python and Rego columns both ask for element membership, which is what
-    SCHEMA.md §4.2 defines.
-
-    Unreachable on the corpus -- every `in` assert resolves to numbers or to
-    lists of strings, so one level of flattening always leaves scalars -- and
-    fixing the bash side would move every already-generated
-    tests/_assert_lib.sh, so it is corrected by the removal of the jq backend
-    rather than ahead of it.
+    The clause is named here because the retired bash grader asked it as
+    `$e | index($x) != null`, and jq's `index` with an ARRAY argument is a
+    SUBSEQUENCE search rather than an element test: `["a"] | index(["a"])` is
+    0, so a doubly-nested node passed. All three columns now contradict it, and
+    the `doubly-nested-list` shape in the matrix above runs `in` alongside
+    every other op because of it.
     """
     doc = {"Items": [{"Name": [["a"]]}]}
-    assert _bash_outcome(tmp_path, "$.Items[*].Name", "in", ["a"], doc) == HELD
-    assert _python_outcome("$.Items[*].Name", "in", ["a"], doc) == CONTRADICTED
-    rego = _rego_outcomes(tmp_path, [("probe", "$.Items[*].Name", "in", ["a"])], doc)
-    assert rego["probe"] == CONTRADICTED
+    assert _agree(tmp_path, "$.Items[*].Name", "in", ["a"], doc) == CONTRADICTED
 
 
 @pytest.mark.parametrize(
@@ -522,9 +524,11 @@ class TestFromjsonParity:
 class TestFromjsonDecoderDivergence:
     r"""`|fromjson` runs a DIFFERENT DECODER in each column -- jq's, Go's
     (`json.is_valid`/`json.unmarshal`) and Python's `json` -- and the three do
-    not accept the same set of strings. Pinned per column, because the whole
-    class is invisible to `make tier0-parity`: it depends on a byte no
-    fixture produces, and 26 corpus paths use `|fromjson`.
+    not accept the same set of strings. The DRIVER's `|fromjson` is jq's: the
+    hop happens inside the compiled filter, so moving the op table to Python
+    left this class exactly where it was. Pinned per column, because the whole
+    class is invisible to `make tier0-parity`: it depends on a byte no fixture
+    produces, and 26 corpus paths use `|fromjson`.
 
     One direction is closed by an explicit rule rather than left divergent: jq
     REJECTS a string carrying an unpaired `\uD800`-`\uDBFF` escape, while Go
@@ -573,7 +577,7 @@ class TestFromjsonDecoderDivergence:
         container definition unresolvable."""
         assert _agree(tmp_path, self.PATH, "exists", None, {"x": raw}) == HELD
 
-    # (raw string, python reference outcome) -- bash is HELD and rego is
+    # (raw string, python reference outcome) -- the driver is HELD and rego is
     # UNRESOLVABLE for every one of them.
     JQ_LENIENT = (
         ("NaN", HELD),
@@ -591,7 +595,7 @@ class TestFromjsonDecoderDivergence:
         self, raw: str, python: str, tmp_path: Path
     ) -> None:
         doc = {"x": raw}
-        assert _bash_outcome(tmp_path, self.PATH, "exists", None, doc) == HELD
+        assert _driver_outcome(tmp_path, self.PATH, "exists", None, doc) == HELD
         rego = _rego_outcomes(tmp_path, [("probe", self.PATH, "exists", None)], doc)
         assert rego["probe"] == UNRESOLVABLE
         assert _python_outcome(self.PATH, "exists", None, doc) == python
@@ -741,48 +745,58 @@ class TestRegexFlavourDivergence:
         assert rego["probe"] == UNRESOLVABLE
 
     @pytest.mark.parametrize(("pattern", "subject"), RE2_REJECTS[:2])
-    def test_the_jq_grader_reaches_the_opposite_verdict_there(
+    def test_the_driver_reaches_the_opposite_verdict_there(
         self, pattern: str, subject: str, tmp_path: Path
     ) -> None:
-        """Oniguruma compiles both, so jq grades `not_regex` as contradicted on
-        a subject the pattern matches. The rego column's unresolvable is
-        therefore a refusal to grade, not a flipped verdict."""
+        """Python `re` compiles a lookahead and a backreference, so the driver
+        grades both: `not_regex` is contradicted on a subject the pattern
+        matches. The rego column's unresolvable is therefore a refusal to
+        grade, not a flipped verdict."""
         doc = {"a": subject}
-        assert _bash_outcome(tmp_path, "$.a", "not_regex", pattern, doc) == CONTRADICTED
-        assert _bash_outcome(tmp_path / "r", "$.a", "regex", pattern, doc) == HELD
+        assert _driver_outcome(tmp_path, "$.a", "not_regex", pattern, doc) == CONTRADICTED
+        assert _driver_outcome(tmp_path / "r", "$.a", "regex", pattern, doc) == HELD
 
-    def test_jq_itself_reaches_a_verdict_on_a_pattern_it_cannot_compile(
-        self, tmp_path: Path
+    @pytest.mark.parametrize("op", ["regex", "not_regex"])
+    def test_a_pattern_no_engine_can_compile_is_unresolvable_everywhere(
+        self, op: str, tmp_path: Path
     ) -> None:
-        """The jq backend's own version of the same defect, which is corrected
-        by its removal rather than ahead of it: an unbalanced class makes
-        `test` fail, and the collect-and-count shape reads that as "no node
-        matched" -- a VERDICT on a pattern no engine could apply. Both other
-        columns refuse."""
-        doc = {"a": "a"}
-        assert _bash_outcome(tmp_path, "$.a", "not_regex", "[", doc) == CONTRADICTED
-        assert _python_outcome("$.a", "not_regex", "[", doc) == UNRESOLVABLE
+        """An unbalanced class compiles nowhere, and every column refuses it.
 
-    # (pattern, a subject BOTH GRADERS match it against). Python's `re` reads a
-    # POSIX class as a nested set, rejects `\p` and `\z` outright, and spells a
-    # named group `(?P<` so it reads `(?<x>` as a malformed lookbehind.
+        The retired bash grader is the reason this clause is named: `test`
+        failing made the collect-and-count shape read "no value matched", which
+        is a VERDICT on a pattern no engine could apply -- it contradicted
+        `not_regex`, the one op whose whole purpose is proving an absence.
+        """
+        assert _agree(tmp_path, "$.a", op, "[", {"a": "a"}) == UNRESOLVABLE
+
+    # (pattern, a subject, the DRIVER's outcome for `not_regex` against it).
+    # Python's `re` reads a POSIX class as a nested set (so the class means
+    # something else entirely and the pattern still grades), and rejects `\p`,
+    # `\z` and Oniguruma's `(?<name>` spelling outright (so those do not
+    # grade at all). Rego/RE2 contradicts all four.
     RE_MISREADS = (
-        ("[[:alpha:]]", "abc"),
-        (r"\p{L}+", "abc"),
-        ("(?<x>a)", "abc"),
-        (r"c\z", "abc"),
+        ("[[:alpha:]]", "abc", HELD),
+        (r"\p{L}+", "abc", UNRESOLVABLE),
+        ("(?<x>a)", "abc", UNRESOLVABLE),
+        (r"c\z", "abc", UNRESOLVABLE),
     )
 
-    @pytest.mark.parametrize(("pattern", "subject"), RE_MISREADS)
-    def test_the_two_graders_agree_where_the_python_reference_refuses(
-        self, pattern: str, subject: str, tmp_path: Path
+    @pytest.mark.parametrize(("pattern", "subject", "driver_outcome"), RE_MISREADS)
+    def test_the_reference_refuses_what_the_driver_reads_its_own_way(
+        self, pattern: str, subject: str, driver_outcome: str, tmp_path: Path
     ) -> None:
-        """The reference REFUSES rather than answering: compiling
-        `[[:alpha:]]` under `re` and reporting the result would answer
-        "not_regex holds" where both graders contradict -- an authoring-time
-        false PASS, the worst of the three directions."""
+        """Python `re` IS the tier-0 flavour, so the driver's answer is the
+        definition -- and for `[[:alpha:]]` that answer is the OPPOSITE of
+        RE2's, because `re` reads the POSIX class as a set of the characters
+        `[:alph` followed by a literal `]`.
+
+        The reference column keeps refusing all four. It is the
+        spec-authoring-time check, and the Rego column reads them differently,
+        so answering here would tell an author a pattern is safe when only one
+        engine agrees. No corpus pattern uses any of this syntax.
+        """
         doc = {"a": subject}
-        assert _bash_outcome(tmp_path, "$.a", "not_regex", pattern, doc) == CONTRADICTED
+        assert _driver_outcome(tmp_path, "$.a", "not_regex", pattern, doc) == driver_outcome
         rego = _rego_outcomes(tmp_path, [("probe", "$.a", "not_regex", pattern)], doc)
         assert rego["probe"] == CONTRADICTED
         assert _python_outcome("$.a", "not_regex", pattern, doc) == UNRESOLVABLE
@@ -792,28 +806,25 @@ class TestRegexFlavourDivergence:
         assert _agree(tmp_path, "$.a", "not_regex", "^zz$", doc) == HELD
         assert _agree(tmp_path / "r", "$.a", "regex", "^a$", doc) == HELD
 
-    def test_a_go_style_named_group_is_refused_rather_than_graded(
+    def test_a_go_style_named_group_is_graded_by_the_driver_alone(
         self, tmp_path: Path
     ) -> None:
-        r"""`(?P<name>...)` is RE2's spelling and Oniguruma has no such form at
-        all -- it spells a named group `(?<name>...)` and fails to compile the
-        `(?P<` one -- so there is NO subject on which the two flavours agree,
-        and the rego column refuses the pattern outright instead of screening
-        per value. jq's own failure to compile collapses into "no value
-        matched", which is a verdict: it contradicts `regex` on a subject the
-        pattern would have matched and contradicts `not_regex` on one it would
-        not, and that half is corrected by the removal of the jq backend rather
-        than ahead of it. No corpus pattern uses the form.
+        r"""`(?P<name>...)` is Python's and RE2's spelling; Oniguruma has no
+        such form at all and spells a named group `(?<name>...)`.
+
+        With Python `re` as the tier-0 flavour the driver simply grades it. The
+        rego column refuses the pattern outright rather than screening per
+        value, because there is NO subject on which its flavour and
+        Oniguruma's agree; the reference refuses both named-group spellings for
+        the same reason, so a spec author is still told the pattern is unsafe
+        for any engine but the driver. No corpus pattern uses the form.
         """
         for op, subject in (("regex", "a"), ("not_regex", "zzz")):
             doc = {"a": subject}
-            assert _bash_outcome(tmp_path / op, "$.a", op, "(?P<n>a)", doc) == CONTRADICTED
+            assert _driver_outcome(tmp_path / op, "$.a", op, "(?P<n>a)", doc) == HELD
+            assert _python_outcome("$.a", op, "(?P<n>a)", doc) == UNRESOLVABLE
             rego = _rego_outcomes(tmp_path / op, [("probe", "$.a", op, "(?P<n>a)")], doc)
             assert rego["probe"] == UNRESOLVABLE
-            # Python `re` accepts the form too, so the reference would answer
-            # "holds" for `regex` -- the false-PASS direction -- unless it
-            # screens the construct out the way it screens `[[:` and `\p{`.
-            assert _python_outcome("$.a", op, "(?P<n>a)", doc) == UNRESOLVABLE
 
 
 class TestRegexMeaningDivergence:
@@ -834,7 +845,7 @@ class TestRegexMeaningDivergence:
     `^(ObjectWriter|BucketOwnerPreferred)$`), and the worst direction lands on
     a `not_regex` absence proof -- `^1$` against a `function_version` of
     `"1
-"` is jq=contradicted (it catches the pin) and, ungoverned,
+"` is driver=contradicted (it catches the pin) and, ungoverned,
     rego=held: a vacuous pass on the one op whose purpose is proving an
     absence.
 
@@ -846,7 +857,8 @@ class TestRegexMeaningDivergence:
     column against the verdict jq reaches.
     """
 
-    # (op, pattern, subject, the outcome the jq/Python columns reach).
+    # (op, pattern, subject, the outcome the driver and the reference reach --
+    # one flavour between them, Python `re`).
     CELLS = (
         ("not_regex", "^1$", "1\n", CONTRADICTED),
         ("regex", "^1$", "1\n", HELD),
@@ -859,59 +871,81 @@ class TestRegexMeaningDivergence:
     )
 
     @pytest.mark.parametrize(
-        ("op", "pattern", "subject", "jq_outcome"), CELLS,
+        ("op", "pattern", "subject", "py_outcome"), CELLS,
         ids=[f"{c[0]}-{c[1]}-{c[2]}" for c in CELLS],
     )
     def test_the_rego_column_refuses_where_the_flavours_disagree(
-        self, op: str, pattern: str, subject: str, jq_outcome: str, tmp_path: Path
+        self, op: str, pattern: str, subject: str, py_outcome: str, tmp_path: Path
     ) -> None:
         doc = {"a": subject}
-        assert _bash_outcome(tmp_path, "$.a", op, pattern, doc) == jq_outcome
-        assert _python_outcome("$.a", op, pattern, doc) == jq_outcome
+        assert _driver_outcome(tmp_path, "$.a", op, pattern, doc) == py_outcome
+        assert _python_outcome("$.a", op, pattern, doc) == py_outcome
         rego = _rego_outcomes(tmp_path, [("probe", "$.a", op, pattern)], doc)
         assert rego["probe"] == UNRESOLVABLE
 
-    # The same split in the POSIX spelling, which carries no backslash for the
-    # pattern screen to key on. The Python reference column is absent here: `re`
-    # reads `[[:alpha:]]` as a nested set and refuses the spelling outright, so
-    # it is pinned in TestRegexFlavourDivergence.RE_MISREADS instead.
+    # The same ASCII-vs-Unicode split in the POSIX spelling, where the THREE
+    # engines read the pattern three ways and the driver's reading is now the
+    # definition: `re` takes `[[:alpha:]]` as the set `[:alph` plus a literal
+    # `]`, so it matches neither "café" nor "prod-1", where Oniguruma and RE2
+    # both read a character class. Reachable only through a pattern no corpus
+    # assert uses, and named here so the next author of one is not surprised.
+    #
+    # (op, pattern, subject, the DRIVER's outcome, Oniguruma's outcome).
     POSIX_CELLS = (
-        ("regex", "^[[:alpha:]]+$", "caf\u00e9", HELD),
-        ("not_regex", "^[[:alpha:]]+$", "caf\u00e9", CONTRADICTED),
-        ("not_regex", "^[[:alnum:]]+$", "caf\u00e9", CONTRADICTED),
-        ("not_regex", "^[[:word:]]+$", "caf\u00e9", CONTRADICTED),
-        ("not_regex", "^[[:lower:]]+$", "\u00e9", CONTRADICTED),
-        ("not_regex", "^[[:upper:]]+$", "\u00c9", CONTRADICTED),
-        ("not_regex", "^[[:digit:]]+$", "\u0661\u0662", CONTRADICTED),
-        ("not_regex", "^[[:space:]]+$", "\u00a0", CONTRADICTED),
-        ("not_regex", "^[[:alnum:]_-]+$", "na\u00efve-1", CONTRADICTED),
+        ("regex", "^[[:alpha:]]+$", "caf\u00e9", CONTRADICTED, HELD),
+        ("not_regex", "^[[:alpha:]]+$", "caf\u00e9", HELD, CONTRADICTED),
+        ("not_regex", "^[[:alnum:]]+$", "caf\u00e9", HELD, CONTRADICTED),
+        ("not_regex", "^[[:word:]]+$", "caf\u00e9", HELD, CONTRADICTED),
+        ("not_regex", "^[[:lower:]]+$", "\u00e9", HELD, CONTRADICTED),
+        ("not_regex", "^[[:upper:]]+$", "\u00c9", HELD, CONTRADICTED),
+        ("not_regex", "^[[:digit:]]+$", "\u0661\u0662", HELD, CONTRADICTED),
+        ("not_regex", "^[[:space:]]+$", "\u00a0", HELD, CONTRADICTED),
+        ("not_regex", "^[[:alnum:]_-]+$", "na\u00efve-1", HELD, CONTRADICTED),
     )
 
     @pytest.mark.parametrize(
-        ("op", "pattern", "subject", "jq_outcome"), POSIX_CELLS,
+        ("op", "pattern", "subject", "driver_outcome", "_oniguruma"), POSIX_CELLS,
         ids=[f"{c[0]}-{c[1]}-{c[2]}" for c in POSIX_CELLS],
     )
-    def test_the_rego_column_refuses_a_posix_class_over_a_non_ascii_value(
-        self, op: str, pattern: str, subject: str, jq_outcome: str, tmp_path: Path
+    def test_a_posix_class_is_a_character_set_under_neither_re_nor_rego(
+        self, op: str, pattern: str, subject: str, driver_outcome: str,
+        _oniguruma: str, tmp_path: Path
     ) -> None:
+        """The driver grades the pattern as Python reads it; the rego column
+        refuses it over a non-ASCII value rather than reaching RE2's own
+        (third) verdict. The reference is absent: it refuses the spelling
+        itself, pinned in TestRegexFlavourDivergence.RE_MISREADS."""
         doc = {"a": subject}
-        assert _bash_outcome(tmp_path, "$.a", op, pattern, doc) == jq_outcome
+        assert _driver_outcome(tmp_path, "$.a", op, pattern, doc) == driver_outcome
         rego = _rego_outcomes(tmp_path, [("probe", "$.a", op, pattern)], doc)
         assert rego["probe"] == UNRESOLVABLE
 
-    @pytest.mark.parametrize("op", ["regex", "not_regex"])
-    @pytest.mark.parametrize("pattern", ["^[[:alpha:]]+$", "^[[:alnum:]_-]+$"])
-    def test_a_posix_class_still_grades_over_an_ascii_value(
-        self, op: str, pattern: str, tmp_path: Path
+    # (op, pattern, the driver's outcome, rego's) over the ASCII value
+    # "prod-1". Rego's screen is per VALUE, so an ASCII subject is graded
+    # rather than refused and a POSIX-class assert keeps working there; the
+    # driver grades it too, as the set `re` actually read. Whether the two
+    # then AGREE is a coincidence of the value: "prod-1" matches RE2's
+    # `[[:alnum:]_-]` and not its `[[:alpha:]]`, and matches neither of
+    # Python's readings.
+    POSIX_ASCII_CELLS = (
+        ("regex", "^[[:alpha:]]+$", CONTRADICTED, CONTRADICTED),
+        ("not_regex", "^[[:alpha:]]+$", HELD, HELD),
+        ("regex", "^[[:alnum:]_-]+$", CONTRADICTED, HELD),
+        ("not_regex", "^[[:alnum:]_-]+$", HELD, CONTRADICTED),
+    )
+
+    @pytest.mark.parametrize(
+        ("op", "pattern", "driver_outcome", "rego_outcome"), POSIX_ASCII_CELLS,
+        ids=[f"{c[0]}-{c[1]}" for c in POSIX_ASCII_CELLS],
+    )
+    def test_a_posix_class_over_an_ascii_value_grades_in_both_graders(
+        self, op: str, pattern: str, driver_outcome: str, rego_outcome: str,
+        tmp_path: Path
     ) -> None:
-        """The screen is per VALUE: an ASCII subject is graded by both graders
-        rather than refused, so a POSIX-class assert keeps working. Two
-        columns, not three -- Python `re` refuses the spelling itself."""
         doc = {"a": "prod-1"}
-        bash = _bash_outcome(tmp_path, "$.a", op, pattern, doc)
+        assert _driver_outcome(tmp_path, "$.a", op, pattern, doc) == driver_outcome
         rego = _rego_outcomes(tmp_path, [("probe", "$.a", op, pattern)], doc)["probe"]
-        assert bash == rego
-        assert bash in (HELD, CONTRADICTED)
+        assert rego == rego_outcome
 
     @pytest.mark.parametrize(
         ("pattern", "subject"),
@@ -938,8 +972,9 @@ class TestRegexMeaningDivergence:
 class TestMistypedExpected:
     """`in`/`set_eq` are defined over a list and the pattern ops over a string.
     generator/spec_model.py refuses either mistyping at spec load, which is
-    where an author sees it; the emitter still has to produce a COMPILABLE
-    policy for a caller that bypasses the spec model, because an uncompilable
+    where an author sees it; every column still has to report it as
+    unresolvable for a caller that bypasses the spec model -- and the Rego
+    emitter still has to produce a COMPILABLE policy, because an uncompilable
     tier0.rego takes every other assert in the arm down with it."""
 
     @pytest.mark.parametrize(
@@ -949,10 +984,7 @@ class TestMistypedExpected:
     def test_a_mistyped_expected_is_unresolvable_not_uncompilable(
         self, op: str, expected: object, tmp_path: Path
     ) -> None:
-        doc = {"a": "a"}
-        rego = _rego_outcomes(tmp_path, [("probe", "$.a", op, expected)], doc)
-        assert rego["probe"] == UNRESOLVABLE
-        assert _python_outcome("$.a", op, expected, doc) == UNRESOLVABLE
+        assert _agree(tmp_path, "$.a", op, expected, {"a": "a"}) == UNRESOLVABLE
 
     @pytest.mark.parametrize("op", ["in", "set_eq"])
     @pytest.mark.parametrize("jsonpath", ["$", "$..Action"])

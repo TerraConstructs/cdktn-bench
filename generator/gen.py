@@ -42,6 +42,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from jsonpath_jq import jsonpath_to_jq  # noqa: E402
 from jsonpath_rego import build_tier0_rego  # noqa: E402
+from tier0_py import OPS_PY, OPS_SELFTEST_OK, Tier0Entry, build_tier0_py  # noqa: E402
 from spec_model import Arm, Spec, Step, load_spec  # noqa: E402
 from oracles.emit import emit_oracles  # noqa: E402
 from gates.equipping import _discover_equipping_files  # noqa: E402
@@ -1752,193 +1753,30 @@ def build_steps_toml(spec: Spec, live) -> list[str]:
 # from tasks/anchor/smoke/tests/test.sh)
 # ---------------------------------------------------------------------------
 
-ASSERT_LIB_SH = textwrap.dedent(
+# The tier-1 delegation guard tests/static_tiers.sh carries. A policy file the
+# generator only ever scaffolded (never hand-authored, SCHEMA.md §8.2 point 7)
+# keeps a stub marker: an un-authored policy means this scenario's
+# Rego/cfn-guard is not written yet, so the tier is skipped, never failed.
+IS_STUB_POLICY_SH = textwrap.dedent(
     """\
-    #!/usr/bin/env bash
-    # Generated -- generator/gen.py. Shared by tests/static_tiers.sh in this
-    # task directory only (not a cross-task shared file). Do not hand-edit;
-    # regenerate the owning scenario instead.
-    #
-    # Tier-0 structural-assert runner: every cfn_jsonpath/tf_jsonpath in the
-    # spec's oracle.structural_asserts was compiled to a jq filter at
-    # generation time (generator/jsonpath_jq.py) -- jq is the only JSON-query
-    # tool guaranteed present in every arm image (DECISIONS.md "Agent-container
-    # baseline contract"). This function evaluates one compiled filter against
-    # the synthesized/planned artifact and checks the result against op/expected.
-    #
-    # op semantics are pinned to specs/SCHEMA.md §4.2's table (the single
-    # authoritative definition -- oracles/lib/structural.py implements the
-    # same table in Python for spec-authoring-time use; a differential test,
-    # oracles/tests/test_op_parity.py, runs both against shared fixtures and
-    # fails if they ever disagree again):
-    #   exists      -> path resolves to >=1 node
-    #   not_exists  -> path resolves to 0 nodes
-    #   eq          -> the (single) resolved value equals expected (exactly
-    #                  one node -- 0 or >1 is a failure, not "pick one")
-    #   in          -> every resolved value (each array-valued match
-    #                  flattened one level first, since a property like
-    #                  Action is sometimes a bare string and sometimes a
-    #                  list of strings across statements) is a member of
-    #                  the expected list
-    #   contains    -> a resolved string LITERALLY contains expected as a
-    #                  substring (jq's `contains/1`, not `test/1` -- test()
-    #                  treats expected as a regex, so e.g. expected
-    #                  "ec2.amazonaws.com" would match the actual string
-    #                  "ec2Xamazonaws.com" via the unescaped "." wildcard;
-    #                  that is a real, security-relevant false PASS, not a
-    #                  theoretical one), OR a resolved list/array contains
-    #                  expected as a member
-    #   regex       -> a resolved string matches expected as a regex
-    #                  (this is the one op that IS pattern matching by
-    #                  design, per SCHEMA.md §4.2's own table)
-    #   set_eq      -> every resolved value (flattened one level, same as
-    #                  `in`), taken as a SET, equals expected taken as a
-    #                  SET -- exactly, not a subset/superset. `in`/`contains`
-    #                  can only express "every actual value is allowed" or
-    #                  "at least one match", so a broader-than-intended
-    #                  grant (e.g. a trust policy correctly listing
-    #                  ec2.amazonaws.com but ALSO listing an unintended
-    #                  second principal) passes `contains`/`in` -- one
-    #                  correct value masks an arbitrarily bad extra one.
-    #                  set_eq is the "and nothing else" op the taxonomy's
-    #                  "scoped, not broader" catches actually need.
-    #   absent_or_eq -> the path resolves to 0 nodes, OR to exactly 1 node
-    #                  equal to expected (>1 node is a failure, same
-    #                  ambiguity rule as `eq`). Added by the residual
-    #                  finding fix (2026-08-06): a bare `not_exists` check
-    #                  for "the implied default was left unset" false-
-    #                  negatived an equally-correct solution that wrote the
-    #                  semantically-identical value explicitly (e.g.
-    #                  `tier = "Standard"`) -- neither `not_exists` alone
-    #                  (rejects the explicit form) nor `eq` alone (rejects
-    #                  the omitted form) can express "either form is fine",
-    #                  which is what a real "left at its implied default"
-    #                  catch means.
-    #   not_regex   -> literal negation of `regex` (unanchored search, same
-    #                  "matches anywhere" semantics -- never a full-string
-    #                  match): NONE of the resolved string values may match
-    #                  expected. 0 resolved nodes vacuously PASSES (nothing
-    #                  present to violate a "must never contain X" rule),
-    #                  unlike `regex`'s own ">=1 node" requirement. Added
-    #                  for the sfn-jsonata mode-mixing catch's "no raw
-    #                  un-evaluated JSONPath string anywhere in this
-    #                  JSONata-mode ASL" fact -- `regex` can only assert a
-    #                  pattern IS present, never that it is absent, and
-    #                  `not_exists` checks for an absent KEY, not an absent
-    #                  substring inside an arbitrary string value.
-    assert_check() {
-      local name="$1" jq_filter="$2" op="$3" expected_json="$4" artifact="$5"
-      local vals
-      # `map(select(. != null))` drops JSON `null` results -- jq's plain
-      # field access (`.Foo`) returns `null` for a key that is simply
-      # absent from the matched object rather than raising an error or
-      # producing no output, so an uncollected "[ .Foo ]" over N matched
-      # objects where none of them has "Foo" resolves to "[null, null, ...]"
-      # (length N, not 0). Left unfixed, `not_exists` never passes on the
-      # exact "field genuinely absent" case it exists to check (e.g. an
-      # attribute correctly nested where the schema says it belongs, so the
-      # WRONG, mis-nested location resolves to null, not to "no node") --
-      # every not_exists assert failed unconditionally, including against a
-      # known-good artifact.
-      #
-      # RETURN CODES ARE THREE-VALUED (finding m4, adversarial review
-      # 2026-08-25):
-      #   0  the assert RESOLVED and HELD
-      #   1  the assert RESOLVED and was CONTRADICTED  -- a verdict
-      #   2  the assert could NOT BE RESOLVED AT ALL   -- NOT a verdict
-      # A malformed/unexpected artifact, a missing jq, or an op this library
-      # does not know are all "the proof did not run", which is a different
-      # fact from "the account/template is wrong" -- the same three-valued
-      # contract live_check.py (pass / fail_stale / not_verifiable) and the
-      # idempotence tier (converged / pending_changes / not_verifiable) already
-      # honour. Before this fix both collapsed to 1, so a seed proof told the
-      # operator "the account does not hold the seed" when the truth was "the
-      # question could not be asked".
-      #
-      # EVERY EXISTING CALLER IS UNAFFECTED, deliberately: tier-0 in
-      # static_tiers.sh is `assert_check ... || tier0_pass=0` and
-      # generator/check_reference_paths.py's _assert_check_via_bash is
-      # `ok = proc.returncode == 0` -- both test != 0, so 2 behaves exactly as
-      # 1 did there. Only a caller that LOOKS for 2 (gen.py's seed
-      # pre_invoke.sh) sees the difference. Pinned by
-      # generator/tests/test_seed_deploy.py::
-      # test_tier0_still_treats_an_unresolvable_assert_as_a_failure.
-      if ! vals="$(jq -c "[ ${jq_filter} ] | map(select(. != null))" "$artifact" 2>/tmp/assert-jq-err.txt)"; then
-        echo "  FAIL [$name]: jq query error (UNRESOLVABLE, not contradicted): $(cat /tmp/assert-jq-err.txt)"
-        return 2
-      fi
-      local pass
-      case "$op" in
-        exists)
-          pass="$(jq -n --argjson v "$vals" '($v | length) > 0')" ;;
-        not_exists)
-          pass="$(jq -n --argjson v "$vals" '($v | length) == 0')" ;;
-        eq)
-          pass="$(jq -n --argjson v "$vals" --argjson e "$expected_json" \\
-            '($v | length) == 1 and ($v[0] == $e)')" ;;
-        in)
-          pass="$(jq -n --argjson v "$vals" --argjson e "$expected_json" \\
-            '($v | [ .[] | if (type == "array") then .[] else . end ]) as $flat |
-             ($flat | length) > 0 and ($flat | all(. as $x | $e | index($x) != null))')" ;;
-        contains)
-          pass="$(jq -n --argjson v "$vals" --argjson e "$expected_json" \\
-            '($v | length) >= 1 and
-             ($v | any(
-                if (type == "array") then any(. == $e)
-                elif (type == "string") then ($e | type == "string") and contains($e)
-                else . == $e end))')" ;;
-        regex)
-          pass="$(jq -n --argjson v "$vals" --argjson e "$expected_json" \\
-            '($v | length) >= 1 and ($v | any(type == "string" and test($e)))')" ;;
-        set_eq)
-          pass="$(jq -n --argjson v "$vals" --argjson e "$expected_json" \\
-            '(($v | [ .[] | if (type == "array") then .[] else . end ]) | unique | sort) as $actual_set |
-             ($e | unique | sort) as $expected_set |
-             $actual_set == $expected_set')" ;;
-        absent_or_eq)
-          pass="$(jq -n --argjson v "$vals" --argjson e "$expected_json" \\
-            '($v | length) == 0 or (($v | length) == 1 and ($v[0] == $e))')" ;;
-        not_regex)
-          pass="$(jq -n --argjson v "$vals" --argjson e "$expected_json" \\
-            '($v | all(if type == "string" then (test($e) | not) else true end))')" ;;
-        *)
-          # Also UNRESOLVABLE (rc 2), not contradicted: an op this library does
-          # not implement is a generator/library bug, and reporting it as "the
-          # artifact is wrong" would point the operator at the wrong file.
-          echo "  FAIL [$name]: unknown op $op (UNRESOLVABLE, not contradicted)"; return 2 ;;
-      esac
-      if [ "$pass" = "true" ]; then
-        echo "  PASS [$name]"
-        return 0
-      fi
-      echo "  FAIL [$name]: op=$op expected=$expected_json resolved=$vals"
-      return 1
-    }
-
-    # Tier-1 delegation guard: a policy file the generator only ever
-    # scaffolded (never hand-authored, SCHEMA.md §8.2 point 7) is marked with
-    # this string. An un-authored policy is not a failure -- it means Slice D
-    # hasn't written this scenario's Rego/cfn-guard yet.
     is_stub_policy() {
       local f="$1"
       [ ! -s "$f" ] && return 0
-      # Primary signal: the GENERATOR-STUB marker every oracles/emit.py
-      # skeleton carries (oracles/emit.py is now the sole writer of
-      # policy.rego/policy.guard -- see generator/gen.py::generate_oracles).
-      # "TODO(Slice D)" is a belt-and-suspenders fallback: both skeletons
-      # also carry that phrase, so a stub is still detected even if the
-      # GENERATOR-STUB line is ever accidentally stripped without the rest
-      # of the placeholder being replaced.
+      # Two markers, either of which means un-authored: GENERATOR-STUB, the
+      # line every oracles/emit.py skeleton carries (emit.py is the sole
+      # writer of policy.rego/policy.guard -- see generate_oracles), and the
+      # literal "TODO(Slice D)" those skeletons also carry, matched as a
+      # fallback so stripping the first line alone cannot make a placeholder
+      # look authored.
       grep -q -e "GENERATOR-STUB" -e "TODO(Slice D)" "$f" 2>/dev/null && return 0
       return 1
     }
     """
-)
-
+).rstrip("\n")
 
 # The shared aws-CLI runner every hand-authored tests/live_check.py calls
 # instead of subprocess.run. Written into the same tests/ directory as
-# _assert_lib.sh, and imported by file name (live_check.py is run as
+# ops.py, and imported by file name (live_check.py is run as
 # `python3 <tests>/live_check.py`, so its own directory is sys.path[0]).
 # One owner, so the classification is identical in every arm and every
 # scenario; the host-side twin used by the post-trial reset lives in
@@ -2146,16 +1984,20 @@ def run_aws(
 '''
 
 
-def build_assert_calls(
+def build_tier0_table(
     spec: Spec, arm: Arm, assert_names: set[str] | None = None
-) -> tuple[list[str], list[str]]:
-    """Returns (tier0_call_lines, tier1_assert_names) for one arm.
+) -> tuple[list[Tier0Entry], list[str]]:
+    """Returns (tier-0 assert table, tier-1 assert names) for one arm.
+
+    The tier-0 half is what tests/tier0.py carries verbatim; the tier-1 half is
+    only a list of names, because tier 1 is graded by ONE policy evaluation
+    over the whole bundle and has no per-assert channel.
 
     `assert_names` (SCHEMA.md §2.6) restricts the emitted asserts to one step's
     own projection of the spec-level oracle. `None` = every assert, which is
     both the single-step shape and the final step's required shape.
     """
-    tier0_lines: list[str] = []
+    tier0: list[Tier0Entry] = []
     tier1_names: list[str] = []
     for a in spec.oracle.structural_asserts:
         if assert_names is not None and a.name not in assert_names:
@@ -2164,25 +2006,20 @@ def build_assert_calls(
             continue
         jsonpath = a.cfn_jsonpath if arm == "awscdk" else a.tf_jsonpath
         if a.tier == "0":
-            jq_filter = jsonpath_to_jq(jsonpath)
-            expected_json = json.dumps(a.expected)
-            call = (
-                "assert_check "
-                + shlex.quote(a.name)
-                + " "
-                + shlex.quote(jq_filter)
-                + " "
-                + shlex.quote(a.op)
-                + " "
-                + shlex.quote(expected_json)
-                + ' "$ARTIFACT" || tier0_pass=0'
+            tier0.append(
+                Tier0Entry(
+                    name=a.name,
+                    jsonpath=jsonpath,
+                    jq_filter=jsonpath_to_jq(jsonpath),
+                    op=a.op,
+                    expected=a.expected,
+                )
             )
-            tier0_lines.append(call)
         elif a.tier == "1":
             tier1_names.append(a.name)
         else:
             raise AssertionError(f"unexpected tier {a.tier!r} on {a.name!r}")
-    return tier0_lines, tier1_names
+    return tier0, tier1_names
 
 
 def tier0_rego_pkg(spec: Spec) -> str:
@@ -2194,9 +2031,38 @@ def tier0_rego_pkg(spec: Spec) -> str:
     return spec.id.replace("-", "_")
 
 
+def tier0_step_note(spec: Spec, step: Step | None) -> str:
+    """The paragraph tests/tier0.py's docstring carries for a multi-step task:
+    which step's assert projection this table is. Empty for a single-step
+    task, so its generated file says nothing about steps it does not have."""
+    if step is None:
+        return ""
+    if step.oracle.structural_asserts is None:
+        scope = (
+            "the FULL tier suite -- this is the final step, so its grading is "
+            "identical to the single-step form of this scenario."
+        )
+    else:
+        scope = "a SUBSET of this spec's structural_asserts."
+    return (
+        "\n".join(
+            textwrap.wrap(f"STEP {step.name!r} oracle (SCHEMA.md §2.6): {scope}", width=76)
+        )
+        + "\n\n"
+    )
+
+
+def build_tier0_py_file(spec: Spec, arm: Arm, step: Step | None = None) -> str:
+    """tests/tier0.py: this arm's (and step's) tier-0 assert table."""
+    assert_names = None if step is None else set(spec.step_assert_names(step))
+    entries, _tier1 = build_tier0_table(spec, arm, assert_names)
+    return build_tier0_py(spec.id, arm, entries, tier0_step_note(spec, step))
+
+
 def build_tier0_rego_file(spec: Spec, arm: Arm, step: Step | None = None) -> str:
     """tests/tier0.rego for one arm: the same tier-"0" asserts
-    build_assert_calls compiles to jq, compiled to Rego from the same YAML.
+    build_tier0_table projects for the jq driver, compiled to Rego from the
+    same YAML.
 
     Written into a task dir only when `oracle.tier0_engine` is `rego`, the
     engine static_tiers.sh's tier-0 block then reads it with. Every other
@@ -2217,8 +2083,37 @@ def build_tier0_rego_file(spec: Spec, arm: Arm, step: Step | None = None) -> str
     return build_tier0_rego(tier0_rego_pkg(spec), entries)
 
 
+# The default (`oracle.tier0_engine: jq`) tier-0 block: one call to the
+# generated tests/tier0.py, which carries this arm's assert table and drives
+# jq through tests/ops.py (DECISIONS.md Amendment 43 -- the tier-0 driver is
+# Python, the paths stay jq). Its exit status is the whole verdict, so no
+# per-assert shell suffix survives.
+#
+# FAIL CLOSED ON A MISSING TOOL, with the same marker discipline the tier-1
+# block uses: python3 runs the driver and jq resolves every path, so without
+# either of them not one assert could be asked, which is a broken arm image
+# rather than a silent pass. Both arms of the check set tier0_pass=0, which the
+# final reward gate already maps to 0.0.
+TIER0_PY_BLOCK = textwrap.dedent(
+    """\
+    if ! command -v python3 >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+      tier0_pass=0
+      {
+        echo "python3 and jq are both required to evaluate the tier-0"
+        echo "structural asserts (tests/tier0.py drives tests/ops.py, which"
+        echo "invokes jq); at least one is missing from this image, so no"
+        echo "assert was evaluated -- a run-invalidating condition, not a"
+        echo "silent pass."
+      } | tee /logs/verifier/tier0-unavailable
+    elif ! python3 "$DIR/tier0.py" "$ARTIFACT"; then
+      tier0_pass=0
+    fi
+    """
+).rstrip("\n")
+
+
 # The tier-0 block `oracle.tier0_engine: rego` substitutes for the jq
-# assert_check call list (specs/SCHEMA.md §4.5.1). ONE `opa eval` per trial
+# driver above (specs/SCHEMA.md §4.5.1). ONE `opa eval` per trial
 # returns the whole tier-0 report, because the compiled rules already hold
 # every assert and per-assert shelling out would only re-add the bash layer
 # this engine exists to remove.
@@ -2549,7 +2444,7 @@ def build_static_tiers_sh(spec: Spec, arm: Arm, step: Step | None = None) -> str
     per_arm = getattr(spec.instruction.per_arm, arm)
     oc = per_arm.output_contract
     assert_names = None if step is None else set(spec.step_assert_names(step))
-    tier0_lines, tier1_names = build_assert_calls(spec, arm, assert_names)
+    tier0_entries, tier1_names = build_tier0_table(spec, arm, assert_names)
 
     toolchain_steps: list[tuple[str, str]] = []
     # terraconstructs: the TypeScript compile is the load-bearing GATE for
@@ -2699,18 +2594,16 @@ def build_static_tiers_sh(spec: Spec, arm: Arm, step: Step | None = None) -> str
         )
     toolchain_block = "\n".join(step_blocks)
 
-    # `jq` (the default) keeps the assert_check call list every already-
-    # generated task carries; `rego` replaces the whole block with one
-    # `opa eval` of the compiled tests/tier0.rego. The applicable-assert COUNT
-    # is the same either way, so the header line and every consumer of the
-    # `== summary:` line are untouched.
+    # `jq` (the default) runs the generated tests/tier0.py driver; `rego`
+    # replaces the whole block with one `opa eval` of the compiled
+    # tests/tier0.rego. The applicable-assert COUNT is the same either way, so
+    # the header line and every consumer of the `== summary:` line are
+    # untouched.
     if spec.oracle.tier0_engine == "rego":
         tier0_block = TIER0_REGO_BLOCK.replace("__PKG__", tier0_rego_pkg(spec)).rstrip("\n")
-    elif tier0_lines:
-        tier0_block = "\n".join(tier0_lines)
     else:
-        tier0_block = "true  # no tier-0 asserts apply"
-    tier0_total = len(tier0_lines)
+        tier0_block = TIER0_PY_BLOCK
+    tier0_total = len(tier0_entries)
 
     tier1_comment = (
         "# tier-1 (Rego/cfn-guard-graded) structural_asserts for this arm: "
@@ -2987,9 +2880,7 @@ def build_static_tiers_sh(spec: Spec, arm: Arm, step: Step | None = None) -> str
               else
                 tier1_status="FAIL"
               fi
-              # not_verifiable (residual finding "tier-1 action-allowlist
-              # silently skipped on TF arms (plan-time-unknown path)", fixed
-              # 2026-08-06): a plan-time-unknown encoded policy attribute
+              # not_verifiable: a plan-time-unknown encoded policy attribute
               # (e.g. a correct solution referencing another resource's
               # .arn) makes some tier-1 value-content facts genuinely
               # unverifiable from plan JSON alone -- specs/SCHEMA.md §4.2.1
@@ -3167,8 +3058,10 @@ def build_static_tiers_sh(spec: Spec, arm: Arm, step: Step | None = None) -> str
         # (harbor/verifier/verifier.py::_parse_reward_text).
         set -uo pipefail
         DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-        source "$DIR/_assert_lib.sh"
         mkdir -p /logs/verifier
+
+        __IS_STUB_POLICY__
+
         __AWS_PREFLIGHT__
         cd /app/project
 
@@ -3219,6 +3112,7 @@ def build_static_tiers_sh(spec: Spec, arm: Arm, step: Step | None = None) -> str
         template.replace("__SPEC_ID__", spec.id)
         .replace("__ARM__", arm)
         .replace("__STEP_NOTE__", step_note)
+        .replace("__IS_STUB_POLICY__", IS_STUB_POLICY_SH)
         .replace("__AWS_PREFLIGHT__", aws_preflight)
         .replace("__TOOLCHAIN_BLOCK__", toolchain_block)
         .replace("__ARTIFACT_PATH__", oc.artifact_path)
@@ -3379,8 +3273,8 @@ IDEMPOTENCE_COMPLETION_MARKER: dict[Arm, str] = {
 
 @dataclass(frozen=True)
 class SeedMovementTexts:
-    """The per-tier wording of one shared mechanism (specs/SCHEMA.md §2.7.1,
-    finding H -- the harness-deployed seed a do-nothing agent inherits). Both
+    """The per-tier wording of one shared mechanism (specs/SCHEMA.md §2.7.1 --
+    the harness-deployed seed a do-nothing agent would otherwise inherit). Both
     tiers ask the same question -- did the deployed state move off the identity
     the harness seeded? -- so only the shell variables and the consequence
     differ; the jq programs, the receipt and the branch structure stay here,
@@ -3402,7 +3296,7 @@ IDEMPOTENCE_SEED_MOVEMENT_TEXTS = SeedMovementTexts(
     var_prefix="idem",
     tier_label="idempotence",
     header=(
-        "# SEED MOVEMENT GUARD (specs/SCHEMA.md §2.7.1, finding H). The state",
+        "# SEED MOVEMENT GUARD (specs/SCHEMA.md §2.7.1). The state",
         "# probe above cannot fire on a spec whose seed the HARNESS deployed",
         "# before the agent's first token, so a do-nothing agent would inherit",
         "# the seed's own convergence as a `converged` verdict. The seed's",
@@ -4041,17 +3935,15 @@ def build_test_sh(spec: Spec, arm: Arm) -> str:
         DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
         # ---- BROWNFIELD SEED DEPLOY, FAIL-CLOSED (SCHEMA.md §2.7.1) ---------
-        # Finding M3 (adversarial review, 2026-08-25). Every anti-vacuity layer
-        # of the seed-deploy mechanism lives inside
+        # Every anti-vacuity layer of the seed-deploy mechanism lives inside
         # pre_invoke/pre_invoke.sh, and aws_bench/task/aws_trial.py runs that
         # file if and only if it is on disk -- `if
         # self.task.has_phase_script(ScriptType.PRE_INVOKE):`, no else branch,
         # no log line, and has_phase_script is pure file existence. A task tree
         # that lost its pre_invoke/ directory (stale generator, bad image
-        # layer, truncated upload) therefore ran the whole trial against an
-        # EMPTY account in total silence, and this scenario's live oracle
-        # passes for free on an empty account -- which is the original defect,
-        # docs/brownfield-seed-not-deployed.md, restored by a missing file.
+        # layer, truncated upload) therefore runs the whole trial against an
+        # EMPTY account in total silence, on which this scenario's live oracle
+        # passes for free (docs/brownfield-seed-not-deployed.md).
         #
         # The verifier is the one component that always runs, so it is the one
         # that refuses. SPEC_SEED_DEPLOY_REQUIRED comes from this task's own
@@ -4119,30 +4011,21 @@ def build_test_sh(spec: Spec, arm: Arm) -> str:
 
         if [ "${SPEC_LIVE_CHECK_ENABLED:-false}" = "true" ] \\
            && [ -f "$DIR/live_check.py" ]; then
-          # REGION (2026-08-25). The verifier container is handed
-          # credentials but NOT a region, so every `aws` call a
-          # live_check.py makes died with exit 253 (`NoRegion`: "You must
-          # specify a region") BEFORE reaching AWS. live_check.py cannot
-          # tell that apart from a real API error, so it reported
-          # "not_verifiable" -- which gating below fails closed to reward
-          # 0.0. The result is an INFRASTRUCTURE failure wearing the
-          # costume of an agent failure: a correct, deployed, converged
-          # solution scores 0.0 with `"failures": []`, and nothing in
-          # result.json's exception_info marks the trial as invalid.
-          # Observed on all three arms of named-resource-replacement's
-          # first live run (jobs/rerun-named-resource-replacement/
-          # 2026-08-25__00-42-05); the same latent bug sits under every
-          # apigw-redeploy live_check.py, which only ever passed because
-          # its proofs were driven host-side with an operator shell that
-          # had a region configured.
+          # REGION. The verifier container is handed credentials but NOT a
+          # region, so without these two lines every `aws` call a
+          # live_check.py makes dies with exit 253 (`NoRegion`) BEFORE
+          # reaching AWS. live_check.py cannot tell that apart from a real
+          # API error, reports "not_verifiable", and the gating below fails
+          # closed to 0.0 -- an infrastructure failure wearing the costume
+          # of an agent failure: a correct, deployed, converged solution
+          # scores 0.0 with `"failures": []` and nothing marks the trial
+          # invalid.
           #
-          # Set here, in the GENERATOR, and not in the nine hand-authored
-          # live_check.py files: the region is a property of the
-          # environment the verifier runs in, not of any one oracle, and a
-          # per-file fix would have to be repeated for every scenario
-          # authored from now on. `:=` so a region the harness DOES inject
-          # always wins; the literal is the region this bench is pinned to
-          # by its own SCP.
+          # Set in the GENERATOR, not in the hand-authored live_check.py
+          # files: the region is a property of the environment the verifier
+          # runs in, not of any one oracle. `:=` so a region the harness
+          # DOES inject always wins; the literal is the region this bench is
+          # pinned to by its own SCP.
           : "${AWS_DEFAULT_REGION:=us-east-1}"
           export AWS_DEFAULT_REGION
           if command -v python3 >/dev/null 2>&1; then
@@ -4168,7 +4051,7 @@ def build_test_sh(spec: Spec, arm: Arm) -> str:
           # this spec declares never reached the container. It prints no
           # `outcome`, so the gating block below would read "not_verifiable"
           # and score EVERY solution 0.0, correct ones included. Same rule as
-          # _assert_lib.sh's is_stub_policy: a missing oracle VOIDS the row,
+          # static_tiers.sh's is_stub_policy: a missing oracle VOIDS the row,
           # it never grades it. No reward file is written, so harbor's own
           # RewardFileNotFoundError reports the trial INVALID.
           if [ "$(jq -r '.status // ""' /logs/verifier/live_check-result.json 2>/dev/null)" = "not_implemented" ]; then
@@ -4456,15 +4339,14 @@ SEED_STATE_PROOF: dict[Arm, str] = {
         "if ! aws cloudformation describe-stacks --stack-name ScenarioStack "
         "--output json \\\n"
         "     > /logs/pre_invoke/seed-cfn.json 2>/logs/pre_invoke/seed-cfn.err; then\n"
-        "  # A RESOLVED ABSENCE IS NOT AN UNVERIFIABLE ONE (finding D,\n"
-        "  # adversarial review round 3, 2026-08-25). `describe-stacks` on a\n"
-        "  # stack that does not exist exits NON-ZERO with `ValidationError ...\n"
-        "  # does not exist` -- that is a RESOLVED FACT about the account, and\n"
-        "  # its truthful verdict is seed_absent (2), not seed_unverifiable (3).\n"
-        "  # Reporting it as 3 is finding m4's mislabelling in the opposite\n"
-        "  # direction: it tells the operator the proof could not be RUN when\n"
-        "  # the proof ran and answered. Everything else -- throttling, no\n"
-        "  # credentials, no network, an IAM denial -- really is unresolvable.\n"
+        "  # A RESOLVED ABSENCE IS NOT AN UNVERIFIABLE ONE. `describe-stacks`\n"
+        "  # on a stack that does not exist exits NON-ZERO with\n"
+        "  # `ValidationError ... does not exist` -- that is a RESOLVED FACT\n"
+        "  # about the account, whose truthful verdict is seed_absent (2), not\n"
+        "  # seed_unverifiable (3). Reporting it as 3 tells the operator the\n"
+        "  # proof could not be RUN when the proof ran and answered. Everything\n"
+        "  # else -- throttling, no credentials, no network, an IAM denial --\n"
+        "  # really is unresolvable.\n"
         "  if grep -qE 'does not exist|ValidationError' /logs/pre_invoke/seed-cfn.err; then\n"
         '    fail seed_absent "CloudFormation has NO stack named ScenarioStack '
         "after the seed deploy reported success -- the deploy left nothing for "
@@ -4530,7 +4412,7 @@ def build_seed_state_identity_block(arm: Arm) -> str:
     in whichever direction the reader happened to guess.
     """
     return (
-        "# SEED STATE IDENTITY (finding H). Stamped into the receipt below and\n"
+        "# SEED STATE IDENTITY. Stamped into the receipt below and\n"
         "# re-read by tests/test.sh's idempotence tier, which must be able to\n"
         "# tell the agent's OWN converged state from the one this script just\n"
         "# deployed. See gen.py::SEED_STATE_IDENTITY_JQ for why these fields.\n"
@@ -4607,12 +4489,12 @@ def build_seed_pre_invoke_sh(spec: Spec, arm: Arm) -> str:
         .replace("__WORKSPACE_ID__", wid)
     )
 
-    # ANTI-VACUITY LAYER 3. One `aws` call + one assert_check per declared live
-    # assert, compiled through the SAME generator/jsonpath_jq.py the tier-0
-    # asserts use and resolved by the SAME _assert_lib.sh::assert_check. Every
-    # argv token is single-quoted individually, which is why the spec surface
-    # types `aws` as a LIST: there is no word-splitting or quoting question left
-    # to get wrong at emission time.
+    # ANTI-VACUITY LAYER 3. One `aws` call + one `ops.py --one` per declared
+    # live assert, compiled through the SAME generator/jsonpath_jq.py the
+    # tier-0 asserts use and resolved by the SAME tests/ops.py. Every argv
+    # token is single-quoted individually, which is why the spec surface types
+    # `aws` as a LIST: there is no word-splitting or quoting question left to
+    # get wrong at emission time.
     assert_blocks: list[str] = []
     for index, a in enumerate(seed.deploy.live_asserts, start=1):
         # UNDER /logs/pre_invoke/, NEVER /tmp. ScriptRunner's step-7 cleanup
@@ -4647,15 +4529,15 @@ def build_seed_pre_invoke_sh(spec: Spec, arm: Arm) -> str:
                     f'  fail seed_unverifiable "aws call for [{a.name}] failed: '
                     f'$(head -c 400 {err})" 3',
                     "fi",
-                    # THREE-VALUED, never `|| failures=$((...))`. assert_check
-                    # returns 2 for "the query could not be resolved at all" and
-                    # 1 for "resolved and contradicted"; folding both into one
-                    # counter tells the operator "the account does not hold the
-                    # seed this workspace describes" when the truthful verdict
-                    # is seed_unverifiable. `|| rc=$?` (never a bare `rc=$?` on
+                    # THREE-VALUED, never `|| failures=$((...))`. ops.py exits
+                    # 2 for "the query could not be resolved at all" and 1 for
+                    # "resolved and contradicted"; folding both into one counter
+                    # tells the operator "the account does not hold the seed
+                    # this workspace describes" when the truthful verdict is
+                    # seed_unverifiable. `|| rc=$?` (never a bare `rc=$?` on
                     # its own line) keeps this safe under any future `set -e`.
                     "rc=0",
-                    "assert_check "
+                    "python3 /pre_invoke/ops.py --one "
                     + shlex.quote(a.name)
                     + " "
                     + shlex.quote(jq_filter)
@@ -4665,20 +4547,20 @@ def build_seed_pre_invoke_sh(spec: Spec, arm: Arm) -> str:
                     + shlex.quote(json.dumps(a.expected))
                     + f" {out} || rc=$?",
                     # ANY rc OUTSIDE {0,1,2} IS UNRESOLVABLE, not contradicted.
-                    # An `elif rc -ne 0` here would sweep 126/127 (`assert_check`
-                    # not found or not executable) and every future rc into the
-                    # CONTRADICTED bucket, making the script announce that a real
-                    # AWS account is wrong. _assert_lib.sh's contract defines
-                    # exactly three codes; anything else is the harness, not the
-                    # account.
+                    # An `elif rc -ne 0` here would sweep 126/127 (ops.py not
+                    # found or not executable) and every future rc into the
+                    # CONTRADICTED bucket, making the script announce that a
+                    # real AWS account is wrong. ops.py's contract defines
+                    # exactly three codes; anything else is the harness, not
+                    # the account.
                     'if [ "$rc" -eq 0 ]; then',
                     "  :",
                     'elif [ "$rc" -eq 1 ]; then',
                     "  failures=$((failures + 1))",
                     "else",
                     "  unresolvable=$((unresolvable + 1))",
-                    f'  echo "  [{a.name}] assert_check exited $rc, which is '
-                    'outside _assert_lib.sh\'s documented {0,1,2} -- counted as '
+                    f'  echo "  [{a.name}] ops.py exited $rc, which is '
+                    'outside its documented {0,1,2} -- counted as '
                     'UNRESOLVABLE" >&2',
                     "fi",
                 ]
@@ -4708,11 +4590,8 @@ def build_seed_pre_invoke_sh(spec: Spec, arm: Arm) -> str:
         # workspace_seed.premise's "it is already deployed in this account" TRUE
         # -- and then to prove it, three ways, fail-closed.
         #
-        # WHAT IS ACTUALLY GUARANTEED ABOUT WHAT THE AGENT SEES (restated by
-        # finding m2, adversarial review 2026-08-25 -- the sentence that used
-        # to sit here claimed the agent "never sees this file, its output, or
-        # the fact that a harness deployed anything", which was more than the
-        # code enforced):
+        # WHAT IS ACTUALLY GUARANTEED ABOUT WHAT THE AGENT SEES. The
+        # guarantee is exactly what ScriptRunner removes, and nothing wider:
         #
         #   GUARANTEED GONE. ScriptRunner removes /pre_invoke and
         #   /logs/pre_invoke, and NOTHING ELSE, before the agent phase
@@ -4724,8 +4603,8 @@ def build_seed_pre_invoke_sh(spec: Spec, arm: Arm) -> str:
         #
         #   DELIBERATELY LEFT BEHIND. Exactly one artifact: the RECEIPT at
         #   {SEED_DEPLOY_RECEIPT_PATH}, read by tests/test.sh so a trial whose
-        #   seed never ran fails CLOSED instead of grading an empty account
-        #   (finding M3). It is one JSON object under /logs, a harness
+        #   seed never ran fails CLOSED instead of grading an empty account.
+        #   It is one JSON object under /logs, a harness
         #   directory the agent has no reason to open, and it discloses only
         #   what workspace_seed.premise already tells the agent in its own
         #   prompt -- that this workspace is already deployed.
@@ -4777,31 +4656,38 @@ def build_seed_pre_invoke_sh(spec: Spec, arm: Arm) -> str:
         : "${{AWS_DEFAULT_REGION:=us-east-1}}"
         export AWS_DEFAULT_REGION
 
-        # THE PROOF HARNESS IS CHECKED BEFORE THE ACCOUNT IS TOUCHED (finding
-        # F, adversarial review round 3, 2026-08-25). Both lines below used to
-        # be unguarded, and the failure was the repo's signature shape: with
-        # _assert_lib.sh absent (ScriptRunner uploads pre_invoke/ at RUN time,
-        # so a partial upload or a future rename reaches this), the source
-        # failed SILENTLY, every `assert_check` became `command not found` ->
-        # rc 127, and the per-assert dispatch below bucketed 127 as
-        # CONTRADICTED. The run then exited 2 saying "the account does not hold
-        # EXACTLY the seed this workspace describes" -- a false statement about
-        # a real AWS account, in the one file whose job is to be believed.
+        # THE PROOF HARNESS IS CHECKED BEFORE THE ACCOUNT IS TOUCHED.
+        # Unguarded, a missing or unrunnable runner (ScriptRunner uploads
+        # pre_invoke/ at RUN time, so a partial upload or a rename reaches
+        # this) makes every assert exit outside the three-valued contract, and
+        # the dispatch below buckets anything it does not recognise as
+        # CONTRADICTED: the script would exit 2 saying "the account does not
+        # hold EXACTLY the seed this workspace describes", a false statement
+        # about a real AWS account in the one file whose job is to be believed.
         #
-        # Ordered jq-guard -> source -> deploy ON PURPOSE: a broken proof
-        # harness must never spend against the account it then cannot check.
-        # `fail` itself degrades to a printf fallback when jq is missing, so
-        # this guard can still report its own verdict.
+        # Ordered jq-guard -> python3-guard -> ops.py selftest -> deploy: a
+        # broken proof harness must never spend against the account it then
+        # cannot check. `fail` degrades to a printf fallback when jq is
+        # missing, so the first guard can still report its own verdict.
+        #
+        # THE SELFTEST IS THE LOAD-BEARING ONE: a truncated ops.py is a file
+        # that ignores its own argv and exits 0, which the dispatch reads as
+        # "held" -- a seed announced as proven that was never checked. So its
+        # STDOUT is compared, as a whole string, against the one line only a
+        # driver that really resolved one assert per outcome through jq can
+        # print. Exiting 0 proves nothing here; answering does.
         command -v jq >/dev/null 2>&1 \\
-          || fail seed_unverifiable "jq is not on PATH in this container -- the entire seed proof (this script's verdict file, the compiled live asserts, and _assert_lib.sh) is written in jq, so nothing below could be resolved. This is NOT a claim about the account (DECISIONS.md's agent-container baseline contract puts jq in every arm image; if it is missing, the image is wrong)" 3
+          || fail seed_unverifiable "jq is not on PATH in this container -- this script's verdict file, the seed receipt and every compiled live assert are resolved through jq, so nothing below could be resolved. This is NOT a claim about the account (DECISIONS.md's agent-container baseline contract puts jq in every arm image; if it is missing, the image is wrong)" 3
+        command -v python3 >/dev/null 2>&1 \\
+          || fail seed_unverifiable "python3 is not on PATH in this container -- /pre_invoke/ops.py is the live-assert runner this proof depends on, so no live assert below could be resolved. This is NOT a claim about the account (DECISIONS.md's agent-container baseline contract puts python3 in every arm image; if it is missing, the image is wrong)" 3
 
-        # assert_check, byte-identical to the one tests/static_tiers.sh runs --
-        # ONE owner (gen.py::ASSERT_LIB_SH), two destinations. The seed proof and
-        # tier-0 must never disagree about what `eq` means.
-        . /pre_invoke/_assert_lib.sh \\
-          || fail seed_unverifiable "could not source /pre_invoke/_assert_lib.sh -- the live-assert runner this proof depends on is missing or unreadable, so no live assert below could be resolved. ScriptRunner uploads pre_invoke/ at RUN time, so this is a harness/upload fault, NOT a claim about the account" 3
-        command -v assert_check >/dev/null 2>&1 \\
-          || fail seed_unverifiable "/pre_invoke/_assert_lib.sh sourced without error but defined no assert_check function -- the proof harness is broken (a truncated upload, or a library that no longer owns this contract). NOT a claim about the account" 3
+        # ops.py, byte-identical to the one tests/static_tiers.sh's tier-0
+        # driver imports -- ONE owner (gen.py::OPS_PY), two destinations. The
+        # seed proof and tier-0 must never disagree about what `eq` means.
+        [ -f /pre_invoke/ops.py ] \\
+          || fail seed_unverifiable "/pre_invoke/ops.py is not there -- the live-assert runner this proof depends on is missing, so no live assert below could be resolved. ScriptRunner uploads pre_invoke/ at RUN time, so this is a harness/upload fault, NOT a claim about the account" 3
+        [ "$(python3 /pre_invoke/ops.py --selftest 2>/dev/null)" = "{OPS_SELFTEST_OK}" ] \\
+          || fail seed_unverifiable "/pre_invoke/ops.py did not answer its own --selftest with {OPS_SELFTEST_OK}, so it cannot be trusted to resolve a live assert (a truncated upload, a python3 that cannot run it, or a jq it cannot drive). NOT a claim about the account" 3
 
         cd /app/project || fail seed_unverifiable "no /app/project in this container" 3
 
@@ -4827,14 +4713,14 @@ def build_seed_pre_invoke_sh(spec: Spec, arm: Arm) -> str:
         # against real AWS CLI responses. Arm-agnostic on purpose -- the account
         # does not know which arm produced its resources, the same principle
         # that makes tests/live_check.py byte-identical across all three arms.
-        # TWO counters, not one (finding m4). `failures` counts asserts that
-        # resolved and were CONTRADICTED -- assert_check rc 1, and ONLY rc 1.
-        # `unresolvable` counts everything else non-zero: rc 2 (the query could
-        # not be run) and any rc outside _assert_lib.sh's documented {0,1,2},
-        # which is a broken proof harness rather than a wrong account (finding
-        # F, round 3). Collapsing them told the operator the account was wrong
-        # when the proof simply did not resolve -- a lie about a real account,
-        # in the one file whose whole job is to be believed.
+        # TWO counters, never one. `failures` counts asserts that resolved and
+        # were CONTRADICTED -- ops.py rc 1, and ONLY rc 1. `unresolvable`
+        # counts everything else non-zero: rc 2 (the query could not be run)
+        # and any rc outside ops.py's documented {{0,1,2}}, which is a broken
+        # proof harness rather than a wrong account. Collapsing them would tell
+        # the operator the account is wrong when the proof simply did not
+        # resolve -- a lie about a real account, in the one file whose whole
+        # job is to be believed.
         failures=0
         unresolvable=0
 
@@ -4850,18 +4736,16 @@ def build_seed_pre_invoke_sh(spec: Spec, arm: Arm) -> str:
           "$failures seed live assert(s) resolved and were CONTRADICTED -- the account does not hold EXACTLY the seed this workspace describes. Read the assert's own resolved= line above before concluding the seed is MISSING: an exact-count op (eq) is contradicted by zero resolved nodes AND by more than one, and the second case is a STRAY leftover object from an incompletely-reset earlier trial (aws_trial.py::_reset_scenario_account logs a reset failure and never raises). Both make this trial unmeasurable, which is why both abort" 2
 
         # ---- 4. RECEIPT ------------------------------------------------------
-        # THE ONE ARTIFACT THAT OUTLIVES THIS SCRIPT (finding M3, adversarial
-        # review 2026-08-25). Every anti-vacuity layer above lives INSIDE a file
-        # that a trial only runs if it is on disk: aws_trial.py:303 is a bare
+        # THE ONE ARTIFACT THAT OUTLIVES THIS SCRIPT. Every anti-vacuity layer
+        # above lives INSIDE a file that a trial only runs if it is on disk:
+        # aws_trial.py:303 is a bare
         # `if self.task.has_phase_script(ScriptType.PRE_INVOKE):` with no else
         # and no logging, and has_phase_script is pure file existence
         # (aws_bench/dataset/task_config.py:175-177). A dropped pre_invoke/
         # directory -- a bad image layer, a task tree built by a stale
-        # generator, an upload that lost a subdirectory -- therefore skipped
-        # the ENTIRE mechanism in silence and handed the verifier an empty
-        # account, on which live_check.py's discriminating assertion passes for
-        # free all over again. That is the original defect, restored by a
-        # missing file.
+        # generator, an upload that lost a subdirectory -- therefore skips the
+        # ENTIRE mechanism in silence and hands the verifier an empty account,
+        # on which live_check.py's discriminating assertion passes for free.
         #
         # So the VERIFIER -- the one component that always runs -- is told to
         # look for this receipt and to refuse to grade without it (see
@@ -4883,7 +4767,7 @@ def build_seed_pre_invoke_sh(spec: Spec, arm: Arm) -> str:
         # /logs under a non-root script user -- see generate_arm's Dockerfile
         # USER guard) the seed must fail LOUDLY here, not succeed into a
         # verifier that will refuse it later.
-        # `state_identity` (finding H, round 3): the identity of the state THIS
+        # `state_identity`: the identity of the state THIS
         # script just deployed, which tests/test.sh's idempotence tier compares
         # against the state it finds after the agent phase. Unchanged means the
         # agent applied NOTHING and would otherwise have inherited the seed's
@@ -4894,14 +4778,6 @@ def build_seed_pre_invoke_sh(spec: Spec, arm: Arm) -> str:
           || fail seed_unverifiable "could not write the seed receipt to {SEED_DEPLOY_RECEIPT_PATH} -- the verifier fails closed without it" 3
 
         # ---- 5. DECLARE ------------------------------------------------------
-        # Probe leftovers first (finding m2): _assert_lib.sh writes its jq
-        # stderr to /tmp/assert-jq-err.txt, which step 7's cleanup does not
-        # reach. That library is SHARED with tier-0, so its path is NOT changed
-        # there; it is cleaned up here instead, where the agent is the next
-        # reader of this filesystem. Best-effort -- a leftover scratch file must
-        # never turn a deployed, proven seed into an aborted trial.
-        rm -f /tmp/assert-jq-err.txt || true
-
         # placeholder.json LAST, and only on success: ScriptRunner checks the
         # exit code (step 5) before it looks for the result file (step 6), so a
         # failing seed surfaces as ScriptExecutionError rather than the more
@@ -5054,7 +4930,10 @@ def make_executable(path: Path) -> None:
 # generated file this run must clean up" apart from "hand-authored material a
 # shape change would silently destroy" -- see write_multi_step_layout().
 _GENERATED_TESTS_FILES = (
-    "_assert_lib.sh",
+    # The tier-0 driver: the fixed op table + three-valued outcome (ops.py)
+    # and this arm's assert table (tier0.py), DECISIONS.md Amendment 43.
+    "ops.py",
+    "tier0.py",
     "_live_lib.py",
     "static_tiers.sh",
     "test.sh",
@@ -5085,7 +4964,10 @@ _GENERATED_TESTS_FILES = (
 
 # `tests/` filenames this emitter never writes. Swept on every regeneration so
 # a task dir cannot keep claiming an oracle the emitted scripts no longer run.
-_RETIRED_TESTS_FILES = ("TIER05.md",)
+# `_assert_lib.sh` is the tier-0 bash library the Python driver replaced
+# (Amendment 43): a task dir that still carries it would claim an evaluator the
+# emitted static_tiers.sh no longer sources.
+_RETIRED_TESTS_FILES = ("TIER05.md", "_assert_lib.sh")
 
 
 def write_tests_dir(spec: Spec, arm: Arm, tests_dir: Path, step: Step | None = None) -> None:
@@ -5100,7 +4982,11 @@ def write_tests_dir(spec: Spec, arm: Arm, tests_dir: Path, step: Step | None = N
     """
     live = spec.verifier.live_check if step is None else step_live_check(spec, step)
     tests_dir.mkdir(parents=True, exist_ok=True)
-    (tests_dir / "_assert_lib.sh").write_text(ASSERT_LIB_SH)
+    # ONE owner for the op table (gen.py's OPS_PY), up to two destinations per
+    # task: here, and a brownfield task's pre_invoke/. The seed proof and tier-0
+    # must never disagree about what `set_eq` means.
+    (tests_dir / "ops.py").write_text(OPS_PY)
+    (tests_dir / "tier0.py").write_text(build_tier0_py_file(spec, arm, step))
     (tests_dir / "static_tiers.sh").write_text(build_static_tiers_sh(spec, arm, step))
     # Only the `rego` engine's static_tiers.sh sources this policy; under the
     # default `jq` the task dir must not carry one, and a leftover from a spec
@@ -5117,7 +5003,7 @@ def write_tests_dir(spec: Spec, arm: Arm, tests_dir: Path, step: Step | None = N
     # is the only legal value when live_check.enabled=False, and those specs
     # keep the always-overwrite-the-stub behavior.
     live_check_path = tests_dir / "live_check.py"
-    written = ["_assert_lib.sh", "static_tiers.sh", "test.sh"]
+    written = ["ops.py", "tier0.py", "static_tiers.sh", "test.sh"]
     if step is None or live.enabled:
         if live.enabled and live.hand_authored and not live_check_path.exists():
             # Falling through would write build_live_check_py's STUB, whose
@@ -5539,12 +5425,18 @@ def generate_arm(spec: Spec, arm: Arm) -> Path:
         script.write_text(build_seed_pre_invoke_sh(spec, arm))
         make_executable(script)
         # ONE OWNER, TWO DESTINATIONS, BYTE-IDENTICAL. The same module-level
-        # ASSERT_LIB_SH write_tests_dir() copies into tests/: assert_check's
-        # nine ops must behave identically in the seed proof and in tier-0, or
-        # a live assert and a structural assert can disagree about what
-        # `set_eq` means and nothing would notice. Same discipline
-        # IDEMPOTENCE_COMMAND uses -- never a second, forked copy.
-        (pre_invoke_dir / "_assert_lib.sh").write_text(ASSERT_LIB_SH)
+        # OPS_PY write_tests_dir() copies into tests/: the nine ops must behave
+        # identically in the seed proof and in tier-0, or a live assert and a
+        # structural assert can disagree about what `set_eq` means and nothing
+        # would notice. Same discipline IDEMPOTENCE_COMMAND uses -- never a
+        # second, forked copy.
+        (pre_invoke_dir / "ops.py").write_text(OPS_PY)
+        # The bash library the driver replaced (Amendment 43). Swept rather
+        # than left behind: pre_invoke/ is uploaded wholesale at run time, and
+        # a stale copy would claim a runner this script no longer sources.
+        stale_lib = pre_invoke_dir / "_assert_lib.sh"
+        if stale_lib.exists():
+            stale_lib.unlink()
 
         # LOAD-BEARING ASSERTION, not a tidiness check. It does NOT guard
         # against the seed deploy and the agent running as different users: a
@@ -5605,7 +5497,7 @@ def generate_oracles(spec: Spec) -> None:
     itself: two writers behind the same `if not exists` guard means whichever
     runs first against a given scenario wins permanently, including whose
     GENERATOR-STUB marker text lands on disk -- which is what is_stub_policy()
-    in the generated tests/_assert_lib.sh keys off. Calling emit_oracles() here
+    in the generated tests/static_tiers.sh keys off. Calling emit_oracles() here
     keeps it the single owner, matching its own module docstring."""
     emit_oracles(spec.model_dump(mode="json"), root=REPO_ROOT)
 

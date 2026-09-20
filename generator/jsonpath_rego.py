@@ -9,7 +9,7 @@ restating them, so the two backends cannot drift apart on what a path means.
 What is NOT shared is error behaviour, and that is the whole difficulty. jq
 raises on a field access into a scalar, on iterating a non-collection, and on
 `fromjson` over a non-string, invalid JSON or escapes only its own decoder
-rejects, and `assert_check` reports each raise as UNRESOLVABLE (rc 2) rather
+rejects, and the tier-0 driver reports each raise as UNRESOLVABLE (rc 2) rather
 than as a verdict. Rego turns the same situations into silent undefined, which
 would collapse "the question could not be asked" into "the path found no node"
 -- a vacuous pass. So each is emitted as an EXPLICIT rule contributing a reason
@@ -35,7 +35,7 @@ from jsonpath_jq import (
     _WILDCARD_RE,
 )
 
-# Ops jq's assert_check implements. Anything else is UNRESOLVABLE (the emitted
+# Ops the jq driver implements. Anything else is UNRESOLVABLE (the emitted
 # file says so in its own reason string) rather than a generation-time refusal:
 # "an op this library does not know" is a three-valued outcome the translation
 # has to be able to produce, not an error to raise here.
@@ -427,7 +427,7 @@ def _flavour_guards(prefix: str, exp: str, vals: str, pattern: str) -> list[str]
 
 
 def _emit_op(prefix: str, op: str, expected: object) -> list[str]:
-    """The `<prefix>_ok` rule: assert_check's op table, clause for clause.
+    """The `<prefix>_ok` rule: the jq driver's op table, clause for clause.
 
     The pattern ops also contribute to `<prefix>_err`, because whether a
     pattern is applicable at all is only decidable inside Rego.
@@ -583,7 +583,7 @@ HEADER = """\
 # generator/jsonpath_rego.py. Do not hand-edit; regenerate the owning scenario.
 #
 # One assert source, one policy language: the same oracle.structural_asserts
-# entries the jq backend compiles to tests/_assert_lib.sh calls are compiled
+# entries the jq backend compiles into tests/tier0.py's table are compiled
 # here to Rego, with jq's three-valued outcome preserved -- `held`,
 # `contradicted` and `unresolvable` are disjoint and exhaustive per assert, and
 # `unresolvable` is reached only through the explicit `_err` rules that name a
@@ -679,7 +679,7 @@ def build_tier0_rego(pkg: str, asserts: list[tuple[str, str, str, object]]) -> s
 
 
 class Unresolvable(ValueError):
-    """The path could not be resolved at all -- assert_check's rc 2.
+    """The path could not be resolved at all -- the jq driver's rc 2.
 
     Never a verdict about the artifact: a field access into a scalar, an
     iteration over a non-collection, `|fromjson` over a non-string or over a

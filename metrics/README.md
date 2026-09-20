@@ -223,7 +223,8 @@ failed (`reward < 1.0`) valid rows' `tier_evidence`:
   `structural_assert` independently echoes its own PASS/FAIL
   (`gates/emit_result.py::read_tier_evidence`, parsing
   `verifier/test-stdout.txt`'s `  PASS [name]` / `  FAIL [name]` lines —
-  `generator/gen.py`'s `_assert_lib.sh::assert_check()` is the producer).
+  `generator/tier0_py.py`'s emitted `tests/ops.py::report()` is the
+  producer).
 - Tier-`"1"` rows are a **single bundled verdict** per scenario/arm — the
   oracle itself only ever computes one `opa eval`/`cfn-guard validate`
   result covering every tier-1 catch at once (verified against

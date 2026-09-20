@@ -59,7 +59,7 @@ comparison is what the scenario is for.
   bullet the spec declares — those hints describe the CFN shape and apply to
   this file whichever engine reads them.
 - The stub `oracles/emit.py` scaffolds carries a `GENERATOR-STUB` marker that
-  the generated `tests/_assert_lib.sh::is_stub_policy()` greps for. Delete that
+  the generated `tests/static_tiers.sh::is_stub_policy()` greps for. Delete that
   line once real rules are in, and not before: leaving it makes tier-1 report
   `SKIPPED_STUB` (a hard verifier failure), removing it early makes an empty
   policy start gating trials.

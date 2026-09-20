@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shlex
 import shutil
 import subprocess
 import sys
@@ -62,7 +61,7 @@ def _prepare_project(
     COPYs into WORKDIR /app/project -- flattened, no 'workspace'/'app' prefix,
     matching real container layout) with the fixture file dropped in at
     entry_file, plus that task's own tests/ for its real, already-generated
-    static_tiers.sh, _assert_lib.sh and compiled tier0.rego."""
+    static_tiers.sh, tier-0 driver and compiled tier0.rego."""
     task = task_dir(spec, arm)
     project = tmp / "project"
     shutil.copytree(task / "environment" / ARM_WORKSPACE_SUBDIR[arm], project)
@@ -104,7 +103,8 @@ def _prepare_project(
 
     tests_dst = project / "tests"
     tests_dst.mkdir(exist_ok=True)
-    shutil.copy2(task / "tests" / "_assert_lib.sh", tests_dst / "_assert_lib.sh")
+    for driver in ("ops.py", "tier0.py"):
+        shutil.copy2(task / "tests" / driver, tests_dst / driver)
     # The compiled tier-0 Rego, for a spec whose `oracle.tier0_engine` is
     # `rego`: static_tiers.sh loads it from its own directory, and without it
     # `opa eval` ABORTS -- no per-assert line is printed at all, and the script
@@ -153,26 +153,34 @@ def _run_toolchain(project: Path, env: dict[str, str]) -> str:
     return proc.stdout + proc.stderr
 
 
-def _assert_check_via_bash(
+def _assert_check_via_driver(
     project: Path, name: str, jsonpath: str, op: str, expected: object, artifact: Path
 ) -> tuple[bool, str]:
-    """Resolve+apply one structural_assert against `artifact` by calling the
-    REAL `assert_check` bash function from this task's own (generated)
-    _assert_lib.sh -- the same jq-compiled evaluator every trial's tier-0
-    actually runs, so a tier-1 path that jsonpath_ng can't even parse (the
-    `||`-OR'd CFN filters) is still checked for real, and there is no
-    second, drifting implementation of op semantics to keep in sync."""
-    jq_filter = jsonpath_to_jq(jsonpath)
-    expected_json = json.dumps(expected)
-    script = (
-        f"set -uo pipefail\n"
-        f'source {shlex.quote(str(project / "tests" / "_assert_lib.sh"))}\n'
-        f"assert_check {shlex.quote(name)} {shlex.quote(jq_filter)} "
-        f"{shlex.quote(op)} {shlex.quote(expected_json)} {shlex.quote(str(artifact))}\n"
+    """Resolve+apply one structural_assert against `artifact` through this
+    task's own generated `tests/ops.py` -- the same evaluator every trial's
+    tier-0 actually runs, so a tier-1 path that jsonpath_ng can't even parse
+    (the `||`-OR'd CFN filters) is still checked for real, and there is no
+    second, drifting implementation of op semantics to keep in sync.
+
+    `ok` is the rc-0 test, so an UNRESOLVABLE assert (rc 2) fails this gate
+    exactly as a contradicted one does: a declared path that cannot be asked
+    of a known-correct reference artifact is a broken path."""
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(project / "tests" / "ops.py"),
+            "--one",
+            name,
+            jsonpath_to_jq(jsonpath),
+            op,
+            json.dumps(expected),
+            str(artifact),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
     )
-    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True, check=False)
-    ok = proc.returncode == 0
-    return ok, (proc.stdout + proc.stderr).strip()
+    return proc.returncode == 0, (proc.stdout + proc.stderr).strip()
 
 
 def _applies(a: StructuralAssert, arm: Arm) -> bool:
@@ -218,7 +226,7 @@ def check_arm(spec: Spec, arm: Arm, env: dict[str, str]) -> list[PathCheckResult
                 continue
             jsonpath = a.cfn_jsonpath if arm == "awscdk" else a.tf_jsonpath
             assert jsonpath is not None
-            ok, detail = _assert_check_via_bash(project, a.name, jsonpath, a.op, a.expected, artifact)
+            ok, detail = _assert_check_via_driver(project, a.name, jsonpath, a.op, a.expected, artifact)
             label = f"{arm}/{a.name} (tier {a.tier})"
             results.append(PathCheckResult(label, ok, detail))
 
@@ -240,7 +248,7 @@ def check_arm(spec: Spec, arm: Arm, env: dict[str, str]) -> list[PathCheckResult
                             continue
                         jsonpath = a.cfn_jsonpath if arm == "awscdk" else a.tf_jsonpath
                         assert jsonpath is not None
-                        passed, _ = _assert_check_via_bash(
+                        passed, _ = _assert_check_via_driver(
                             bad_project, a.name, jsonpath, a.op, a.expected, bad_artifact
                         )
                         # not_exists PASSING on the bad/violating fixture too
@@ -337,7 +345,7 @@ def check_seed_arm(spec: Spec, arm: Arm, env: dict[str, str]) -> list[PathCheckR
         for a in applicable:
             jsonpath = a.cfn_jsonpath if arm == "awscdk" else a.tf_jsonpath
             assert jsonpath is not None
-            ok, detail = _assert_check_via_bash(
+            ok, detail = _assert_check_via_driver(
                 project, a.name, jsonpath, a.op, a.expected, artifact
             )
             pin = f" pins_catch={a.pins_catch}" if a.pins_catch else ""

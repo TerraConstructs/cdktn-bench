@@ -7,7 +7,7 @@ on that arm, correct ones included, with exit 0 everywhere and nothing in the
 logs naming the cause. Two guards keep that from being reachable: generation
 refuses to write the stub over a spec that declares a hand-authored check, and
 test.sh refuses to grade a stub that reached the container anyway (the same
-rule as _assert_lib.sh's is_stub_policy for tier-1 bundles).
+rule as static_tiers.sh's is_stub_policy for tier-1 bundles).
 """
 
 from __future__ import annotations

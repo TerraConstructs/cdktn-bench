@@ -8,8 +8,21 @@
 # (harbor/verifier/verifier.py::_parse_reward_text).
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$DIR/_assert_lib.sh"
 mkdir -p /logs/verifier
+
+is_stub_policy() {
+  local f="$1"
+  [ ! -s "$f" ] && return 0
+  # Two markers, either of which means un-authored: GENERATOR-STUB, the
+  # line every oracles/emit.py skeleton carries (emit.py is the sole
+  # writer of policy.rego/policy.guard -- see generate_oracles), and the
+  # literal "TODO(Slice D)" those skeletons also carry, matched as a
+  # fallback so stripping the first line alone cannot make a placeholder
+  # look authored.
+  grep -q -e "GENERATOR-STUB" -e "TODO(Slice D)" "$f" 2>/dev/null && return 0
+  return 1
+}
+
 
 cd /app/project
 
@@ -37,13 +50,18 @@ fi
 echo
 echo "== tier-0: structural asserts (7 applicable) =="
 tier0_pass=1
-assert_check versioning-enabled '.Resources | .[] | select(.Type=="AWS::S3::Bucket") | .Properties.VersioningConfiguration.Status' eq '"Enabled"' "$ARTIFACT" || tier0_pass=0
-assert_check sse-is-kms '.Resources | .[] | select(.Type=="AWS::S3::Bucket") | .Properties.BucketEncryption.ServerSideEncryptionConfiguration | .[] | .ServerSideEncryptionByDefault.SSEAlgorithm' eq '"aws:kms"' "$ARTIFACT" || tier0_pass=0
-assert_check bpa-block-public-acls '.Resources | .[] | select(.Type=="AWS::S3::Bucket") | .Properties.PublicAccessBlockConfiguration.BlockPublicAcls' eq true "$ARTIFACT" || tier0_pass=0
-assert_check bpa-block-public-policy '.Resources | .[] | select(.Type=="AWS::S3::Bucket") | .Properties.PublicAccessBlockConfiguration.BlockPublicPolicy' eq true "$ARTIFACT" || tier0_pass=0
-assert_check bpa-ignore-public-acls '.Resources | .[] | select(.Type=="AWS::S3::Bucket") | .Properties.PublicAccessBlockConfiguration.IgnorePublicAcls' eq true "$ARTIFACT" || tier0_pass=0
-assert_check bpa-restrict-public-buckets '.Resources | .[] | select(.Type=="AWS::S3::Bucket") | .Properties.PublicAccessBlockConfiguration.RestrictPublicBuckets' eq true "$ARTIFACT" || tier0_pass=0
-assert_check tls-deny-condition-present '.Resources | .[] | select(.Type=="AWS::S3::BucketPolicy") | .Properties.PolicyDocument.Statement | .[] | select(.Effect=="Deny") | .Condition.Bool' contains '{"aws:SecureTransport": "false"}' "$ARTIFACT" || tier0_pass=0
+if ! command -v python3 >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+  tier0_pass=0
+  {
+    echo "python3 and jq are both required to evaluate the tier-0"
+    echo "structural asserts (tests/tier0.py drives tests/ops.py, which"
+    echo "invokes jq); at least one is missing from this image, so no"
+    echo "assert was evaluated -- a run-invalidating condition, not a"
+    echo "silent pass."
+  } | tee /logs/verifier/tier0-unavailable
+elif ! python3 "$DIR/tier0.py" "$ARTIFACT"; then
+  tier0_pass=0
+fi
 
 echo
 echo "== tier-1: cfn-guard =="

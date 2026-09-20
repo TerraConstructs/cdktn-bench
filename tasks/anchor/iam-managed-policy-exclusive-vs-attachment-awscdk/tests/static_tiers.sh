@@ -8,8 +8,21 @@
 # (harbor/verifier/verifier.py::_parse_reward_text).
 set -uo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-source "$DIR/_assert_lib.sh"
 mkdir -p /logs/verifier
+
+is_stub_policy() {
+  local f="$1"
+  [ ! -s "$f" ] && return 0
+  # Two markers, either of which means un-authored: GENERATOR-STUB, the
+  # line every oracles/emit.py skeleton carries (emit.py is the sole
+  # writer of policy.rego/policy.guard -- see generate_oracles), and the
+  # literal "TODO(Slice D)" those skeletons also carry, matched as a
+  # fallback so stripping the first line alone cannot make a placeholder
+  # look authored.
+  grep -q -e "GENERATOR-STUB" -e "TODO(Slice D)" "$f" 2>/dev/null && return 0
+  return 1
+}
+
 
 cd /app/project
 
@@ -37,8 +50,18 @@ fi
 echo
 echo "== tier-0: structural asserts (2 applicable) =="
 tier0_pass=1
-assert_check role-trusts-ecs-tasks-service '.Resources | .[] | select(.Type=="AWS::IAM::Role") | .Properties.AssumeRolePolicyDocument.Statement | .[] | .Principal.Service' contains '"ecs-tasks.amazonaws.com"' "$ARTIFACT" || tier0_pass=0
-assert_check role-trusts-lambda-service '.Resources | .[] | select(.Type=="AWS::IAM::Role") | .Properties.AssumeRolePolicyDocument.Statement | .[] | .Principal.Service' contains '"lambda.amazonaws.com"' "$ARTIFACT" || tier0_pass=0
+if ! command -v python3 >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
+  tier0_pass=0
+  {
+    echo "python3 and jq are both required to evaluate the tier-0"
+    echo "structural asserts (tests/tier0.py drives tests/ops.py, which"
+    echo "invokes jq); at least one is missing from this image, so no"
+    echo "assert was evaluated -- a run-invalidating condition, not a"
+    echo "silent pass."
+  } | tee /logs/verifier/tier0-unavailable
+elif ! python3 "$DIR/tier0.py" "$ARTIFACT"; then
+  tier0_pass=0
+fi
 
 echo
 echo "== tier-1: OPA/Rego =="
@@ -68,9 +91,7 @@ if [ "$HAS_TIER1_ASSERTS" = "true" ]; then
   else
     tier1_status="FAIL"
   fi
-  # not_verifiable (residual finding "tier-1 action-allowlist
-  # silently skipped on TF arms (plan-time-unknown path)", fixed
-  # 2026-08-06): a plan-time-unknown encoded policy attribute
+  # not_verifiable: a plan-time-unknown encoded policy attribute
   # (e.g. a correct solution referencing another resource's
   # .arn) makes some tier-1 value-content facts genuinely
   # unverifiable from plan JSON alone -- specs/SCHEMA.md §4.2.1

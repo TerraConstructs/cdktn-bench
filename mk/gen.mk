@@ -67,16 +67,18 @@ grading-proof:
 	@if [ -z "$(SPEC)" ]; then echo "usage: make grading-proof SPEC=specs/foo.yaml [CATCH=catch-name]" >&2; exit 2; fi
 	uv run python gates/grading_proof.py $(SPEC) $(if $(CATCH),--catch $(CATCH),)
 
-# Grade every reference and broken-fixture artifact with BOTH tier-0 backends
-# -- the jq compiler in tests/_assert_lib.sh and the Rego one compiled from the
-# same spec entries -- and require identical per-assert outcomes and identical
-# tier0_pass. ON DEMAND, not in `make ci`: jq is the shipped grader and the
-# Rego engine was not adopted (DECISIONS.md Amendment 42). Run it when the
-# compilers or the shared grammar change; any spec works, whatever
-# `oracle.tier0_engine` says. Same host toolchain and runtime class as
-# `make falsifiability`: it runs every fixture for real. `OUT=<dir>` keeps the
-# collected artifacts so `--regrade <dir>` can re-check a compiler change in
-# seconds without them. Exit 3 = NOT_AUTHORED (nothing gradeable).
+# Grade every reference and broken-fixture artifact with both tier-0 graders
+# -- the `assert_check` bash library recovered from git as it stood before
+# DECISIONS.md Amendment 43, and the generated tests/{tier0,ops}.py driver that
+# replaced it -- and require identical per-assert outcomes and identical
+# tier0_pass. The driver's landing condition, and ON DEMAND afterwards, never
+# in `make ci`. Run it when the compilers or the shared grammar change; any
+# spec works, whatever `oracle.tier0_engine` says. `--rego` adds the compiled
+# Rego backend as a third column (available, not adopted). Same host toolchain
+# and runtime class as `make falsifiability`: it runs every fixture for real.
+# `OUT=<dir>` keeps the collected artifacts so `--regrade <dir>` can re-check a
+# grader change in seconds without them. Exit 3 = NOT_AUTHORED (nothing
+# gradeable).
 tier0-parity:
 	@if [ -z "$(SPEC)" ]; then echo "usage: make tier0-parity SPEC=specs/foo.yaml [OUT=dir]" >&2; exit 2; fi
 	uv run python gates/tier0_parity.py $(SPEC) $(if $(OUT),--out $(OUT),)

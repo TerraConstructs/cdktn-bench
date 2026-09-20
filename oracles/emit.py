@@ -141,7 +141,7 @@ def _render_rego_skeleton(spec: dict[str, Any]) -> str:
     lines: list[str] = [
         "# GENERATOR-STUB — auto-scaffolded by oracles/emit.py, hand-author the",
         "# real rules below and then DELETE this GENERATOR-STUB line. The generated",
-        "# tests/_assert_lib.sh::is_stub_policy() greps this exact file for the",
+        "# tests/static_tiers.sh::is_stub_policy() greps this exact file for the",
         "# literal string \"GENERATOR-STUB\" to decide whether tier-1 should run for",
         "# real or report SKIPPED_STUB — leaving this marker in place after you've",
         "# added real rules would silently disable grading, and removing it from a",
@@ -239,7 +239,7 @@ def _render_rego_cfn_skeleton(spec: dict[str, Any]) -> str:
     lines: list[str] = [
         "# GENERATOR-STUB — auto-scaffolded by oracles/emit.py, hand-author the",
         "# real rules below and then DELETE this GENERATOR-STUB line. The generated",
-        "# tests/_assert_lib.sh::is_stub_policy() greps this exact file for the",
+        "# tests/static_tiers.sh::is_stub_policy() greps this exact file for the",
         "# literal string \"GENERATOR-STUB\" to decide whether tier-1 should run for",
         "# real or report SKIPPED_STUB — leaving this marker in place after you've",
         "# added real rules would silently disable grading, and removing it from a",
@@ -327,7 +327,7 @@ def _render_guard_skeleton(spec: dict[str, Any]) -> str:
         "#",
         "# GENERATOR-STUB — auto-scaffolded by oracles/emit.py, hand-author the",
         "# real rules below and then DELETE this GENERATOR-STUB line. The generated",
-        "# tests/_assert_lib.sh::is_stub_policy() greps this exact file for the",
+        "# tests/static_tiers.sh::is_stub_policy() greps this exact file for the",
         "# literal string \"GENERATOR-STUB\" to decide whether tier-1 should run for",
         "# real or report SKIPPED_STUB — leaving this marker in place after you've",
         "# added real rules would silently disable grading, and removing it from a",

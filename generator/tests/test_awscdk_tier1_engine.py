@@ -213,7 +213,7 @@ class TestEmitOraclesScaffolding:
         body = emit_oracles(spec_dict, root=tmp_path)[
             "oracles/rego-cfn/ecs-swappiness/policy.rego"
         ]
-        # is_stub_policy() in the generated tests/_assert_lib.sh greps for this
+        # is_stub_policy() in the generated tests/static_tiers.sh greps for this
         # literal; without it a scaffold would start gating trials.
         assert "GENERATOR-STUB" in body
         assert "package cdktn_bench.ecs_swappiness" in body

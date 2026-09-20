@@ -12,11 +12,8 @@
 # workspace_seed.premise's "it is already deployed in this account" TRUE
 # -- and then to prove it, three ways, fail-closed.
 #
-# WHAT IS ACTUALLY GUARANTEED ABOUT WHAT THE AGENT SEES (restated by
-# finding m2, adversarial review 2026-08-25 -- the sentence that used
-# to sit here claimed the agent "never sees this file, its output, or
-# the fact that a harness deployed anything", which was more than the
-# code enforced):
+# WHAT IS ACTUALLY GUARANTEED ABOUT WHAT THE AGENT SEES. The
+# guarantee is exactly what ScriptRunner removes, and nothing wider:
 #
 #   GUARANTEED GONE. ScriptRunner removes /pre_invoke and
 #   /logs/pre_invoke, and NOTHING ELSE, before the agent phase
@@ -28,8 +25,8 @@
 #
 #   DELIBERATELY LEFT BEHIND. Exactly one artifact: the RECEIPT at
 #   /logs/seed-deploy-receipt.json, read by tests/test.sh so a trial whose
-#   seed never ran fails CLOSED instead of grading an empty account
-#   (finding M3). It is one JSON object under /logs, a harness
+#   seed never ran fails CLOSED instead of grading an empty account.
+#   It is one JSON object under /logs, a harness
 #   directory the agent has no reason to open, and it discloses only
 #   what workspace_seed.premise already tells the agent in its own
 #   prompt -- that this workspace is already deployed.
@@ -81,31 +78,38 @@ fail() {   # fail <outcome> <reason> <exit-code>
 : "${AWS_DEFAULT_REGION:=us-east-1}"
 export AWS_DEFAULT_REGION
 
-# THE PROOF HARNESS IS CHECKED BEFORE THE ACCOUNT IS TOUCHED (finding
-# F, adversarial review round 3, 2026-08-25). Both lines below used to
-# be unguarded, and the failure was the repo's signature shape: with
-# _assert_lib.sh absent (ScriptRunner uploads pre_invoke/ at RUN time,
-# so a partial upload or a future rename reaches this), the source
-# failed SILENTLY, every `assert_check` became `command not found` ->
-# rc 127, and the per-assert dispatch below bucketed 127 as
-# CONTRADICTED. The run then exited 2 saying "the account does not hold
-# EXACTLY the seed this workspace describes" -- a false statement about
-# a real AWS account, in the one file whose job is to be believed.
+# THE PROOF HARNESS IS CHECKED BEFORE THE ACCOUNT IS TOUCHED.
+# Unguarded, a missing or unrunnable runner (ScriptRunner uploads
+# pre_invoke/ at RUN time, so a partial upload or a rename reaches
+# this) makes every assert exit outside the three-valued contract, and
+# the dispatch below buckets anything it does not recognise as
+# CONTRADICTED: the script would exit 2 saying "the account does not
+# hold EXACTLY the seed this workspace describes", a false statement
+# about a real AWS account in the one file whose job is to be believed.
 #
-# Ordered jq-guard -> source -> deploy ON PURPOSE: a broken proof
-# harness must never spend against the account it then cannot check.
-# `fail` itself degrades to a printf fallback when jq is missing, so
-# this guard can still report its own verdict.
+# Ordered jq-guard -> python3-guard -> ops.py selftest -> deploy: a
+# broken proof harness must never spend against the account it then
+# cannot check. `fail` degrades to a printf fallback when jq is
+# missing, so the first guard can still report its own verdict.
+#
+# THE SELFTEST IS THE LOAD-BEARING ONE: a truncated ops.py is a file
+# that ignores its own argv and exits 0, which the dispatch reads as
+# "held" -- a seed announced as proven that was never checked. So its
+# STDOUT is compared, as a whole string, against the one line only a
+# driver that really resolved one assert per outcome through jq can
+# print. Exiting 0 proves nothing here; answering does.
 command -v jq >/dev/null 2>&1 \
-  || fail seed_unverifiable "jq is not on PATH in this container -- the entire seed proof (this script's verdict file, the compiled live asserts, and _assert_lib.sh) is written in jq, so nothing below could be resolved. This is NOT a claim about the account (DECISIONS.md's agent-container baseline contract puts jq in every arm image; if it is missing, the image is wrong)" 3
+  || fail seed_unverifiable "jq is not on PATH in this container -- this script's verdict file, the seed receipt and every compiled live assert are resolved through jq, so nothing below could be resolved. This is NOT a claim about the account (DECISIONS.md's agent-container baseline contract puts jq in every arm image; if it is missing, the image is wrong)" 3
+command -v python3 >/dev/null 2>&1 \
+  || fail seed_unverifiable "python3 is not on PATH in this container -- /pre_invoke/ops.py is the live-assert runner this proof depends on, so no live assert below could be resolved. This is NOT a claim about the account (DECISIONS.md's agent-container baseline contract puts python3 in every arm image; if it is missing, the image is wrong)" 3
 
-# assert_check, byte-identical to the one tests/static_tiers.sh runs --
-# ONE owner (gen.py::ASSERT_LIB_SH), two destinations. The seed proof and
-# tier-0 must never disagree about what `eq` means.
-. /pre_invoke/_assert_lib.sh \
-  || fail seed_unverifiable "could not source /pre_invoke/_assert_lib.sh -- the live-assert runner this proof depends on is missing or unreadable, so no live assert below could be resolved. ScriptRunner uploads pre_invoke/ at RUN time, so this is a harness/upload fault, NOT a claim about the account" 3
-command -v assert_check >/dev/null 2>&1 \
-  || fail seed_unverifiable "/pre_invoke/_assert_lib.sh sourced without error but defined no assert_check function -- the proof harness is broken (a truncated upload, or a library that no longer owns this contract). NOT a claim about the account" 3
+# ops.py, byte-identical to the one tests/static_tiers.sh's tier-0
+# driver imports -- ONE owner (gen.py::OPS_PY), two destinations. The
+# seed proof and tier-0 must never disagree about what `eq` means.
+[ -f /pre_invoke/ops.py ] \
+  || fail seed_unverifiable "/pre_invoke/ops.py is not there -- the live-assert runner this proof depends on is missing, so no live assert below could be resolved. ScriptRunner uploads pre_invoke/ at RUN time, so this is a harness/upload fault, NOT a claim about the account" 3
+[ "$(python3 /pre_invoke/ops.py --selftest 2>/dev/null)" = "OPS_SELFTEST_OK" ] \
+  || fail seed_unverifiable "/pre_invoke/ops.py did not answer its own --selftest with OPS_SELFTEST_OK, so it cannot be trusted to resolve a live assert (a truncated upload, a python3 that cannot run it, or a jq it cannot drive). NOT a claim about the account" 3
 
 cd /app/project || fail seed_unverifiable "no /app/project in this container" 3
 
@@ -126,15 +130,14 @@ fi
 # the next phase can use. See gen.py::SEED_STATE_PROOF.
 if ! aws cloudformation describe-stacks --stack-name ScenarioStack --output json \
      > /logs/pre_invoke/seed-cfn.json 2>/logs/pre_invoke/seed-cfn.err; then
-  # A RESOLVED ABSENCE IS NOT AN UNVERIFIABLE ONE (finding D,
-  # adversarial review round 3, 2026-08-25). `describe-stacks` on a
-  # stack that does not exist exits NON-ZERO with `ValidationError ...
-  # does not exist` -- that is a RESOLVED FACT about the account, and
-  # its truthful verdict is seed_absent (2), not seed_unverifiable (3).
-  # Reporting it as 3 is finding m4's mislabelling in the opposite
-  # direction: it tells the operator the proof could not be RUN when
-  # the proof ran and answered. Everything else -- throttling, no
-  # credentials, no network, an IAM denial -- really is unresolvable.
+  # A RESOLVED ABSENCE IS NOT AN UNVERIFIABLE ONE. `describe-stacks`
+  # on a stack that does not exist exits NON-ZERO with
+  # `ValidationError ... does not exist` -- that is a RESOLVED FACT
+  # about the account, whose truthful verdict is seed_absent (2), not
+  # seed_unverifiable (3). Reporting it as 3 tells the operator the
+  # proof could not be RUN when the proof ran and answered. Everything
+  # else -- throttling, no credentials, no network, an IAM denial --
+  # really is unresolvable.
   if grep -qE 'does not exist|ValidationError' /logs/pre_invoke/seed-cfn.err; then
     fail seed_absent "CloudFormation has NO stack named ScenarioStack after the seed deploy reported success -- the deploy left nothing for the agent's own cdk deploy to update: $(head -c 400 /logs/pre_invoke/seed-cfn.err)" 2
   fi
@@ -146,7 +149,7 @@ case "$st" in
   "") fail seed_unverifiable "describe-stacks on ScenarioStack exited 0 but its response carries no .Stacks[0].StackStatus -- the question was asked and NOT answered" 3 ;;
   *) fail seed_absent "CloudFormation stack ScenarioStack is in state '$st', not CREATE_COMPLETE/UPDATE_COMPLETE -- the seed did not land as a usable stack for the agent to update" 2 ;;
 esac
-# SEED STATE IDENTITY (finding H). Stamped into the receipt below and
+# SEED STATE IDENTITY. Stamped into the receipt below and
 # re-read by tests/test.sh's idempotence tier, which must be able to
 # tell the agent's OWN converged state from the one this script just
 # deployed. See gen.py::SEED_STATE_IDENTITY_JQ for why these fields.
@@ -158,14 +161,14 @@ seed_state_identity="$(jq -er '.Stacks[0] | "stack_id=" + (.StackId|strings) + "
 # against real AWS CLI responses. Arm-agnostic on purpose -- the account
 # does not know which arm produced its resources, the same principle
 # that makes tests/live_check.py byte-identical across all three arms.
-# TWO counters, not one (finding m4). `failures` counts asserts that
-# resolved and were CONTRADICTED -- assert_check rc 1, and ONLY rc 1.
-# `unresolvable` counts everything else non-zero: rc 2 (the query could
-# not be run) and any rc outside _assert_lib.sh's documented (0, 1, 2),
-# which is a broken proof harness rather than a wrong account (finding
-# F, round 3). Collapsing them told the operator the account was wrong
-# when the proof simply did not resolve -- a lie about a real account,
-# in the one file whose whole job is to be believed.
+# TWO counters, never one. `failures` counts asserts that resolved and
+# were CONTRADICTED -- ops.py rc 1, and ONLY rc 1. `unresolvable`
+# counts everything else non-zero: rc 2 (the query could not be run)
+# and any rc outside ops.py's documented {0,1,2}, which is a broken
+# proof harness rather than a wrong account. Collapsing them would tell
+# the operator the account is wrong when the proof simply did not
+# resolve -- a lie about a real account, in the one file whose whole
+# job is to be believed.
 failures=0
 unresolvable=0
 
@@ -179,14 +182,14 @@ if ! aws s3api list-buckets --output json > /logs/pre_invoke/seed-01.json 2>/log
   fail seed_unverifiable "aws call for [the-bucket-is-live] failed: $(head -c 400 /logs/pre_invoke/seed-01.err)" 3
 fi
 rc=0
-assert_check the-bucket-is-live '.Buckets | .[] | select(.Name=="cdktn-bench-reports-archive") | .Name' eq '"cdktn-bench-reports-archive"' /logs/pre_invoke/seed-01.json || rc=$?
+python3 /pre_invoke/ops.py --one the-bucket-is-live '.Buckets | .[] | select(.Name=="cdktn-bench-reports-archive") | .Name' eq '"cdktn-bench-reports-archive"' /logs/pre_invoke/seed-01.json || rc=$?
 if [ "$rc" -eq 0 ]; then
   :
 elif [ "$rc" -eq 1 ]; then
   failures=$((failures + 1))
 else
   unresolvable=$((unresolvable + 1))
-  echo "  [the-bucket-is-live] assert_check exited $rc, which is outside _assert_lib.sh's documented {0,1,2} -- counted as UNRESOLVABLE" >&2
+  echo "  [the-bucket-is-live] ops.py exited $rc, which is outside its documented {0,1,2} -- counted as UNRESOLVABLE" >&2
 fi
 
 # [the-live-document-holds-exactly-the-other-teams-rule] THE ANTI-
@@ -213,14 +216,14 @@ if ! aws s3api get-bucket-lifecycle-configuration --bucket cdktn-bench-reports-a
   fail seed_unverifiable "aws call for [the-live-document-holds-exactly-the-other-teams-rule] failed: $(head -c 400 /logs/pre_invoke/seed-02.err)" 3
 fi
 rc=0
-assert_check the-live-document-holds-exactly-the-other-teams-rule '.Rules | .[] | .ID' eq '"expire-raw-logs"' /logs/pre_invoke/seed-02.json || rc=$?
+python3 /pre_invoke/ops.py --one the-live-document-holds-exactly-the-other-teams-rule '.Rules | .[] | .ID' eq '"expire-raw-logs"' /logs/pre_invoke/seed-02.json || rc=$?
 if [ "$rc" -eq 0 ]; then
   :
 elif [ "$rc" -eq 1 ]; then
   failures=$((failures + 1))
 else
   unresolvable=$((unresolvable + 1))
-  echo "  [the-live-document-holds-exactly-the-other-teams-rule] assert_check exited $rc, which is outside _assert_lib.sh's documented {0,1,2} -- counted as UNRESOLVABLE" >&2
+  echo "  [the-live-document-holds-exactly-the-other-teams-rule] ops.py exited $rc, which is outside its documented {0,1,2} -- counted as UNRESOLVABLE" >&2
 fi
 
 # [the-live-rule-really-expires-logs-after-thirty-days] The deployed
@@ -237,14 +240,14 @@ if ! aws s3api get-bucket-lifecycle-configuration --bucket cdktn-bench-reports-a
   fail seed_unverifiable "aws call for [the-live-rule-really-expires-logs-after-thirty-days] failed: $(head -c 400 /logs/pre_invoke/seed-03.err)" 3
 fi
 rc=0
-assert_check the-live-rule-really-expires-logs-after-thirty-days '.Rules | .[] | .Expiration.Days' eq 30 /logs/pre_invoke/seed-03.json || rc=$?
+python3 /pre_invoke/ops.py --one the-live-rule-really-expires-logs-after-thirty-days '.Rules | .[] | .Expiration.Days' eq 30 /logs/pre_invoke/seed-03.json || rc=$?
 if [ "$rc" -eq 0 ]; then
   :
 elif [ "$rc" -eq 1 ]; then
   failures=$((failures + 1))
 else
   unresolvable=$((unresolvable + 1))
-  echo "  [the-live-rule-really-expires-logs-after-thirty-days] assert_check exited $rc, which is outside _assert_lib.sh's documented {0,1,2} -- counted as UNRESOLVABLE" >&2
+  echo "  [the-live-rule-really-expires-logs-after-thirty-days] ops.py exited $rc, which is outside its documented {0,1,2} -- counted as UNRESOLVABLE" >&2
 fi
 
 # UNRESOLVABLE IS CHECKED FIRST, and the order is the point: if even one
@@ -257,18 +260,16 @@ fi
   "$failures seed live assert(s) resolved and were CONTRADICTED -- the account does not hold EXACTLY the seed this workspace describes. Read the assert's own resolved= line above before concluding the seed is MISSING: an exact-count op (eq) is contradicted by zero resolved nodes AND by more than one, and the second case is a STRAY leftover object from an incompletely-reset earlier trial (aws_trial.py::_reset_scenario_account logs a reset failure and never raises). Both make this trial unmeasurable, which is why both abort" 2
 
 # ---- 4. RECEIPT ------------------------------------------------------
-# THE ONE ARTIFACT THAT OUTLIVES THIS SCRIPT (finding M3, adversarial
-# review 2026-08-25). Every anti-vacuity layer above lives INSIDE a file
-# that a trial only runs if it is on disk: aws_trial.py:303 is a bare
+# THE ONE ARTIFACT THAT OUTLIVES THIS SCRIPT. Every anti-vacuity layer
+# above lives INSIDE a file that a trial only runs if it is on disk:
+# aws_trial.py:303 is a bare
 # `if self.task.has_phase_script(ScriptType.PRE_INVOKE):` with no else
 # and no logging, and has_phase_script is pure file existence
 # (aws_bench/dataset/task_config.py:175-177). A dropped pre_invoke/
 # directory -- a bad image layer, a task tree built by a stale
-# generator, an upload that lost a subdirectory -- therefore skipped
-# the ENTIRE mechanism in silence and handed the verifier an empty
-# account, on which live_check.py's discriminating assertion passes for
-# free all over again. That is the original defect, restored by a
-# missing file.
+# generator, an upload that lost a subdirectory -- therefore skips the
+# ENTIRE mechanism in silence and hands the verifier an empty account,
+# on which live_check.py's discriminating assertion passes for free.
 #
 # So the VERIFIER -- the one component that always runs -- is told to
 # look for this receipt and to refuse to grade without it (see
@@ -290,7 +291,7 @@ fi
 # /logs under a non-root script user -- see generate_arm's Dockerfile
 # USER guard) the seed must fail LOUDLY here, not succeed into a
 # verifier that will refuse it later.
-# `state_identity` (finding H, round 3): the identity of the state THIS
+# `state_identity`: the identity of the state THIS
 # script just deployed, which tests/test.sh's idempotence tier compares
 # against the state it finds after the agent phase. Unchanged means the
 # agent applied NOTHING and would otherwise have inherited the seed's
@@ -301,14 +302,6 @@ jq -n --arg identity "$seed_state_identity" \
   || fail seed_unverifiable "could not write the seed receipt to /logs/seed-deploy-receipt.json -- the verifier fails closed without it" 3
 
 # ---- 5. DECLARE ------------------------------------------------------
-# Probe leftovers first (finding m2): _assert_lib.sh writes its jq
-# stderr to /tmp/assert-jq-err.txt, which step 7's cleanup does not
-# reach. That library is SHARED with tier-0, so its path is NOT changed
-# there; it is cleaned up here instead, where the agent is the next
-# reader of this filesystem. Best-effort -- a leftover scratch file must
-# never turn a deployed, proven seed into an aborted trial.
-rm -f /tmp/assert-jq-err.txt || true
-
 # placeholder.json LAST, and only on success: ScriptRunner checks the
 # exit code (step 5) before it looks for the result file (step 6), so a
 # failing seed surfaces as ScriptExecutionError rather than the more
