@@ -686,11 +686,12 @@ bash library and the driver side by side — 305 artifacts, 1,506 assert
 evaluations per column, zero divergences, 70 of them regex. It stays DRAFT until
 one live read-only trial is graded by the driver.
 
-**Next, in order.** (1) `jq` is pinned by sha256 in the arm images: `apt-get
-install jq` gives bookworm's 1.6 while the host gates run 1.7.x, so the grader a
-trial runs is not the grader the gates prove. (2) The bash that is left in
-`tests/static_tiers.sh` and `tests/test.sh` (`docs/design/shell-inventory.md`
-class 2).
+**Next, in order.** (1) DONE — `jq` 1.7.1 is pinned by sha256 in all three arm
+images and dropped from `apt-get install`, so the tier-0 grading engine is fixed
+the way `opa` and `cfn-guard` are and matches the 1.7.x the host gates run
+(DECISIONS.md Amendment 43, "`jq` pinned"); the equipping hash moves for all
+three arms. (2) The bash that is left in `tests/static_tiers.sh` and
+`tests/test.sh` (`docs/design/shell-inventory.md` class 2).
 
 Two decisions, one independent of the other:
 
@@ -940,8 +941,8 @@ and the disarmed shape.
 7. After the day-2 work: M10. Decision A (tier 0 compiled to Rego from the
    same YAML) was built and NOT adopted — the emitted policy is unreadable
    beside the jq script, so jq stays the grader; see M10's status note for what
-   stays available and what comes next (a generated `tests/tier0.py` driver,
-   then a sha256-pinned `jq` in the arm images, then the bash removal).
+   stays available and what comes next (the generated `tests/tier0.py` driver
+   and the sha256-pinned `jq` have landed; the bash removal has not).
    `microsoft/regorus` was evaluated and rejected against the existing policy
    set (`docs/design/m10-regorus-spike-results.md`).
 

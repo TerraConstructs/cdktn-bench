@@ -8231,7 +8231,7 @@ zero divergences over 305 artifacts. The HCL pre-parser lift landed and stays.
 The clean-up above is superseded: the bash op table is replaced by a generated
 stdlib `tests/tier0.py` driver over the same jq filters (next amendment).
 
-## Amendment 43 — the tier-0 driver is Python; `tests/_assert_lib.sh` is deleted — DRAFT
+## Amendment 43 — the tier-0 driver is Python; `tests/_assert_lib.sh` is deleted — ACCEPTED
 
 `oracle.structural_asserts` compiles to jq filters (`generator/jsonpath_jq.py`)
 applied, until now, by a generated 178-line bash library,
@@ -8302,8 +8302,34 @@ a subsequence), and a pattern no engine can compile is unresolvable everywhere.
 graded by the driver, reaching the same per-assert outcomes the bash library
 produces on that trial's own artifact.
 
-**Follow-ups, neither blocking.** `jq` is still unpinned in the arm images —
-`apt-get install jq` gives bookworm's 1.6 where the host gates run 1.7.x, so the
-grader a trial runs is not the grader the gates prove; pin it by sha256 as `opa`
-and `cfn-guard` are. The emitted bash that is left is `static_tiers.sh`'s
-toolchain checks and `test.sh` (`docs/design/shell-inventory.md` class 2).
+**Promotion.** `jobs/amend43-promotion/2026-09-21__00-34-05` (claude-sonnet-5,
+k=1, `ecs-swappiness` on `anchor`): awscdk 1.0, hcl_raw 0.0, terraconstructs
+1.0. Each workspace was rebuilt offline from its `agent/agent-output.txt`
+through `_run_solve` and regraded: the driver reproduced every trial's tier-0
+block byte for byte, and the retired `assert_check` (recovered from
+`3ce3f12:generator/gen.py`) agreed on all 9 evaluations — three `PASS`,
+`tier0_pass=1`, per arm. hcl_raw's 0.0 is tier 1: the planted
+`swappiness-requires-maxswap` catch. awscdk's row would be VOIDED by
+`gates/emit_result.py` (`invalid-infra`/`audit-unavailable`) — Harbor's ATIF
+conversion failed on a `step_id` gap, leaving no `trajectory.json`.
+
+**Follow-up, not blocking.** The emitted bash that is left is
+`static_tiers.sh`'s toolchain checks and `test.sh`
+(`docs/design/shell-inventory.md` class 2).
+
+### `jq` pinned
+
+Tier 0's grading engine is `jq` — `tests/ops.py` resolves every structural
+assert through it — and it was the one grader no arm image pinned: `apt-get
+install jq` gave bookworm's 1.6 while the host gates run 1.7.x, so the engine a
+trial was graded by was not the engine the gates prove. All three arm images
+now install the release binary at a fixed version and checksum, like `opa`:
+
+    https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-${TARGETARCH}
+    amd64  5942c9b0934e510ee61eb3e30273f1b3fe2590df93933a93d7c58b81d19c8ff5
+    arm64  4dd2d8a0661df0b22f1bb9a1f9830f06b6f3b8f7d91211a1ef5d7c4f06a8b4a5
+
+Both hashes are the release's own `sha256sum.txt`, confirmed against the
+downloaded assets. `jq` leaves each image's `apt-get install` line, so
+`/usr/local/bin/jq` is the only one on PATH. The equipping hash moves for all
+three arms; `docs/gates.md` states the matching host requirement.

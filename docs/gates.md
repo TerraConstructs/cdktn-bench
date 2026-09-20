@@ -328,6 +328,10 @@ the first time `npm ci` populates node_modules for awscdk/terraconstructs
 fixtures. Not wired into `make check`/test-gates for that reason (see
 mk/rails.mk's gate-preflight note).
 
+The `jq` on the host must be 1.7.x: the arm images pin `jq` 1.7.1 by sha256
+(DECISIONS.md Amendment 43), and tier 0 is graded through it, so a host gate
+run under bookworm's 1.6 would be proving a different grader than a trial runs.
+
 ### --seed mode: brownfield seed parity
 
 What "the three seeds are equivalent" must and must not mean (specs/SCHEMA.md

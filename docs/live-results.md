@@ -291,3 +291,58 @@ the reward, which is the split Amendment 41 predicted. The oracle-agent route
 does not work for a mutating scenario as shipped: a hand-authored solve.sh runs
 `bash tests/static_tiers.sh` from a working directory that has no `tests/` in a
 trial, and it never applies, so the reference half used the real agent.
+
+## Amendment 43 promotion run — 2026-09-21 (the Python tier-0 driver)
+
+`jobs/amend43-promotion/2026-09-21__00-34-05`; claude-sonnet-5, k=1, the three
+arms of `ecs-swappiness` on `anchor`, read-only (no live check, no teardown).
+The trial the driver had to be graded by:
+
+| scenario | arm | shard | reward | output tok | turns | tier0 | tier1 |
+|---|---|---|---:|---:|---:|:---:|:---:|
+| ecs-swappiness | awscdk | anchor | 1.0 | 3,654 | 15 | pass | PASS |
+| ecs-swappiness | hcl_raw | anchor | 0.0 | 1,182 | 6 | pass | FAIL |
+| ecs-swappiness | terraconstructs | anchor | 1.0 | 6,408 | 28 | pass | PASS |
+
+`awscdk`'s counts are the Claude Code transcript's own
+(`agent/claude-code.txt`: `output_tokens` 3654, `num_turns` 15, cost 0.27437);
+that trial has no `agent/trajectory.json` and `result.json` carries null token
+counts, because Harbor's ATIF conversion failed validation on a `step_id` gap
+(`trial.log`: `steps[16].step_id: expected 17 … got 18`).
+`gates/emit_result.py` VOIDS that row — `invalid-infra`, kind
+`audit-unavailable` — before its own transcript-recovery path can price it; the
+other two rows come out `valid`, with `n_llm_calls` 6 and 28 matching the
+transcripts' `num_turns`.
+
+`hcl_raw`'s 0.0 is the scenario's planted `swappiness-requires-maxswap` catch
+firing at tier 1, exactly where `specs/ecs-swappiness.yaml` predicts it for this
+arm (`hcl: "1"`). The agent wrote `linuxParameters = { swappiness = 42 }` with
+no `maxSwap`, and `opa eval` on the reconstructed `plan.json` denies with:
+`aws_ecs_task_definition.app: container "app" sets linuxParameters.swappiness
+but no linuxParameters.maxSwap -- AWS ECS silently ignores swappiness without
+maxSwap, so the tuned value has no effect`. Tier 0 passed on all three arms.
+
+Parity half: each workspace was reconstructed offline from its
+`agent/agent-output.txt` (the `_run_solve` sandbox, `gates/aws_stub.py`, no AWS
+call), and the graded artifact — `cdk.out/ScenarioStack.template.json`,
+`plan.json`, `cdktf.out/stacks/ecs-swappiness/plan.json` — regraded by both
+drivers:
+
+| arm | assert | bash | driver | identical |
+|---|---|:---:|:---:|:---:|
+| awscdk | taskdef-exists | PASS | PASS | yes |
+| awscdk | taskdef-ec2-compatible | PASS | PASS | yes |
+| awscdk | swappiness-value-correct | PASS | PASS | yes |
+| hcl_raw | taskdef-exists | PASS | PASS | yes |
+| hcl_raw | taskdef-ec2-compatible | PASS | PASS | yes |
+| hcl_raw | swappiness-value-correct | PASS | PASS | yes |
+| terraconstructs | taskdef-exists | PASS | PASS | yes |
+| terraconstructs | taskdef-ec2-compatible | PASS | PASS | yes |
+| terraconstructs | swappiness-value-correct | PASS | PASS | yes |
+
+`tier0_pass=1` under both columns on all three arms, and each reconstruction's
+`== tier-0 … ==` through `== summary: … ==` block diffs clean against the
+trial's own `verifier/test-stdout.txt`. The bash column is the retired
+`assert_check`, recovered from `3ce3f12:generator/gen.py` with the
+`assert_check` call lines from that revision's `tests/static_tiers.sh` — never
+from the working tree.
