@@ -281,8 +281,8 @@ against zero resolved nodes is False, so this gate turns that into a real
 assert failure. See specs/SCHEMA.md §4.2 on `tf_jsonpath`/`cfn_jsonpath`.
 
 Paths resolve through the SAME mechanism the generated `static_tiers.sh` uses
-for tier 0 — `generator/jsonpath_jq.py`'s jq compilation plus
-`_assert_lib.sh`'s `assert_check` — not a second, Python-side evaluator.
+for tier 0 — `generator/jsonpath_jq.py`'s jq compilation plus the task's own
+generated `tests/ops.py` — not a second, host-side evaluator.
 `oracles/lib/structural.py` uses `jsonpath_ng`, which cannot parse the `||`-OR'd
 filter syntax several tier-1 CFN paths use at all.
 
@@ -290,10 +290,10 @@ This gate is **engine-independent by design**: it grades every assert through
 the jq compiler whatever a spec's `oracle.tier0_engine` says, because the
 question it answers is "does this declared path resolve against a real
 artifact", which is a property of the shared grammar and not of either
-backend. Whether the two backends reach the SAME outcome on an artifact is a
+backend. Whether two graders reach the SAME outcome on an artifact is a
 different question, answered by `make tier0-parity` (below) and by
 `oracles/tests/test_op_parity.py`. The gate stages a `tests/tier0.rego` beside
-`_assert_lib.sh` when the task ships one, because a `rego`-engine spec's
+the driver when the task ships one, because a `rego`-engine spec's
 `static_tiers.sh` — which this gate runs for real to produce the artifact —
 aborts its `opa eval` without it. No spec ships one today.
 
@@ -339,8 +339,8 @@ defined behaviourally, by declared facts:
 1. Every arm's seed synths/plans GREEN with no overlay. A workspace that does
    not is not "existing infrastructure", it is a generation failure.
 2. Every `seed_assert` holds on every arm its `applies_to` names, resolved
-   through the same jq compiler and `_assert_lib.sh::assert_check` a real
-   trial's tier 0 runs.
+   through the same jq compiler and the same `tests/ops.py` a real trial's
+   tier 0 runs.
 
 The residual, human half is `workspace_seed.premise`: a mechanical gate can
 prove "these three configurations satisfy the same declared facts", never
@@ -357,43 +357,48 @@ account.
 ## tier0-parity
 
 `gates/tier0_parity.py` — `make tier0-parity SPEC=… [OUT=dir]`,
-`make tier0-parity-all`. **On demand, NOT in `make ci`**: jq is the shipped
-tier-0 grader and the Rego engine was evaluated and not adopted (DECISIONS.md
-Amendment 42), so nothing here gates a commit. Run it when the compiler, the
-shared grammar or `_assert_lib.sh` changes.
+`make tier0-parity-all`. **On demand, NOT in `make ci`**: the jq driver is the
+shipped tier-0 grader and the Rego engine was evaluated and not adopted
+(DECISIONS.md Amendment 42), so nothing here gates a commit. It WAS the landing
+condition for the driver itself (Amendment 43); run it when the compiler, the
+shared grammar or `tests/ops.py` changes.
 
-Grades every artifact a spec's own fixtures produce with BOTH tier-0 backends
-and requires identical per-assert three-valued outcomes and identical
-`tier0_pass`:
+Grades every artifact a spec's own fixtures produce with two graders — three
+under `--rego` — and requires identical per-assert three-valued outcomes and
+identical `tier0_pass`:
 
-| backend | what runs |
+| column | what runs |
 |---|---|
-| jq | the generated `tests/_assert_lib.sh::assert_check`, sourced from the task dir, one call per assert — the grader a trial runs today |
-| Rego | one `opa eval` of a `tests/tier0.rego`: the task's own under `oracle.tier0_engine: rego`, otherwise compiled into the run's scratch dir, so any spec can be graded |
+| driver | the generated `tests/ops.py`, one `--one` call per assert — the grader a trial runs today |
+| bash | `assert_check` as it stood before Amendment 43, recovered by `ast` from `<--baseline-rev>:generator/gen.py` and sourced from a scratch file, never from the working tree — the grader a trial ran before |
+| Rego (`--rego`) | one `opa eval` of a `tests/tier0.rego`: the task's own under `oracle.tier0_engine: rego`, otherwise compiled into the run's scratch dir, so any spec can be graded |
+
+Every `regex`/`not_regex` assert graded is listed in the summary with both
+columns' verdicts, named rather than merely found non-divergent: the flavour
+moving from jq's Oniguruma to Python `re` is the one deliberate divergence
+surface the migration opened.
 
 Fixtures are produced through `gates/artifact_collector.py`, which drives
 `gates/oracle_falsifiability.py::_run_solve` under the aws-stub, so a fixture
 runs here exactly as `make falsifiability` runs it — same toolchain
 requirements and the same runtime class.
 
-Producing an artifact costs 25–60s; grading one with both backends costs
+Producing an artifact costs 25–60s; grading one with every column costs
 milliseconds. `OUT=<dir>` keeps the collected tree and a manifest, and
-`--regrade <dir>` re-grades it with no toolchain at all, which is how a
-compiler change is checked against the whole corpus in seconds.
+`--regrade <dir>` re-grades it with no toolchain at all, which is how a grader
+change is checked against the whole corpus in seconds.
 
 ### What it cannot prove
 
 **It grades the artifacts that exist.** A divergence reachable only through a
 value no fixture produces is invisible to it however many specs it covers — a
 regex subject with a trailing newline, a non-ASCII subject under a `\w`
-shorthand or a `[[:alpha:]]` POSIX class, a `|fromjson` string only jq's lenient
-decoder reads or one carrying an unpaired `\uD800`-`\uDBFF` escape, and an `in`
-node nested one level deeper than the op's single flatten, where jq's `index`
-reads an array argument as a SUBSEQUENCE and Rego reaches the OPPOSITE verdict.
-Those are pinned per column in `oracles/tests/test_op_parity.py` and, bar the
-`in` one, refused per resolved value by the compiler itself (specs/SCHEMA.md
-§4.2, §4.5.1). Agreement here is evidence about the artifacts in hand, never a
-proof that the two engines are interchangeable.
+shorthand or a `[[:alpha:]]` POSIX class, and a `|fromjson` string only jq's
+lenient decoder reads or one carrying an unpaired `\uD800`-`\uDBFF` escape.
+Those are pinned per column in `oracles/tests/test_op_parity.py` and, where the
+Rego backend is the one that would diverge, refused per resolved value by its
+compiler (specs/SCHEMA.md §4.2, §4.5.1). Agreement here is evidence about the
+artifacts in hand, never a proof that two graders are interchangeable.
 
 ### Exit codes
 

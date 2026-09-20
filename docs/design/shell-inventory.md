@@ -32,18 +32,19 @@ lowest-priority item on the M10 track. Nothing here is scheduled.
 
 | emitter | lands as | size |
 |---|---|---|
-| `ASSERT_LIB_SH` (gen.py ~1754) | `tests/_assert_lib.sh`, copied to `pre_invoke/_assert_lib.sh` | ~178 lines |
-| `build_static_tiers_sh` with `build_hcl_merge_block` | `tests/static_tiers.sh` | ~126 lines; calls `terraform`, `npx`, `opa`, `cfn-guard`, `jq`, `hcl2json`, `aws`. The ~160-line HCL pre-parser is `build_hcl_merge_py()` -> `tests/hcl_merge.py`, which the script invokes; the shell block is the toolchain check and the invocation only. |
+| ~~`ASSERT_LIB_SH`~~ | **DONE** (DECISIONS.md Amendment 43): ~178 lines of bash became `generator/tier0_py.py`'s `OPS_PY` (`tests/ops.py`, copied to `pre_invoke/ops.py`) plus a generated `tests/tier0.py` assert table. The jq filters are unchanged; the op table, the three-valued outcome and the regex flavour moved to Python. `is_stub_policy` moved into `static_tiers.sh`, its only caller. |
+| `build_static_tiers_sh` with `build_hcl_merge_block` | `tests/static_tiers.sh` | ~126 lines; calls `terraform`, `npx`, `opa`, `cfn-guard`, `jq`, `hcl2json`, `aws`, `python3`. Tier 0 is now one `python3 "$DIR/tier0.py"` behind a tool check; the ~160-line HCL pre-parser is `build_hcl_merge_py()` -> `tests/hcl_merge.py`, which the script invokes. The shell that is left is the toolchain checks, the invocations and the reward gate. |
 | `build_test_sh` (~3868) with `build_idempotence_block` (~3460) and `build_teardown_block` (~3698) folded in | `tests/test.sh` | ~192 lines; calls `bash`, `python3` |
 | `build_seed_pre_invoke_sh` (~4426), `build_step_pre_invoke_sh` (~4143), `build_seed_movement_guard` (~3355) | `pre_invoke/*.sh` | ~268 lines on a brownfield task |
 | `build_solve_sh_stub` (~4832), `build_seed_unchanged_solve_sh` (~4857) | `solution/solve.sh` scaffold, the generator-owned negative | small |
 
-About 1,200 lines of embedded bash, re-emitted into every task directory.
+About 1,000 lines of embedded bash, re-emitted into every task directory
+(1,200 before the tier-0 library moved).
 
 ## Class 5 — Python shelling out
 
-`generator/check_reference_paths.py` (`npm ci`; `bash tests/static_tiers.sh`;
-one `bash -c` probe), `generator/shards.py` (`git ls-files`),
+`generator/check_reference_paths.py` (`npm ci`; `bash tests/static_tiers.sh`),
+`generator/shards.py` (`git ls-files`),
 `generator/gen.py` (`hcl2json`, `terraform` at authoring time),
 `gates/oracle_falsifiability.py` (`docker create/cp/rm`; `npm ci`;
 `bash solution/**/solve.sh`), `gates/equipping.py` (`docker inspect`),
@@ -66,7 +67,9 @@ one `bash -c` probe), `generator/shards.py` (`git ls-files`),
 
 * `tests/test.sh` and `tests/static_tiers.sh` run under `set -uo pipefail`
   without `-e` on purpose: every tier runs and the verdicts combine; a Python
-  port must not short-circuit on the first failure.
+  port must not short-circuit on the first failure. `tests/tier0.py` already
+  honours that inside tier 0 -- it reports every assert's own verdict and
+  returns the worst, rather than exiting on the first non-held one.
 * `pre_invoke/*.sh` and the solve stubs run under `set -euo pipefail` on
   purpose: the seed deploy is fail-closed, so a port must abort on the first
   error.

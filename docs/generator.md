@@ -30,9 +30,26 @@ the library it imports. The `_hcl` MERGE that library reads is emitted for
 `hcl_raw` ONLY — terraconstructs has no `.tf` files — see
 `build_static_tiers_sh`'s `hcl_lib`/`hcl_merge` comment.
 
-Two generated files under `tests/` are worth naming because a reader meets
+Four generated files under `tests/` are worth naming because a reader meets
 them inside a task dir rather than here:
 
+    tests/tier0.py       THE tier-0 oracle a reviewer opens: this arm's assert
+                         table, one `(name, jq filter, op, expected)` tuple per
+                         applicable tier-"0" structural_assert with the declared
+                         JSONPath in a comment above it. `static_tiers.sh` runs
+                         it as `python3 "$DIR/tier0.py" "$ARTIFACT"` and reads
+                         its exit status as the whole tier-0 verdict.
+    tests/ops.py         the op table (specs/SCHEMA.md §4.2) and the
+                         three-valued outcome, stdlib only, driving `jq` as a
+                         subprocess. Byte-identical in every arm's tests/ and in
+                         a brownfield task's pre_invoke/, which calls
+                         `python3 /pre_invoke/ops.py --one ...` once per live
+                         assert -- one owner (`generator/tier0_py.py`'s
+                         `OPS_PY`), so the seed proof and tier 0 can never
+                         disagree about what `set_eq` means. It replaced the
+                         emitted `tests/_assert_lib.sh` bash library in
+                         DECISIONS.md Amendment 43, which also made Python `re`
+                         the single tier-0 regex flavour.
     tests/tier0.rego     the tier-0 structural asserts compiled to Rego
                          (generator/jsonpath_rego.py). Written only for a spec
                          whose `oracle.tier0_engine` is `rego`, the one engine
@@ -122,10 +139,10 @@ step this repo cannot perform.
    (specs/SCHEMA.md §2.7). SKIP (rc=3) for a greenfield spec.
 4. `tier1-coverage`, `falsifiability`, `grading-proof`.
 
-`make tier0-parity` is deliberately NOT in this battery: jq is the shipped
-tier-0 grader, so cross-checking it against the Rego compiler is an on-demand
-check run when the compiler or the shared grammar changes
-(docs/gates.md#tier0-parity).
+`make tier0-parity` is deliberately NOT in this battery: the jq driver is the
+shipped tier-0 grader, so cross-checking it against the retired bash library or
+against the Rego compiler is an on-demand check, run when a grader or the
+shared grammar changes (docs/gates.md#tier0-parity).
 
 `specs/_toy/toy-ssm-parameter.yaml` is not a benchmark scenario and runs a
 lighter smoke set (gen-sync + check-paths + tier1-coverage + falsifiability).
@@ -242,7 +259,7 @@ requirements that the target comments reference:
   fixture of the spec for real, so it needs the same toolchain as
   `make falsifiability` and takes the same order of
   time. `OUT=<dir>` keeps the collected artifacts so
-  `gates/tier0_parity.py --regrade <dir>` can re-check a compiler change
+  `gates/tier0_parity.py --regrade <dir>` can re-check a grader change
   against them with no toolchain at all.
 - **`make check-paths`** runs the arm's real toolchain against a hand-authored,
   oracle-correct reference fixture at
@@ -296,7 +313,7 @@ A `jsonpath` that stops at the CONTAINER instead of descending into it hands
 even `exists` one node on an empty account:
 
     $ echo '{"SecurityGroups":[]}' > /tmp/empty.json
-    $ assert_check probe '.SecurityGroups' exists '' /tmp/empty.json
+    $ python3 tests/ops.py --one probe '.SecurityGroups' exists null /tmp/empty.json
       PASS [probe]                                          # rc=0
 
 `[ .SecurityGroups ]` is `[[]]` — length 1, and `map(select(. != null))` does

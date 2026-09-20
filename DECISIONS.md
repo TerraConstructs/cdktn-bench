@@ -8230,3 +8230,80 @@ zero divergences over 305 artifacts. The HCL pre-parser lift landed and stays.
 
 The clean-up above is superseded: the bash op table is replaced by a generated
 stdlib `tests/tier0.py` driver over the same jq filters (next amendment).
+
+## Amendment 43 — the tier-0 driver is Python; `tests/_assert_lib.sh` is deleted — DRAFT
+
+`oracle.structural_asserts` compiles to jq filters (`generator/jsonpath_jq.py`)
+applied, until now, by a generated 178-line bash library,
+`tests/_assert_lib.sh::assert_check`, one call per assert out of
+`tests/static_tiers.sh`. Amendment 42 evaluated replacing the whole tier with
+Rego and did not adopt it; the surveyed alternative
+(`docs/design/tier0-assert-libraries.md` §6) is the opposite split — keep the jq
+filters, which are the readable part, and delete the bash. Two generated files
+replace the library:
+
+* `tests/ops.py` — the op table of `specs/SCHEMA.md` §4.2 and the three-valued
+  outcome, stdlib only, invoking `jq -c "[ <filter> ] | map(select(. != null))"`
+  exactly as the library did. One owner (`generator/tier0_py.py`'s `OPS_PY`),
+  byte-identical in every arm's `tests/` and in a brownfield `pre_invoke/`.
+* `tests/tier0.py` — this arm's (and, for a multi-step spec, this step's) assert
+  table: one `(name, jq filter, op, expected)` tuple per applicable tier-"0"
+  assert, with the declared JSONPath in a comment above it. The jq filter
+  strings are byte-identical to what the bash calls carried. This is the file a
+  reviewer opens.
+
+`static_tiers.sh`'s tier-0 block is a `python3`/`jq` availability check that
+fails closed with a `/logs/verifier/tier0-unavailable` marker, then one
+`python3 "$DIR/tier0.py" "$ARTIFACT"` whose exit status sets `tier0_pass`. The
+applicable-assert header, the `  PASS [name]` / `  FAIL [name]: …` lines and the
+`== summary: tier0_pass=N tier1_status=X ==` line are unchanged, so
+`gates/emit_result.py`, `gates/oracle_falsifiability.py`,
+`gates/grading_proof.py` and `metrics/result_schema.json` do not move.
+`is_stub_policy` moved into `static_tiers.sh`, its only caller.
+
+**The three-valued outcome is the contract, not the reward.** `held` /
+`contradicted` / `unresolvable` map to exit 0 / 1 / 2 per assert, and a jq
+error, a missing jq, an unknown op, a mistyped `expected` and a pattern `re`
+will not compile are all unresolvable. A driver that turned an unasked question
+into a verdict would be a defect even if every fixture still scored the same.
+
+**Regex is Python `re` for tier 0.** The filters never carry a pattern again, so
+`SCHEMA.md` §4.2's three-flavour divergence table collapses to one authoring
+rule: write the pattern for `re`. Its `$` also matches before one trailing
+newline and its shorthands are Unicode-aware, both as Oniguruma's were; but a
+POSIX bracket expression is not a character class at all, and `\p{...}`,
+`\z`/`\Z` and `(?<name>...)` do not compile, becoming unresolvable rather than
+graded. `oracles/lib/structural.py` keeps refusing all of those — that refusal
+now protects the Rego backend's flavour, not the driver's. No corpus pattern
+uses any of it.
+
+**`pre_invoke` moved too, rather than half-moving.** A brownfield seed proof
+calls `python3 /pre_invoke/ops.py --one <name> <filter> <op> <expected> <file>`
+per live assert and keeps its `{0,1,2}` dispatch. Its harness guard changed
+shape, because a Python file fails differently: a truncated upload RUNS, ignores
+its argv and exits 0, which the dispatch would read as "held" — a seed announced
+as proven that was never checked. The guard therefore compares `ops.py
+--selftest`'s whole stdout against one line the driver can only print after
+resolving one assert per outcome through jq.
+
+**Landing condition, met.** `make tier0-parity-all` now grades every fixture
+artifact with the retired `assert_check` — recovered by `ast` from
+`<rev>:generator/gen.py`, never from the working tree — and with the driver,
+requiring identical per-assert outcomes and `tier0_pass`: 305 artifacts, 1,506
+assert evaluations per column, 0 divergences. Every `regex`/`not_regex` assert
+is named in the summary rather than assumed: 70 evaluations of the corpus's 8
+tier-0 patterns, all `held`/`contradicted`/`unresolvable` identically under both
+flavours. `oracles/tests/test_op_parity.py` keeps three columns with the driver
+in the bash column's place, and two of its per-column pins became agreements:
+`in` is element membership in all three (jq's `index` read an array argument as
+a subsequence), and a pattern no engine can compile is unresolvable everywhere.
+
+**Promotion criterion.** One live read-only trial (`specs/ecs-swappiness.yaml`)
+graded by the driver, reaching the same per-assert outcomes the bash library
+produces on that trial's own artifact.
+
+**Follow-ups, neither blocking.** `jq` is still unpinned in the arm images —
+`apt-get install jq` gives bookworm's 1.6 where the host gates run 1.7.x, so the
+grader a trial runs is not the grader the gates prove; pin it by sha256 as `opa`
+and `cfn-guard` are. The emitted bash that is left is `static_tiers.sh`'s
+toolchain checks and `test.sh` (`docs/design/shell-inventory.md` class 2).

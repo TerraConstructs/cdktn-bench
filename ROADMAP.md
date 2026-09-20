@@ -654,7 +654,9 @@ the embedded merge Python leaves the shell heredoc for a generated
 verified (parity matrix green, all-artifacts parity green, one live battery
 graded under it), the jq backend, `_assert_lib.sh`, and the bash that hosted
 them are removed, and the arm images drop `jq` from the verifier toolchain.
-The track ends when the static oracle is Python, Rego and Go only.
+The track ends when the static oracle is Python, Rego and Go only. Rego was
+then not adopted, so the clean-up ran the other way: the bash went and jq
+stayed as the path language (Amendment 43).
 
 **Status — Rego tier 0 evaluated and NOT adopted (DECISIONS.md Amendment
 42).** `generator/jsonpath_rego.py` compiles the same grammar to
@@ -665,7 +667,8 @@ default never flips. What remains available: the compiler, the emitted-policy
 path behind `oracle.tier0_engine: rego` (no spec selects it, so no task dir
 ships a policy), and `make tier0-parity`, which compiles one on the fly for any
 spec — an ON-DEMAND cross-check, removed from `make ci`, with zero divergences
-over 305 artifacts. `oracles/tests/test_op_parity.py` keeps its three columns.
+over 305 artifacts. `oracles/tests/test_op_parity.py` keeps three columns,
+with the Python driver in the retired bash grader's place.
 One divergence class the artifact gate cannot see was found and closed by
 refusal: Oniguruma's `$` also matches before one trailing newline and its
 `\w`/`\d` are Unicode-aware where RE2's are neither, so the compiler screens
@@ -673,18 +676,28 @@ each pattern and reports UNRESOLVABLE for a resolved value the two flavours
 would read differently. The `hcl2json` merge Python lift to a generated
 `tests/hcl_merge.py` landed and stays.
 
-**Next, in order.** (1) The bash op table is replaced by a generated stdlib
-`tests/tier0.py` driver over the same jq filters — the readable-grader half of
-this milestone, its own amendment (`docs/design/tier0-assert-libraries.md`).
-(2) `jq` is pinned by sha256 in the arm images: `apt-get install jq` gives
-bookworm's 1.6 while the host gates run 1.7.x, so the grader a trial runs is
-not the grader the gates prove. (3) Then the bash removal.
+**Status — the tier-0 driver landed (DECISIONS.md Amendment 43, DRAFT).** The
+bash op table is now a generated stdlib `tests/ops.py` plus a per-arm
+`tests/tier0.py` assert table over the same, unchanged jq filters
+(`docs/design/tier0-assert-libraries.md` §6); `tests/_assert_lib.sh` is gone
+from every task dir and from `pre_invoke/`, and Python `re` is the single tier-0
+regex flavour. `make tier0-parity-all` graded the whole corpus with the retired
+bash library and the driver side by side — 305 artifacts, 1,506 assert
+evaluations per column, zero divergences, 70 of them regex. It stays DRAFT until
+one live read-only trial is graded by the driver.
+
+**Next, in order.** (1) `jq` is pinned by sha256 in the arm images: `apt-get
+install jq` gives bookworm's 1.6 while the host gates run 1.7.x, so the grader a
+trial runs is not the grader the gates prove. (2) The bash that is left in
+`tests/static_tiers.sh` and `tests/test.sh` (`docs/design/shell-inventory.md`
+class 2).
 
 Two decisions, one independent of the other:
 
-* **Tier 0 is translated to Rego, compiled from the same spec YAML.** Today
-  the generator compiles a spec's JSONPath asserts into jq and the three-valued
-  outcome lives in `_assert_lib.sh`; tier 1 is already Rego with an explicit
+* **Tier 0 is translated to Rego, compiled from the same spec YAML.** At the
+  time this was written the generator compiled a spec's JSONPath asserts into jq
+  and the three-valued outcome lived in `_assert_lib.sh`; tier 1 is already
+  Rego with an explicit
   `not_verifiable` rule set. Compiling tier 0 to Rego from the same YAML keeps
   one assert source and removes the bash between the spec and the verdict. The
   risk is operator parity (`set_eq`, `absent_or_eq`, `not_regex`, unresolvable
