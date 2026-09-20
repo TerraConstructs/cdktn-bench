@@ -12,23 +12,25 @@ infrastructure code
 
 "Does a typed construct library make an AI agent better at infrastructure
 code than raw HCL?" is easy to ask and easy to answer wrongly. This talk is
-about the second half. cdktn-bench measures Claude Code writing the same
-infrastructure ticket in AWS CDK, raw Terraform HCL and a CDKTF-shaped
-construct library, and grades it in a real AWS account. The result is less
-interesting than the method: pre-registered hypotheses, an oracle for every
-scenario that must be shown to fail on a planted mistake before it may pass a
-correct answer, a metric that is never pooled across things that measure
-different tasks, and a decision log of 43 amendments recording every time the
-design turned out to be wrong. Everything shown is open source.
+about the second half. I built a benchmark to measure Claude Code writing the same
+infrastructure ticket in AWS CDK, Terraform HCL and a CDK-Terrain based
+construct library, and grades it across 4 tiers, including a real AWS account.
+I present the results and the method: pre-registered hypotheses, a library of scenarios,
+an oracle for each, shown to fail on a planted mistake before it may pass a
+correct answer, Defined metrics, grouping without combining unrelated measurements
+across different tasks, and iterating on the overall design based on findings.
+Everything shown is open source.
+
+We learned that how you measure depends heavily on the use case you're trying
+to evaluate, and it does not generalize as much as most benchmarks like to claim.
 
 ## Description (for reviewers)
 
 The benchmark exists to put empirical weight behind a claim in the CDK
 Terrain roadmap: that intent-level typed constructs are a more token-efficient
 substrate for AI-assisted infrastructure authoring than resource-level HCL.
-The talk is not the result. It is how a small team, working mostly through
-agentic tooling, built a measurement they could trust, and what broke on the
-way.
+The talk is not the result. It is how I, working mostly through agentic tooling,
+built a measurement I felt I could trust, and what broke on the way.
 
 **1. Pre-registration before data (10 min).** Three falsifiable hypotheses
 (the bold one: an un-tuned CDK arm beats a tuned HCL arm), a fixed factorial
