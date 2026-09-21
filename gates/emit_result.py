@@ -31,7 +31,13 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from gates.audit import KNOWN_ARMS, audit_trial, resolve_step_names
+from gates.audit import (
+    AUDIT_SOURCE_STREAM,
+    KNOWN_ARMS,
+    TRANSCRIPT_NAME,
+    audit_trial,
+    resolve_step_names,
+)
 from gates.equipping import compute_equipping_hash
 
 sys.path.insert(0, str(_REPO_ROOT / "generator"))
@@ -441,13 +447,72 @@ def _n_llm_calls_from_trajectory(path: Path) -> int | None:
     return n_llm_calls
 
 
+def _n_llm_calls_from_claude_code_stream(path: Path) -> int | None:
+    """`_n_llm_calls_from_trajectory`'s counterpart for a step whose
+    trajectory Harbor's converter rejected (see `gates/audit.py`'s transcript
+    fallback and docs/upstream/harbor-trajectory-step-id-gap.md).
+
+    Prefers the transcript's terminal ``result`` event's own ``num_turns`` --
+    the same count harbor reports -- and falls back to the number of DISTINCT
+    assistant message ids, which is one per LLM call (streaming repeats an id
+    across chunks). The two differ (13 vs 15 on the awscdk trial that motivated
+    this), so the harness's own number wins wherever it exists.
+
+    Returns ``None`` when the transcript is absent, unreadable, or carries
+    neither signal -- the `None`-not-`0` contract `extract_n_llm_calls`
+    documents.
+    """
+    if not path.is_file():
+        return None
+    message_ids: list[str] = []
+    num_turns: int | None = None
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if event.get("type") == "result":
+            turns = event.get("num_turns")
+            if isinstance(turns, int) and not isinstance(turns, bool):
+                num_turns = turns
+        elif event.get("type") == "assistant":
+            message = event.get("message")
+            if isinstance(message, dict):
+                mid = message.get("id")
+                if isinstance(mid, str) and mid not in message_ids:
+                    message_ids.append(mid)
+    if num_turns is not None:
+        return num_turns
+    return len(message_ids) or None
+
+
+def _n_llm_calls_from_agent_dir(agent_dir: Path) -> int | None:
+    """One step's LLM-call count from whichever file the audit gate would read
+    for it: the ATIF trajectory, else the stream transcript beside it."""
+    trajectory = agent_dir / "trajectory.json"
+    if trajectory.is_file():
+        return _n_llm_calls_from_trajectory(trajectory)
+    return _n_llm_calls_from_claude_code_stream(agent_dir / TRANSCRIPT_NAME)
+
+
 def extract_n_llm_calls_per_step(trial_dir: str | Path) -> dict[str, int | None]:
     """LLM-call counts keyed by trial phase, in execution order.
 
-    Single-step trial dir: ``{"trial": <n>}`` (or ``{}`` when there is no
-    `agent/trajectory.json` at all). Multi-step: one entry per step dir, keyed
-    by step name, value ``None`` for a step whose trajectory is
-    missing/unreadable/malformed.
+    Single-step trial dir: ``{"trial": <n>}`` (or ``{}`` when the agent dir
+    holds neither a trajectory nor a transcript). Multi-step: one entry per step
+    dir, keyed by step name, value ``None`` for a step whose trajectory is
+    missing/unreadable/malformed and whose transcript gives no count either.
+
+    A step Harbor left without a trajectory is counted from its
+    ``agent/claude-code.txt`` instead, the same fallback and the same per-step
+    resolution the audit gate uses (``gates.audit.resolve_audit_sources``).
 
     Deliberately keyed rather than a bare list: a caller attributing
     iterations-to-green to a step needs the step's NAME, and the aborted-trial
@@ -455,17 +520,15 @@ def extract_n_llm_calls_per_step(trial_dir: str | Path) -> dict[str, int | None]
     a shorter dict rather than as a silently smaller number.
     """
     trial_dir = Path(trial_dir)
-    root = trial_dir / "agent" / "trajectory.json"
-    if root.is_file():
-        return {"trial": _n_llm_calls_from_trajectory(root)}
+    root = trial_dir / "agent"
+    if (root / "trajectory.json").is_file() or (root / TRANSCRIPT_NAME).is_file():
+        return {"trial": _n_llm_calls_from_agent_dir(root)}
 
     step_names = resolve_step_names(trial_dir)
     if not step_names:
         return {}
     return {
-        name: _n_llm_calls_from_trajectory(
-            trial_dir / "steps" / name / "agent" / "trajectory.json"
-        )
+        name: _n_llm_calls_from_agent_dir(trial_dir / "steps" / name / "agent")
         for name in step_names
     }
 
@@ -1060,6 +1123,13 @@ def build_result_record(
         # container, and its presence is itself diagnostic.
         "tier_evidence": tier_evidence,
     }
+    # Provenance, present only when the audit fell back to the stream
+    # transcript because harbor's converter left the step without a trajectory
+    # (gates/audit.py, docs/upstream/harbor-trajectory-step-id-gap.md). Absent
+    # means the ATIF trajectory was read, so every pre-existing record is
+    # unchanged.
+    if audit is not None and audit.get("audit_source") == AUDIT_SOURCE_STREAM:
+        record["audit_source"] = AUDIT_SOURCE_STREAM
     if equipping_hash_error is not None:
         record["equipping_hash_error"] = equipping_hash_error
     if scenario_form_error is not None:
@@ -1216,6 +1286,13 @@ def to_result_row(
         row["n_llm_calls"] = record["n_llm_calls"]
     if record.get("tier_evidence") is not None:
         row["tier_evidence"] = record["tier_evidence"]
+    # Provenance for a row harbor could not price or convert itself: both keys
+    # are absent on a row built from the ATIF trajectory and harbor's own
+    # token totals, so their presence is the whole signal.
+    if record.get("audit_source") is not None:
+        row["audit_source"] = record["audit_source"]
+    if record.get("tokens_source") is not None:
+        row["tokens_source"] = record["tokens_source"]
     if record["validity_class"] != VALID:
         row["validity_reason"] = record["reason"]
     return row

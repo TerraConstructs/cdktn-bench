@@ -194,6 +194,59 @@ user: its Terraform-shaped arms are proven this way, while `awscdk` — where th
 CDK default removal policy `Retain` makes a silent no-op destroy report clean —
 keeps a static assert and a tier-1 fixture.
 
+## audit
+
+`gates/audit.py` — Gate 2: did the trial actually invoke its arm's toolchain,
+or did it grep/cat its way to a green reward? Evidence is positional
+(`ARM_TOKEN_PATTERNS`, argv[0] after wrapper-peeling); `gates/README.md` has
+the matching rules. This section covers only where the tool calls are read
+from.
+
+### Transcript fallback and its provenance field
+
+Normally the gate reads Harbor's ATIF `agent/trajectory.json`. Harbor's Claude
+Code converter, however, can reject its own output — it pairs a tool result to
+its call in timestamp order and renumbers nothing, so a result whose recorded
+timestamp precedes its own call is dropped and the surviving steps carry a
+step-id gap (`steps[16].step_id: expected 17, got 18`, logged in `trial.log` as
+"Failed to convert Claude Code events to trajectory"; see
+`docs/upstream/harbor-trajectory-step-id-gap.md`). The trial then has a
+complete `agent/claude-code.txt` stream transcript and no trajectory, which
+used to void the row as `invalid-infra` / `audit-unavailable`.
+
+So when a step has no trajectory but does have the transcript beside it, the
+gate builds the step list from the transcript instead
+(`steps_from_claude_code_stream`), pairing results to calls in TRANSCRIPT order
+— which is what cannot produce the gap. Resolution is per step
+(`resolve_audit_sources`), so a multi-step trial that lost one step's
+trajectory is still audited over all of them, and the trajectory always wins
+where both files exist. A trial with NEITHER file stays `audit-unavailable`.
+
+The reconstruction is faithful, not lenient. It reproduces Harbor's own
+observation text (`_format_tool_result`: the block content, then
+`[stdout]`/`[stderr]`/`[exit_code]`/`[metadata]` chunks) and hands the audit
+the same raw `tool_use_result` under `extra.metadata`, so the structured
+exit-code channel and the anchored free-text heuristics both classify a call
+exactly as they would from a trajectory — including the degraded-arm verdict
+that separates `invalid-infra` from `invalid-bypass`. Where Claude Code emits
+no `exitCode` at all (the version that produced the affected rows does not),
+BOTH paths fall back to the free-text heuristics, and a call neither channel
+can classify stays `unknown`, which callers treat as non-degrading: absence of
+an exit code is not positive evidence that the toolchain was unavailable.
+
+Provenance is recorded rather than inferred. An audit record, the
+`build_result_record` record and the published row each gain
+`audit_source: "claude-code-stream"` when any step was audited this way; the
+key is ABSENT (equivalently `"trajectory"`) otherwise, so records for trials
+that had a trajectory are unchanged. `tokens_source` marks the same failure on
+the token side — `_tokens_from_claude_code_stream` recovers the totals from the
+transcript's terminal `result` event because Harbor fills `agent_result` only
+when its conversion succeeded — and `n_llm_calls` comes from that event's own
+`num_turns`. Both fields are optional in `metrics/result_schema.json`
+(no required field changed, so `schema_version` stays 1.1). Pinned by
+`gates/tests/test_audit_stream_fallback.py` against a reduced copy of the real
+trial that motivated it (`gates/tests/fixtures/awscdk/no-trajectory/`).
+
 ## emit-result
 
 `gates/emit_result.py` — Gate 3 of the three-gate integrity pattern: wrap a

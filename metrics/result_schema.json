@@ -162,7 +162,22 @@
     "n_llm_calls": {
       "type": "integer",
       "minimum": 0,
-      "description": "Iteration count (LLM calls in the trial), for iterations-to-green. Populated by gates/emit_result.py::extract_n_llm_calls() from agent/trajectory.json (mirrors aws_bench/metrics/run_data.py::_llm_usage_from_trajectory's own n_llm_calls accumulation), since result.json's agent_result never carries this field itself."
+      "description": "Iteration count (LLM calls in the trial), for iterations-to-green. Populated by gates/emit_result.py::extract_n_llm_calls() from agent/trajectory.json (mirrors aws_bench/metrics/run_data.py::_llm_usage_from_trajectory's own n_llm_calls accumulation), since result.json's agent_result never carries this field itself. Falls back to the stream transcript's own num_turns when the step has no trajectory -- see audit_source."
+    },
+    "audit_source": {
+      "type": "string",
+      "enum": [
+        "trajectory",
+        "claude-code-stream"
+      ],
+      "description": "OPTIONAL provenance. Which file gate 2 (gates/audit.py) read the agent's tool calls from. ABSENT (equivalently \"trajectory\") on every row audited from harbor's ATIF agent/trajectory.json, which is the normal case. \"claude-code-stream\" means at least one step had no trajectory because harbor's own Claude Code converter rejected its output on a step-id gap (docs/upstream/harbor-trajectory-step-id-gap.md) and the audit read agent/claude-code.txt instead: same tool calls, same observation text, same degraded/bypass classification, but recorded so a reader can tell which rows exist only because of that fallback."
+    },
+    "tokens_source": {
+      "type": "string",
+      "enum": [
+        "claude-code-stream"
+      ],
+      "description": "OPTIONAL provenance, set only when the token fields were recovered from the stream transcript's terminal result event because harbor's own agent_result carried nulls -- the same converter failure audit_source records. Absent means harbor priced the trial itself."
     },
     "tier_evidence": {
       "type": "object",

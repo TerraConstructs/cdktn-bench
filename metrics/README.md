@@ -310,7 +310,23 @@ test still pass unmodified:
   `result.json`'s `agent_result` never carries this field itself (verified:
   only `cost_usd`/`n_input_tokens`/`n_output_tokens`/`n_cache_tokens` do)
   — only the trajectory does. Populates the already-declared-but-previously
-  -unproduced `n_llm_calls` optional field on the row.
+  -unproduced `n_llm_calls` optional field on the row. A step whose
+  trajectory Harbor's converter rejected is counted from its
+  `agent/claude-code.txt` transcript instead (that event's own `num_turns`),
+  the same per-step fallback the audit gate takes — see `audit_source` below.
+- **`audit_source` / `tokens_source`** (both **optional** row properties) —
+  provenance for a row that exists only because the gates fell back to the
+  Claude Code stream transcript: `audit_source: "claude-code-stream"` when the
+  audit gate read the agent's tool calls from `agent/claude-code.txt` because
+  Harbor's own converter produced no `trajectory.json`
+  (`docs/upstream/harbor-trajectory-step-id-gap.md`, `docs/gates.md#audit`),
+  and `tokens_source: "claude-code-stream"` when the token totals were
+  recovered from that transcript's terminal `result` event because
+  `agent_result` carried nulls for the same reason. Both keys are ABSENT on a
+  row Harbor converted and priced itself, so their presence is the whole
+  signal; neither changes how a row is pooled (the audit verdict is identical
+  either way), they exist so a reader can tell which rows came through the
+  fallback.
 - **`to_result_row(..., censored=None, max_iters=None, max_tokens=None)`**
   — `censored`'s default changed from a hardcoded `False` to `None`
   ("auto-detect"), which is backward compatible: with neither

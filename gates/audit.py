@@ -7,7 +7,10 @@ arm's own tool (``docs/lex00-bench-diff.md`` §2.2). A green reward with no
 toolchain evidence is not a scored result, it's an invalid-bypass.
 
 Reads Harbor's ATIF ``trajectory.json`` (``<job_dir>/<trial_name>/agent/trajectory.json``
-per RECON.md §3) and walks ``steps[].tool_calls[]`` for Bash invocations
+per RECON.md §3) — or, for a step Harbor's own converter rejected and left
+without one, the ``agent/claude-code.txt`` stream transcript beside it
+(``steps_from_claude_code_stream``, ``docs/gates.md``) — and walks
+``steps[].tool_calls[]`` for Bash invocations
 (``function_name == "Bash"``, ``arguments.command``). Matching is
 **positional, not textual**: each ``&&``/``||``/``;``/``|``/newline-delimited
 segment of the command is shell-tokenized (``shlex``, with ``#``-comments
@@ -793,6 +796,227 @@ def resolve_trajectory_path(trial_dir_or_file: str | Path) -> Path:
     return resolve_trajectory_paths(trial_dir_or_file)[0]
 
 
+# What `audit_source` on an audit record names: the file the step list was
+# built from. Absent means ``trajectory`` (a record from a trial that had one
+# is byte-identical to before this fallback existed).
+AUDIT_SOURCE_TRAJECTORY = "trajectory"
+AUDIT_SOURCE_STREAM = "claude-code-stream"
+
+TRANSCRIPT_NAME = "claude-code.txt"
+
+
+def _stringify(value: Any) -> str:
+    """Harbor ``claude_code.py::_stringify``, so a non-string tool_result block
+    reaches the audit as the same text a trajectory would have carried."""
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except TypeError:
+        return str(value)
+
+
+def _format_tool_result(block: dict[str, Any], tool_use_result: Any) -> str | None:
+    """The observation text Harbor's ``claude_code.py::_format_tool_result``
+    builds for one ``tool_result`` block, reproduced so a transcript-derived
+    step classifies (``_classify_evidence_status``) exactly like the ATIF step
+    Harbor would have written: the block's own content, then ``[stdout]`` /
+    ``[stderr]`` / ``[exit_code]`` / ``[interrupted]`` / ``[is_image]`` /
+    ``[metadata]`` chunks, then ``[error] tool reported failure``.
+
+    Both anchored free-text signals the degraded check relies on therefore
+    appear in the same positions as in a trajectory: a shell's own ``cdk:
+    command not found`` at the start (it is the block content), and Harbor's
+    own ``[exit_code] N`` line.
+    """
+    parts: list[str] = []
+    content = block.get("content")
+    if isinstance(content, str):
+        if content.strip():
+            parts.append(content.strip())
+    elif isinstance(content, list):
+        for item in content:
+            text_value = _stringify(item)
+            if text_value.strip():
+                parts.append(text_value.strip())
+    elif content not in (None, ""):
+        parts.append(_stringify(content))
+
+    if isinstance(tool_use_result, dict):
+        stdout = tool_use_result.get("stdout")
+        stderr = tool_use_result.get("stderr")
+        exit_code = tool_use_result.get("exitCode") or tool_use_result.get("exit_code")
+        chunks: list[str] = []
+        if stdout:
+            chunks.append(f"[stdout]\n{stdout}".rstrip())
+        if stderr:
+            chunks.append(f"[stderr]\n{stderr}".rstrip())
+        if exit_code not in (None, 0):
+            chunks.append(f"[exit_code] {exit_code}")
+        if tool_use_result.get("interrupted"):
+            chunks.append(f"[interrupted] {tool_use_result['interrupted']}")
+        if tool_use_result.get("isImage"):
+            chunks.append(f"[is_image] {tool_use_result['isImage']}")
+        remaining = {
+            k: v
+            for k, v in tool_use_result.items()
+            if k not in {"stdout", "stderr", "exitCode", "exit_code", "interrupted", "isImage"}
+        }
+        if remaining:
+            chunks.append(f"[metadata] {json.dumps(remaining, ensure_ascii=False)}")
+        if chunks:
+            parts.append("\n".join(chunks))
+
+    if block.get("is_error") is True:
+        parts.append("[error] tool reported failure")
+
+    return "\n\n".join(p for p in parts if p).strip() or None
+
+
+def steps_from_claude_code_stream(transcript_path: str | Path) -> list[dict[str, Any]]:
+    """The tool-call steps of Claude Code's ``--output-format stream-json``
+    transcript (``agent/claude-code.txt``), in the ATIF shape this gate reads.
+
+    Used when Harbor produced no ``trajectory.json``: its converter rejects its
+    own output on a step-id gap (``steps[N].step_id: expected N+1, got N+2``,
+    see ``docs/upstream/harbor-trajectory-step-id-gap.md``), which leaves a
+    complete transcript on disk and no trajectory. Pairing here is by
+    ``tool_use_id`` in TRANSCRIPT ORDER — never by timestamp, which is what
+    produces the gap upstream — so a result whose recorded timestamp precedes
+    its own call still pairs.
+
+    Each step carries only what the audit reads: the ``Bash`` tool call with
+    its command, the matching observation text (``_format_tool_result``) and
+    the raw ``tool_use_result`` under ``extra.metadata`` so
+    ``_extract_structured_exit_code`` finds a structured exit code whenever
+    Claude Code emitted one. ``step_id`` counts the transcript's tool calls
+    from 1; it is NOT Harbor's ATIF step number, which also counts message
+    steps. ``tool_call_id`` is the transcript's own ``toolu_…`` id and is the
+    stable cross-reference back to the transcript.
+
+    A call whose result never arrived is emitted last, observation-free — the
+    same ``unknown`` (non-degrading) status a trajectory gives such a call.
+    """
+    path = Path(transcript_path)
+    pending: dict[str, dict[str, Any]] = {}
+    steps: list[dict[str, Any]] = []
+
+    def emit(call_id: str, tool_name: str, arguments: Any, observation: str | None, tool_use_result: Any) -> None:
+        step: dict[str, Any] = {
+            "step_id": len(steps) + 1,
+            "source": "agent",
+            "tool_calls": [
+                {
+                    "tool_call_id": call_id,
+                    "function_name": tool_name,
+                    "arguments": arguments if isinstance(arguments, dict) else {},
+                }
+            ],
+        }
+        if observation is not None:
+            step["observation"] = {"results": [{"source_call_id": call_id, "content": observation}]}
+        if isinstance(tool_use_result, dict):
+            step["extra"] = {"metadata": {"tool_use_result": tool_use_result}}
+        steps.append(step)
+
+    for line in path.read_text(errors="replace").splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        event_type = event.get("type")
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if event_type == "assistant" and block.get("type") == "tool_use":
+                call_id = block.get("id")
+                if isinstance(call_id, str) and call_id:
+                    pending[call_id] = block
+            elif event_type == "user" and block.get("type") == "tool_result":
+                call_id = block.get("tool_use_id")
+                call = pending.pop(call_id, None) if isinstance(call_id, str) else None
+                tool_use_result = event.get("tool_use_result", event.get("toolUseResult"))
+                emit(
+                    call_id if isinstance(call_id, str) else "",
+                    (call or {}).get("name") or block.get("name") or "",
+                    (call or {}).get("input"),
+                    _format_tool_result(block, tool_use_result),
+                    tool_use_result,
+                )
+
+    for call_id, block in pending.items():
+        emit(call_id, block.get("name") or "", block.get("input"), None, None)
+    return steps
+
+
+def resolve_audit_sources(trial_dir_or_file: str | Path) -> list[tuple[Path, str]]:
+    """Every file one trial can be audited from, in execution order, each
+    paired with its kind (``AUDIT_SOURCE_TRAJECTORY``/``AUDIT_SOURCE_STREAM``).
+
+    Harbor's ATIF ``trajectory.json`` is preferred wherever it exists; the
+    Claude Code stream transcript beside it (``agent/claude-code.txt``) is the
+    fallback for a step Harbor's converter rejected, which is a harness defect
+    and not evidence about the agent. Per STEP, so a multi-step trial whose
+    conversion failed on one step only is still audited over all of them —
+    the same per-step resolution as ``resolve_trajectory_paths``.
+
+    Raises:
+        FileNotFoundError: if neither file exists anywhere under the dir. That
+        trial stays unauditable (``audit-unavailable`` in
+        ``gates/emit_result.py``).
+    """
+    p = Path(trial_dir_or_file)
+    if p.is_file():
+        kind = AUDIT_SOURCE_STREAM if p.name == TRANSCRIPT_NAME else AUDIT_SOURCE_TRAJECTORY
+        return [(p, kind)]
+
+    def first_of(agent_dir: Path) -> tuple[Path, str] | None:
+        traj = agent_dir / "trajectory.json"
+        if traj.is_file():
+            return (traj, AUDIT_SOURCE_TRAJECTORY)
+        transcript = agent_dir / TRANSCRIPT_NAME
+        if transcript.is_file():
+            return (transcript, AUDIT_SOURCE_STREAM)
+        return None
+
+    for agent_dir in (p / "agent", p):
+        found = first_of(agent_dir)
+        if found is not None:
+            return [found]
+
+    step_sources = [first_of(p / "steps" / name / "agent") for name in resolve_step_names(p)]
+    present = [s for s in step_sources if s is not None]
+    if present:
+        return present
+
+    checked = ", ".join(
+        str(c)
+        for c in [
+            p / "agent" / "trajectory.json",
+            p / "agent" / TRANSCRIPT_NAME,
+            p / "trajectory.json",
+            p / "steps" / "*" / "agent" / "trajectory.json",
+        ]
+    )
+    raise FileNotFoundError(f"no trajectory.json or {TRANSCRIPT_NAME} found under {p} (checked: {checked})")
+
+
+def _steps_from_source(path: Path, kind: str) -> list[Any]:
+    if kind == AUDIT_SOURCE_STREAM:
+        return list(steps_from_claude_code_stream(path))
+    data = json.loads(path.read_text())
+    return list(data.get("steps") or [])
+
+
 def audit_trial(trial_dir_or_file: str | Path, arm: str) -> dict[str, Any]:
     """Load + audit a trial's trajectory. See ``audit_trajectory`` for the shape.
 
@@ -803,9 +1027,24 @@ def audit_trial(trial_dir_or_file: str | Path, arm: str) -> dict[str, Any]:
     not bypassed the toolchain. Auditing each step separately would invent a
     stricter rule than the one this benchmark pre-registered.
 
-    ``trajectory_path`` keeps naming the first trajectory (unchanged for
+    ``trajectory_path`` keeps naming the first file audited (unchanged for
     single-step); ``trajectory_paths`` is added ONLY when there is more than
     one, so a single-step record is byte-identical to before.
+
+    **Transcript fallback.** A step with no ``trajectory.json`` is audited from
+    the Claude Code stream transcript beside it instead
+    (``steps_from_claude_code_stream``, ``resolve_audit_sources``), and the
+    record then carries ``audit_source: "claude-code-stream"``; the key is
+    ABSENT when every step had a trajectory. The evidence and the ``ok``/
+    ``failed``/``missing``/``sigkill``/``unknown`` classification are the same
+    either way — the fallback reproduces Harbor's own observation text and
+    hands ``_extract_structured_exit_code`` the same ``tool_use_result`` — so
+    the degraded/bypass verdict does not depend on which file was read. Where
+    Claude Code emits no ``exitCode`` at all, BOTH paths fall back to the
+    anchored free-text heuristics and an unclassifiable call stays ``unknown``,
+    which callers treat as non-degrading: absence of an exit code is not
+    positive evidence the toolchain was unavailable, and a real degraded arm
+    still shows up in the observation text the agent could not suppress.
 
     **Concatenation needs a step key.** ATIF's ``step_id`` is a counter local to
     one trajectory and RESTARTS at 1 in every trial step (a fresh
@@ -816,14 +1055,13 @@ def audit_trial(trial_dir_or_file: str | Path, arm: str) -> dict[str, Any]:
     step dir it came from, and every evidence entry drawn from it carries a
     ``step_name``. Only when merging: a single-step audit gains no new key.
     """
-    traj_paths = resolve_trajectory_paths(trial_dir_or_file)
-    merged = len(traj_paths) > 1
+    sources = resolve_audit_sources(trial_dir_or_file)
+    merged = len(sources) > 1
     steps: list[Any] = []
-    for path in traj_paths:
-        data = json.loads(path.read_text())
-        traj_steps = data.get("steps") or []
+    for path, kind in sources:
+        traj_steps = _steps_from_source(path, kind)
         if merged:
-            # `steps/<name>/agent/trajectory.json` -> `<name>`.
+            # `steps/<name>/agent/<file>` -> `<name>`.
             step_name = path.parent.parent.name
             traj_steps = [
                 {**s, _STEP_NAME_KEY: step_name} if isinstance(s, dict) else s
@@ -831,9 +1069,11 @@ def audit_trial(trial_dir_or_file: str | Path, arm: str) -> dict[str, Any]:
             ]
         steps.extend(traj_steps)
     result = audit_trajectory({"steps": steps}, arm)
-    result["trajectory_path"] = str(traj_paths[0])
-    if len(traj_paths) > 1:
-        result["trajectory_paths"] = [str(p) for p in traj_paths]
+    result["trajectory_path"] = str(sources[0][0])
+    if merged:
+        result["trajectory_paths"] = [str(p) for p, _ in sources]
+    if any(kind == AUDIT_SOURCE_STREAM for _, kind in sources):
+        result["audit_source"] = AUDIT_SOURCE_STREAM
     return result
 
 
@@ -841,7 +1081,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Gate 2: verify a trial's trajectory actually invoked its arm's toolchain."
     )
-    parser.add_argument("trial_dir", help="Trial dir, agent/ dir, or a trajectory.json path.")
+    parser.add_argument("trial_dir", help="Trial dir, agent/ dir, or a trajectory.json / claude-code.txt path.")
     parser.add_argument("--arm", required=True, choices=KNOWN_ARMS, help="Arm to audit against.")
     parser.add_argument("--json-out", default=None, help="Also write the JSON report to this path.")
     args = parser.parse_args(argv)
