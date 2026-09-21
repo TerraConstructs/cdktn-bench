@@ -224,7 +224,13 @@ a visible init failure.
    tier column, per-spec enable, factorial and equipping row restated.
 3. Plan normaliser with the zero-drift parity gate over every existing
    Terraform fixture, then module-shaped fixtures for the pilot scenarios;
-   Rego policies and `hcl_traversal` read the normalised document.
+   Rego policies and `hcl_traversal` read the normalised document. Module
+   defaults are handled red-green: for each pilot catch, a fixture where the
+   module's default (or a hidden input) sets the trapped attribute is graded
+   first and must show the current oracle's blind spot; the spec's
+   `hcl_modules_override` then names the tier that decides it, or
+   `applies_to` excludes the catch on this arm, and the fixture stays as a
+   regression test so a later module bump that moves a default trips it.
 4. Module delivery: vendored set pinned by commit sha in the image, the
    registry responder as a compose sidecar (generator-emitted
    `environment/docker-compose.yaml` for this arm, smoke-drift byte copy
@@ -234,5 +240,9 @@ a visible init failure.
 5. Arm plumbing and the pilot: three scenarios with references and fixtures,
    falsifiability and grading-proof green, one live promotion trial per arm
    form used.
-6. Corpus roll-out, then the tuned equipping level with a bench-owned index
-   tool in place of the Terraform MCP server (or the M2 row re-registered).
+6. Corpus roll-out.
+
+The tuned equipping level (a bench-owned index tool with the Terraform MCP
+server's tool names, answering from the same manifest; see
+`registry-index-tool.md`) is the M2 row for this arm, with its own phases
+after the arm lands; the untuned arm gets the sidecar's search endpoint only.
