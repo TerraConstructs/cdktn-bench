@@ -157,12 +157,20 @@ Options (env var alternatives in parentheses; all optional):
                               provenance only. Default: unset (pilot-set per
                               the build plan — no numeric default is baked
                               in until Phase 3's pilot sets one). (MAX_TOKENS)
+      --no-prebuild          Skip the task-image prebuild below. (CDKTN_PREBUILD=0)
       --dry-run              Print the assembled `uv run cdktn-bench` argv and
                               exit, instead of running it. (AWS_BENCH_DRY_RUN=1)
   -h, --help                 Show this help.
 
 Any other argument, or anything after `--`, is forwarded verbatim to
 `uv run cdktn-bench run`.
+
+Asset mirror + task-image prebuild: the local asset mirror is served for the
+whole run, and every `--include-task-name`/`-i` task is built serially before
+it (scripts/prebuild-tasks.sh). Harbor voids a trial whose compose build
+exceeds its build timeout (600 s by default), and a cold task build refetches
+every pinned binary. Populate the mirror first: `python3
+scripts/asset_mirror.py populate` (docs/asset-mirror.md).
 
 Token resolution: CLAUDE_CODE_OAUTH_TOKEN env (if already set) takes
 precedence over $AWS_BENCH_CLAUDE_TOKEN_FILE (default ~/.anthropic — an
@@ -190,6 +198,7 @@ ENV_NAME=""
 N_TASKS=""
 YES=0
 DRY_RUN="${AWS_BENCH_DRY_RUN:-0}"
+PREBUILD="${CDKTN_PREBUILD:-1}"
 # Budget cap (prereg §4): MAX_ITERS defaults to 100 (the pre-registration's own
 # 8, raised by DECISIONS.md Amendment 22 — see the note below);
 # MAX_TOKENS has deliberately no numeric default (pilot-set, see this
@@ -221,6 +230,7 @@ while [ $# -gt 0 ]; do
     --yes) YES=1; shift ;;
     --max-iters) MAX_ITERS="$2"; shift 2 ;;
     --max-tokens) MAX_TOKENS="$2"; shift 2 ;;
+    --no-prebuild) PREBUILD=0; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
     --) shift; EXTRA+=("$@"); break ;;
@@ -418,4 +428,34 @@ fi
 printf '{\n  "max_iters": %s,\n  "max_tokens": %s,\n  "cli_equipping": %s\n}\n' \
   "${MAX_ITERS:-null}" "$MAX_TOKENS_JSON" "$CLI_EQUIPPING_JSON" > "$JOBS_DIR/budget.json"
 
-exec uv run cdktn-bench "${ARGS[@]}"
+# --- asset mirror + task-image prebuild -------------------------------------
+# Harbor voids a trial whose compose build exceeds its build timeout, and a
+# task's environment/Dockerfile embeds its arm's Dockerfile verbatim: every
+# pinned binary is refetched on a cold build. The mirror answers those fetches
+# from disk, and it stays up for the WHOLE run, not just the prebuild -- Harbor
+# builds a task image itself whenever a layer is missing, and that build probes
+# the same port. Prebuilding warms the cache; the mirror is what keeps a cache
+# miss cheap.
+MIRROR_PID="$(./scripts/asset-mirror-up.sh)"
+trap '[ -n "$MIRROR_PID" ] && kill "$MIRROR_PID" 2>/dev/null || true' EXIT
+
+# Only the tasks named by --include-task-name/-i are prebuilt; a run that names
+# none is left alone, because prebuilding the whole dataset costs more than it
+# saves. The sha256 pins still gate every mirrored file -- docs/asset-mirror.md.
+if [ "$PREBUILD" = "1" ]; then
+  PREBUILD_TASKS=()
+  _i=0
+  while [ "$_i" -lt "${#ARGS[@]}" ]; do
+    case "${ARGS[$_i]}" in
+      -i|--include-task-name) PREBUILD_TASKS+=("${ARGS[$((_i + 1))]:-}") ;;
+    esac
+    _i=$((_i + 1))
+  done
+  if [ "${#PREBUILD_TASKS[@]}" -gt 0 ]; then
+    echo "==> prebuilding ${#PREBUILD_TASKS[@]} task image(s) before the run"
+    ./scripts/prebuild-tasks.sh "${PREBUILD_TASKS[@]}"
+  fi
+fi
+
+# Not `exec`: the EXIT trap above has to outlive the runner to stop the mirror.
+uv run cdktn-bench "${ARGS[@]}"

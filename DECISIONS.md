@@ -8334,6 +8334,27 @@ downloaded assets. `jq` leaves each image's `apt-get install` line, so
 `/usr/local/bin/jq` is the only one on PATH. The equipping hash moves for all
 three arms; `docs/gates.md` states the matching host requirement.
 
+### Build-time asset mirror
+
+Every image build refetches the six pinned assets these amendments installed —
+`opa`, `jq`, `hcl2json`, the cfn-guard tarball, the terraform zip, the AWS CLI
+zip — and a task image embeds its arm's Dockerfile verbatim, so it pays for all
+of them again. On a network that cannot pull a 57 MB GitHub release asset
+reliably, that voids trials against Harbor's compose-build timeout.
+`scripts/asset_mirror.py` keeps them on the host and serves them to build
+containers. `ARG ASSET_MIRROR` defaults to one fixed URL,
+`http://host.lima.internal:8899`, and nothing passes it as a build arg: a
+build arg is expanded into each `RUN` string before BuildKit hashes it, so
+passing one would give the prebuild a different cache key from the
+no-build-arg `docker compose build` Harbor runs, and Harbor would refetch
+upstream anyway. With one key, each fetch probes that URL with `curl -fsI` and
+falls back to the upstream URL when nothing answers, so a build needs no mirror
+and a warmed layer is reused by every builder. Integrity is unchanged: the
+mirror is a SOURCE, never an authority, because every fetch still runs the
+`sha256sum -c` hardcoded beside it, and the asset list is parsed out of the
+Dockerfiles so it cannot drift from a pin. The equipping hash moves for all
+three arms. How to populate and serve: `docs/asset-mirror.md`.
+
 ## Amendment 44 — the verifier is Python; `static_tiers.sh` and `test.sh` are shims — DRAFT
 
 The per-task verifier was ~340 lines of generated bash per arm

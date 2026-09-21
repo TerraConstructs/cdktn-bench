@@ -1,0 +1,149 @@
+{
+  "assets": [
+    {
+      "name": "awscli-exe-linux-aarch64.zip",
+      "arch": "arm64",
+      "url": "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip",
+      "sha256": null,
+      "container_path": "/tmp/awscliv2.zip",
+      "binary": false,
+      "arms": [
+        "awscdk",
+        "hcl-raw",
+        "terraconstructs"
+      ],
+      "observed_sha256": "2dec26fdaff2f5e34961ea98f456297104f73d8409fc3599c8f2909c6e27a07e"
+    },
+    {
+      "name": "awscli-exe-linux-x86_64.zip",
+      "arch": "amd64",
+      "url": "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip",
+      "sha256": null,
+      "container_path": "/tmp/awscliv2.zip",
+      "binary": false,
+      "arms": [
+        "awscdk",
+        "hcl-raw",
+        "terraconstructs"
+      ]
+    },
+    {
+      "name": "cfn-guard-v3-aarch64-linux-latest.tar.gz",
+      "arch": "arm64",
+      "url": "https://github.com/aws-cloudformation/cloudformation-guard/releases/download/3.2.0/cfn-guard-v3-aarch64-linux-latest.tar.gz",
+      "sha256": "d562e14831794a4859782f5609186970373e8e0a049fbded2c01612d2dcdb087",
+      "container_path": "/tmp/cfn-guard.tar.gz",
+      "binary": false,
+      "arms": [
+        "awscdk"
+      ]
+    },
+    {
+      "name": "cfn-guard-v3-x86_64-linux-latest.tar.gz",
+      "arch": "amd64",
+      "url": "https://github.com/aws-cloudformation/cloudformation-guard/releases/download/3.2.0/cfn-guard-v3-x86_64-linux-latest.tar.gz",
+      "sha256": "c78f7a1a6c2674f7edbf0ebdc0590126487a14b103e434aea31205a4d1034d21",
+      "container_path": "/tmp/cfn-guard.tar.gz",
+      "binary": false,
+      "arms": [
+        "awscdk"
+      ]
+    },
+    {
+      "name": "hcl2json_linux_amd64",
+      "arch": "amd64",
+      "url": "https://github.com/tmccombs/hcl2json/releases/download/v0.6.9/hcl2json_linux_amd64",
+      "sha256": "b609e37094948c0b77cd8c6c0baaf8af2bd168c685c6e3334d671cc9692c34a5",
+      "container_path": "/usr/local/bin/hcl2json",
+      "binary": true,
+      "arms": [
+        "hcl-raw"
+      ]
+    },
+    {
+      "name": "hcl2json_linux_arm64",
+      "arch": "arm64",
+      "url": "https://github.com/tmccombs/hcl2json/releases/download/v0.6.9/hcl2json_linux_arm64",
+      "sha256": "cb2ccf59a830829fe122e8dfb85d6ef2500aceda5af45a7c1052a4d2c46541f9",
+      "container_path": "/usr/local/bin/hcl2json",
+      "binary": true,
+      "arms": [
+        "hcl-raw"
+      ]
+    },
+    {
+      "name": "jq-linux-amd64",
+      "arch": "amd64",
+      "url": "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-amd64",
+      "sha256": "5942c9b0934e510ee61eb3e30273f1b3fe2590df93933a93d7c58b81d19c8ff5",
+      "container_path": "/usr/local/bin/jq",
+      "binary": true,
+      "arms": [
+        "awscdk",
+        "hcl-raw",
+        "terraconstructs"
+      ]
+    },
+    {
+      "name": "jq-linux-arm64",
+      "arch": "arm64",
+      "url": "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-arm64",
+      "sha256": "4dd2d8a0661df0b22f1bb9a1f9830f06b6f3b8f7d91211a1ef5d7c4f06a8b4a5",
+      "container_path": "/usr/local/bin/jq",
+      "binary": true,
+      "arms": [
+        "awscdk",
+        "hcl-raw",
+        "terraconstructs"
+      ]
+    },
+    {
+      "name": "opa_linux_amd64_static",
+      "arch": "amd64",
+      "url": "https://github.com/open-policy-agent/opa/releases/download/v1.19.0/opa_linux_amd64_static",
+      "sha256": "1dd5c5591ff856f5e20a1d66bafae9511ddf3c5552ed3b5070c70b2b6580ee3f",
+      "container_path": "/usr/local/bin/opa",
+      "binary": true,
+      "arms": [
+        "awscdk",
+        "hcl-raw",
+        "terraconstructs"
+      ]
+    },
+    {
+      "name": "opa_linux_arm64_static",
+      "arch": "arm64",
+      "url": "https://github.com/open-policy-agent/opa/releases/download/v1.19.0/opa_linux_arm64_static",
+      "sha256": "06680087ed236c8c6aaa021660d83178db829a2ad30bdb3482481fada6791b2a",
+      "container_path": "/usr/local/bin/opa",
+      "binary": true,
+      "arms": [
+        "awscdk",
+        "hcl-raw",
+        "terraconstructs"
+      ]
+    },
+    {
+      "name": "terraform_1.15.8_linux_amd64.zip",
+      "arch": "amd64",
+      "url": "https://releases.hashicorp.com/terraform/1.15.8/terraform_1.15.8_linux_amd64.zip",
+      "sha256": "d25ce7b6902013ad905db3d2eab0be4cd905887fe88b81a6171b8d5503c31f3d",
+      "container_path": "/tmp/terraform.zip",
+      "binary": false,
+      "arms": [
+        "hcl-raw"
+      ]
+    },
+    {
+      "name": "terraform_1.15.8_linux_arm64.zip",
+      "arch": "arm64",
+      "url": "https://releases.hashicorp.com/terraform/1.15.8/terraform_1.15.8_linux_arm64.zip",
+      "sha256": "8891e9dcedc9e3b8950bc6af9d4d8af1f4cfade3062f53b9dc403a89f6ce8c9c",
+      "container_path": "/tmp/terraform.zip",
+      "binary": false,
+      "arms": [
+        "hcl-raw"
+      ]
+    }
+  ]
+}

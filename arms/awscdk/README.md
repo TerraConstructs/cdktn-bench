@@ -154,6 +154,14 @@ SKIP_BUILD=1 ./preflight.sh
 # Build with a different tag:
 IMAGE_TAG=myorg/awscdk:test ./preflight.sh
 
+# Fetch the pinned binaries from a local mirror instead of upstream, for a
+# network that cannot pull a 57 MB GitHub release asset reliably. `make
+# build-arms` brings the mirror up itself on the port the Dockerfile probes and
+# passes NO build arg, so these layers are the same ones Harbor's own build
+# reuses. The sha256 checks still gate every file -- populate the mirror first,
+# see ../../docs/asset-mirror.md.
+make -C ../.. build-arms
+
 # Equivalent to what preflight.sh does, spelled out:
 docker build -t cdktn-bench/awscdk:dev -f environment/Dockerfile environment/
 docker run --rm --network none --entrypoint /usr/local/bin/preflight.sh \

@@ -40,7 +40,6 @@
 # Never COPY from tests/ or solution/ — see aws-bench-datasets-guide.md §6b.
 
 FROM node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5
-
 # --- OS packages -------------------------------------------------------
 # Same baseline utility set as the upstream dataset's Dockerfile
 # (ca-certificates/curl/unzip/less/groff/zip; jq comes from the pinned
@@ -64,6 +63,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl unzip less groff zip git python3 \
     && rm -rf /var/lib/apt/lists/*
 
+# --- ASSET_MIRROR: base URL of a local mirror of the pinned build-time
+# --- downloads below (scripts/asset_mirror.py serve). The default is
+# --- NON-EMPTY and nothing overrides it, so every builder -- `make build-arms`,
+# --- scripts/prebuild-tasks.sh, and the no-build-arg `docker compose build`
+# --- the harness runs -- hashes these RUN lines identically and shares one
+# --- layer cache. Each fetch below probes the mirror and falls back to
+# --- upstream when it does not answer, so a build with no mirror running
+# --- still succeeds; see docs/asset-mirror.md.
+# --- Every fetch still runs its hardcoded `sha256sum -c`, so the mirror is a
+# --- SOURCE and never an authority: a substituted file fails the build.
+ARG ASSET_MIRROR=http://host.lima.internal:8899
+
 # --- AWS CLI v2 ----------------------------------------------------------
 # Not required by preflight.sh (which proves the CDK toolchain works fully
 # offline) but included for parity with the upstream agent-container
@@ -74,7 +85,9 @@ RUN ARCH=$(uname -m) && \
     else \
         CLI_URL="https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip"; \
     fi && \
-    curl -sSL "$CLI_URL" -o /tmp/awscliv2.zip && \
+    ASSET_MIRROR_URL="$ASSET_MIRROR/$(basename "$CLI_URL")" && \
+    { curl -fsI --connect-timeout 2 --max-time 5 "$ASSET_MIRROR_URL" >/dev/null 2>&1 && CLI_URL="$ASSET_MIRROR_URL" || true; } && \
+    curl -fsSL --http1.1 --retry 5 --retry-all-errors -o /tmp/awscliv2.zip "$CLI_URL" && \
     unzip -q /tmp/awscliv2.zip -d /tmp && \
     /tmp/aws/install && \
     rm -rf /tmp/aws /tmp/awscliv2.zip
@@ -110,8 +123,10 @@ RUN set -eu; \
              CFN_GUARD_SHA256="d562e14831794a4859782f5609186970373e8e0a049fbded2c01612d2dcdb087" ;; \
       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL -o /tmp/cfn-guard.tar.gz \
-      "https://github.com/aws-cloudformation/cloudformation-guard/releases/download/3.2.0/${CFN_GUARD_ASSET}"; \
+    URL="https://github.com/aws-cloudformation/cloudformation-guard/releases/download/3.2.0/${CFN_GUARD_ASSET}"; \
+    ASSET_MIRROR_URL="$ASSET_MIRROR/${CFN_GUARD_ASSET}"; \
+    if curl -fsI --connect-timeout 2 --max-time 5 "$ASSET_MIRROR_URL" >/dev/null 2>&1; then URL="$ASSET_MIRROR_URL"; fi; \
+    curl -fsSL --http1.1 --retry 5 --retry-all-errors -o /tmp/cfn-guard.tar.gz "$URL"; \
     echo "${CFN_GUARD_SHA256}  /tmp/cfn-guard.tar.gz" | sha256sum -c -; \
     tar -xzf /tmp/cfn-guard.tar.gz -C /tmp; \
     install -m 0755 /tmp/cfn-guard-v3-*-linux-latest/cfn-guard /usr/local/bin/cfn-guard; \
@@ -142,8 +157,10 @@ RUN set -eu; \
       arm64) OPA_SHA256="06680087ed236c8c6aaa021660d83178db829a2ad30bdb3482481fada6791b2a" ;; \
       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL -o /usr/local/bin/opa \
-      "https://github.com/open-policy-agent/opa/releases/download/v1.19.0/opa_linux_${TARGETARCH}_static"; \
+    URL="https://github.com/open-policy-agent/opa/releases/download/v1.19.0/opa_linux_${TARGETARCH}_static"; \
+    ASSET_MIRROR_URL="$ASSET_MIRROR/opa_linux_${TARGETARCH}_static"; \
+    if curl -fsI --connect-timeout 2 --max-time 5 "$ASSET_MIRROR_URL" >/dev/null 2>&1; then URL="$ASSET_MIRROR_URL"; fi; \
+    curl -fsSL --http1.1 --retry 5 --retry-all-errors -o /usr/local/bin/opa "$URL"; \
     echo "${OPA_SHA256}  /usr/local/bin/opa" | sha256sum -c -; \
     chmod 0755 /usr/local/bin/opa; \
     opa version
@@ -161,8 +178,10 @@ RUN set -eu; \
       arm64) JQ_SHA256="4dd2d8a0661df0b22f1bb9a1f9830f06b6f3b8f7d91211a1ef5d7c4f06a8b4a5" ;; \
       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL -o /usr/local/bin/jq \
-      "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-${TARGETARCH}"; \
+    URL="https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-${TARGETARCH}"; \
+    ASSET_MIRROR_URL="$ASSET_MIRROR/jq-linux-${TARGETARCH}"; \
+    if curl -fsI --connect-timeout 2 --max-time 5 "$ASSET_MIRROR_URL" >/dev/null 2>&1; then URL="$ASSET_MIRROR_URL"; fi; \
+    curl -fsSL --http1.1 --retry 5 --retry-all-errors -o /usr/local/bin/jq "$URL"; \
     echo "${JQ_SHA256}  /usr/local/bin/jq" | sha256sum -c -; \
     chmod 0755 /usr/local/bin/jq; \
     jq --version

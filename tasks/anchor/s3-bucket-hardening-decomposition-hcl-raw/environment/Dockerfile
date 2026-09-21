@@ -32,7 +32,6 @@
 # .RepoDigests 0}}' debian:bookworm-slim` and updating both the tag and the
 # digest together.
 FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
-
 ARG TERRAFORM_VERSION=1.15.8
 ARG AWS_PROVIDER_VERSION=6.58.0
 # NOTE: deliberately no default value here. TARGETARCH is one of BuildKit's
@@ -62,6 +61,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 \
     && rm -rf /var/lib/apt/lists/*
 
+# --- ASSET_MIRROR: base URL of a local mirror of the pinned build-time
+# --- downloads below (scripts/asset_mirror.py serve). The default is
+# --- NON-EMPTY and nothing overrides it, so every builder -- `make build-arms`,
+# --- scripts/prebuild-tasks.sh, and the no-build-arg `docker compose build`
+# --- the harness runs -- hashes these RUN lines identically and shares one
+# --- layer cache. Each fetch below probes the mirror and falls back to
+# --- upstream when it does not answer, so a build with no mirror running
+# --- still succeeds; see docs/asset-mirror.md.
+# --- Every fetch still runs its hardcoded `sha256sum -c`, so the mirror is a
+# --- SOURCE and never an authority: a substituted file fails the build.
+ARG ASSET_MIRROR=http://host.lima.internal:8899
+
 # --- AWS CLI v2 (agent-container parity with arms/awscdk/arms/terraconstructs;
 # --- not required by preflight.sh, which proves the toolchain works with zero
 # --- AWS surface area) ---
@@ -71,7 +82,9 @@ RUN ARCH=$(uname -m) && \
     else \
         CLI_URL="https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip"; \
     fi && \
-    curl -sSL "$CLI_URL" -o /tmp/awscliv2.zip && \
+    ASSET_MIRROR_URL="$ASSET_MIRROR/$(basename "$CLI_URL")" && \
+    { curl -fsI --connect-timeout 2 --max-time 5 "$ASSET_MIRROR_URL" >/dev/null 2>&1 && CLI_URL="$ASSET_MIRROR_URL" || true; } && \
+    curl -fsSL --http1.1 --retry 5 --retry-all-errors -o /tmp/awscliv2.zip "$CLI_URL" && \
     unzip -q /tmp/awscliv2.zip -d /tmp && \
     /tmp/aws/install && \
     rm -rf /tmp/aws /tmp/awscliv2.zip
@@ -86,8 +99,10 @@ RUN set -eu; \
       arm64) TF_SHA256="8891e9dcedc9e3b8950bc6af9d4d8af1f4cfade3062f53b9dc403a89f6ce8c9c" ;; \
       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL -o /tmp/terraform.zip \
-      "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_${TARGETARCH}.zip"; \
+    URL="https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_${TARGETARCH}.zip"; \
+    ASSET_MIRROR_URL="$ASSET_MIRROR/terraform_${TERRAFORM_VERSION}_linux_${TARGETARCH}.zip"; \
+    if curl -fsI --connect-timeout 2 --max-time 5 "$ASSET_MIRROR_URL" >/dev/null 2>&1; then URL="$ASSET_MIRROR_URL"; fi; \
+    curl -fsSL --http1.1 --retry 5 --retry-all-errors -o /tmp/terraform.zip "$URL"; \
     echo "${TF_SHA256}  /tmp/terraform.zip" | sha256sum -c -; \
     unzip -q /tmp/terraform.zip -d /usr/local/bin; \
     chmod 0755 /usr/local/bin/terraform; \
@@ -107,8 +122,10 @@ RUN set -eu; \
       arm64) OPA_SHA256="06680087ed236c8c6aaa021660d83178db829a2ad30bdb3482481fada6791b2a" ;; \
       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL -o /usr/local/bin/opa \
-      "https://github.com/open-policy-agent/opa/releases/download/v1.19.0/opa_linux_${TARGETARCH}_static"; \
+    URL="https://github.com/open-policy-agent/opa/releases/download/v1.19.0/opa_linux_${TARGETARCH}_static"; \
+    ASSET_MIRROR_URL="$ASSET_MIRROR/opa_linux_${TARGETARCH}_static"; \
+    if curl -fsI --connect-timeout 2 --max-time 5 "$ASSET_MIRROR_URL" >/dev/null 2>&1; then URL="$ASSET_MIRROR_URL"; fi; \
+    curl -fsSL --http1.1 --retry 5 --retry-all-errors -o /usr/local/bin/opa "$URL"; \
     echo "${OPA_SHA256}  /usr/local/bin/opa" | sha256sum -c -; \
     chmod 0755 /usr/local/bin/opa; \
     opa version
@@ -126,8 +143,10 @@ RUN set -eu; \
       arm64) JQ_SHA256="4dd2d8a0661df0b22f1bb9a1f9830f06b6f3b8f7d91211a1ef5d7c4f06a8b4a5" ;; \
       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL -o /usr/local/bin/jq \
-      "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-${TARGETARCH}"; \
+    URL="https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-${TARGETARCH}"; \
+    ASSET_MIRROR_URL="$ASSET_MIRROR/jq-linux-${TARGETARCH}"; \
+    if curl -fsI --connect-timeout 2 --max-time 5 "$ASSET_MIRROR_URL" >/dev/null 2>&1; then URL="$ASSET_MIRROR_URL"; fi; \
+    curl -fsSL --http1.1 --retry 5 --retry-all-errors -o /usr/local/bin/jq "$URL"; \
     echo "${JQ_SHA256}  /usr/local/bin/jq" | sha256sum -c -; \
     chmod 0755 /usr/local/bin/jq; \
     jq --version
@@ -162,8 +181,10 @@ RUN set -eu; \
       arm64) HCL2JSON_SHA256="cb2ccf59a830829fe122e8dfb85d6ef2500aceda5af45a7c1052a4d2c46541f9" ;; \
       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL -o /usr/local/bin/hcl2json \
-      "https://github.com/tmccombs/hcl2json/releases/download/v0.6.9/hcl2json_linux_${TARGETARCH}"; \
+    URL="https://github.com/tmccombs/hcl2json/releases/download/v0.6.9/hcl2json_linux_${TARGETARCH}"; \
+    ASSET_MIRROR_URL="$ASSET_MIRROR/hcl2json_linux_${TARGETARCH}"; \
+    if curl -fsI --connect-timeout 2 --max-time 5 "$ASSET_MIRROR_URL" >/dev/null 2>&1; then URL="$ASSET_MIRROR_URL"; fi; \
+    curl -fsSL --http1.1 --retry 5 --retry-all-errors -o /usr/local/bin/hcl2json "$URL"; \
     echo "${HCL2JSON_SHA256}  /usr/local/bin/hcl2json" | sha256sum -c -; \
     chmod 0755 /usr/local/bin/hcl2json; \
     hcl2json -version

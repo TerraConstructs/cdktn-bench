@@ -15,15 +15,30 @@ setup:
 #
 # Fails loudly (exit 1) if an arm is missing its Dockerfile — a missing arm
 # is a broken build, not something to skip past silently.
+#
+# The local asset mirror is brought up on the one port the Dockerfiles probe
+# (scripts/asset-mirror-up.sh) and stopped again unless it was already running,
+# so these builds hash identically to every other build of the same Dockerfile
+# and share its layer cache. No build arg is passed: $CDKTN_ASSET_MIRROR_URL
+# does pass one, which forks the cache key, and exists only for a docker host
+# where host.lima.internal does not resolve. The sha256 pins in each Dockerfile
+# gate every downloaded file, mirrored or not (docs/asset-mirror.md).
 build-arms:
 	@set -e; \
 	missing=0; \
+	mirror_pid="$$(scripts/asset-mirror-up.sh)"; \
+	trap '[ -n "$$mirror_pid" ] && kill "$$mirror_pid" 2>/dev/null || true' EXIT; \
+	mirror_arg=""; \
+	if [ -n "$${CDKTN_ASSET_MIRROR_URL:-}" ]; then \
+		mirror_arg="--build-arg ASSET_MIRROR=$$CDKTN_ASSET_MIRROR_URL"; \
+		echo "==> ASSET_MIRROR=$$CDKTN_ASSET_MIRROR_URL (build arg: forks the layer cache)"; \
+	fi; \
 	for arm_dir in arms/*/; do \
 		arm=$$(basename "$$arm_dir"); \
 		dockerfile="$${arm_dir}environment/Dockerfile"; \
 		if [ -f "$$dockerfile" ]; then \
 			echo "==> building arm image: $$arm  (context: $${arm_dir}environment/)"; \
-			docker build -t "cdktn-bench/$$arm:dev" -f "$$dockerfile" "$${arm_dir}environment"; \
+			docker build $$mirror_arg -t "cdktn-bench/$$arm:dev" -f "$$dockerfile" "$${arm_dir}environment"; \
 		else \
 			echo "==> ERROR: $$arm has no $$dockerfile" >&2; \
 			missing=1; \

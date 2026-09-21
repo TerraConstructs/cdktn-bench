@@ -944,6 +944,10 @@ and the disarmed shape.
      `gates/tests/test_audit_stream_fallback.py`, `docs/gates.md#audit`);
      both affected rows now emit valid at reward 1.0, and the step-id gap is
      filed in `docs/upstream/harbor-trajectory-step-id-gap.md`.
+   * ~~Image builds blocked by the release CDN~~ — DONE: the pinned build-time
+     assets are mirrored on the host and served to build containers
+     (`scripts/asset_mirror.py`, `scripts/prebuild-tasks.sh`,
+     `docs/asset-mirror.md`); the sha256 pins still gate every fetch.
 6. Comment clean-up continues as part of every change (rules in CLAUDE.md
    "Comments"); remaining hot spots are `generator/gen.py` bodies, the
    emitted template strings, hand-authored `solve.sh` files, `arms/*/README.md`,
