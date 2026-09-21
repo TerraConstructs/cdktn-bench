@@ -81,9 +81,9 @@ generator-emitted awscdk tier-1 rule denies an unprompted
 root template only), mirroring the module-usage deny in
 `s3-notification-authoritative-singleton`. No ticket asks for nested stacks.
 
-### What the survey did not change
+### The plan shapes, tier by tier
 
-Not as written. `terraform show -json` places module resources under
+`terraform show -json` places module resources under
 `planned_values.root_module.child_modules[].resources[]` (recursively) with
 addresses `module.<call>.<type>.<name>`, and the configuration side under
 `configuration.root_module.module_calls.<call>.module.resources[]`, whose
@@ -101,18 +101,17 @@ What that breaks, tier by tier:
 | 1 (hcl_traversal) | resolves `local.*` in the root module's own files | refuses module boundaries and inputs by design |
 | live, idempotence, teardown | read the account or run terraform | unchanged |
 
-The honest fix is a plan normaliser, not 301 rewritten paths: a pure function
-over the plan JSON that hoists every resource from every `child_modules`
-level into one list with `module_path` and the full address, and rewrites
-configuration references across the boundary where they resolve
-(`var.x` inside `module.a` becomes whatever `module_calls.a.expressions.x`
-references). Every TF-shaped arm grades the normalised document, so a
-module-free plan must normalise to itself byte-for-byte (a parity gate over
-all existing hcl_raw and terraconstructs fixtures, zero drift), and the
-same asserts then hold on a module-shaped plan. The place for it is the
-Python tier-0 driver (a `normalize_plan` step in `ops.py` before jq runs,
-and the same document handed to `opa`), which is why this arm sequences
-after the Python verifier work and not before.
+The fix is the normaliser described above, not 301 rewritten paths: a pure
+function over the plan JSON, hoisting from `resource_changes` and
+`planned_values` with `after_unknown` carried, and rewriting configuration
+references across the boundary where they resolve (`var.x` inside `module.a`
+becomes whatever `module_calls.a.expressions.x` references). Every TF-shaped
+arm grades the normalised document, so a module-free plan must normalise to
+itself byte-for-byte (a parity gate over all existing hcl_raw and
+terraconstructs fixtures, zero drift), and the same asserts then hold on a
+module-shaped plan. It lives in the Python tier-0 driver (a `normalize_plan`
+step in `ops.py` before jq runs, the same document handed to `opa`), which is
+why this arm sequences after the Python verifier work.
 
 Two semantics questions the normaliser cannot answer alone and the spec
 must: `eq` demands exactly one node, so an assert written for one bucket
