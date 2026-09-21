@@ -137,9 +137,10 @@ Full rules: `docs/adding-scenarios.md` §1 item 3a. The short form:
   run in the foreground; deploy counts as toolchain evidence), 39
   (`grading-proof` accepts a live-tier proof), 40 (the gate stub is an
   assumed-role identity answering `iam:GetRole`), 41 (a catch may be
-  predicted at the teardown tier; first gating teardown) and 43 (tier 0 is
+  predicted at the teardown tier; first gating teardown), 43 (tier 0 is
   graded by a generated Python driver over the jq filters; jq pinned at 1.7.1)
-  are ACCEPTED** (promotion
+  and 44 (the whole per-task verifier is generated Python; the two `.sh`
+  files are shims) are ACCEPTED** (promotion
   runs for the harness-changing ones under `jobs/amend3*-promotion`).
   Rows produced under them are publishable within
   their own stratum. Any new amendment that changes the harness re-enters

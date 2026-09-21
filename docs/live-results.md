@@ -346,3 +346,25 @@ trial's own `verifier/test-stdout.txt`. The bash column is the retired
 `assert_check`, recovered from `3ce3f12:generator/gen.py` with the
 `assert_check` call lines from that revision's `tests/static_tiers.sh` — never
 from the working tree.
+
+## Amendment 44 promotion run — 2026-09-22 (Python verifier)
+
+`jobs/amend44-promotion/2026-09-22__00-10-32`; claude-sonnet-5, k=1, one trial
+per verifier shape on its own shard, four concurrent, task images prebuilt
+from the asset mirror (every layer cached). Two earlier attempts the same
+evening were voided before any agent ran: GitHub's release CDN truncated the
+pinned opa download inside the task image builds past Harbor's 600 s build
+budget.
+
+| scenario | arm | shape | reward | output tok | tier0 | tier1 | live | idempotence | teardown |
+|---|---|---|---:|---:|:---:|:---:|:---:|:---:|:---:|
+| ecs-swappiness | hcl_raw | static read-only | 0.0 | 1,251 | pass | FAIL (planted catch) | — | — | — |
+| ecr-repo-destroy-force-delete | hcl_raw | live + teardown | 1.0 | 1,838 | pass | no asserts | pass | — | clean |
+| named-resource-replacement | awscdk | brownfield, seed guard | 1.0 | 3,255 | pass | PASS | pass | converged | clean |
+| apigw-redeploy | terraconstructs | multi-step | 1.0 | 9,504 + 7,821 | pass / pass | PASS / PASS | pass / pass | — | — |
+
+Every verdict, status string and marker set matches the bash verifier's
+earlier run of the same shape (`jobs/amend43-promotion`, `amend41-promotion`,
+`amend37-promotion`, and the multi-step battery). The ecs-swappiness 0.0 is the
+scenario's tier-1 catch firing on an agent that set `swappiness` without
+`maxSwap`, not a verifier difference.

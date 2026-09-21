@@ -8355,7 +8355,7 @@ mirror is a SOURCE, never an authority, because every fetch still runs the
 Dockerfiles so it cannot drift from a pin. The equipping hash moves for all
 three arms. How to populate and serve: `docs/asset-mirror.md`.
 
-## Amendment 44 — the verifier is Python; `static_tiers.sh` and `test.sh` are shims — DRAFT
+## Amendment 44 — the verifier is Python; `static_tiers.sh` and `test.sh` are shims — ACCEPTED
 
 The per-task verifier was ~340 lines of generated bash per arm
 (`tests/test.sh` + `tests/static_tiers.sh`), the largest surface in
@@ -8420,8 +8420,17 @@ fixtures, which earn their live-only marker by proving no static tier reads
 `force_delete`, grep `tier0.py`, `policy.rego`, `verify.py` and `tiers.py`;
 `static_tiers.sh`, which they grepped before, now declares nothing.
 
-**Promotion.** One live trial per verifier shape, with identical rewards and
-marker sets: static read-only (`ecs-swappiness`), live-plus-teardown
-(`ecr-repo-destroy-force-delete`), brownfield with the seed guard and the
-idempotence tier (`named-resource-replacement`), multi-step
-(`apigw-redeploy`).
+**Promotion (2026-09-22, `jobs/amend44-promotion/2026-09-22__00-10-32`).** One
+live trial per verifier shape, graded by `tests/verify.py`, every reward and
+marker set matching the bash verifier's earlier runs of the same shape:
+static read-only `ecs-swappiness` hcl_raw 0.0 (tier 0 all PASS, tier 1 FAIL on
+the planted `swappiness-requires-maxswap` catch, the same outcome as the
+Amendment 43 pilot; marker set `reward.txt` + `test-stdout.txt` only);
+live-plus-teardown `ecr-repo-destroy-force-delete` hcl_raw 1.0, live pass,
+teardown clean; brownfield `named-resource-replacement` awscdk 1.0, live pass,
+idempotence converged, teardown clean, seed receipt honoured; multi-step
+`apigw-redeploy` terraconstructs 1.0 with both steps' live checks passing. The
+two earlier attempts of this run were voided by GitHub's release CDN
+truncating the pinned opa download inside the task image builds, which is
+what the build-time asset mirror (Amendment 43, "Build-time asset mirror")
+closed; no verifier behaviour was involved.

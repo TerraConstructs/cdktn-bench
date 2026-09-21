@@ -691,7 +691,7 @@ images and dropped from `apt-get install`, so the tier-0 grading engine is fixed
 the way `opa` and `cfn-guard` are and matches the 1.7.x the host gates run
 (DECISIONS.md Amendment 43, "`jq` pinned"); the equipping hash moves for all
 three arms. (2) ~~The bash in `tests/static_tiers.sh` and `tests/test.sh`~~ --
-DONE, DECISIONS.md Amendment 44: the verifier is `tests/tiers.py` +
+DONE, DECISIONS.md Amendment 44 (ACCEPTED 2026-09-22): the verifier is `tests/tiers.py` +
 `tests/verify.py`, and the two `.sh` files are shims because harbor executes
 one and every hand-authored `solve.sh` ends with the other. What is left of
 `docs/design/shell-inventory.md` class 2 is the brownfield `pre_invoke/*.sh`.
