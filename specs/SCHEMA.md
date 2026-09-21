@@ -404,7 +404,7 @@ hcl_raw:
 ### 2.4 `per_arm.<arm>.output_contract`
 
 What the agent must leave on disk, precisely enough that the generated
-`tests/static_tiers.sh` (§8) can find it without guessing. Every generated
+the generated verifier (§8) can find it without guessing. Every generated
 task's starter workspace ships an **empty skeleton** at `entry_file` — an
 already-wired app/stack/root module with an empty body and a `// TODO` /
 `# TODO` comment pointing back at the instruction — so the agent edits inside
@@ -427,7 +427,7 @@ output_contract:
 
 **`build_command` and the terraconstructs compile gate.** For `awscdk` this is
 an ordinary per-spec field (`npm run build`). For `terraconstructs` it must be
-**omitted**: `generator/gen.py::build_static_tiers_sh` injects
+**omitted**: `generator/gen.py::build_toolchain_steps` injects
 `npx tsc -p tsconfig.json` unconditionally as that arm's first toolchain step —
 the same unconditional-injection pattern it already uses for the arm's tf-plan
 step — so the compile gate cannot go missing because a spec author forgot a YAML
@@ -442,7 +442,7 @@ re-type-checks by construction and can never execute stale emitted JS. See
 |---|---|---|---|---|
 | `awscdk` | `lib/scenario-stack.ts` (class `ScenarioStack`, resource logic only) | `bin/app.ts` — `App`/`ScenarioStack` instantiation; the generator rewrites its import/instantiation once per scenario, never per trial | `cdk.out/ScenarioStack.template.json` | `build_command: npm run build`, `synth_command: npx cdk synth --no-lookups --quiet -o cdk.out` |
 | `hcl_raw` | `main.tf` (resource blocks ONLY — no `provider` block; see below) | `provider.tf` — the `terraform{}`/`provider "aws" {}` block, region + `default_tags` only, no credential fixture of any kind (live AWS is the only trial mode, DECISIONS.md Amendment 32; byte-copied from `arms/hcl-raw/environment/workspace/provider.tf`, never per-scenario content) | `plan.json` | `synth_command` not used; `plan_command: terraform init && terraform validate && terraform plan -out=plan.tfplan && terraform show -json plan.tfplan > plan.json` |
-| `terraconstructs` | `lib/scenario-stack.ts` (class `ScenarioStack extends AwsStack`, resource logic only) | `main.ts` — `App`/`providerConfig` bootstrap (`providerConfig: { region: "us-east-1" }` only — live AWS is the only trial mode, DECISIONS.md Amendment 32; no `skip_*`, no dummy credentials, no mock `endpoints` pointer), imports and instantiates `ScenarioStack`; regenerated every run, mirroring `awscdk`'s `bin/app.ts` | `cdktf.out/stacks/<id>/plan.json` where `<id>` is the generator-assigned stack id, always equal to **`workspace_id`** (§0.1 — the AGENT-VISIBLE scenario name, which falls back to `id` when a spec declares none; this path is agent-visible in `preflight.sh` and in the agent's own `npx cdktn synth` output, and `Spec._terraconstructs_artifact_path_matches_workspace_identity` refuses a spec whose `artifact_path` disagrees with it) — **not** `cdk.tf.json`: `generator/gen.py::build_static_tiers_sh` always appends a real `terraform init && terraform plan && terraform show -json` step after `synth_command`, chdir'd into the synthesized stack's own directory, so this arm is graded in the same plan-JSON shape `hcl_raw` is (see §4.2) | `synth_command: npx cdktn synth`; `build_command` **must be unset** — gen.py always injects `npx tsc -p tsconfig.json` as an explicit first toolchain step with its own reward-0.0 branch (see the `build_command` note above §8.3) |
+| `terraconstructs` | `lib/scenario-stack.ts` (class `ScenarioStack extends AwsStack`, resource logic only) | `main.ts` — `App`/`providerConfig` bootstrap (`providerConfig: { region: "us-east-1" }` only — live AWS is the only trial mode, DECISIONS.md Amendment 32; no `skip_*`, no dummy credentials, no mock `endpoints` pointer), imports and instantiates `ScenarioStack`; regenerated every run, mirroring `awscdk`'s `bin/app.ts` | `cdktf.out/stacks/<id>/plan.json` where `<id>` is the generator-assigned stack id, always equal to **`workspace_id`** (§0.1 — the AGENT-VISIBLE scenario name, which falls back to `id` when a spec declares none; this path is agent-visible in `preflight.sh` and in the agent's own `npx cdktn synth` output, and `Spec._terraconstructs_artifact_path_matches_workspace_identity` refuses a spec whose `artifact_path` disagrees with it) — **not** `cdk.tf.json`: `generator/gen.py::build_toolchain_steps` always appends a real `terraform init && terraform plan && terraform show -json` step after `synth_command`, chdir'd into the synthesized stack's own directory, so this arm is graded in the same plan-JSON shape `hcl_raw` is (see §4.2) | `synth_command: npx cdktn synth`; `build_command` **must be unset** — gen.py always injects `npx tsc -p tsconfig.json` as an explicit first toolchain step with its own reward-0.0 branch (see the `build_command` note above §8.3) |
 
 **`entry_file` vs. the non-agent-owned bootstrap file (finding G1, fixed
 2026-08-06):** every arm's workspace ships both. `entry_file` is what the
@@ -466,7 +466,7 @@ this `[]` and the generated `instruction.md` omits the
 `agent-output.json` fence entirely (§2.1's assembly template treats the fence
 as conditional on this list being non-empty). Do not add fields here "just in
 case" — every field here is a hard requirement the generated `tests/check`-
-equivalent (`static_tiers.sh`) will treat as a `output_contract` criterion
+equivalent (the generated verifier) will treat as a `output_contract` criterion
 (mirroring `create-eks-cluster`'s `output_contract` criterion), and a missing
 key fails the tier unconditionally.
 
@@ -639,7 +639,7 @@ carry different per-step language lines; they may not carry different bodies.
 **The oracle is a projection, never a second definition.**
 `steps[].oracle.structural_asserts` is a list of **names** drawn from the one
 spec-level `oracle.structural_asserts`. The generator emits one
-`steps/<name>/tests/static_tiers.sh` per step running that projection.
+`steps/<name>/tests/verify.py` per step running that projection.
 
 - Every step but the last **must** name its subset. Inheriting the full suite
   would grade an intermediate state against the FINAL state's asserts, which
@@ -851,7 +851,7 @@ one fixture whose purpose is to be un-weakenable must not be hand-editable.
 
 `< 1.0` is **necessary but not sufficient**, and the gate enforces the second
 half too: the run must also have produced a *graded artifact* (a tier-0 summary
-in its output). `tests/static_tiers.sh` writes `0.0` for a broken toolchain as
+in its output). The generated verifier writes `0.0` for a broken toolchain as
 well as for a rejected solution — `TF-PLAN FAILED`, `MISSING ARTIFACT`. Counting
 those as proof would make the one un-fakeable check pass vacuously. Observed
 for real (2026-08-20, under the mock-STS mechanism DECISIONS.md Amendment 32
@@ -1036,7 +1036,7 @@ unreachable from the agent phase.
    graded an empty account. So `pre_invoke.sh` writes a **receipt** at
    `/logs/seed-deploy-receipt.json` — deliberately *not* under
    `/logs/pre_invoke/`, which `ScriptRunner` deletes before the agent phase —
-   and the generated `tests/test.sh` refuses to run the static tiers, and
+   and the generated verifier refuses to run the static tiers, and
    writes **no reward file at all**, when `task.toml`'s
    `[verifier].env.SPEC_SEED_DEPLOY_REQUIRED` is `"true"` and that receipt is
    absent or does not say `seed_deployed`. Harbor then raises
@@ -1079,7 +1079,7 @@ so a half-deployed seed is still torn down.
 3. `deploy` set, but `verifier.live_check.gating` is false — **the same
    condition**, reached by omission rather than by decision, since `gating`
    defaults to `false`. Non-gating, `live_check.py`'s `.outcome` never reaches
-   `reward.txt` (`build_test_sh` folds it in only under
+   `reward.txt` (the verifier folds it in only under
    `SPEC_LIVE_CHECK_GATING=true`), so the oracle whose vacuity this deploy
    exists to close cannot change any published number: the account is mutated,
    the money is spent, and the measurement is decorative.
@@ -1109,7 +1109,7 @@ so a half-deployed seed is still torn down.
    now carries real, ambient credentials instead, but the requirement is
    retained regardless, because the credential-free host gates
    (`gates/oracle_falsifiability.py` et al.) run the identical
-   `static_tiers.sh` against `gates/aws_stub.py`, which answers exactly two
+   the generated verifier against `gates/aws_stub.py`, which answers exactly two
    operations and cannot resolve an arbitrary refresh either. Grading is
    unaffected: every `tf_jsonpath` reads `$.planned_values` /
    `$.configuration`, which carry the full desired end state of every
@@ -1123,7 +1123,7 @@ so a half-deployed seed is still torn down.
    `live_check.enabled` one, an unrelated coupling that a brownfield spec with
    the live check off would have silently lost), and an arm-parametrised test
    asserts the flag on the **emitted bytes** of every enabled arm's
-   `tests/static_tiers.sh` and `tests/test.sh`. A validator that reads a spec
+   `tests/verify.py` and `tests/tiers.py`. A validator that reads a spec
    field cannot see what a template emits.
 
 **`aws` is an argv LIST, never a shell string.** The generator emits each token
@@ -1194,7 +1194,7 @@ spec is exempt (its header says so) and does not need taxonomy diversity.
   H2 evidence.
 - `predicted_tier_caught.awscdk` / `.hcl` are **required**, string-typed
   (`"0"`, `"1"`, `"live"` or `"teardown"` — strings, not YAML numbers). `"0"`
-  and `"1"` are the two STATIC tiers a generated `tests/static_tiers.sh` runs; a
+  and `"1"` are the two STATIC tiers the generated verifier runs; a
   catch no static tier can see is `"live"`, or `"teardown"` when not even the
   live check sees it.
 - **`.hcl` means "the Terraform-shaped arms as a group"** — `hcl_raw` and,
@@ -1360,7 +1360,7 @@ references another resource's computed output (an entirely normal,
 arguably more idiomatic Terraform pattern than avoiding it). A Rego rule
 written against it can never fire; this is functionally identical to
 `default allow := true`, and nothing catches it, because tier-1 paths are
-never executed by the generated `tests/static_tiers.sh` (tier-1 is
+never executed as declared paths by the generated verifier (tier-1 is
 Rego/cfn-guard-graded — the path is documentation, not code, until this
 finding's fix). This is exactly why `generator/check_reference_paths.py`
 (`make check-paths SPEC=...`, added by this fix) exists: it resolves
@@ -1460,7 +1460,7 @@ generation/review time instead of shipping silent.
          msg := sprintf("...", [...])
      }
      ```
-     A generated `tests/static_tiers.sh` (`generator/gen.py::build_static_tiers_sh`)
+     A generated `tests/verify.py` (`generator/gen.py::build_verify_config`)
      evaluates `data.cdktn_bench.<pkg>.not_verifiable` after `deny` and,
      whenever it's non-empty, tees the detail to
      `/logs/verifier/tier1-not-verifiable` — mirroring the existing
@@ -1480,7 +1480,7 @@ generation/review time instead of shipping silent.
 **Authoring rule going forward:** never mark a `structural_assert` tier
 `"0"` for an attribute that *can* be plan-time-unknown depending on how a
 correct solution references other resources — tier "0" entries are
-executed directly by the generated `tests/static_tiers.sh` against every
+executed directly by the generated verifier against every
 trial, so a dead tier-0 path doesn't just mis-document a Rego rule, it
 makes the tier itself silently unfalsifiable. Run `make check-paths
 SPEC=specs/<id>.yaml` against a real reference fixture before trusting any
@@ -1572,13 +1572,13 @@ an embedded string is a normal, first-class operation in both, so this is
 a tier-0-evaluator-specific gap, not a Rego/cfn-guard one).
 
 `tier`: `"0"` if checkable directly on the raw synth/plan artifact with no
-extra tool (this is what the generated `static_tiers.sh` runs immediately
+extra tool (this is what the generated verifier runs immediately
 after synth/plan, before invoking cfn-guard/Rego); `"1"` if it's the kind of
 graph/intent check better expressed as Rego/cfn-guard policy (in which case
 this entry is the **spec** for that policy, cross-checked by the
 oracle-equivalence CI — the policy file is still the thing that actually
 runs). Those two are the only legal values: a structural assert is compiled
-into `static_tiers.sh`, so it can only name a tier that script runs. A fact no
+into the verifier, so it can only name a tier it runs. A fact no
 static artifact can carry belongs in the live check instead (§5), declared as a
 `predicted_tier_caught: "live"` catch (§3).
 
@@ -1613,7 +1613,7 @@ the live check, or any other arm.
 
 **The default is the incumbent on purpose.** Every spec written before this
 field existed regenerates byte-identically — no task dir, no `task.toml`, no
-`tests/static_tiers.sh`, no `intent.md` changes by adding the field to the
+the verifier, no `intent.md` changes by adding the field to the
 schema. Selecting `rego` is an explicit, per-scenario opt-in.
 
 #### The two Rego bundles are different files, deliberately
@@ -1621,7 +1621,7 @@ schema. Selecting `rego` is an explicit, per-scenario opt-in.
 `oracles/rego/<id>/policy.rego` and `oracles/rego-cfn/<id>/policy.rego` share a
 language, a `deny` contract, and a package name
 (`cdktn_bench.<scenario_id_with_underscores>` — the generated
-`tests/static_tiers.sh` runs one identical `opa eval` line on every arm). They
+the verifier runs one identical `opa eval` on every arm). They
 do **not** share an `input`:
 
 - TF arms: `input.planned_values.root_module.resources[]`, keyed on the plan
@@ -1668,7 +1668,7 @@ comparison selects `rego`; an awscdk-local check may keep `cfn_guard`.
 #### Failure semantics are identical either way
 
 Both branches emit the same tier-1 status ladder and the same hard-failure
-reward gate (`generator/gen.py::build_static_tiers_sh`): `SKIPPED_NO_ASSERTS`
+reward gate (`generator/gen.py::build_verify_config`): `SKIPPED_NO_ASSERTS`
 (no tier-`"1"` asserts declared — non-gating), `TOOL_MISSING` (the grader is
 absent from the image; writes `/logs/verifier/tier1-unavailable`; **hard
 failure**), `SKIPPED_STUB` (the policy still carries its `GENERATOR-STUB`
@@ -1693,7 +1693,7 @@ Amendment 42, NOT ADOPTED). The compiler and this field stay so
 | `rego` | the same asserts are compiled to `tests/tier0.rego` (`generator/jsonpath_rego.py`) and evaluated by one `opa eval` — the engine tier 1 already runs on all three arms. |
 
 `tests/tier0.rego` is written into a task dir only under `rego`, the one engine
-whose `static_tiers.sh` reads it; a spec that goes back to `jq` has the stale
+whose verifier reads it; a spec that goes back to `jq` has the stale
 policy removed. `make tier0-parity` needs no emitted file — it compiles one
 into its own scratch directory for whichever spec it is grading.
 
@@ -1758,7 +1758,7 @@ execution on `s3-notification-authoritative-singleton`:
   with a message that was factually false about the artifact.
 
 With `hcl_traversal: true`, the `hcl_raw` arm's generated
-`tests/static_tiers.sh` gains one step before `opa eval`: it globs the agent's
+the verifier gains one step before `opa eval`: it globs the agent's
 own `*.tf` and `*.tf.json`, parses each with **`hcl2json` 0.6.9** (pinned +
 sha256-verified in `arms/hcl-raw/environment/Dockerfile`, 4.1 MB, no network at
 trial time), and merges the result into the same plan document under **one
@@ -1837,7 +1837,7 @@ on a *correct* solution, in either direction:
 | the **library** (`-d hcl_traversal.rego`) | **hcl_raw AND terraconstructs** | `oracles/rego/<id>/policy.rego` is ONE file that grades both TF-shaped arms. The moment it says `import data.cdktn_bench.hcl`, every arm loading it needs the file: without it `hcl.slot(...)` is UNDEFINED, the acceptance rule never matches, and the **reference solution is denied**. |
 | the **`_hcl` merge** (`hcl2json` over `*.tf`) | **hcl_raw only** | terraconstructs synthesizes `cdk.tf.json` and has no `.tf` files. Running the merge there globs nothing, writes an **empty** `_hcl`, and trips the policy's own "no `.tf` source was supplied" fail-closed deny — a second false fail from the opposite mistake. |
 
-`generator/gen.py::build_static_tiers_sh` calls these `hcl_lib` and
+`generator/gen.py::hcl_input_mode` calls these `hcl_lib` and
 `hcl_merge`; the terraconstructs branch emits
 `build_hcl_lib_only_block()` (library path + `LIB_MISSING` check, no parse).
 The parse itself is a generated `tests/hcl_merge.py` (`build_hcl_merge_py()`),
@@ -1907,7 +1907,7 @@ an oracle bug charged to the agent.
 > `hcl_traversal: true`. Every other scenario still runs the un-hardened
 > `opa eval | jq -e` gate, so an oracle crash there is still graded as the
 > agent's failure. Promoting the hardening repo-wide changes every scenario's
-> `tests/static_tiers.sh` and belongs in its own change with its own
+> the generated verifier and belongs in its own change with its own
 > regeneration sweep.
 
 #### Scope: `hcl_raw` only, and that is verified rather than assumed
@@ -2127,7 +2127,7 @@ deployed". A second synth + template self-diff is **not** an analogue — CDK
 synth is deterministic, so that check is vacuous by construction and would
 silently hand the awscdk arm a free pass.
 
-`-refresh=false` on the TF arms for the same reason `build_static_tiers_sh`
+`-refresh=false` on the TF arms for the same reason `build_toolchain_steps`
 already uses it on a post-apply working tree: a refreshing plan re-contacts
 AWS, and at the credential-free host gates (`gates/aws_stub.py`, the only
 credential-limited context left since DECISIONS.md Amendment 32) that 403s on
@@ -2244,10 +2244,9 @@ Both `pending_changes` and `not_verifiable` downgrade to 0.0.
 
 **Emission is generation-conditional, not a runtime-gated branch.** Unlike
 `live_check`'s gating (a dead runtime branch every task carries), the idempotence
-block is emitted into `tests/test.sh` **only** for a spec that opts in — because
-`build_test_sh` is otherwise one static template shared by every task, and an
+tier is declared in `tests/verify.py` **only** for a spec that opts in — an
 always-emitted block would move every existing task's bytes. Verified: with
-`idempotence` disabled, every pre-existing task's `tests/test.sh` is byte-identical.
+`idempotence` disabled, every pre-existing task's verifier is byte-identical.
 
 Multi-step composition: the block rides the **final** step's `[steps.verifier] env`
 only. An intermediate step is expected to leave pending changes (the next step is
@@ -2353,7 +2352,7 @@ raw command output in `/logs/verifier/teardown.log`) **whether gating or not**:
 the idempotence block. Destroying first would invalidate both — the live check
 would assert against a deleted account and the idempotence plan would run
 against emptied state. Both tiers share one placeholder line in
-`build_test_sh`'s template, teardown always second.
+`tiers.py::main`, teardown always second.
 
 **`gating: true` is fail-closed and AND-composed**, byte for byte §5.1's
 contract with one more conjunct: final reward is 1.0 iff the static tiers say
@@ -2363,7 +2362,7 @@ contract with one more conjunct: final reward is 1.0 iff the static tiers say
 
 **Emission is generation-conditional, not a runtime-gated branch** — §5.1's
 regression guarantee, verified the same way: with `teardown` disabled, every
-pre-existing task's `tests/test.sh` is byte-identical.
+pre-existing task's verifier is byte-identical.
 
 **A catch may name this tier** — `predicted_tier_caught: "teardown"` (§3) — only
 where the tier is `enabled` AND `gating`, so the mistake it names actually costs
@@ -2429,14 +2428,15 @@ tasks/<scenario-id>/
                 ...                # unmodified except lib/scenario-stack.ts (added/overwritten)
                                     # and bin/app.ts (import + instantiation rewritten once)
         tests/
-            test.sh                # thin wrapper: exec static_tiers.sh; if $SPEC_LIVE_CHECK_ENABLED=true
-                                    # (from this task's own [verifier] env, i.e. verifier.live_check.enabled
-                                    # is true for this spec) and live_check.py exists, also run it
-                                    # (informational only, §5)
-            static_tiers.sh        # generated per arm: build step (awscdk: build_command;
+            test.sh                # shim: harbor executes this path, so it exports the two
+                                    # in-container paths and execs verify.py
+            static_tiers.sh        # shim: `verify.py --static-only`, the static tiers alone —
+                                    # what every hand-authored solve.sh ends with
+            tiers.py               # the verifier's mechanism, byte-identical in every task
+            verify.py              # this task's config: build step (awscdk: build_command;
                                     # terraconstructs: gen.py-injected `npx tsc -p tsconfig.json`)
                                     # -> synth_command ->
-                                    # structural_asserts (tier "0") -> cfn-lint -> cfn-guard
+                                    # structural_asserts (tier "0") -> cfn-guard
                                     # (tier "1"; or opa, per oracle.awscdk_tier1_engine — §4.5)
                                     # -> writes /logs/verifier/reward.txt
             live_check.py           # scaffolded stub iff verifier.live_check.module names it;
@@ -2581,7 +2581,7 @@ if the flat grouping was actually intended.
    hand-authored policy content.
 8. `solution/solve.sh` per arm is hand-authored (like every `aws-bench-datasets`
    solution) to write a **known-good** `entry_file`, then invoke the same
-   `tests/static_tiers.sh` the real trial runs — this is what the build
+   the verifier the real trial runs — this is what the build
    plan's Phase 2 exit criterion ("reference solutions score 1.0 in all
    cells") checks.
 9. A spec declaring `steps` (§2.6) emits §8.3's layout instead of a root
@@ -2608,8 +2608,9 @@ tasks/<scenario_id>/<scenario-id>-<arm>/
     steps/
         01-<slug>/
             instruction.md          # this step's prompt (per arm)
-            tests/                  # this step's oracle: ops.py, tier0.py, static_tiers.sh
-                                     # (that step's assert projection), test.sh,
+            tests/                  # this step's oracle: ops.py, tier0.py, tiers.py,
+                                     # verify.py (that step's assert projection) and the
+                                     # two shims,
                                      # policy.{rego,guard}, live_check.py if live-checked
             pre_invoke/pre_invoke.sh # iff the step declares pre_invoke (never on step 01)
             solution/solve.sh        # reference solution for THIS step (non-final steps only)

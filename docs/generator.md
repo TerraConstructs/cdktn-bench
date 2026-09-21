@@ -28,17 +28,26 @@ for `oracle.hcl_traversal: true` (specs/SCHEMA.md §4.6), on BOTH TF-shaped
 arms: they are graded by the one `oracles/rego/<id>/policy.rego`, so both need
 the library it imports. The `_hcl` MERGE that library reads is emitted for
 `hcl_raw` ONLY — terraconstructs has no `.tf` files — see
-`build_static_tiers_sh`'s `hcl_lib`/`hcl_merge` comment.
+`hcl_input_mode`'s comment in gen.py.
 
-Four generated files under `tests/` are worth naming because a reader meets
+The verifier itself is Python (DECISIONS.md Amendment 44). `tests/test.sh` is
+harbor's entry point and `tests/static_tiers.sh` the one every hand-authored
+`solution/**/solve.sh` ends with, so both survive as shims that export the two
+in-container paths and `exec python3 tests/verify.py` (the second with
+`--static-only`). `tests/tiers.py` is the mechanism, byte-identical in every
+task; `tests/verify.py` is this task's configuration -- the toolchain commands,
+the artifact, the tier-1 engine and policy, and every reason string the live
+tiers can record -- and is the file to read to see what one task grades.
+
+These generated files under `tests/` are worth naming because a reader meets
 them inside a task dir rather than here:
 
     tests/tier0.py       THE tier-0 oracle a reviewer opens: this arm's assert
                          table, one `(name, jq filter, op, expected)` tuple per
                          applicable tier-"0" structural_assert with the declared
-                         JSONPath in a comment above it. `static_tiers.sh` runs
-                         it as `python3 "$DIR/tier0.py" "$ARTIFACT"` and reads
-                         its exit status as the whole tier-0 verdict.
+                         JSONPath in a comment above it. tiers.py runs it as
+                         `python3 tier0.py <artifact>` and reads its exit
+                         status as the whole tier-0 verdict.
     tests/ops.py         the op table (specs/SCHEMA.md §4.2) and the
                          three-valued outcome, stdlib only, driving `jq` as a
                          subprocess. Byte-identical in every arm's tests/ and in
@@ -53,25 +62,27 @@ them inside a task dir rather than here:
     tests/tier0.rego     the tier-0 structural asserts compiled to Rego
                          (generator/jsonpath_rego.py). Written only for a spec
                          whose `oracle.tier0_engine` is `rego`, the one engine
-                         whose static_tiers.sh reads it (specs/SCHEMA.md
+                         whose verifier reads it (specs/SCHEMA.md
                          §4.5.1). No spec selects it, so no task dir carries
                          one; `make tier0-parity` compiles its own.
     tests/hcl_merge.py   the `.tf`/`.tf.json` -> JSON pre-parse, `hcl_raw` arm
                          of an `oracle.hcl_traversal` spec only. Invoked as
-                         `python3 "$DIR/hcl_merge.py" "$ARTIFACT" "$HCL_MERGED"`;
+                         `python3 hcl_merge.py <artifact> <merged>`;
                          a missing file is the fail-closed `LIB_MISSING` status,
-                         never a verdict. It was a heredoc inside
-                         static_tiers.sh until DECISIONS.md Amendment 42, and
+                         never a verdict. It was a heredoc inside the emitted
+                         shell until DECISIONS.md Amendment 42, and
                          `generator/tests/test_hcl_merge.py` pins both the
                          emitted bytes and the invocation.
 
-### Live verifier tiers in `tests/test.sh`
+### Live verifier tiers in `tests/verify.py`
 
-Two optional live tiers are emitted into `tests/test.sh`, both
-GENERATION-conditional: a spec that does not opt in generates byte-identically
-to before either tier existed, because `build_test_sh` is otherwise one static
-template shared by every task. They share ONE placeholder line in that template,
-so opting into neither adds no blank line.
+Two optional live tiers are declared in `tests/verify.py`, both
+GENERATION-conditional: a spec that does not opt in declares the tier as `None`
+and nothing can arm one at runtime. They are two configurations of ONE shared
+mechanism (`tiers.py::live_tier`), so neither can grow a branch the other lacks:
+probe that there is anything to ask about, run the arm's command, classify its
+exit code against that tier's own branches, record the verdict, and fold a
+non-positive outcome into the reward only under that tier's gating switch.
 
 | tier | spec key | env flags | outcomes | result file |
 |---|---|---|---|---|

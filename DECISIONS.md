@@ -8333,3 +8333,74 @@ Both hashes are the release's own `sha256sum.txt`, confirmed against the
 downloaded assets. `jq` leaves each image's `apt-get install` line, so
 `/usr/local/bin/jq` is the only one on PATH. The equipping hash moves for all
 three arms; `docs/gates.md` states the matching host requirement.
+
+## Amendment 44 — the verifier is Python; `static_tiers.sh` and `test.sh` are shims — DRAFT
+
+The per-task verifier was ~340 lines of generated bash per arm
+(`tests/test.sh` + `tests/static_tiers.sh`), the largest surface in
+`docs/design/shell-inventory.md`'s class 2. It is now Python:
+
+* `tests/tiers.py` — the mechanism, byte-identical in every task the way
+  `ops.py` is: the toolchain runner, the preflight and its VOID, tier 0, the
+  HCL pre-parse, tier 1 and every status, the summary line, the reward gate,
+  the seed-receipt guard, the live check, and one shared `live_tier` the
+  idempotence and teardown tiers are both configurations of.
+* `tests/verify.py` — this task's configuration and one call into `tiers`: the
+  toolchain commands, the artifact, the tier-1 engine/policy/query and every
+  literal reason string a live tier can record. Every per-spec, per-arm and
+  per-step difference is here, so the mechanism has no branches on identity.
+
+**Both `.sh` files stay, as shims, and neither is decoration.** Harbor executes
+`tests/test.sh` itself (`harbor/verifier/verifier.py` chmod +x's the path and
+hands it to `environment.exec`), and every hand-authored `solution/**/solve.sh`
+ends with `bash tests/static_tiers.sh`. The shims carry the in-container paths
+as exports, because `gates/oracle_falsifiability.py` and
+`generator/check_reference_paths.py` repoint the whole chain by text-patching
+that one file; an `oracle.hcl_traversal` spec's shim declares `HCL_MERGED` for
+the same reason (a fixture reads that path back out of it). A `python3`-less
+image is decided in the shim, which writes the same `tier0-unavailable` marker
+and the same 0.0 the bash verifier wrote rather than voiding on a different
+channel. The transcript is what it cannot reproduce: with no interpreter the
+toolchain, tier-1 and summary lines never print, and `gates/emit_result.py`
+reads a missing summary line as `tier1_status=null`.
+
+**Contracts preserved, because they are read downstream, not by humans:** the
+`== summary: tier0_pass=N tier1_status=X ==` line and every status string in
+it (`PASS`, `FAIL`, `TOOL_MISSING`, `SKIPPED_STUB`, `SKIPPED_NO_ASSERTS`,
+`ENGINE_ERROR`); the per-assert `PASS [name]` / `FAIL [name]` lines; the
+`<LABEL> FAILED` and `MISSING ARTIFACT` lines; `/logs/verifier/reward.txt` as a
+bare float; every marker file with its own bytes (`aws-unavailable`(`.json`),
+`tier0-unavailable`, `tier0-engine-error`, `tier1-unavailable`,
+`tier1-unauthored`, `tier1-engine-error`, `tier1-not-verifiable`,
+`seed-deploy-missing.json`, `oracle-input.json`, `idempotence-result.json`,
+`teardown-result.json`); and every VOID — unreachable AWS,
+an un-authored oracle, a stub live check, a live check AWS never answered, an
+unproven seed receipt — still removing the reward file instead of writing 0.0.
+
+**Parity, measured.** `gates/verifier_parity.py` records per fixture the reward
+bytes, the `/logs/verifier` file set with each one's digest and the stdout lines
+the gates parse, then compares two recordings: 88 fixtures, three specs, all
+three arms, no divergence. Two surfaces are normalised there and nowhere else —
+the per-run sandbox path, which jq quotes back in a message, and
+`oracle-input.json`, compared by presence because the plan it is built from
+carries a `timestamp` and reorders its `references` arrays (its bytes are gated
+by `gates/hcl_merge_bytes.py`). A fail-closed
+matrix runs both verifiers over the same sandbox per fault — a missing tool,
+policy or artifact, a failing preflight, an aborting `opa`, a live check that
+crashes or that AWS never answered, a bad seed receipt, a failing plan or
+destroy: 27 of 28 identical, the 28th the `python3`-missing transcript.
+
+**Two things the shape change moved.** The HCL pre-parser globs `*.tf` in its
+own cwd, which the bash verifier gave it by `cd`-ing to the project, so
+`tiers.py` passes that cwd explicitly: from anywhere else it merges nothing,
+exits 0 and hands the policy an empty `_hcl` — the one failure here that would
+be silent rather than a status. And the `repository-not-emptied-on-delete`
+fixtures, which earn their live-only marker by proving no static tier reads
+`force_delete`, grep `tier0.py`, `policy.rego`, `verify.py` and `tiers.py`;
+`static_tiers.sh`, which they grepped before, now declares nothing.
+
+**Promotion.** One live trial per verifier shape, with identical rewards and
+marker sets: static read-only (`ecs-swappiness`), live-plus-teardown
+(`ecr-repo-destroy-force-delete`), brownfield with the seed guard and the
+idempotence tier (`named-resource-replacement`), multi-step
+(`apigw-redeploy`).

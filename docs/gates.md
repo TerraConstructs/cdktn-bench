@@ -31,7 +31,7 @@ hold.
 `running_stub()` starts the script as a subprocess once per gate invocation,
 waits for its `PORT=<n>` announcement, and yields the environment dict every
 toolchain subprocess (`terraform plan`, `cdktn synth`, and the generated
-`tests/static_tiers.sh`'s own `aws sts get-caller-identity` preflight) must run
+the generated verifier's own `aws sts get-caller-identity` preflight) must run
 under. The dict is a full copy of the gate's own `os.environ` with every
 inherited `AWS_*` variable dropped and the stub's endpoint plus fixed dummy
 credentials set.
@@ -77,7 +77,7 @@ Which verdict a `solution/broken/<catch>/` fixture must produce depends on the
 catch's `predicted_tier_caught` for the arm:
 
 * **"0" / "1"** — reward 0.0, AND `observed_tier()` (parsed from the run's own
-  static_tiers.sh stdout) must equal the predicted tier. Reward 0.0 alone only
+  verifier stdout) must equal the predicted tier. Reward 0.0 alone only
   proves something caught the violation, never that it was caught at the tier
   the spec records, and the per-catch tier-attribution table depends on that
   tier being right.
@@ -325,15 +325,15 @@ synthesized/planned artifact — produced by running the arm's real toolchain
 against a hand-authored, oracle-correct reference fixture — rather than against
 the spec author's mental model of what the artifact looks like.
 
-Tier-1 entries are never executed by the generated `tests/static_tiers.sh`
-(tier 1 is Rego/cfn-guard-graded), so a broken `tf_jsonpath` there is inert
+Tier-1 entries are never executed as declared paths by the generated verifier
+ (tier 1 is Rego/cfn-guard-graded), so a broken `tf_jsonpath` there is inert
 documentation that nothing else would ever catch. `.planned_values...
 aws_iam_role_policy...values.policy` resolves to NOTHING at plan time whenever
 the policy's Resource references a provider-computed attribute; an `op: in`
 against zero resolved nodes is False, so this gate turns that into a real
 assert failure. See specs/SCHEMA.md §4.2 on `tf_jsonpath`/`cfn_jsonpath`.
 
-Paths resolve through the SAME mechanism the generated `static_tiers.sh` uses
+Paths resolve through the SAME mechanism the generated verifier uses
 for tier 0 — `generator/jsonpath_jq.py`'s jq compilation plus the task's own
 generated `tests/ops.py` — not a second, host-side evaluator.
 `oracles/lib/structural.py` uses `jsonpath_ng`, which cannot parse the `||`-OR'd
@@ -346,9 +346,9 @@ artifact", which is a property of the shared grammar and not of either
 backend. Whether two graders reach the SAME outcome on an artifact is a
 different question, answered by `make tier0-parity` (below) and by
 `oracles/tests/test_op_parity.py`. The gate stages a `tests/tier0.rego` beside
-the driver when the task ships one, because a `rego`-engine spec's
-`static_tiers.sh` — which this gate runs for real to produce the artifact —
-aborts its `opa eval` without it. No spec ships one today.
+the driver when the task ships one, because a `rego`-engine spec's verifier —
+which this gate runs for real to produce the artifact — aborts its `opa eval`
+without it. No spec ships one today.
 
 ### Fixtures
 
@@ -406,7 +406,7 @@ prove "these three configurations satisfy the same declared facts", never
 
 AWS access: `main()` starts one `gates/aws_stub.py::running_stub()` per
 invocation and threads its env into every toolchain subprocess. The generated
-`static_tiers.sh` this drives preflights `aws sts get-caller-identity` on both
+verifier this drives preflights `aws sts get-caller-identity` on both
 Terraform-shaped arms and voids the run without it; the stub answers that
 preflight, so the check needs no ambient credentials and can never reach a real
 account.
@@ -470,7 +470,7 @@ authored yet".
 the byte gate on the lifted HCL pre-parser
 (DECISIONS.md Amendment 42). The Python that merges an arm's parsed `.tf`
 documents into the plan JSON is now a generated `tests/hcl_merge.py` rather
-than a heredoc inside `tests/static_tiers.sh`, and the lift is only safe if the
+than a heredoc inside the emitted shell, and the lift is only safe if the
 document it writes to `/logs/verifier/oracle-input.json` — the real tier-1
 input for an `oracle.hcl_traversal` spec — is unchanged. So the gate runs a
 baseline copy of the program taken from a git revision
@@ -487,3 +487,35 @@ without it the gate collects its own through `gates/artifact_collector.py`.
 `0` = every fixture's document is identical. `1` = a difference, a baseline run
 that failed, or nothing comparable. Not wired into `make ci`: it is a gate on a
 one-time lift, run when the pre-parser or its invocation changes.
+
+## verifier-parity
+
+`gates/verifier_parity.py` — `uv run python gates/verifier_parity.py <spec>…
+--out FILE.json [--baseline HEAD.json]`. **On demand, NOT in `make ci`**: it
+answers one question, asked when the verifier itself changes (DECISIONS.md
+Amendment 44, the Python verifier), and it costs a full fixture collection.
+
+The verifier's output is a CONTRACT, not a log. `gates/emit_result.py` reads the
+per-assert `PASS [name]` lines, the summary line's `tier1_status=` and the
+`/logs/verifier/*` markers; `gates/oracle_falsifiability.py` reads the summary
+line and the `<LABEL> FAILED` lines; harbor reads `reward.txt`. So the gate runs
+every fixture of every arm through `oracle_falsifiability._run_solve` and
+records exactly those three surfaces — the reward bytes, the set of files under
+the run's logs dir with each one's digest, and the stdout lines the gates parse
+— then compares two recordings and names every divergence. Toolchain chatter is
+deliberately not compared: it is the arm's own output, identical by construction
+because the same command runs.
+
+Two surfaces are normalised, or a recording would diverge from itself: the
+sandbox path, which is per-run and which jq quotes back inside an
+unresolvable-assert message, and `oracle-input.json`, compared by presence
+rather than digest because the plan document it is built from carries a
+`timestamp` and reorders its `references` arrays. That document's own bytes are
+gated per fixture by `gates/hcl_merge_bytes.py` instead.
+
+It covers the STATIC half, which is what a fixture's `solve.sh` reaches
+(`bash tests/static_tiers.sh`). The live, idempotence and teardown tiers are
+covered instead by the sandboxed whole-verifier executions in
+`generator/tests/test_seed_deploy.py` and `generator/tests/test_teardown_tier.py`
+(`generator/tests/verifier_harness.py` stages one task's real emitted verifier
+and runs it against stub binaries).
