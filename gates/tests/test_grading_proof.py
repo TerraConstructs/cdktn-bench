@@ -1,7 +1,7 @@
 """Unit coverage for `gates/grading_proof.py`'s two proof selectors.
 
 `auto_select_negative` picks, per arm, the `solution/broken/<name>/solve.sh`
-fixture whose run proves the arm's tier-1 Rego/cfn-guard chain is wired for
+fixture whose run proves the arm's tier-1 Rego chain is wired for
 real; `live_tier_proof` picks the live-tier proof a scenario graded at the live
 tier offers instead. Both must select on what a run was OBSERVED to do -- a
 spec-wide or predicted-tier selector silently yields nothing for a scenario
@@ -43,7 +43,7 @@ class TestAutoSelectNegativeTierSelection:
     """A fixture only counts as a grading-proof negative when it was
     OBSERVED (not merely predicted) to be caught at tier "1" -- a fixture
     caught earlier, at tier "0" (either a toolchain/build failure, or a
-    failed tier-0 structural assert), never reaches the Rego/cfn-guard
+    failed tier-0 structural assert), never reaches the Rego
     chain this gate exists to prove, so it must not be selected."""
 
     def test_skips_tier0_toolchain_failure_picks_tier1(self):

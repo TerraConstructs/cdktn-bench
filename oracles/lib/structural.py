@@ -13,7 +13,7 @@ extension, `jsonpath_ng.ext`) and applies `op`.
 
 Tier-"1" asserts are deliberately **not** evaluated here — per SCHEMA §4.2,
 those are the *spec* for the hand-authored `oracles/rego/<id>/policy.rego`
-and `oracles/cfn-guard/<id>/policy.guard` files, not something this
+and `oracles/rego-cfn/<id>/policy.rego` files, not something this
 JSONPath-based evaluator runs directly. Concretely: some tier-"1" paths in
 `specs/_toy/toy-ssm-parameter.yaml` (e.g. the `||`-combined
 `AWS::IAM::Policy' || @.Type=='AWS::IAM::Role`) filter) use syntax

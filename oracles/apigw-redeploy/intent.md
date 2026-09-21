@@ -1,6 +1,6 @@
 # Oracle intent: API Gateway REST API: deploy, confirm, modify, re-deploy (day-2 iteration)
 
-`apigw-redeploy` — generated verbatim from `specs/apigw-redeploy.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/apigw-redeploy/policy.rego` and `../cfn-guard/apigw-redeploy/policy.guard` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
+`apigw-redeploy` — generated verbatim from `specs/apigw-redeploy.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/apigw-redeploy/policy.rego` and `../rego-cfn/apigw-redeploy/policy.rego` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
 
 **Do not hand-edit this file.** It is regenerated from the spec on every `emit_oracles` call; edit `oracle.intent` in `specs/apigw-redeploy.yaml` instead.
 

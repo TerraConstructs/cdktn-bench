@@ -673,7 +673,7 @@ oracle:
        `solution/broken/seed-unchanged/`, which exists precisely to keep proving
        that.
 
-    2. TIER 1 (Rego / cfn-guard, every arm). The group's 443 ingress stays
+    2. TIER 1 (Rego, every arm). The group's 443 ingress stays
        scoped to the VPC CIDR — no 0.0.0.0/0. A policy-family fact rather than a
        tier-0 assert because "no rule anywhere in this group may be open to the
        world" is a quantified statement over a collection, which is what the
@@ -693,6 +693,8 @@ oracle:
     What is deliberately NOT graded: how many resources each arm's expansion
     produced, and whether the group is expressed as an L2 or as raw HCL. The
     arms are compared on the declared behavioural facts only.
+
+  awscdk_tier1_engine: rego
 
   structural_asserts:
     - name: security-group-uses-the-new-team-prefixed-name

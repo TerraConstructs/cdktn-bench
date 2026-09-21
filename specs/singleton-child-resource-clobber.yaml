@@ -707,7 +707,7 @@ oracle:
        agent that changed nothing would score 1.0. See
        `solution/broken/seed-unchanged/`, which exists to keep proving that.
 
-    2. TIER 1 (Rego / cfn-guard, every arm). No rule in the document may be
+    2. TIER 1 (Rego, every arm). No rule in the document may be
        left un-enabled. A quantified statement over a collection, not a pinned
        value.
 
@@ -728,6 +728,14 @@ oracle:
     construct or raw HCL; the id the agent gives its NEW rule (only the
     existing rule's id is pinned, because that one is not the agent's to
     rename); and anything about the bucket beyond its identity.
+
+  # ROADMAP.md M8: OPA/Rego grades tier 1 on every arm, so equal strictness
+  # across arms (DECISIONS.md Amendment 29 §4 — binding) is a property of one
+  # policy language rather than a claim about two. The awscdk bundle is
+  # oracles/rego-cfn/singleton-child-resource-clobber/policy.rego; it states
+  # the same fact at the same strictness as the retired cfn-guard policy, and
+  # no fixture's verdict changed.
+  awscdk_tier1_engine: rego
 
   structural_asserts:
     - name: exports-objects-transition-to-glacier-instant-retrieval

@@ -6,7 +6,7 @@ alike -- resolve its declared path and op/expected against a REAL
 synthesized/planned artifact, produced by running the arm's real toolchain
 against a hand-authored, oracle-CORRECT reference fixture. Tier-1 paths are
 never executed by the generated tests/static_tiers.sh (tier 1 is
-Rego/cfn-guard-graded), so without this a broken `tf_jsonpath` there is inert
+Rego-graded), so without this a broken `tf_jsonpath` there is inert
 documentation, wrong in a way nothing would ever catch.
 
 Exit 0 iff every declared structural_assert resolves and passes against its

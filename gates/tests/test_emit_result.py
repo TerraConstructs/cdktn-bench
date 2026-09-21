@@ -651,8 +651,8 @@ class TestTierEvidence:
         "  PASS [taskdef-exists]\n"
         "  FAIL [swappiness-value-correct]: op=eq expected=42 resolved=[41]\n"
         "\n"
-        "== tier-1: cfn-guard ==\n"
-        "# tier-1 (Rego/cfn-guard-graded) structural_asserts for this arm: (none)\n"
+        "== tier-1: OPA/Rego ==\n"
+        "# tier-1 (Rego-graded) structural_asserts for this arm: (none)\n"
         "\n"
         "== summary: tier0_pass=0 tier1_status=SKIPPED_NO_ASSERTS ==\n"
     )

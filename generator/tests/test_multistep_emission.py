@@ -303,7 +303,7 @@ def test_step_one_oracle_leaks_nothing_about_step_two(spec: Spec) -> None:
     # policy.{rego,guard} are the shared, spec-level tier-1 bundles -- they
     # describe deployment/depends_on coverage generically and are byte-copied
     # into every step, so they are excluded from this particular read.
-    exempt = {"policy.rego", "policy.guard"}
+    exempt = {"policy.rego"}
     for arm in ARMS:
         tests = task_dir(spec, arm) / "steps" / first.name / "tests"
         for path in sorted(tests.rglob("*")):

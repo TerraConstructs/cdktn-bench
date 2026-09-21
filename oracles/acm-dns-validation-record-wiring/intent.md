@@ -1,6 +1,6 @@
 # Oracle intent: Public certificate for the storefront domain and its www alias
 
-`acm-dns-validation-record-wiring` — generated verbatim from `specs/acm-dns-validation-record-wiring.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/acm-dns-validation-record-wiring/policy.rego` and `../cfn-guard/acm-dns-validation-record-wiring/policy.guard` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
+`acm-dns-validation-record-wiring` — generated verbatim from `specs/acm-dns-validation-record-wiring.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/acm-dns-validation-record-wiring/policy.rego` and `../rego-cfn/acm-dns-validation-record-wiring/policy.rego` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
 
 **Do not hand-edit this file.** It is regenerated from the spec on every `emit_oracles` call; edit `oracle.intent` in `specs/acm-dns-validation-record-wiring.yaml` instead.
 

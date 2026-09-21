@@ -1,6 +1,6 @@
 # Oracle intent: Document archive bucket with versioning, KMS encryption, TLS-only access and no public access
 
-`s3-bucket-hardening-decomposition` — generated verbatim from `specs/s3-bucket-hardening-decomposition.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/s3-bucket-hardening-decomposition/policy.rego` and `../cfn-guard/s3-bucket-hardening-decomposition/policy.guard` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
+`s3-bucket-hardening-decomposition` — generated verbatim from `specs/s3-bucket-hardening-decomposition.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/s3-bucket-hardening-decomposition/policy.rego` and `../rego-cfn/s3-bucket-hardening-decomposition/policy.rego` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
 
 **Do not hand-edit this file.** It is regenerated from the spec on every `emit_oracles` call; edit `oracle.intent` in `specs/s3-bucket-hardening-decomposition.yaml` instead.
 

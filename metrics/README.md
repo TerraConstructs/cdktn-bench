@@ -226,7 +226,7 @@ failed (`reward < 1.0`) valid rows' `tier_evidence`:
   `generator/tier0_py.py`'s emitted `tests/ops.py::report()` is the
   producer).
 - Tier-`"1"` rows are a **single bundled verdict** per scenario/arm — the
-  oracle itself only ever computes one `opa eval`/`cfn-guard validate`
+  oracle itself only ever computes one `opa eval`
   result covering every tier-1 catch at once (verified against
   `generator/gen.py`'s tier1 blocks: the individual tier-1 assert names
   are compiled into a bash `#`-comment for human readability, never

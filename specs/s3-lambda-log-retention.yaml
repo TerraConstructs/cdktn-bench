@@ -268,6 +268,14 @@ oracle:
     TWO AWS::Lambda::Function resources, not one. Reworded to state only
     what is actually graded and actually true across every arm.
 
+  # ROADMAP.md M8: OPA/Rego grades tier 1 on every arm, so equal strictness
+  # across arms (DECISIONS.md Amendment 29 §4 — binding) is a property of one
+  # policy language rather than a claim about two. The SourceArn check is a
+  # cross-resource logical-id join; cfn-guard could only ask whether SourceArn
+  # was SOME Fn::GetAtt, so oracles/rego-cfn/s3-lambda-log-retention/policy.rego
+  # closes that documented gap. No fixture verdict changed.
+  awscdk_tier1_engine: rego
+
   structural_asserts:
     - name: s3-bucket-exists
       description: "An S3 bucket exists."

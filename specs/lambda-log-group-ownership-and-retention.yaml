@@ -605,6 +605,13 @@ oracle:
     and the resource itself is a `Custom::LogRetention` Lambda-backed
     custom resource rather than a plain, template-visible log group.
 
+  # awscdk tier-1 engine (SCHEMA.md 4.5): Rego, so this fact is graded at one
+  # strictness on all three arms. cfn-guard has no string-concatenation
+  # operator and could only check the /aws/lambda/ prefix, never this
+  # function's own name as the suffix; Rego checks the exact name the TF arms
+  # have always required. Amendment 29 4 makes that parity binding.
+  awscdk_tier1_engine: rego
+
   structural_asserts:
     - name: log-group-exists
       description: "A CloudWatch Logs log group exists."
@@ -717,19 +724,18 @@ oracle:
       description: >
         (awscdk only -- see -tf for the TF-shaped arms.) The declared log
         group actually governs this function's logs: EITHER its
-        `LogGroupName` matches the `^/aws/lambda/` prefix (the weaker,
-        precision-limited form of the convention-name check on this arm --
-        see this file's header comment, "RESIDUAL, NARROWER
-        TOOL-CAPABILITY GAP", for why cfn-guard cannot verify the exact
-        suffix match without a string-concatenation operator it does not
-        have), OR the function's own `Properties.LoggingConfig.LogGroup`
-        exists (a Ref/GetAtt/literal wiring the function to a log group
-        this template declares -- fully precise, no capability gap, since
-        this is a structural existence check, not a value comparison).
-        Verified directly against cfn-guard 3.2.0 with hand-built
-        fixtures before this file was written: wired-only PASS,
-        literal-convention-name-only PASS, neither PASS-condition met
-        (unrelated name, no wiring) FAIL, no log group at all FAIL.
+        `LogGroupName` is EXACTLY `/aws/lambda/` followed by this
+        function's own name -- as a literal, or as the `Fn::Join`/`Fn::Sub`
+        intrinsic CDK renders when the name is interpolated off the
+        function itself, both of which name the function's logical id --
+        OR the function's own `Properties.LoggingConfig.LogGroup`
+        references a log group THIS template declares, by logical id or by
+        that group's own name (explicit wiring accepts a log group of any
+        name, since the wiring is what makes Lambda write to it). Same two
+        mechanisms and same exact-match strictness as the `-tf` twin. This
+        `cfn_jsonpath` documents only the convention-name side; the real
+        both-disjuncts check is
+        oracles/rego-cfn/lambda-log-group-ownership-and-retention/policy.rego.
       tier: "1"
       applies_to: [awscdk]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Logs::LogGroup')].Properties.LogGroupName"

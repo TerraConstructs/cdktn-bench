@@ -290,7 +290,7 @@ def _run_solve(
     'workspace'/'app' prefix: `workspace/` for awscdk/hcl_raw, `app/` for
     terraconstructs) into the SANDBOX ROOT, run `solve_sh` there with cwd=that
     scratch dir, and read back /logs/verifier/reward.txt. Runs entirely on the
-    host using whatever toolchain is on PATH (terraform/cfn-guard/opa/node/npm).
+    host using whatever toolchain is on PATH (terraform/opa/node/npm).
 
     The flattening is load-bearing, and shared with
     generator/check_reference_paths.py::_prepare_project. The generated
@@ -598,7 +598,7 @@ def check_arm(spec: Spec, arm: Arm, env: dict[str, str] | None = None) -> list[R
     # idiomatic shape is caught too (aws_iam_policy +
     # aws_iam_role_policy_attachment on the TF arms, inlinePolicies on awscdk),
     # not just the ONE shape a catch name covers. Each is required to score 0.0
-    # the same way, so re-narrowing the rego/cfn-guard bundle turns this red.
+    # the same way, so re-narrowing the Rego bundle turns this red.
     broken_dir = task / "solution" / "broken"
     if broken_dir.is_dir():
         for extra_dir in sorted(broken_dir.iterdir()):

@@ -1,7 +1,7 @@
 # ci
 
 Oracle-equivalence CI (build plan Phase 1 / §3 of the pre-registration): runs both
-oracle tiers (`../oracles/rego`, `../oracles/cfn-guard`) against all three arms'
+oracle tiers (`../oracles/rego`, `../oracles/rego-cfn`) against all three arms'
 reference solutions on every commit.
 
 **What this actually proves today (2026-08-06, corrected -- the previous version
@@ -44,7 +44,7 @@ also independently trip the SIX-key-alternation `no_jsonpath_mode_keys` rule
 at the same time (their raw JSONPath literal is ALSO a banned key's value),
 so silently gutting `no_raw_jsonpath_string_literal` alone changed no
 `falsifiability`/`grading-proof` verdict -- confirmed by hand (replacing its
-cfn-guard condition with an always-true regex left every existing fixture's
+tier-1 condition with an always-true regex left every existing fixture's
 PASS/FAIL bit-identical). Fixed by adding
 `solution/broken/raw-jsonpath-literal-value-only/` (an extra, non-catch-named
 fixture, same convention as the escape-hatch fixture) on BOTH arms: a raw
@@ -107,5 +107,5 @@ must stay a byte-copy of `../arms/awscdk/environment/` — that `make check` (an
 therefore `make ci`) runs on every invocation, independent of any per-spec loop.
 
 `../.github/workflows/ci.yml` runs both `make check` (a docker-free `policy-only` job)
-and `make ci` (a `full-ci` job with docker + the pinned terraform/opa/cfn-guard
+and `make ci` (a `full-ci` job with docker + the pinned terraform/opa
 toolchain) on every push/PR.

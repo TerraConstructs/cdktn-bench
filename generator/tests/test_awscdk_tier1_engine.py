@@ -1,17 +1,18 @@
-"""`oracle.awscdk_tier1_engine` — the M8 tier-1 engine selector (SCHEMA.md §4.5).
+"""`oracle.awscdk_tier1_engine` — the tier-1 engine selector (SCHEMA.md §4.5).
 
-Two things need proving, and they pull in opposite directions:
+OPA/Rego grades tier 1 on every arm, awscdk included (ROADMAP.md M8), so
+`rego` is the field's only value and its default. These tests pin the three
+things a future edit could silently undo:
 
-  1. **Nothing changes by default.** The field exists, but every spec written
-     before it did must regenerate byte-identically. `make gen-all` proves that
-     over the whole tree; these tests pin it at the two emission sites that
-     could drift silently (the tier-1 shell block and `task.toml`'s
-     verification_explanation), so a future edit to either one fails here
-     rather than in a whole-tree diff nobody re-runs.
-  2. **Selecting `rego` really does swap the engine** — and swaps it to the
-     *same* block the TF arms already run, not to a lookalike. The strongest
-     form of "no failure semantics were weakened" is byte-equality with the
-     block that already carries them, so that is what is asserted.
+  1. The retired `cfn_guard` value is REJECTED at spec load, with a message
+     naming M8 — not silently accepted, and not rejected with a bare
+     "Input should be 'rego'" a reader cannot act on.
+  2. The awscdk tier-1 block is byte-identical to the TF arms', so the two
+     arms cannot drift to different strictness — DECISIONS.md Amendment 29's
+     binding rule that arms are graded at equal strictness.
+  3. Every shipped spec that declares a tier-"1" awscdk assert has a
+     hand-authored `oracles/rego-cfn/<id>/policy.rego` — not a stub, which
+     the verifier reports as SKIPPED_STUB and scores as a hard failure.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from pathlib import Path
 import gen
 import pytest
 import yaml
+from spec_model import Oracle
 
 from oracles.emit import emit_oracles
 
@@ -30,6 +32,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 # A real, shipped spec with a tier-"1" assert that applies to awscdk -- so
 # HAS_TIER1_ASSERTS is true and every status branch is actually reachable.
 SPEC_PATH = REPO_ROOT / "specs" / "ecs-swappiness.yaml"
+
+
+def shipped_specs() -> list[Path]:
+    """Every scenario spec. `split.yaml` is the generated train/holdout
+    assignment table living in the same directory, not a scenario."""
+    return [
+        p for p in sorted((REPO_ROOT / "specs").glob("*.yaml"))
+        if p.name != "split.yaml"
+    ]
 
 
 def _tier1(spec, arm: str) -> dict:
@@ -43,42 +54,34 @@ def spec():
     return gen.load_spec(SPEC_PATH)
 
 
-@pytest.fixture
-def spec_rego(spec):
-    flipped = spec.model_copy(deep=True)
-    object.__setattr__(flipped.oracle, "awscdk_tier1_engine", "rego")
-    return flipped
+class TestRegoIsTheOnlyEngine:
+    def test_field_defaults_to_rego(self):
+        assert Oracle(intent="x", structural_asserts=[]).awscdk_tier1_engine == "rego"
+
+    def test_cfn_guard_is_rejected_with_a_message_naming_the_reason(self):
+        with pytest.raises(ValueError) as excinfo:
+            Oracle(
+                intent="x", structural_asserts=[], awscdk_tier1_engine="cfn_guard"
+            )
+        message = str(excinfo.value)
+        assert "retired" in message
+        assert "ROADMAP.md M8" in message
+        assert "oracles/rego-cfn" in message
+
+    def test_every_shipped_spec_selects_rego(self):
+        for path in shipped_specs():
+            assert gen.load_spec(path).oracle.awscdk_tier1_engine == "rego", path.name
 
 
-class TestDefaultIsTheIncumbent:
-    def test_field_defaults_to_cfn_guard(self, spec):
-        assert spec.oracle.awscdk_tier1_engine == "cfn_guard"
+class TestOneEngineOnEveryArm:
+    def test_awscdk_tier1_block_is_byte_identical_to_the_tf_arms(self, spec):
+        """One engine, one identity domain, parity by construction. If these
+        two blocks ever diverge, awscdk is being graded at a different
+        strictness than hcl_raw again."""
+        assert _tier1(spec, "awscdk") == _tier1(spec, "hcl_raw")
 
-    def test_default_awscdk_tier1_still_runs_cfn_guard(self, spec):
+    def test_awscdk_tier1_block_preserves_every_failure_semantic(self, spec):
         tier1 = _tier1(spec, "awscdk")
-        assert tier1["engine"] == "cfn_guard"
-        assert tier1["header"] == "cfn-guard"
-        assert tier1["policy"] == "policy.guard"
-        assert tier1["query"] is None, "a cfn-guard arm declares no Rego query"
-
-    def test_default_task_toml_explanation_names_cfn_guard(self, spec):
-        chain = gen.verification_explanation(spec, "awscdk")
-        assert "tier-1 cfn-guard (oracles/cfn-guard/ecs-swappiness/policy.guard" in chain
-
-
-class TestRegoSelectionSwapsTheEngine:
-    def test_awscdk_rego_block_is_byte_identical_to_the_tf_arms(self, spec, spec_rego):
-        """The point of M8: one engine, one identity domain, parity by
-        construction. If these two blocks ever diverge, awscdk is being graded
-        at a different strictness than hcl_raw again -- the exact thing
-        DECISIONS.md Amendment 29 §4 forbids."""
-        assert _tier1(spec_rego, "awscdk") == _tier1(spec, "hcl_raw")
-
-    def test_awscdk_rego_block_preserves_every_failure_semantic(self, spec_rego):
-        """Every status the mechanism can report is one shared library's, so
-        selecting an engine cannot weaken any of them -- and the engine the
-        selector picked really is opa."""
-        tier1 = _tier1(spec_rego, "awscdk")
         assert tier1["engine"] == "opa"
         assert tier1["policy"] == "policy.rego"
         assert tier1["has_asserts"] is True
@@ -92,32 +95,25 @@ class TestRegoSelectionSwapsTheEngine:
         for marker in ("tier1-unavailable", "tier1-unauthored"):
             assert marker in gen.TIERS_PY
 
-    def test_hard_failure_reward_gate_is_untouched(self, spec, spec_rego):
-        """The same three statuses cost the reward on both engines, so a rego
-        scenario cannot silently score a TOOL_MISSING/SKIPPED_STUB run as a
-        pass."""
-        for candidate in (spec, spec_rego):
-            assert _tier1(candidate, "awscdk")["bad_statuses"] == [
-                "FAIL", "TOOL_MISSING", "SKIPPED_STUB",
-            ]
+    def test_tiers_py_runs_no_engine_but_opa(self):
+        """cfn-guard stays installed in the awscdk image as an arm capability
+        an agent may run; the verifier must never invoke it."""
+        assert "cfn-guard" not in gen.TIERS_PY
+        assert "cfn_guard" not in gen.TIERS_PY
 
-    def test_task_toml_explanation_names_the_rego_cfn_bundle(self, spec_rego):
-        chain = gen.verification_explanation(spec_rego, "awscdk")
+    def test_hard_failure_reward_gate_is_untouched(self, spec):
+        assert _tier1(spec, "awscdk")["bad_statuses"] == [
+            "FAIL", "TOOL_MISSING", "SKIPPED_STUB",
+        ]
+
+    def test_task_toml_explanation_names_the_rego_cfn_bundle(self, spec):
+        chain = gen.verification_explanation(spec, "awscdk")
         assert "tier-1 OPA/Rego (oracles/rego-cfn/ecs-swappiness/policy.rego" in chain
         assert "cfn-guard" not in chain
 
 
 class TestCanonicalBundlePlumbing:
     """`write_tests_dir` copies ONE canonical policy into the task's tests/."""
-
-    def test_default_awscdk_copies_the_guard_bundle(self, tmp_path, spec):
-        tests_dir = tmp_path / "tests"
-        gen.write_tests_dir(spec, "awscdk", tests_dir)
-        assert (tests_dir / "policy.guard").exists()
-        assert not (tests_dir / "policy.rego").exists()
-        assert (tests_dir / "policy.guard").read_text() == (
-            REPO_ROOT / "oracles" / "cfn-guard" / "ecs-swappiness" / "policy.guard"
-        ).read_text()
 
     def test_tf_arm_copies_the_plan_shaped_rego_bundle(self, tmp_path, spec):
         tests_dir = tmp_path / "tests"
@@ -126,36 +122,17 @@ class TestCanonicalBundlePlumbing:
             REPO_ROOT / "oracles" / "rego" / "ecs-swappiness" / "policy.rego"
         ).read_text()
 
-    def test_rego_engine_copies_the_cfn_shaped_bundle_not_the_plan_shaped_one(
-        self, tmp_path, spec_rego, monkeypatch
+    def test_awscdk_copies_the_cfn_shaped_bundle_not_the_plan_shaped_one(
+        self, tmp_path, spec, monkeypatch
     ):
         """The whole point of the separate tree: awscdk must NOT be handed
         oracles/rego/<id>/policy.rego, which is written against `terraform show
         -json` and would silently evaluate to an empty deny set (=> PASS) on a
         CloudFormation template."""
         fake_oracles = tmp_path / "oracles"
-        (fake_oracles / "rego-cfn" / "ecs-swappiness").mkdir(parents=True)
-        (fake_oracles / "rego-cfn" / "ecs-swappiness" / "policy.rego").write_text(
-            "# CFN-SHAPED BUNDLE\n"
-        )
-        (fake_oracles / "rego" / "ecs-swappiness").mkdir(parents=True)
-        (fake_oracles / "rego" / "ecs-swappiness" / "policy.rego").write_text(
-            "# PLAN-SHAPED BUNDLE\n"
-        )
-        monkeypatch.setattr(gen, "ORACLES_DIR", fake_oracles)
-
-        tests_dir = tmp_path / "tests"
-        gen.write_tests_dir(spec_rego, "awscdk", tests_dir)
-        assert (tests_dir / "policy.rego").read_text() == "# CFN-SHAPED BUNDLE\n"
-        assert not (tests_dir / "policy.guard").exists()
-
-    def test_flipping_the_engine_removes_the_previous_engines_stale_bundle(
-        self, tmp_path, spec, spec_rego, monkeypatch
-    ):
-        fake_oracles = tmp_path / "oracles"
         for rel, body in (
-            ("cfn-guard/ecs-swappiness/policy.guard", "# GUARD\n"),
-            ("rego-cfn/ecs-swappiness/policy.rego", "# CFN-SHAPED\n"),
+            ("rego-cfn/ecs-swappiness/policy.rego", "# CFN-SHAPED BUNDLE\n"),
+            ("rego/ecs-swappiness/policy.rego", "# PLAN-SHAPED BUNDLE\n"),
         ):
             path = fake_oracles / rel
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -164,14 +141,34 @@ class TestCanonicalBundlePlumbing:
 
         tests_dir = tmp_path / "tests"
         gen.write_tests_dir(spec, "awscdk", tests_dir)
-        assert (tests_dir / "policy.guard").exists()
+        assert (tests_dir / "policy.rego").read_text() == "# CFN-SHAPED BUNDLE\n"
 
-        gen.write_tests_dir(spec_rego, "awscdk", tests_dir)
-        assert (tests_dir / "policy.rego").read_text() == "# CFN-SHAPED\n"
-        assert not (tests_dir / "policy.guard").exists(), (
-            "the previous engine's bundle must not linger in a task dir that no "
-            "longer runs it"
-        )
+    def test_no_task_dir_carries_a_retired_guard_bundle(self):
+        stale = sorted((REPO_ROOT / "tasks").rglob("policy.guard"))
+        assert stale == [], stale
+
+
+class TestEveryGradingSpecHasAHandAuthoredBundle:
+    """A stub policy reports SKIPPED_STUB, which the reward gate scores as a
+    hard failure. A spec with awscdk tier-1 asserts and a stub bundle would
+    therefore fail every awscdk trial, including its own reference solution."""
+
+    def test_no_stub_bundle_backs_an_awscdk_tier1_assert(self):
+        for path in shipped_specs():
+            spec = gen.load_spec(path)
+            asserts = [
+                a
+                for a in spec.oracle.structural_asserts
+                if a.tier == "1" and (not a.applies_to or "awscdk" in a.applies_to)
+            ]
+            bundle = REPO_ROOT / "oracles" / "rego-cfn" / spec.id / "policy.rego"
+            assert bundle.exists(), f"{spec.id}: no awscdk tier-1 bundle"
+            if not asserts:
+                continue
+            assert "GENERATOR-STUB" not in bundle.read_text(), (
+                f"{spec.id} declares awscdk tier-1 asserts "
+                f"{[a.name for a in asserts]} but its bundle is still a stub"
+            )
 
 
 class TestEmitOraclesScaffolding:
@@ -179,18 +176,7 @@ class TestEmitOraclesScaffolding:
     def spec_dict(self):
         return yaml.safe_load(SPEC_PATH.read_text())
 
-    def test_default_scaffolds_the_guard_bundle_and_no_rego_cfn_tree(
-        self, spec_dict, tmp_path
-    ):
-        files = emit_oracles(spec_dict, root=tmp_path)
-        assert "oracles/cfn-guard/ecs-swappiness/policy.guard" in files
-        assert "oracles/rego-cfn/ecs-swappiness/policy.rego" not in files
-        assert not (tmp_path / "oracles" / "rego-cfn").exists()
-
-    def test_rego_engine_scaffolds_rego_cfn_and_no_guard_bundle(
-        self, spec_dict, tmp_path
-    ):
-        spec_dict["oracle"]["awscdk_tier1_engine"] = "rego"
+    def test_emit_writes_exactly_the_three_oracle_files(self, spec_dict, tmp_path):
         files = emit_oracles(spec_dict, root=tmp_path)
         assert set(files) == {
             "oracles/ecs-swappiness/intent.md",
@@ -202,11 +188,10 @@ class TestEmitOraclesScaffolding:
     def test_rego_cfn_skeleton_is_a_stub_and_documents_the_cfn_input_shape(
         self, spec_dict, tmp_path
     ):
-        spec_dict["oracle"]["awscdk_tier1_engine"] = "rego"
         body = emit_oracles(spec_dict, root=tmp_path)[
             "oracles/rego-cfn/ecs-swappiness/policy.rego"
         ]
-        # is_stub_policy() in the generated tests/static_tiers.sh greps for this
+        # is_stub_policy() in the generated tests/tiers.py greps for this
         # literal; without it a scaffold would start gating trials.
         assert "GENERATOR-STUB" in body
         assert "package cdktn_bench.ecs_swappiness" in body
@@ -217,7 +202,6 @@ class TestEmitOraclesScaffolding:
     def test_rego_cfn_bundle_is_never_overwritten_once_hand_authored(
         self, spec_dict, tmp_path
     ):
-        spec_dict["oracle"]["awscdk_tier1_engine"] = "rego"
         path = tmp_path / "oracles" / "rego-cfn" / "ecs-swappiness" / "policy.rego"
         path.parent.mkdir(parents=True)
         path.write_text("# HAND-AUTHORED CFN REGO — must survive regeneration\n")
@@ -229,15 +213,11 @@ class TestEmitOraclesScaffolding:
     def test_intent_md_points_at_the_bundle_the_scenario_actually_runs(
         self, spec_dict, tmp_path
     ):
-        default = emit_oracles(spec_dict, root=tmp_path)["oracles/ecs-swappiness/intent.md"]
-        assert "../cfn-guard/ecs-swappiness/policy.guard" in default
-
-        spec_dict["oracle"]["awscdk_tier1_engine"] = "rego"
-        flipped = emit_oracles(spec_dict, root=tmp_path / "other")[
+        intent = emit_oracles(spec_dict, root=tmp_path)[
             "oracles/ecs-swappiness/intent.md"
         ]
-        assert "../rego-cfn/ecs-swappiness/policy.rego" in flipped
-        assert "policy.guard" not in flipped
+        assert "../rego-cfn/ecs-swappiness/policy.rego" in intent
+        assert "policy.guard" not in intent
 
 
 class TestSkeletonIsValidRego:
@@ -250,9 +230,7 @@ class TestSkeletonIsValidRego:
             pytest.skip("opa not installed locally")
         import subprocess
 
-        spec_dict = yaml.safe_load(SPEC_PATH.read_text())
-        spec_dict["oracle"]["awscdk_tier1_engine"] = "rego"
-        emit_oracles(spec_dict, root=tmp_path)
+        emit_oracles(yaml.safe_load(SPEC_PATH.read_text()), root=tmp_path)
         path = tmp_path / "oracles" / "rego-cfn" / "ecs-swappiness" / "policy.rego"
         result = subprocess.run(
             [opa, "check", str(path)], capture_output=True, text=True, check=False

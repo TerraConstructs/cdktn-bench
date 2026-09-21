@@ -1,6 +1,6 @@
 # Oracle intent: Event processor whose logs are kept for 30 days and cleaned up with the stack
 
-`lambda-log-group-ownership-and-retention` — generated verbatim from `specs/lambda-log-group-ownership-and-retention.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/lambda-log-group-ownership-and-retention/policy.rego` and `../cfn-guard/lambda-log-group-ownership-and-retention/policy.guard` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
+`lambda-log-group-ownership-and-retention` — generated verbatim from `specs/lambda-log-group-ownership-and-retention.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/lambda-log-group-ownership-and-retention/policy.rego` and `../rego-cfn/lambda-log-group-ownership-and-retention/policy.rego` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
 
 **Do not hand-edit this file.** It is regenerated from the spec on every `emit_oracles` call; edit `oracle.intent` in `specs/lambda-log-group-ownership-and-retention.yaml` instead.
 

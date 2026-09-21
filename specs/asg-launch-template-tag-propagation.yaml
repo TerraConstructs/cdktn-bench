@@ -542,6 +542,12 @@ oracle:
     volumes, regardless of `propagate_at_launch`), so this half has no
     alternative mechanism to accept.
 
+  # awscdk tier-1 engine (SCHEMA.md §4.5): Rego, so that this arm's tier 1 is
+  # graded by the same engine as the others (ROADMAP.md M8). The rules are a
+  # one-for-one port of the retired cfn-guard policy's two-mechanism
+  # disjunction; no fixture verdict changes.
+  awscdk_tier1_engine: rego
+
   structural_asserts:
     - name: asg-exists
       description: "An Auto Scaling group exists."

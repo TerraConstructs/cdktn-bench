@@ -1072,21 +1072,13 @@ def existing_task_uuid(task_toml_path: Path) -> str | None:
 
 
 def verification_explanation(spec: Spec, arm: Arm) -> str:
-    if arm == "awscdk" and spec.oracle.awscdk_tier1_engine == "rego":
-        # oracle.awscdk_tier1_engine: rego (specs/SCHEMA.md §4.5) -- same
-        # synthesized template, graded by OPA instead of cfn-guard, against
-        # this scenario's CFN-shaped Rego bundle.
+    if arm == "awscdk":
+        # The synthesized CloudFormation template, graded by the same OPA the
+        # TF arms run, against this scenario's CFN-shaped Rego bundle.
         chain = (
             "npm run build -> cdk synth -> tier-0 structural asserts (jq, "
             f"compiled from specs/{spec.id}.yaml oracle.structural_asserts) -> "
             f"tier-1 OPA/Rego (oracles/rego-cfn/{spec.id}/policy.rego, "
-            "skipped if not yet hand-authored)"
-        )
-    elif arm == "awscdk":
-        chain = (
-            "npm run build -> cdk synth -> tier-0 structural asserts (jq, "
-            f"compiled from specs/{spec.id}.yaml oracle.structural_asserts) -> "
-            f"tier-1 cfn-guard (oracles/cfn-guard/{spec.id}/policy.guard, "
             "skipped if not yet hand-authored)"
         )
     else:
@@ -2454,12 +2446,11 @@ def build_verify_config(spec: Spec, arm: Arm, step: Step | None = None) -> dict:
     if spec.oracle.tier0_engine == "rego":
         tier0["query"] = f"data.cdktn_bench.{tier0_rego_pkg(spec)}.tier0.render"
 
-    # The awscdk arm grades the synthesized CloudFormation template with EITHER
-    # cfn-guard (the incumbent) or OPA/Rego (`oracle.awscdk_tier1_engine`,
-    # specs/SCHEMA.md §4.5: cfn-guard 3.2.0 cannot express a cross-resource
-    # logical-id join, so a scenario needing one is graded by the engine the
-    # other arms use). Both feed the same artifact; only the policy differs.
-    cfn_guard = arm == "awscdk" and spec.oracle.awscdk_tier1_engine == "cfn_guard"
+    # OPA/Rego is the tier-1 engine on EVERY arm: the awscdk arm's synthesized
+    # CloudFormation template is graded by the same `opa eval ... deny` line
+    # the TF arms run over plan JSON, against a CFN-shaped policy. One language
+    # and one identity domain (logical ids) is what makes cross-arm
+    # equal-strictness grading structural rather than a review promise.
     hcl = hcl_input_mode(spec, arm)
     # ENGINE_ERROR -- "the oracle did not run" -- must never be scored as a
     # pass; it is run-invalidating exactly as TOOL_MISSING is. It is only a
@@ -2469,17 +2460,15 @@ def build_verify_config(spec: Spec, arm: Arm, step: Step | None = None) -> dict:
     if hcl is not None:
         bad_statuses.append("ENGINE_ERROR")
     tier1: dict = {
-        "engine": "cfn_guard" if cfn_guard else "opa",
-        "header": "cfn-guard" if cfn_guard else "OPA/Rego",
-        "policy": "policy.guard" if cfn_guard else "policy.rego",
+        "engine": "opa",
+        "header": "OPA/Rego",
+        "policy": "policy.rego",
         # A generation-time constant: the names are known here, and the three
         # reasons tier-1 ran no real check stay distinguishable at runtime.
         "has_asserts": bool(tier1_names),
         "asserts": list(tier1_names),
-        "query": None if cfn_guard else f"data.cdktn_bench.{pkg}.deny",
-        "not_verifiable_query": (
-            None if cfn_guard else f"data.cdktn_bench.{pkg}.not_verifiable"
-        ),
+        "query": f"data.cdktn_bench.{pkg}.deny",
+        "not_verifiable_query": f"data.cdktn_bench.{pkg}.not_verifiable",
         "hcl": hcl,
         # Capture `opa eval`'s exit code instead of piping it into jq, so an
         # aborted evaluation is ENGINE_ERROR rather than an unexplained FAIL
@@ -3912,7 +3901,7 @@ def build_seed_unchanged_solve_sh(spec: Spec, arm: Arm, entry_file: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-# oracles/emit.py is the SOLE writer of policy.rego/policy.guard skeletons (see
+# oracles/emit.py is the SOLE writer of policy.rego skeletons (see
 # generate_oracles() below); this file must never grow its own stub renderer.
 # Two writers guarding the same `if not path.exists()` means whichever runs
 # first wins permanently and the other's content is never written.
@@ -3945,7 +3934,6 @@ _GENERATED_TESTS_FILES = (
     "static_tiers.sh",
     "test.sh",
     "live_check.py",
-    "policy.guard",
     "policy.rego",
     # The tier-0 asserts compiled to Rego (generator/jsonpath_rego.py), written
     # only for a spec whose `oracle.tier0_engine` is `rego` -- the one engine
@@ -4001,7 +3989,7 @@ def write_tests_dir(spec: Spec, arm: Arm, tests_dir: Path, step: Step | None = N
     # Only the `rego` engine's static_tiers.sh sources this policy; under the
     # default `jq` the task dir must not carry one, and a leftover from a spec
     # that has since gone back to jq is stale generated material -- same
-    # discipline as the unselected policy.guard/policy.rego sibling below.
+    # discipline as any other generated file the spec no longer selects.
     tier0_rego_dest = tests_dir / "tier0.rego"
     if spec.oracle.tier0_engine == "rego":
         tier0_rego_dest.write_text(build_tier0_rego_file(spec, arm, step))
@@ -4086,35 +4074,15 @@ def write_tests_dir(spec: Spec, arm: Arm, tests_dir: Path, step: Step | None = N
     # not sibling oracles/** -- see the generator's design notes in gen.py's
     # module docstring companion, generator/README.md).
     #
-    # Which canonical bundle this arm's tier-1 runs is decided by the arm AND,
-    # for awscdk, by `oracle.awscdk_tier1_engine` (specs/SCHEMA.md §4.5):
-    #   awscdk + cfn_guard (default) -> oracles/cfn-guard/<id>/policy.guard
-    #   awscdk + rego                -> oracles/rego-cfn/<id>/policy.rego
-    #   hcl_raw / terraconstructs    -> oracles/rego/<id>/policy.rego
+    # Which canonical bundle this arm's tier-1 runs is decided by the arm:
+    #   awscdk                    -> oracles/rego-cfn/<id>/policy.rego
+    #   hcl_raw / terraconstructs -> oracles/rego/<id>/policy.rego
     # The two Rego bundles are deliberately SEPARATE files: awscdk's `input`
     # is a synthesized CloudFormation template and the TF arms' is `terraform
     # show -json` plan JSON -- structurally unrelated documents that no single
     # policy body can serve without becoming two policies in a trench coat.
-    if arm == "awscdk" and spec.oracle.awscdk_tier1_engine == "cfn_guard":
-        canonical = ORACLES_DIR / "cfn-guard" / spec.id / "policy.guard"
-        copied_name = "policy.guard"
-    elif arm == "awscdk":
-        canonical = ORACLES_DIR / "rego-cfn" / spec.id / "policy.rego"
-        copied_name = "policy.rego"
-    else:
-        canonical = ORACLES_DIR / "rego" / spec.id / "policy.rego"
-        copied_name = "policy.rego"
-    shutil.copy2(canonical, tests_dir / copied_name)
-    # Flipping `oracle.awscdk_tier1_engine` changes WHICH of the two policy
-    # filenames this tests/ dir should hold; the other one is a stale generated
-    # artifact from the previous engine, and static_tiers.sh would simply
-    # ignore it -- but leaving it behind makes the task dir claim a grader it
-    # no longer uses. Both names are in _GENERATED_TESTS_FILES (generator-owned,
-    # never hand-authored inside tests/), so removing the unselected one is
-    # safe.
-    stale = tests_dir / ("policy.rego" if copied_name == "policy.guard" else "policy.guard")
-    if stale.exists():
-        stale.unlink()
+    subtree = "rego-cfn" if arm == "awscdk" else "rego"
+    shutil.copy2(ORACLES_DIR / subtree / spec.id / "policy.rego", tests_dir / "policy.rego")
 
     # --- the SHARED tier-1 Rego library ------------------------------------
     #
@@ -4501,9 +4469,8 @@ def generate_arm(spec: Spec, arm: Arm) -> Path:
 def generate_oracles(spec: Spec) -> None:
     """Delegate to oracles.emit.emit_oracles -- the SOLE writer of
     oracles/<id>/intent.md, oracles/rego/<id>/policy.rego, and this spec's
-    awscdk-side bundle (oracles/cfn-guard/<id>/policy.guard by default, or
-    oracles/rego-cfn/<id>/policy.rego when `oracle.awscdk_tier1_engine:
-    rego` -- specs/SCHEMA.md §4.5). This module must never render those files
+    awscdk-side bundle (oracles/rego-cfn/<id>/policy.rego). This module must
+    never render those files
     itself: two writers behind the same `if not exists` guard means whichever
     runs first against a given scenario wins permanently, including whose
     GENERATOR-STUB marker text lands on disk -- which is what is_stub_policy()

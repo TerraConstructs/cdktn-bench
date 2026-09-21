@@ -233,6 +233,14 @@ oracle:
     un-evaluated `"$."`-prefixed JSONPath string appear as a literal value
     in place of a proper JSONata expression.
 
+  # ROADMAP.md M8: OPA/Rego grades tier 1 on every arm, so equal strictness
+  # across arms (DECISIONS.md Amendment 29 §4 — binding) is a property of one
+  # policy language rather than a claim about two. cfn-guard had no
+  # JSON-decode builtin and could only regex the still-encoded
+  # DefinitionString; oracles/rego-cfn/sfn-jsonata/policy.rego walks the
+  # decoded ASL the way the TF bundle does. No fixture verdict changed.
+  awscdk_tier1_engine: rego
+
   structural_asserts:
     - name: state-machine-exists
       description: "An AWS::StepFunctions::StateMachine exists."

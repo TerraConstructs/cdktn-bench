@@ -1,6 +1,6 @@
 # Oracle intent: Change a Lambda function's configuration behind an alias that names a version nothing republishes
 
-`lambda-alias-tracks-unpublished-latest` — generated verbatim from `specs/lambda-alias-tracks-unpublished-latest.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/lambda-alias-tracks-unpublished-latest/policy.rego` and `../cfn-guard/lambda-alias-tracks-unpublished-latest/policy.guard` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
+`lambda-alias-tracks-unpublished-latest` — generated verbatim from `specs/lambda-alias-tracks-unpublished-latest.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/lambda-alias-tracks-unpublished-latest/policy.rego` and `../rego-cfn/lambda-alias-tracks-unpublished-latest/policy.rego` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
 
 **Do not hand-edit this file.** It is regenerated from the spec on every `emit_oracles` call; edit `oracle.intent` in `specs/lambda-alias-tracks-unpublished-latest.yaml` instead.
 
@@ -53,7 +53,7 @@ over a collection that a jq path cannot express ("no rule anywhere in this
 group may be open to the world"). This scenario has no such fact: everything
 it grades is a single value on a single resource, or a property of the
 account. The one candidate considered and rejected was "every alias's
-FunctionVersion must be an intrinsic rather than a literal", which cfn-guard
+FunctionVersion must be an intrinsic rather than a literal", which a policy
 can express — but it does not separate this scenario's catch (BOTH awscdk
 shapes emit an `Fn::GetAtt`), it would need a catch and three negative
 fixtures invented to justify it, and it would score 0.0 the

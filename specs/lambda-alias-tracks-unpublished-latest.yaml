@@ -751,7 +751,7 @@ oracle:
     group may be open to the world"). This scenario has no such fact: everything
     it grades is a single value on a single resource, or a property of the
     account. The one candidate considered and rejected was "every alias's
-    FunctionVersion must be an intrinsic rather than a literal", which cfn-guard
+    FunctionVersion must be an intrinsic rather than a literal", which a policy
     can express — but it does not separate this scenario's catch (BOTH awscdk
     shapes emit an `Fn::GetAtt`), it would need a catch and three negative
     fixtures invented to justify it, and it would score 0.0 the
@@ -759,6 +759,8 @@ oracle:
     that cannot fail for a reason this scenario is about is decoration, and the
     generated `tests/static_tiers.sh` says `SKIPPED_NO_ASSERTS` rather than
     pretending otherwise.
+
+  awscdk_tier1_engine: rego
 
   structural_asserts:
     - name: function-configuration-carries-the-new-currency

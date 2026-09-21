@@ -13,7 +13,7 @@ SKIP) precisely for sfn-jsonata ... so it cannot detect the break there"):
   with no baseline entry at all) is a REGRESSION -- gating. This is what
   actually catches "gut one specific tier-1 rule on an otherwise-tracked
   scenario" -- the exact attack shape demonstrated against
-  oracles/cfn-guard/sfn-jsonata/policy.guard's `no_raw_jsonpath_string_literal`
+  oracles/rego-cfn/sfn-jsonata/policy.rego's raw-JSONPath-literal rule
   rule.
 
 Uses the real, shipped specs (loaded via `spec_model.load_spec`, then

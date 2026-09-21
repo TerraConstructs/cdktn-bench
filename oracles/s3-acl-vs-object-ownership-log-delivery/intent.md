@@ -1,6 +1,6 @@
 # Oracle intent: Disable bucket ACLs on a log-delivery destination bucket without losing log delivery
 
-`s3-acl-vs-object-ownership-log-delivery` — generated verbatim from `specs/s3-acl-vs-object-ownership-log-delivery.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/s3-acl-vs-object-ownership-log-delivery/policy.rego` and `../cfn-guard/s3-acl-vs-object-ownership-log-delivery/policy.guard` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
+`s3-acl-vs-object-ownership-log-delivery` — generated verbatim from `specs/s3-acl-vs-object-ownership-log-delivery.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/s3-acl-vs-object-ownership-log-delivery/policy.rego` and `../rego-cfn/s3-acl-vs-object-ownership-log-delivery/policy.rego` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
 
 **Do not hand-edit this file.** It is regenerated from the spec on every `emit_oracles` call; edit `oracle.intent` in `specs/s3-acl-vs-object-ownership-log-delivery.yaml` instead.
 
@@ -28,7 +28,7 @@ Four things are graded, in four places, and the split is deliberate.
    gone from the artifact entirely (hcl_raw) or readable only conditionally
    (terraconstructs) -- see 3 and 4.
 
-3. TIER 1 (Rego / cfn-guard). Two quantified claims, which is exactly what
+3. TIER 1 (Rego, every arm). Two quantified claims, which is exactly what
    separates this tier from tier 0 -- a jq path pins one value at one path;
    neither of these is that shape:
      * (every arm) NO ownership control anywhere in this workspace may

@@ -1,6 +1,6 @@
 # Oracle intent: ECS EC2 task definition: tuned container memory swappiness
 
-`ecs-swappiness` — generated verbatim from `specs/ecs-swappiness.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/ecs-swappiness/policy.rego` and `../cfn-guard/ecs-swappiness/policy.guard` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
+`ecs-swappiness` — generated verbatim from `specs/ecs-swappiness.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/ecs-swappiness/policy.rego` and `../rego-cfn/ecs-swappiness/policy.rego` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
 
 **Do not hand-edit this file.** It is regenerated from the spec on every `emit_oracles` call; edit `oracle.intent` in `specs/ecs-swappiness.yaml` instead.
 

@@ -1,6 +1,6 @@
 # Oracle intent: Toy: SSM parameter + read-only IAM role
 
-`toy-ssm-parameter` — generated verbatim from `specs/toy-ssm-parameter.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/toy-ssm-parameter/policy.rego` and `../cfn-guard/toy-ssm-parameter/policy.guard` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
+`toy-ssm-parameter` — generated verbatim from `specs/toy-ssm-parameter.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/toy-ssm-parameter/policy.rego` and `../rego-cfn/toy-ssm-parameter/policy.rego` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
 
 **Do not hand-edit this file.** It is regenerated from the spec on every `emit_oracles` call; edit `oracle.intent` in `specs/toy-ssm-parameter.yaml` instead.
 

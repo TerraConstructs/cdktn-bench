@@ -335,6 +335,13 @@ oracle:
     non-gating but genuinely exercised for the first time in this
     benchmark) against the REAL resources the agent's own trial deployed.
 
+  # awscdk tier-1 engine (SCHEMA.md §4.5): Rego, so that this arm's tier 1 is
+  # graded by the same engine as the others (ROADMAP.md M8). As in
+  # apigw-openapi, deployment-depends-on-all-methods becomes the identity join
+  # (every Method logical id in DependsOn) rather than cfn-guard's cardinality
+  # proxy. No fixture verdict changes.
+  awscdk_tier1_engine: rego
+
   structural_asserts:
     - name: rest-api-exists
       description: "An API Gateway REST API resource exists."

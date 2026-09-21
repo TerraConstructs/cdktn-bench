@@ -1,6 +1,6 @@
 # Oracle intent: Auto Scaling worker fleet whose instances and volumes carry cost-allocation tags
 
-`asg-launch-template-tag-propagation` — generated verbatim from `specs/asg-launch-template-tag-propagation.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/asg-launch-template-tag-propagation/policy.rego` and `../cfn-guard/asg-launch-template-tag-propagation/policy.guard` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
+`asg-launch-template-tag-propagation` — generated verbatim from `specs/asg-launch-template-tag-propagation.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/asg-launch-template-tag-propagation/policy.rego` and `../rego-cfn/asg-launch-template-tag-propagation/policy.rego` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
 
 **Do not hand-edit this file.** It is regenerated from the spec on every `emit_oracles` call; edit `oracle.intent` in `specs/asg-launch-template-tag-propagation.yaml` instead.
 

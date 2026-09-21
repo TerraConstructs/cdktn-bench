@@ -1,24 +1,19 @@
 """oracles/tests/toolcheck.py
 
-Best-effort local discovery of `opa` and `cfn-guard`, for the small number
-of tests that validate an emitted skeleton with the real tool rather than
-just asserting on its Python-level content. Neither tool is a hard
-dependency of this repo (`pyproject.toml` has no such entry, deliberately —
-these are developer-machine conveniences, not CI requirements); tests that
-need one call `pytest.skip(...)` when it can't be found, per the task
-brief's "if opa is installable locally via mise/brew... else validate syntax
-with a vendored parser test and note it."
+Best-effort local discovery of `opa`, for the small number of tests that
+validate an emitted skeleton with the real tool rather than just asserting
+on its Python-level content. It is not a hard dependency of this repo (`pyproject.toml` has no such entry, deliberately —
+this is a developer-machine convenience, not a CI requirement); a test that
+needs it calls `pytest.skip(...)` when it can't be found.
 
-Search order, matching how each tool actually ended up available on this
-machine (see the response accompanying this file's original authoring
-turn for the full trail):
+Search order, matching how the tool actually ends up available on a
+developer machine:
   1. `shutil.which` — the normal case, tool already on PATH.
   2. `~/.local/share/mise/shims/<tool>` — mise-installed but the shims dir
      isn't on this process's PATH (true for every non-interactive subprocess
      spawned outside an activated mise shell, which is the common case for
      a test runner).
-  3. Homebrew's fixed prefixes (`/opt/homebrew/bin`, `/usr/local/bin`) —
-     where `cfn-guard` actually landed here (`brew install cfn-guard`).
+  3. Homebrew's fixed prefixes (`/opt/homebrew/bin`, `/usr/local/bin`).
 """
 
 from __future__ import annotations

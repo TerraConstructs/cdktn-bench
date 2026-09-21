@@ -398,9 +398,18 @@ oracle:
     plus a rule whose target references the function) also wires uploads to
     the processor in the sense the ticket's own prose asks for, but is NOT
     graded as an accepted shape by this v1 -- neither the two relevant
-    tier-0 asserts below nor the tier-1 Rego/cfn-guard policies recognize
+    tier-0 asserts below nor the tier-1 Rego policies recognize
     it, and a solution built that way will not score full reward. This is a
     documented v1 scope limitation, not a silent one.
+
+  # ROADMAP.md M8: OPA/Rego grades tier 1 on every arm, so equal strictness
+  # across arms (DECISIONS.md Amendment 29 §4 — binding) is a property of one
+  # policy language rather than a claim about two. Both facts are
+  # cross-resource logical-id joins; cfn-guard could only ask whether SourceArn
+  # and Function were SOME Fn::GetAtt, so
+  # oracles/rego-cfn/s3-notification-custom-resource-tax/policy.rego closes
+  # that documented gap. No fixture verdict changed.
+  awscdk_tier1_engine: rego
 
   structural_asserts:
     # --- TIER 0 (executed unconditionally by every trial's static_tiers.sh) ---

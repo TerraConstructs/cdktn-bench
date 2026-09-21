@@ -55,7 +55,7 @@ def auto_select_negative(results: list[RunResult], arm: str) -> RunResult | None
     """Pick the first `{arm}/solution/broken/<name>/solve.sh` row out of
     `check_arm(spec, arm)`'s results whose run was OBSERVED (not merely
     predicted) to be caught at tier "1" -- i.e. genuinely exercised this arm's
-    Rego/cfn-guard chain, the thing this gate exists to prove is wired for real.
+    Rego chain, the thing this gate exists to prove is wired for real.
 
     Walks `results` in the exact order `check_arm` produces them (declared
     catches in `spec.catches[]` order, then extra non-catch-named fixtures in

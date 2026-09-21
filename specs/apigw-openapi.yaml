@@ -263,27 +263,27 @@ oracle:
     oracles/cfn-guard/apigw-openapi/policy.guard's own header comment, and
     its own documented residual gap for THAT check specifically).
 
-    RESIDUAL, NOT-FULLY-CLOSED GAP (2026-08-06, benchmark-integrity review
-    finding "apigw-openapi / deployment-missing-integration-dependency —
-    tier-1 check is strictly weaker on awscdk than on the TF arms"): the
-    cardinality proxy above, while sound against the REALISTIC missing-
-    dependency mistake (an omitted/empty DependsOn), is NOT sound against
-    an adversarial escape-hatch template whose manual DependsOn names >= 3
-    resources that are not the three Methods at all (e.g. RestApi plus two
-    intermediate ApiGateway::Resource path nodes). policy.rego's
-    identity-precise check catches the structurally identical TF mistake;
-    cfn-guard 3.2.0 has no cross-collection identity-join primitive to
-    reproduce that here (see oracles/cfn-guard/apigw-openapi/policy.guard's
-    own "RESIDUAL, DOCUMENTED GAP" comment for the full write-up). This
-    means the per-arm outcome for this catch's own cardinality-vs-identity
-    strictness, specifically on this one adversarial shape, still partly
-    reflects oracle strength rather than purely arm ergonomics -- recorded
-    explicitly here (rather than left implicit) so the H1 cross-arm
-    comparison this catch feeds accounts for it, per this codebase's own
-    convention of documenting a residual gap rather than silently shipping
-    it. Not closed in this pass; closing it soundly needs a mechanism that
-    CAN do identity matching against the CFN template (e.g. evaluating it
-    with OPA/Rego instead of cfn-guard).
+    CLOSED GAP, recorded because the H1 cross-arm comparison this catch
+    feeds was published against the earlier, weaker awscdk check. The awscdk
+    tier-1 used to be a cardinality proxy (DependsOn length >= Method count).
+    It is sound against the realistic missing-dependency mistake -- an
+    omitted or empty DependsOn -- but not against an escape-hatch template
+    whose manual DependsOn names three resources that are not the Methods at
+    all (a RestApi plus two intermediate ApiGateway::Resource path nodes),
+    which the structurally identical TF mistake was caught for. cfn-guard
+    3.2.0 has no cross-collection identity-join primitive, so the proxy was
+    the strongest encoding available to it. The awscdk tier 1 now runs the
+    same identity join the TF arms do, over the same synthesized template,
+    graded by OPA/Rego (oracles/rego-cfn/apigw-openapi/policy.rego): every
+    Method logical id must appear in every Deployment's DependsOn. The
+    per-arm outcome for this catch no longer reflects oracle strength.
+
+  # awscdk tier-1 engine (SCHEMA.md §4.5): Rego, so that this arm's tier 1 is
+  # graded by the same engine as the others (ROADMAP.md M8). This closes the
+  # residual gap oracle.intent records above: deployment-depends-on-all-methods
+  # is now the identity join (every Method logical id in DependsOn) on awscdk
+  # too, not cfn-guard's cardinality proxy. No fixture verdict changes.
+  awscdk_tier1_engine: rego
 
   structural_asserts:
     - name: rest-api-exists

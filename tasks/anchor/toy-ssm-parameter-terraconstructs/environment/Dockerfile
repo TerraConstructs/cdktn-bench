@@ -20,7 +20,6 @@
 #   cd arms/terraconstructs/environment && docker build -t cdktn-bench/terraconstructs:dev .
 # See ../../DECISIONS.md "Arm build-context contract".
 FROM node:22.23.2-bookworm-slim@sha256:83f487e0a63425e5b4d146fb5e5be574bcbe1b7b843d3ebafdd95eaf7767a7e5 AS base
-
 # NOTE: deliberately no default value -- one of BuildKit's predefined
 # platform ARGs, auto-populated from --platform (or the builder's native
 # platform). A literal default would shadow that auto-injected value and
@@ -60,7 +59,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # --- pinned exact version) ---
 # terraform serves the generated tests/static_tiers.sh (`validate` + `plan`)
 # and this image's own preflight (`cdktn synth` -> `terraform init` ->
-# `validate`, offline against the provider mirror below). jq/git/curl/unzip
+# `validate`, offline against the provider mirror below). git/curl/unzip
 # and python3 (stdlib only; tests/test.sh runs `python3 live_check.py`) are
 # the agent-container baseline shared with arms/awscdk and arms/hcl-raw
 # (DECISIONS.md "Agent-container baseline contract").
@@ -73,7 +72,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       gnupg \
       unzip \
       ca-certificates \
-      jq \
       git \
       less \
       python3 \
@@ -85,6 +83,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get install -y --no-install-recommends terraform=${TERRAFORM_VERSION}-* \
     && rm -f /etc/apt/sources.list.d/hashicorp.list /usr/share/keyrings/hashicorp-archive-keyring.gpg \
     && rm -rf /var/lib/apt/lists/* /tmp/hashicorp.gpg
+
+# --- ASSET_MIRROR: base URL of a local mirror of the pinned build-time
+# --- downloads below (scripts/asset_mirror.py serve). The default is
+# --- NON-EMPTY and nothing overrides it, so every builder -- `make build-arms`,
+# --- scripts/prebuild-tasks.sh, and the no-build-arg `docker compose build`
+# --- the harness runs -- hashes these RUN lines identically and shares one
+# --- layer cache. Each fetch below probes the mirror and falls back to
+# --- upstream when it does not answer, so a build with no mirror running
+# --- still succeeds; see docs/asset-mirror.md.
+# --- Every fetch still runs its hardcoded `sha256sum -c`, so the mirror is a
+# --- SOURCE and never an authority: a substituted file fails the build.
+ARG ASSET_MIRROR=http://host.lima.internal:8899
 
 # --- opa (Open Policy Agent) 1.19.0: static pinned binary, sha256-verified
 # --- (same pin as arms/hcl-raw -- see ../../../DECISIONS.md "tier-1 grading
@@ -99,11 +109,34 @@ RUN set -eu; \
       arm64) OPA_SHA256="06680087ed236c8c6aaa021660d83178db829a2ad30bdb3482481fada6791b2a" ;; \
       *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
-    curl -fsSL -o /usr/local/bin/opa \
-      "https://github.com/open-policy-agent/opa/releases/download/v1.19.0/opa_linux_${TARGETARCH}_static"; \
+    URL="https://github.com/open-policy-agent/opa/releases/download/v1.19.0/opa_linux_${TARGETARCH}_static"; \
+    ASSET_MIRROR_URL="$ASSET_MIRROR/opa_linux_${TARGETARCH}_static"; \
+    if curl -fsI --connect-timeout 2 --max-time 5 "$ASSET_MIRROR_URL" >/dev/null 2>&1; then URL="$ASSET_MIRROR_URL"; fi; \
+    curl -fsSL --http1.1 --retry 5 --retry-all-errors -o /usr/local/bin/opa "$URL"; \
     echo "${OPA_SHA256}  /usr/local/bin/opa" | sha256sum -c -; \
     chmod 0755 /usr/local/bin/opa; \
     opa version
+
+# --- jq 1.7.1: pinned prebuilt binary, sha256-verified against the release's
+# --- own sha256sum.txt. jq is a GRADING ENGINE, not a convenience: the
+# --- generated tests/ops.py runs every tier-0 structural assert through it,
+# --- so it is pinned exactly like opa. Debian bookworm's apt jq is 1.6,
+# --- whose behaviour differs from the 1.7.x the host gates run
+# --- (../../../docs/gates.md). Same version, URL and checksums in all three
+# --- arms, so one jq behaviour grades tier 0 everywhere.
+RUN set -eu; \
+    case "${TARGETARCH}" in \
+      amd64) JQ_SHA256="5942c9b0934e510ee61eb3e30273f1b3fe2590df93933a93d7c58b81d19c8ff5" ;; \
+      arm64) JQ_SHA256="4dd2d8a0661df0b22f1bb9a1f9830f06b6f3b8f7d91211a1ef5d7c4f06a8b4a5" ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    URL="https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-${TARGETARCH}"; \
+    ASSET_MIRROR_URL="$ASSET_MIRROR/jq-linux-${TARGETARCH}"; \
+    if curl -fsI --connect-timeout 2 --max-time 5 "$ASSET_MIRROR_URL" >/dev/null 2>&1; then URL="$ASSET_MIRROR_URL"; fi; \
+    curl -fsSL --http1.1 --retry 5 --retry-all-errors -o /usr/local/bin/jq "$URL"; \
+    echo "${JQ_SHA256}  /usr/local/bin/jq" | sha256sum -c -; \
+    chmod 0755 /usr/local/bin/jq; \
+    jq --version
 
 # --- AWS CLI v2 (agent-container parity with arms/awscdk; not required by
 # --- preflight.sh, which proves the toolchain works with zero AWS surface) ---
@@ -113,7 +146,9 @@ RUN ARCH=$(uname -m) && \
     else \
         CLI_URL="https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip"; \
     fi && \
-    curl -sSL "$CLI_URL" -o /tmp/awscliv2.zip && \
+    ASSET_MIRROR_URL="$ASSET_MIRROR/$(basename "$CLI_URL")" && \
+    { curl -fsI --connect-timeout 2 --max-time 5 "$ASSET_MIRROR_URL" >/dev/null 2>&1 && CLI_URL="$ASSET_MIRROR_URL" || true; } && \
+    curl -fsSL --http1.1 --retry 5 --retry-all-errors -o /tmp/awscliv2.zip "$CLI_URL" && \
     unzip -q /tmp/awscliv2.zip -d /tmp && \
     /tmp/aws/install && \
     rm -rf /tmp/aws /tmp/awscliv2.zip

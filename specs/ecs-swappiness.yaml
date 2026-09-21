@@ -155,6 +155,8 @@ oracle:
     ignores swappiness whenever maxSwap is absent: the tuned swappiness
     value must be EFFECTIVE, not merely present in the artifact.
 
+  awscdk_tier1_engine: rego
+
   structural_asserts:
     - name: taskdef-exists
       description: "An AWS::ECS::TaskDefinition exists."

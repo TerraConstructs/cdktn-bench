@@ -1,6 +1,6 @@
 # Oracle intent: Add a rule to a bucket whose storage-rule document is an authoritative singleton child resource
 
-`singleton-child-resource-clobber` — generated verbatim from `specs/singleton-child-resource-clobber.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/singleton-child-resource-clobber/policy.rego` and `../cfn-guard/singleton-child-resource-clobber/policy.guard` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
+`singleton-child-resource-clobber` — generated verbatim from `specs/singleton-child-resource-clobber.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/singleton-child-resource-clobber/policy.rego` and `../rego-cfn/singleton-child-resource-clobber/policy.rego` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
 
 **Do not hand-edit this file.** It is regenerated from the spec on every `emit_oracles` call; edit `oracle.intent` in `specs/singleton-child-resource-clobber.yaml` instead.
 
@@ -25,7 +25,7 @@ Four things are graded, in four places, and the split is deliberate:
    agent that changed nothing would score 1.0. See
    `solution/broken/seed-unchanged/`, which exists to keep proving that.
 
-2. TIER 1 (Rego / cfn-guard, every arm). No rule in the document may be
+2. TIER 1 (Rego, every arm). No rule in the document may be
    left un-enabled. A quantified statement over a collection, not a pinned
    value.
 

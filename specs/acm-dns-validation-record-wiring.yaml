@@ -490,6 +490,13 @@ oracle:
     a valid CloudFormation template that could sit in PENDING_VALIDATION
     forever with nothing to tell it how to self-validate.
 
+  # awscdk tier-1 engine (SCHEMA.md §4.5): Rego, so that this arm's tier 1 is
+  # graded by the same engine as the others (ROADMAP.md M8). The move keeps
+  # every fixture verdict and adds the join cfn-guard 3.2.0 could not state:
+  # a DomainValidationOptions HostedZoneId must Ref/Fn::GetAtt a hosted zone
+  # created in this same template, not merely exist.
+  awscdk_tier1_engine: rego
+
   structural_asserts:
     - name: hosted-zone-exists
       description: "A public Route53 hosted zone exists."

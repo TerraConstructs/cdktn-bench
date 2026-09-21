@@ -1,6 +1,6 @@
 # Oracle intent: Container image registry for the service, rebuilt with each environment
 
-`ecr-repo-destroy-force-delete` — generated verbatim from `specs/ecr-repo-destroy-force-delete.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/ecr-repo-destroy-force-delete/policy.rego` and `../cfn-guard/ecr-repo-destroy-force-delete/policy.guard` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
+`ecr-repo-destroy-force-delete` — generated verbatim from `specs/ecr-repo-destroy-force-delete.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/ecr-repo-destroy-force-delete/policy.rego` and `../rego-cfn/ecr-repo-destroy-force-delete/policy.rego` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
 
 **Do not hand-edit this file.** It is regenerated from the spec on every `emit_oracles` call; edit `oracle.intent` in `specs/ecr-repo-destroy-force-delete.yaml` instead.
 

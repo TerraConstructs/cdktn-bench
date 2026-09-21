@@ -674,6 +674,15 @@ oracle:
     same way awscdk's tier-0 check does. See "Oracle must tolerate/defend"
     point 6 and oracles/rego/.../policy.rego's own header comment, fix (f).
 
+  # ROADMAP.md M8: OPA/Rego grades tier 1 on every arm, so equal strictness
+  # across arms (DECISIONS.md Amendment 29 §4 — binding) is a property of one
+  # policy language rather than a claim about two. TLS-deny coverage and the
+  # KMS key reference are both cross-resource logical-id joins; cfn-guard could
+  # only count Resource elements and ask whether KMSMasterKeyID was SOME
+  # Fn::GetAtt, so oracles/rego-cfn/s3-bucket-hardening-decomposition/policy.rego
+  # closes both documented gaps. No fixture verdict changed.
+  awscdk_tier1_engine: rego
+
   structural_asserts:
     # --- TIER 0 (executed unconditionally by every trial's static_tiers.sh) ---
     - name: versioning-enabled

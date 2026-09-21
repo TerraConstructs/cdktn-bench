@@ -1,6 +1,6 @@
 # Oracle intent: S3 upload triggers Lambda; log group retains 10 days
 
-`s3-lambda-log-retention` — generated verbatim from `specs/s3-lambda-log-retention.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/s3-lambda-log-retention/policy.rego` and `../cfn-guard/s3-lambda-log-retention/policy.guard` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
+`s3-lambda-log-retention` — generated verbatim from `specs/s3-lambda-log-retention.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/s3-lambda-log-retention/policy.rego` and `../rego-cfn/s3-lambda-log-retention/policy.rego` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
 
 **Do not hand-edit this file.** It is regenerated from the spec on every `emit_oracles` call; edit `oracle.intent` in `specs/s3-lambda-log-retention.yaml` instead.
 

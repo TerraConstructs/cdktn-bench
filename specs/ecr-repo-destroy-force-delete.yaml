@@ -268,6 +268,12 @@ oracle:
     not an added custom-resource Lambda that empties the repository on the way
     down.
 
+  # awscdk tier-1 engine (SCHEMA.md §4.5): Rego, so that this arm's tier 1 is
+  # graded by the same engine as the others (ROADMAP.md M8). The rules are a
+  # one-for-one port of the retired cfn-guard policy's EmptyOnDelete and
+  # no-Custom::ECRAutoDeleteImages checks; no fixture verdict changes.
+  awscdk_tier1_engine: rego
+
   structural_asserts:
     - name: repository-exists-with-scan-on-push
       description: >

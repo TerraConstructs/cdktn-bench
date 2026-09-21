@@ -13,7 +13,7 @@
 # the report. Exit is non-zero iff anything FAILed — a SKIP row does not fail
 # the run.
 #
-# Requires terraform, node, npm, jq, opa/cfn-guard on PATH (plus hcl2json for a
+# Requires terraform, node, npm, jq, opa on PATH (plus hcl2json for a
 # spec with `oracle.hcl_traversal: true`, whose absence is a hard TOOL_MISSING
 # tier-1 failure, never a silent pass), and network the first time `npm ci` /
 # `terraform init` populate their caches. Docker is optional: without it the
@@ -112,7 +112,6 @@ gen_sync_check() {
   done
   paths+=(
     "oracles/rego/${id}"
-    "oracles/cfn-guard/${id}"
     "oracles/rego-cfn/${id}"
     "oracles/${id}"
     "local-registry.json"

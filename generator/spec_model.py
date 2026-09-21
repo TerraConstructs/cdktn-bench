@@ -31,7 +31,7 @@ from jsonpath_jq import jsonpath_to_jq
 
 # The two STATIC tiers, and the only tiers a generated tests/static_tiers.sh
 # can run: "0" (the arm's own toolchain plus jq-compiled structural asserts)
-# and "1" (the hand-authored Rego/cfn-guard bundle).
+# and "1" (the hand-authored Rego bundle).
 TierStr = Literal["0", "1"]
 # "live": a catch whose mistake is invisible to EVERY static tier by
 # construction -- the only discriminating signal comes from a real AWS API
@@ -996,20 +996,14 @@ class Oracle(BaseModel):
     rego_hints: list[str] = Field(default_factory=list)
     cfn_guard_hints: list[str] = Field(default_factory=list)
     # Which engine grades tier-"1" on the `awscdk` arm (specs/SCHEMA.md §4.5).
-    # TF-shaped arms are ALWAYS graded by OPA/Rego over `terraform show -json`;
-    # this only picks what runs against awscdk's synthesized CFN template.
-    #
-    #   "cfn_guard" (DEFAULT) -- `cfn-guard validate --data <template.json>
-    #       --rules oracles/cfn-guard/<id>/policy.guard`. The default is the
-    #       incumbent so every already-generated spec regenerates
-    #       BYTE-IDENTICALLY.
-    #   "rego" -- `opa eval` over the SAME template with this scenario's
-    #       `oracles/rego-cfn/<id>/policy.rego` (CFN-shaped, distinct from the
-    #       TF-shaped `oracles/rego/<id>/policy.rego`). Chosen when the intent
-    #       needs something cfn-guard cannot express (notably a cross-resource
-    #       logical-id join), or when cross-arm equal-strictness grading needs
-    #       one policy language on all three arms (DECISIONS.md Amendment 29).
-    awscdk_tier1_engine: Literal["cfn_guard", "rego"] = "cfn_guard"
+    # "rego" is the only value: `opa eval` over the arm's synthesized
+    # CloudFormation template with this scenario's
+    # `oracles/rego-cfn/<id>/policy.rego` (CFN-shaped, distinct from the
+    # TF-shaped `oracles/rego/<id>/policy.rego` the other arms are graded by).
+    # The field is kept so each spec states its grader where its oracle is
+    # defined; `validate_awscdk_tier1_engine` below rejects the retired
+    # `cfn_guard` value with the reason it was retired.
+    awscdk_tier1_engine: Literal["rego"] = "rego"
     # Which engine grades tier-"0" on EVERY arm (specs/SCHEMA.md §4.5.1). The
     # asserts, their paths and their ops are unchanged either way -- the same
     # YAML entries are compiled to jq or to Rego from one grammar.
@@ -1057,6 +1051,27 @@ class Oracle(BaseModel):
     # block, so neither arm has anything to resolve. Setting this with hcl_raw
     # disabled is a spec bug, not a no-op, and is rejected below.
     hcl_traversal: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _cfn_guard_engine_is_retired(cls, data: object) -> object:
+        # cfn-guard 3.2.0 cannot express a cross-resource logical-id join, so
+        # every intent that states one had to be proxied, and a proxy grades a
+        # byte-equivalent Terraform solution the opposite way. OPA/Rego now
+        # grades tier 1 on every arm (ROADMAP.md M8); cfn-guard stays installed
+        # in the awscdk image as a capability an agent may run, never as the
+        # oracle. Caught here rather than by the Literal so the message says
+        # what replaced the value and why.
+        if isinstance(data, dict) and data.get("awscdk_tier1_engine") == "cfn_guard":
+            raise ValueError(
+                "oracle.awscdk_tier1_engine: 'cfn_guard' is retired. OPA/Rego "
+                "grades tier 1 on every arm, including awscdk, so that one "
+                "policy language and one identity domain (logical ids) make "
+                "equal-strictness cross-arm grading structural rather than a "
+                "review promise -- ROADMAP.md M8 and DECISIONS.md Amendment 45. "
+                "Use 'rego' and hand-author oracles/rego-cfn/<id>/policy.rego."
+            )
+        return data
 
     @model_validator(mode="after")
     def _names_unique(self) -> "Oracle":

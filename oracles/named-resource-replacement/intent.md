@@ -1,6 +1,6 @@
 # Oracle intent: Rename an explicitly-named, in-use security group and roll it out
 
-`named-resource-replacement` — generated verbatim from `specs/named-resource-replacement.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/named-resource-replacement/policy.rego` and `../cfn-guard/named-resource-replacement/policy.guard` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
+`named-resource-replacement` — generated verbatim from `specs/named-resource-replacement.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/named-resource-replacement/policy.rego` and `../rego-cfn/named-resource-replacement/policy.rego` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
 
 **Do not hand-edit this file.** It is regenerated from the spec on every `emit_oracles` call; edit `oracle.intent` in `specs/named-resource-replacement.yaml` instead.
 
@@ -20,7 +20,7 @@ deliberate:
    `solution/broken/seed-unchanged/`, which exists precisely to keep proving
    that.
 
-2. TIER 1 (Rego / cfn-guard, every arm). The group's 443 ingress stays
+2. TIER 1 (Rego, every arm). The group's 443 ingress stays
    scoped to the VPC CIDR — no 0.0.0.0/0. A policy-family fact rather than a
    tier-0 assert because "no rule anywhere in this group may be open to the
    world" is a quantified statement over a collection, which is what the

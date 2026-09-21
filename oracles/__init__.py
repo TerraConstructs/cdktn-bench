@@ -4,8 +4,8 @@ Sibling packages/modules:
   - `emit.py`       — `emit_oracles(spec) -> dict[str, str]`, the stable
                        interface `generator/gen.py` calls to
                        produce a scenario's `oracles/<id>/intent.md`,
-                       `oracles/rego/<id>/policy.rego`, and
-                       `oracles/cfn-guard/<id>/policy.guard`.
+                       `oracles/rego/<id>/policy.rego` (the TF arms) and
+                       `oracles/rego-cfn/<id>/policy.rego` (awscdk).
   - `lib/structural.py`   — path-based structural asserts over synthesized
                              CFN JSON and Terraform plan JSON.
 

@@ -45,7 +45,7 @@ provenance: {...}                 # §6
 
 | Field | Type | Required | Notes |
 |---|---|---|---|
-| `id` | string | yes | Kebab-case, matches `^[a-z][a-z0-9-]*$`. Becomes the directory name under `tasks/`, `oracles/rego/`, `oracles/cfn-guard/`, and `oracles/<id>/` (§8). Must equal the spec's own filename stem (`specs/<id>.yaml`), enforced by the generator at load time — this is what lets the generator refuse to run against a renamed-but-not-moved file. |
+| `id` | string | yes | Kebab-case, matches `^[a-z][a-z0-9-]*$`. Becomes the directory name under `tasks/`, `oracles/rego/`, `oracles/rego-cfn/`, and `oracles/<id>/` (§8). Must equal the spec's own filename stem (`specs/<id>.yaml`), enforced by the generator at load time — this is what lets the generator refuse to run against a renamed-but-not-moved file. |
 | `title` | string | yes | Short human title, shown in any results viewer. Written to `task.toml [task] description` on a **single-step greenfield** spec; on a multi-step *or brownfield* spec that slot carries `workspace_title` instead and the full title moves to `task.toml [metadata] scenario_title` (both host-side metadata; the task dir itself is never uploaded to the agent). Not used in `instruction.md` — the instruction body is `instruction.shared_body`, not `title`. **Is** used as the skeleton header for a single-step greenfield spec — see §0.1. |
 | `workspace_title` | string | **required iff `steps:` or `workspace_seed:` is set**; forbidden otherwise | The header comment stamped into each arm's skeleton entry file under `environment/`. §0.1. |
 | `workspace_id` | string | **required iff `steps:` or `workspace_seed:` is set**; optional otherwise (defaults to `id`) | The agent-visible scenario **name** — the NAME half of what `workspace_title` does for the SENTENCE half. Kebab-case, `^[a-z][a-z0-9-]*$` (it becomes a construct id and a synthesized stack *directory* name). §0.1. |
@@ -1286,7 +1286,7 @@ oracle:
       expected: <any>            # shape depends on op; omitted for exists/not_exists
   rego_hints: [<string>, ...]        # optional, default []
   cfn_guard_hints: [<string>, ...]   # optional, default []
-  awscdk_tier1_engine: cfn_guard | rego   # optional, default cfn_guard — §4.5
+  awscdk_tier1_engine: rego          # optional, default rego — §4.5 (awscdk only)
   tier0_engine: jq | rego            # optional, default jq — §4.5.1 (every arm)
   hcl_traversal: false | true        # optional, default false — §4.6 (hcl_raw only)
 ```
@@ -1298,7 +1298,7 @@ check — the thing a human reviewer reads to judge whether `structural_asserts`
 + the hand-authored `.rego`/`.guard` bundles (§8) actually encode what they
 claim to. This is the text that lands in the generated
 `oracles/<id>/intent.md` (§8) and is what the oracle-equivalence CI (Slice E)
-uses as the reference when checking that the Rego and cfn-guard bundles
+uses as the reference when checking that the two Rego bundles
 encode "the same intent at the same strictness" (prereg §3).
 
 ### 4.2 `structural_asserts`
@@ -1361,7 +1361,7 @@ arguably more idiomatic Terraform pattern than avoiding it). A Rego rule
 written against it can never fire; this is functionally identical to
 `default allow := true`, and nothing catches it, because tier-1 paths are
 never executed as declared paths by the generated verifier (tier-1 is
-Rego/cfn-guard-graded — the path is documentation, not code, until this
+Rego-graded — the path is documentation, not code, until this
 finding's fix). This is exactly why `generator/check_reference_paths.py`
 (`make check-paths SPEC=...`, added by this fix) exists: it resolves
 **every** declared `structural_assert`, tier "0" and tier "1" alike,
@@ -1567,14 +1567,14 @@ matter how correct the rest of the path is. Both evaluators implement this
 identically: `generator/jsonpath_jq.py::jsonpath_to_jq` compiles it to a
 literal jq `fromjson` filter; `oracles/lib/structural.py::resolve` resolves
 segment-by-segment, `json.loads`-ing every node between segments (Rego and
-cfn-guard need no such extension — `json.unmarshal`/native JSON parsing of
+Rego needs no such extension — `json.unmarshal` parsing of
 an embedded string is a normal, first-class operation in both, so this is
-a tier-0-evaluator-specific gap, not a Rego/cfn-guard one).
+a tier-0-evaluator-specific gap, not a Rego one).
 
 `tier`: `"0"` if checkable directly on the raw synth/plan artifact with no
 extra tool (this is what the generated verifier runs immediately
-after synth/plan, before invoking cfn-guard/Rego); `"1"` if it's the kind of
-graph/intent check better expressed as Rego/cfn-guard policy (in which case
+after synth/plan, before invoking Rego); `"1"` if it's the kind of
+graph/intent check better expressed as a Rego policy (in which case
 this entry is the **spec** for that policy, cross-checked by the
 oracle-equivalence CI — the policy file is still the thing that actually
 runs). Those two are the only legal values: a structural assert is compiled
@@ -1587,42 +1587,54 @@ static artifact can carry belongs in the live check instead (§5), declared as a
 Free-form prose, **not executable** — bullet points guiding whoever
 hand-authors this scenario's two policy bundles (§8) toward the intended
 policy shape. `rego_hints` guides the TF-shaped `oracles/rego/<id>/*.rego`;
-`cfn_guard_hints` guides the awscdk-side bundle, which is
-`oracles/cfn-guard/<id>/*.guard` under the default engine and
-`oracles/rego-cfn/<id>/policy.rego` when `oracle.awscdk_tier1_engine: rego`
+`cfn_guard_hints` guides the awscdk-side bundle,
+`oracles/rego-cfn/<id>/policy.rego` — it describes the CloudFormation shape,
+which is what that bundle reads, whatever the field is named
 (§4.5) — the hints describe the **CloudFormation shape**, which is the same
 either way, so the name is about the artifact, not the tool (e.g. "deny if any IAM policy Statement
 Resource is `\"*\"` when a specific parameter ARN was created in this plan").
 Every tier-`"1"` entry in `structural_asserts` should have at least one
-corresponding hint in each list, since both a Rego rule and a cfn-guard rule
-need to exist for it.
+corresponding hint in each list, since a rule must exist in both the
+plan-shaped and the CFN-shaped bundle for it.
 
-### 4.5 `awscdk_tier1_engine` (optional, default `cfn_guard`)
+### 4.5 `awscdk_tier1_engine` (optional, default `rego`)
 
-Which engine grades **tier-`"1"`** on the `awscdk` arm. The TF-shaped arms
-(`hcl_raw`, `terraconstructs`) are *always* graded by OPA/Rego over
-`terraform show -json`; this field only chooses what runs against awscdk's
-synthesized CloudFormation template. It changes nothing about tier-`"0"`,
-the live check, or any other arm.
+Which engine grades **tier-`"1"`** on the `awscdk` arm. `rego` is the only
+value: OPA/Rego grades tier 1 on every arm, and the field is kept so each spec
+states its grader where its oracle is defined. The retired `cfn_guard` value is
+rejected at spec load with a message naming its replacement.
 
 | value | tool | policy file | `input` at eval time |
 |---|---|---|---|
-| `cfn_guard` **(default)** | `cfn-guard validate --data "$ARTIFACT" --rules "$POLICY"` | `oracles/cfn-guard/<id>/policy.guard` | `cdk.out/ScenarioStack.template.json` |
-| `rego` | `opa eval -f raw -I -d "$POLICY" 'data.cdktn_bench.<id>.deny' < "$ARTIFACT"` | `oracles/rego-cfn/<id>/policy.rego` | the same template |
-| *(TF arms, not selectable)* | same `opa eval` line | `oracles/rego/<id>/policy.rego` | `terraform show -json` plan JSON |
+| `rego` **(default, only value)** | `opa eval -f raw -I -d "$POLICY" 'data.cdktn_bench.<id>.deny' < "$ARTIFACT"` | `oracles/rego-cfn/<id>/policy.rego` | `cdk.out/ScenarioStack.template.json` |
+| *(TF arms, not selectable)* | the same `opa eval` line | `oracles/rego/<id>/policy.rego` | `terraform show -json` plan JSON |
 
-**The default is the incumbent on purpose.** Every spec written before this
-field existed regenerates byte-identically — no task dir, no `task.toml`, no
-the verifier, no `intent.md` changes by adding the field to the
-schema. Selecting `rego` is an explicit, per-scenario opt-in.
+One language and one identity domain on every arm is what makes cross-arm
+equal-strictness grading structural instead of a review promise. It closes the
+class of defect that made cfn-guard unusable as an oracle: cfn-guard 3.2.0
+cannot express a **cross-resource join** — there is no way to say "this
+`AWS::IAM::ManagedPolicy`'s `Roles` entry references the logical id of that
+`AWS::IAM::Role`" — so every intent that stated one had to be encoded as a
+proxy (count equality, an allowlist, an existence check), and a proxy is
+unsound in **both** directions: it passes solutions that violate the intent and
+fails solutions that satisfy it, while the byte-equivalent Terraform solution
+scores the opposite way. `DECISIONS.md` Amendment 29 makes equal-strictness
+cross-arm grading binding; Amendment 45 retires the engine. `ROADMAP.md` M8
+carries the executed proof.
+
+#### cfn-guard is retained as an arm capability
+
+`cfn-guard` stays installed in `arms/awscdk/environment/Dockerfile`. It is a
+real tool an awscdk team has, and an agent may run it; it is measured as part
+of the arm. What it is not is the grading authority — no generated verifier
+invokes it, and no spec can select it.
 
 #### The two Rego bundles are different files, deliberately
 
 `oracles/rego/<id>/policy.rego` and `oracles/rego-cfn/<id>/policy.rego` share a
 language, a `deny` contract, and a package name
-(`cdktn_bench.<scenario_id_with_underscores>` — the generated
-the verifier runs one identical `opa eval` on every arm). They
-do **not** share an `input`:
+(`cdktn_bench.<scenario_id_with_underscores>` — the generated verifier runs one
+identical `opa eval` on every arm). They do **not** share an `input`:
 
 - TF arms: `input.planned_values.root_module.resources[]`, keyed on the plan
   **address**, with `.type` / `.values`.
@@ -1636,45 +1648,19 @@ and exactly where a cross-arm strictness gap hides. Do not merge them. The two
 files never load into one OPA instance: each is copied into its own arm's
 `tests/` directory as the only policy there.
 
-Authoring hints: a `rego`-engine awscdk bundle is written from the spec's
-tier-`"1"` asserts' `cfn_jsonpath` values and its **`cfn_guard_hints`** (§4.3)
-— those hints describe the CFN shape and apply to this file whichever engine
-reads them. `rego_hints` describe the plan-JSON shape and belong to
-`oracles/rego/`.
+Authoring hints: an awscdk bundle is written from the spec's tier-`"1"`
+asserts' `cfn_jsonpath` values and its **`cfn_guard_hints`** (§4.3) — those
+hints describe the CFN shape and apply to this file whichever engine reads
+them. `rego_hints` describe the plan-JSON shape and belong to `oracles/rego/`.
 
-#### When to select `rego`
+#### Failure semantics
 
-When the scenario's `oracle.intent` needs something cfn-guard 3.2.0 cannot
-express — in practice, a **cross-resource join**. cfn-guard has no way to state
-"this `AWS::IAM::ManagedPolicy`'s `Roles` entry references the logical id of
-that `AWS::IAM::Role`"; encoding such an intent forces a proxy (count
-equality), and a proxy is unsound in **both** directions — it passes solutions
-that violate the intent and fails solutions that satisfy it, while the
-byte-equivalent Terraform solution scores the opposite way. `DECISIONS.md`
-Amendment 29 §4 makes equal-strictness cross-arm grading **binding**, so a
-scenario that needs that join must be graded by the engine the other arms use.
-See `ROADMAP.md` M8 for the executed proof.
-
-#### cfn-guard is retained, but is not the cross-arm authority
-
-`cfn-guard` stays installed in `arms/awscdk/environment/Dockerfile` and stays
-the default engine. It is a real tool an awscdk team actually has, and it is
-kept as a **measured arm capability**. What it cannot be is the *authority* in
-a cross-arm comparison, because it grades at a different strictness than the
-engine used on the other two arms. Choosing between the engines is therefore a
-statement about what a given scenario is *for*: a cross-arm strictness
-comparison selects `rego`; an awscdk-local check may keep `cfn_guard`.
-
-#### Failure semantics are identical either way
-
-Both branches emit the same tier-1 status ladder and the same hard-failure
+Tier 1 reports one status ladder on every arm, with the same hard-failure
 reward gate (`generator/gen.py::build_verify_config`): `SKIPPED_NO_ASSERTS`
-(no tier-`"1"` asserts declared — non-gating), `TOOL_MISSING` (the grader is
-absent from the image; writes `/logs/verifier/tier1-unavailable`; **hard
-failure**), `SKIPPED_STUB` (the policy still carries its `GENERATOR-STUB`
-marker; writes `/logs/verifier/tier1-unauthored`; **hard failure**), `PASS`,
-`FAIL`. Selecting `rego` only changes which binary is probed with `command -v`
-and which policy filename is read.
+(no tier-`"1"` asserts declared — non-gating), `TOOL_MISSING` (opa is absent
+from the image; writes `/logs/verifier/tier1-unavailable`; **hard failure**),
+`SKIPPED_STUB` (the policy still carries its `GENERATOR-STUB` marker; writes
+`/logs/verifier/tier1-unauthored`; **hard failure**), `PASS`, `FAIL`.
 
 ### 4.5.1 `tier0_engine` (optional, default `jq`)
 
@@ -2436,8 +2422,8 @@ tasks/<scenario-id>/
             verify.py              # this task's config: build step (awscdk: build_command;
                                     # terraconstructs: gen.py-injected `npx tsc -p tsconfig.json`)
                                     # -> synth_command ->
-                                    # structural_asserts (tier "0") -> cfn-guard
-                                    # (tier "1"; or opa, per oracle.awscdk_tier1_engine — §4.5)
+                                    # structural_asserts (tier "0") -> opa
+                                    # (tier "1", oracles/rego-cfn/<id>/policy.rego — §4.5)
                                     # -> writes /logs/verifier/reward.txt
             live_check.py           # scaffolded stub iff verifier.live_check.module names it;
                                     # never called while live_check.enabled == false
@@ -2467,13 +2453,9 @@ oracles/
         policy.rego                 # hand-authored from oracle.structural_asserts (tier "1") +
                                      # oracle.rego_hints; graded against hcl_raw's AND
                                      # terraconstructs' `terraform show -json` plan output
-    cfn-guard/<scenario-id>/
-        policy.guard                 # hand-authored from the same structural_asserts + cfn_guard_hints;
-                                      # graded against awscdk's synthesized CFN template.
-                                      # Present iff oracle.awscdk_tier1_engine == "cfn_guard" (§4.5, the DEFAULT)
     rego-cfn/<scenario-id>/
-        policy.rego                  # same intent, same CFN template, graded by OPA instead of cfn-guard.
-                                      # Present iff oracle.awscdk_tier1_engine == "rego" (§4.5).
+        policy.rego                  # hand-authored from the same structural_asserts + cfn_guard_hints;
+                                      # graded against awscdk's synthesized CFN template (§4.5).
                                       # NOT interchangeable with rego/<id>/policy.rego above: different
                                       # `input` document (CFN template vs plan JSON) — see §4.5
 
@@ -2483,17 +2465,17 @@ specs/<scenario-id>.yaml            # the source; this file
 ### 8.1 A deliberate deviation from directory grouping some earlier notes implied
 
 Earlier planning language (and this task's own brief) suggested one flat
-`oracles/<scenario-id>/{intent.md, policy.rego, policy.guard}` directory per
+`oracles/<scenario-id>/{intent.md, policy.rego}` directory per
 scenario. That's **not** what this doc specifies, on purpose: Slice A already
-scaffolded `oracles/rego/README.md` and `oracles/cfn-guard/README.md` as
+scaffolded `oracles/rego/README.md` and `oracles/rego-cfn/README.md` as
 top-level, oracle-type-first directories, each explicitly documented as "One
-`.rego` bundle per scenario catch... populated in Slice D" / "One `.guard`
-ruleset per scenario catch... populated in Slice D." Moving the policy files
+`.rego` bundle per scenario catch... populated in Slice D" for each. Moving the
+policy files
 under a scenario-first `oracles/<id>/` tree would silently contradict two
 already-committed READMEs for no functional gain (the content addressed is
 identical either way — this is purely a grouping choice). This schema keeps
-`policy.rego` / `policy.guard` where Slice A already said they'd go
-(`oracles/rego/<id>/`, `oracles/cfn-guard/<id>/`) and adds **only**
+both `policy.rego` bundles where Slice A already said they'd go
+(`oracles/rego/<id>/`, `oracles/rego-cfn/<id>/`) and adds **only**
 `oracles/<scenario-id>/intent.md` as new, scenario-first, shared-by-both-
 policies content — satisfying the spirit of "one place to find everything
 about this scenario's oracle" (the intent doc) without relocating what Slice
@@ -2568,8 +2550,7 @@ if the flat grouping was actually intended.
    `{{token}}` channel).
 7. `oracles/<id>/intent.md` is `oracle.intent` verbatim (§8.1).
    `oracles/rego/<id>/policy.rego` and this spec's awscdk-side bundle
-   (`oracles/cfn-guard/<id>/policy.guard`, or `oracles/rego-cfn/<id>/policy.rego`
-   when `oracle.awscdk_tier1_engine: rego` — §4.5) are hand-authored (not
+   (`oracles/rego-cfn/<id>/policy.rego` — §4.5) are hand-authored (not
    generated) from `oracle.structural_asserts` +
    `oracle.rego_hints`/`cfn_guard_hints` — the generator scaffolds an empty
    file with a header comment pointing back at the spec if one doesn't exist
@@ -2687,8 +2668,8 @@ These are flagged, not silently resolved, because each has a real decision
 behind it that the schema above commits to one answer for — recorded here so
 a reviewer can find and override any of them in one place.
 
-1. **§8.1 directory grouping.** This schema keeps `policy.rego`/`policy.guard`
-   under `oracles/rego/<id>/` and `oracles/cfn-guard/<id>/` (matching Slice
+1. **§8.1 directory grouping.** This schema keeps the two `policy.rego`
+   bundles under `oracles/rego/<id>/` and `oracles/rego-cfn/<id>/` (matching Slice
    A's already-committed READMEs) and adds a new `oracles/<id>/intent.md`,
    rather than moving everything under one flat `oracles/<id>/` tree as an
    earlier note phrased it. No functional difference either way — purely a

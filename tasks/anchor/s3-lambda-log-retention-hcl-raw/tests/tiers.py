@@ -371,13 +371,12 @@ def tier_1(cfg, artifact):
     hcl_status, artifact = _hcl_input(cfg, artifact)
     if not cfg["has_asserts"]:
         return "SKIPPED_NO_ASSERTS"
-    tool = "opa" if cfg["engine"] == "opa" else "cfn-guard"
     status = None
-    if not have(tool):
+    if not have("opa"):
         tee(
             "tier1-unavailable",
             [
-                "%s is not installed in this image, but this scenario" % tool,
+                "opa is not installed in this image, but this scenario",
                 "declares tier-1 structural_asserts -- this is a",
                 "run-invalidating condition, not a silent pass.",
             ],
@@ -404,16 +403,10 @@ def tier_1(cfg, artifact):
             list(HCL_PARSE_FAILED_LINES) + read_lines("tier1-hcl-merge.log"),
         )
         status = "ENGINE_ERROR"
-    elif cfg["engine"] == "cfn_guard":
-        sys.stdout.flush()
-        rc = subprocess.run(
-            ["cfn-guard", "validate", "--data", str(artifact), "--rules", str(policy)]
-        ).returncode
-        status = "PASS" if rc == 0 else "FAIL"
     else:
         status = _opa_deny(cfg, policy, artifact)
 
-    if cfg["engine"] == "opa" and have("opa") and not is_stub_policy(policy):
+    if have("opa") and not is_stub_policy(policy):
         _not_verifiable_probe(cfg, policy, artifact)
     return status
 

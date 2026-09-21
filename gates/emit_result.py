@@ -236,8 +236,9 @@ def read_tier1_not_verifiable(trial_dir: str | Path) -> tuple[bool, str | None]:
     Terraform pattern: referencing another resource's provider-computed
     output -- is indistinguishable in the published data from one that WAS
     checked and passed. An identical wildcard-IAM violation scores 0.0 on
-    `awscdk` (cfn-guard has no plan-time-unknown gap; CFN synth is always
-    fully static) but 1.0 on the TF arms, with nothing in the row to show why.
+    `awscdk` (CFN synth is always fully static, so that arm has no
+    plan-time-unknown gap) but 1.0 on the TF arms, with nothing in the row to
+    show why.
 
     Host-side path is `<trial_dir>/verifier/tier1-not-verifiable`
     (`harbor/models/trial/paths.py`: `verifier_dir = trial_dir /
@@ -309,8 +310,8 @@ def read_tier_evidence(trial_dir: str | Path) -> dict[str, Any] | None:
       function returns the real per-assert-name verdict, keyed by
       `structural_assert.name` (specs/SCHEMA.md §4.2), under `"tier0"`.
     - **tier-1 is bundle-only**: every tier-"1" `structural_assert` for a
-      given arm/scenario is graded by ONE `opa eval`/`cfn-guard validate`
-      call over the whole policy file (`tests/tiers.py::tier_1`),
+      given arm/scenario is graded by ONE `opa eval` call over the whole
+      policy file (`tests/tiers.py::tier_1`),
       producing exactly one `tier1_status` for the WHOLE bundle -- there
       is no per-tier-1-assert breakdown to read, because the oracle itself
       never computes one -- the tier-1 assert *names* are recorded in the

@@ -809,7 +809,7 @@ oracle:
        gone from the artifact entirely (hcl_raw) or readable only conditionally
        (terraconstructs) -- see 3 and 4.
 
-    3. TIER 1 (Rego / cfn-guard). Two quantified claims, which is exactly what
+    3. TIER 1 (Rego, every arm). Two quantified claims, which is exactly what
        separates this tier from tier 0 -- a jq path pins one value at one path;
        neither of these is that shape:
          * (every arm) NO ownership control anywhere in this workspace may
@@ -857,6 +857,8 @@ oracle:
     the configuration or retained with a non-granting value; and how many
     applies it took to get there. The arms are compared on the declared
     behavioural facts only.
+
+  awscdk_tier1_engine: rego
 
   structural_asserts:
     - name: application-bucket-still-ships-access-logs-under-the-same-prefix

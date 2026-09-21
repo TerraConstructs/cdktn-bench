@@ -1,6 +1,6 @@
 # Oracle intent: Step Functions order-batch transform (JSONata query language)
 
-`sfn-jsonata` — generated verbatim from `specs/sfn-jsonata.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/sfn-jsonata/policy.rego` and `../cfn-guard/sfn-jsonata/policy.guard` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
+`sfn-jsonata` — generated verbatim from `specs/sfn-jsonata.yaml`'s `oracle.intent` (`specs/SCHEMA.md` §4.1). This is the single natural-language source of truth that both `../rego/sfn-jsonata/policy.rego` and `../rego-cfn/sfn-jsonata/policy.rego` must encode at the same strictness — the oracle-equivalence CI (Slice E) uses this file as the human-reviewable reference when checking that.
 
 **Do not hand-edit this file.** It is regenerated from the spec on every `emit_oracles` call; edit `oracle.intent` in `specs/sfn-jsonata.yaml` instead.
 
