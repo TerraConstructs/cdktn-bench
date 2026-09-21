@@ -9,8 +9,8 @@ each run's artifact into an output tree plus a manifest.
 
 Fixture enumeration and the kept working copies come from
 gates/artifact_collector.py, which is the one implementation of that; what is
-here is the tier-1 half -- parsing the `opa eval` queries out of the generated
-static_tiers.sh and preferring the merged document over the plan.
+here is the tier-1 half -- reading the `opa eval` queries out of the generated
+tests/verify.py and preferring the merged document over the plan.
 
 Usage:
     uv run python scripts/spike/collect_artifacts.py --out <dir> --work-dir <dir>
@@ -19,8 +19,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import ast
 import json
-import re
 import shutil
 import sys
 import time
@@ -38,23 +38,25 @@ from spec_model import load_spec  # noqa: E402
 
 ARMS = ("hcl_raw", "terraconstructs", "awscdk")
 
-# `opa eval -f raw -I -d <policy> [-d <lib>] "data.cdktn_bench.<pkg>.<rule>"`
-# as generator/gen.py emits it. Parsed rather than reconstructed so the spike
-# runs the queries the verifier really runs, library files included.
-_OPA_EVAL_RE = re.compile(
-    r"opa eval -f raw -I((?: -d \"\$[A-Z_]+\")+) \"(data\.cdktn_bench\.[a-z0-9_]+\.\w+)\""
-)
-
-
-def parse_queries(static_tiers: Path) -> list[dict]:
+def parse_queries(verify_py: Path) -> list[dict]:
     """The tier-1 evaluations this arm's generated verifier performs, as
-    `{query, data_vars}` in emission order (deny first, then not_verifiable)."""
-    text = static_tiers.read_text()
-    out = []
-    for m in _OPA_EVAL_RE.finditer(text):
-        data_vars = re.findall(r"\$([A-Z_]+)", m.group(1))
-        out.append({"query": m.group(2), "data_vars": data_vars})
-    return out
+    `{query, data_vars}` in evaluation order (deny first, then not_verifiable).
+
+    Read from the emitted configuration rather than reconstructed, so the spike
+    runs the queries the verifier really runs, shared library included.
+    """
+    for node in ast.parse(verify_py.read_text()).body:
+        if not (isinstance(node, ast.Assign) and node.targets[0].id == "CONFIG"):
+            continue
+        tier1 = ast.literal_eval(node.value)["tier1"]
+        if tier1["engine"] != "opa" or not tier1["has_asserts"]:
+            return []
+        data_vars = ["POLICY"] + (["HCL_LIB"] if tier1["hcl"] else [])
+        return [
+            {"query": tier1[key], "data_vars": data_vars}
+            for key in ("query", "not_verifiable_query")
+        ]
+    return []
 
 
 def main(argv: list[str]) -> int:
@@ -104,10 +106,10 @@ def main(argv: list[str]) -> int:
                         plan.append((st, f"steps/{st.name}/reference", solve))
                 for step, name, solve in plan:
                     tdir = tests_dir(task, step)
-                    static_tiers, policy = tdir / "static_tiers.sh", tdir / "policy.rego"
-                    if not static_tiers.exists() or not policy.exists():
+                    verify_py, policy = tdir / "verify.py", tdir / "policy.rego"
+                    if not verify_py.exists() or not policy.exists():
                         continue
-                    queries = parse_queries(static_tiers)
+                    queries = parse_queries(verify_py)
                     if not queries:
                         continue  # cfn-guard arm, or no tier-1 asserts
                     label = f"{spec.id}/{ARM_DIRNAME[arm]}/{name}"

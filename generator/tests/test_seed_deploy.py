@@ -38,6 +38,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT / "generator"))
 
+import gen  # noqa: E402
 from gen import (  # noqa: E402
     OPS_PY,
     SEED_DEPLOY_RECEIPT_PATH,
@@ -48,6 +49,7 @@ from gen import (  # noqa: E402
     assert_no_agent_user_for_seed_deploy,
     build_seed_pre_invoke_sh,
     build_seed_state_identity_block,
+    build_verify_config,
     build_task_toml,
     generate_arm,
     task_dir,
@@ -55,6 +57,7 @@ from gen import (  # noqa: E402
 from jsonpath_jq import jsonpath_to_jq  # noqa: E402
 from tier0_py import Tier0Entry, build_tier0_py  # noqa: E402
 from spec_model import Spec, load_spec  # noqa: E402
+from verifier_harness import read_config, stage  # noqa: E402
 
 SPEC_PATH = REPO_ROOT / "specs" / "named-resource-replacement.yaml"
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "seed-deploy"
@@ -977,51 +980,23 @@ def test_declaring_a_seed_deploy_and_shipping_one_are_the_same_thing() -> None:
 def _run_test_sh_gate(
     tmp_path: Path, arm: str, receipt: dict | None, env: dict[str, str]
 ) -> tuple[int, Path]:
-    """Execute the REAL emitted tests/test.sh with only its /logs ROOT moved.
+    """Execute the REAL emitted verifier's seed-receipt gate in a sandbox.
 
-    The gate reads absolute in-container paths, so the one substitution made
-    here is `/logs` -> `<tmp>/logs`; everything else -- the condition, the jq
-    filter, the exit, the deliberate absence of a reward write -- is the
-    shipped text. `static_tiers.sh` is stubbed to a script that writes
-    reward.txt, so "the gate let grading proceed" and "the gate refused" are
-    distinguishable by the presence of that file, which is exactly what harbor
-    keys on (harbor/verifier/verifier.py::verify raises RewardFileNotFoundError
-    when it is absent).
+    The gate reads absolute in-container paths; the harness repoints them by
+    rewriting the shim that exports them, and everything else -- the condition,
+    the receipt read, the exit, the deliberate absence of a reward write -- is
+    the shipped verifier. The static tiers are pinned to 1.0, so "the gate let
+    grading proceed" and "the gate refused" are distinguishable by the presence
+    of reward.txt, which is exactly what harbor keys on
+    (harbor/verifier/verifier.py::verify raises RewardFileNotFoundError when it
+    is absent).
     """
-    root = tmp_path / arm
-    tests = root / "tests"
-    tests.mkdir(parents=True)
-    logs = root / "logs"
-    (logs / "verifier").mkdir(parents=True)
-
-    src = (task_dir(load_spec(SPEC_PATH), arm) / "tests" / "test.sh").read_text()
-    expected_moves = src.count("/logs/")
-    assert expected_moves, "tests/test.sh names no /logs path -- rewrite this harness"
-    body = src.replace("/logs/", f"{logs}/")
-    assert body.count(f"{logs}/") == expected_moves, "the /logs rewrite lost a path"
-    assert re.search(r'(?<![\w/])/logs/', body) is None, (
-        "an absolute /logs path survived the rewrite; the test would read or "
-        "write the real container paths"
-    )
-    (tests / "test.sh").write_text(body)
-    (tests / "static_tiers.sh").write_text(
-        "#!/usr/bin/env bash\n"
-        f'echo "1.0" > "{logs}/verifier/reward.txt"\n'
-        "exit 0\n"
-    )
-    for f in ("test.sh", "static_tiers.sh"):
-        (tests / f).chmod(0o755)
-
+    box = stage(tmp_path, load_spec(SPEC_PATH), arm, name=f"gate-{arm}")
+    box.static_tiers("1.0")
     if receipt is not None:
-        (logs / "seed-deploy-receipt.json").write_text(json.dumps(receipt))
-
-    proc = subprocess.run(
-        ["bash", str(tests / "test.sh")],
-        capture_output=True,
-        text=True,
-        env={**os.environ, **env},
-    )
-    return proc.returncode, logs
+        box.seed_receipt(**receipt)
+    res = box.run("test.sh", env=env)
+    return res.rc, box.root / "logs"
 
 
 @pytest.mark.parametrize("arm", ARMS)
@@ -1095,10 +1070,9 @@ def test_a_proven_seed_lets_grading_proceed(tmp_path: Path) -> None:
 
 
 def test_a_spec_without_the_env_key_is_unaffected_by_the_gate(tmp_path: Path) -> None:
-    """The block is emitted into EVERY task's tests/test.sh (one static
-    template, runtime-gated -- the same discipline the live-check and
-    idempotence blocks use), so it has to be a no-op wherever task.toml does
-    not set the key. That is every non-brownfield scenario in this repo."""
+    """The gate is in EVERY task's verifier, runtime-gated on the env key -- the
+    same discipline the live-check tier uses -- so it has to be a no-op wherever
+    task.toml does not set the key. That is every non-brownfield scenario."""
     if shutil.which("jq") is None:  # pragma: no cover - jq is assumed
         pytest.skip("jq not on PATH")
     rc, logs = _run_test_sh_gate(tmp_path, "hcl_raw", receipt=None, env={})
@@ -1114,9 +1088,11 @@ def test_the_seed_script_writes_the_receipt_the_verifier_reads(spec: Spec) -> No
         # ...and it is NOT under /logs/pre_invoke/, which ScriptRunner deletes
         # in step 7 before the agent phase (so the verifier could never see it).
         assert not SEED_DEPLOY_RECEIPT_PATH.startswith("/logs/pre_invoke/")
-        test_sh = (task_dir(spec, arm) / "tests" / "test.sh").read_text()
-        assert SEED_DEPLOY_RECEIPT_PATH in test_sh
-        assert SEED_DEPLOY_REQUIRED_ENV_KEY in test_sh
+        # The reader is the shared verifier mechanism; the path reaches it
+        # through the shim that exports it.
+        shim = (task_dir(spec, arm) / "tests" / "test.sh").read_text()
+        assert SEED_DEPLOY_RECEIPT_PATH in shim
+        assert SEED_DEPLOY_REQUIRED_ENV_KEY in gen.TIERS_PY
 
 
 # ---------------------------------------------------------------------------
@@ -1162,25 +1138,20 @@ def _brownfield_specs() -> list[Path]:
 BROWNFIELD_SPECS = _brownfield_specs()
 
 
-def _executable_plan_lines(text: str) -> list[str]:
-    """Lines that RUN `terraform plan`, excluding comments and prose.
+def _executable_plan_commands(spec: Spec, arm: str) -> list[str]:
+    """Every command the emitted verifier RUNS that contains `terraform plan`:
+    the toolchain steps and the two live tiers' own commands.
 
-    Deliberately not a parser: these are generated scripts whose plan
-    invocations are single logical lines (a `\\`-continued chain keeps the flags
-    on the same physical line as the command). Anything that stops being true
-    should make this test noisy, not quietly empty -- which is why callers also
-    assert the list is NON-empty where a plan is expected.
+    Read from the configuration rather than from the emitted file, because the
+    file is a Python literal whose long strings are wrapped -- a line-based scan
+    would split a chain and stop seeing its flags.
     """
-    out = []
-    for line in text.splitlines():
-        if not _TF_PLAN.search(line):
-            continue
-        if line.lstrip().startswith("#"):
-            continue
-        if re.search(r'echo\s+"[^"]*terraform plan', line):
-            continue
-        out.append(line)
-    return out
+    cfg = build_verify_config(spec, arm)
+    commands = [command for _label, command in cfg["toolchain"]]
+    for tier in ("idempotence", "teardown"):
+        if cfg[tier] is not None:
+            commands.append(cfg[tier]["command"])
+    return [c for c in commands if _TF_PLAN.search(c)]
 
 
 def test_there_is_at_least_one_brownfield_spec_to_check() -> None:
@@ -1221,15 +1192,12 @@ def test_every_emitted_terraform_plan_of_a_brownfield_spec_is_refresh_free(
     model = load_spec(spec_path)
     if arm not in model.arms.enabled_arms():
         pytest.skip(f"{model.id}: {arm} is not enabled")
-    root = task_dir(model, arm)
-    found = 0
-    for rel in ("tests/static_tiers.sh", "tests/test.sh"):
-        lines = _executable_plan_lines((root / rel).read_text())
-        found += len(lines)
-        offenders = [ln for ln in lines if "-refresh=false" not in ln]
-        assert not offenders, (
-            f"{model.id}/{arm}/{rel}: refreshing terraform plan(s): {offenders}"
-        )
+    commands = _executable_plan_commands(model, arm)
+    found = len(commands)
+    offenders = [c for c in commands if "-refresh=false" not in c]
+    assert not offenders, (
+        f"{model.id}/{arm}: refreshing terraform plan(s): {offenders}"
+    )
     if arm == "awscdk":
         assert found == 0, "awscdk runs no terraform at all; this test drifted"
     else:
@@ -1239,7 +1207,7 @@ def test_every_emitted_terraform_plan_of_a_brownfield_spec_is_refresh_free(
         # this test rather than fail it.
         assert found, (
             f"{model.id}/{arm}: no executable `terraform plan` found in the "
-            "emitted verifier scripts -- this test would pass vacuously"
+            "emitted verifier's configuration -- this test would pass vacuously"
         )
 
 
@@ -1302,8 +1270,8 @@ def test_the_refresh_flag_no_longer_depends_on_live_check_alone(
 
     monkeypatch.setattr(gen_module, "TASKS_DIR", tmp_path / "tasks")
     for arm in ("hcl_raw", "terraconstructs"):
-        root = generate_arm(greenfield_oracle_brownfield_workspace, arm)
-        lines = _executable_plan_lines((root / "tests" / "static_tiers.sh").read_text())
+        generate_arm(greenfield_oracle_brownfield_workspace, arm)
+        lines = _executable_plan_commands(greenfield_oracle_brownfield_workspace, arm)
         assert lines, f"{arm}: no executable terraform plan emitted"
         for ln in lines:
             assert "-refresh=false" in ln, (
@@ -1771,82 +1739,50 @@ def _run_test_sh_idempotence(
     state_json: str | None,
     cfn: dict | None = None,
 ) -> dict:
-    """Execute the REAL emitted tests/test.sh idempotence tier in a sandbox.
+    """Execute the REAL emitted verifier's idempotence tier in a sandbox.
 
-    `/logs` and `/app/project` are the only substitutions; the arm's own
-    idempotence command is satisfied by stub binaries that exit 0, i.e. by the
-    CONVERGED answer -- so anything but `converged` in the result comes from a
-    guard and not from the toolchain.
+    The arm's own idempotence command is satisfied by stub binaries that exit 0,
+    i.e. by the CONVERGED answer -- so anything but `converged` in the result
+    comes from a guard and not from the toolchain. The static tiers are pinned to
+    1.0 for the same reason.
     """
-    root = tmp_path / arm
-    tests = root / "tests"
-    logs = root / "box-logs"
-    project = root / "box-project"
-    bins = root / "box-bin"
-    stub = root / "box-stub"
-    for d in (tests, logs / "verifier", project, bins, stub):
-        d.mkdir(parents=True, exist_ok=True)
-
-    src = (task_dir(load_spec(SPEC_PATH), arm) / "tests" / "test.sh").read_text()
-    body = src.replace("/logs/", f"{logs}/").replace("/app/project", str(project))
-    survivors = [
-        ln
-        for ln in body.splitlines()
-        if ln.strip()
-        and not ln.lstrip().startswith("#")
-        and ("/logs/" in ln.replace(str(root), "@@BOX@@")
-             or "/app/project" in ln.replace(str(root), "@@BOX@@"))
-    ]
-    assert not survivors, f"{arm}: absolute path survived the rewrite: {survivors}"
-    (tests / "test.sh").write_text(body)
-    (tests / "static_tiers.sh").write_text(
-        "#!/usr/bin/env bash\n" f'echo "1.0" > "{logs}/verifier/reward.txt"\n' "exit 0\n"
-    )
-    for f in ("test.sh", "static_tiers.sh"):
-        (tests / f).chmod(0o755)
-
-    (bins / "aws").write_text(_AWS_STUB)
+    spec = load_spec(SPEC_PATH)
+    box = stage(tmp_path, spec, arm, name=f"idem-{arm}")
+    box.static_tiers("1.0")
+    stub = box.root / "box-stub"
+    stub.mkdir(parents=True, exist_ok=True)
+    box.stub("aws", _AWS_STUB.split("\n", 1)[1])
     # Every toolchain the three arms' idempotence commands reach, all answering
     # CONVERGED (exit 0). `cd` inside the command still has to succeed, so the
     # terraconstructs synth directory is created too.
     for tool in ("terraform", "npx", "cdktn"):
-        (bins / tool).write_text("#!/usr/bin/env bash\nexit 0\n")
-    for f in bins.iterdir():
-        f.chmod(0o755)
-    (project / "cdktf.out" / "stacks" / load_spec(SPEC_PATH).workspace_identity()).mkdir(
+        box.stub(tool, "exit 0")
+    (box.project / "cdktf.out" / "stacks" / spec.workspace_identity()).mkdir(
         parents=True, exist_ok=True
     )
     if cfn is not None:
         (stub / "cfn.json").write_text(json.dumps(cfn))
     else:
         (stub / "cfn.err").write_text("stub: no stack response configured\n")
-
     if receipt is not None:
-        (logs / "seed-deploy-receipt.json").write_text(json.dumps(receipt))
+        box.seed_receipt(**receipt)
     if state_json is not None:
         state_path = {
-            "hcl_raw": project / "terraform.tfstate",
-            "terraconstructs": project
-            / f"terraform.{load_spec(SPEC_PATH).workspace_identity()}.tfstate",
-            "awscdk": project / "unused.tfstate",
+            "hcl_raw": box.project / "terraform.tfstate",
+            "terraconstructs": box.project
+            / f"terraform.{spec.workspace_identity()}.tfstate",
+            "awscdk": box.project / "unused.tfstate",
         }[arm]
         state_path.write_text(state_json)
 
-    subprocess.run(
-        [shutil.which("bash") or "bash", str(tests / "test.sh")],
-        capture_output=True,
-        text=True,
-        env={
-            **os.environ,
-            "PATH": f"{bins}{os.pathsep}{os.environ['PATH']}",
-            "STUB_DIR": str(stub),
-            "SPEC_IDEMPOTENCE_ENABLED": "true",
-            "SPEC_IDEMPOTENCE_GATING": "false",
-            "SPEC_SEED_DEPLOY_REQUIRED": "false",
-            "SPEC_LIVE_CHECK_ENABLED": "false",
-        },
-    )
-    return json.loads((logs / "verifier" / "idempotence-result.json").read_text())
+    res = box.run("test.sh", env={
+        "STUB_DIR": str(stub),
+        "SPEC_IDEMPOTENCE_ENABLED": "true",
+        "SPEC_IDEMPOTENCE_GATING": "false",
+        "SPEC_SEED_DEPLOY_REQUIRED": "false",
+        "SPEC_LIVE_CHECK_ENABLED": "false",
+    })
+    return res.result_json("idempotence-result.json")
 
 
 _SEED_CFN = {
@@ -2034,14 +1970,14 @@ def test_awscdk_makes_no_claim_when_cloudformation_cannot_be_reached(
 
 
 def test_only_a_seeded_spec_grows_the_movement_guard(tmp_path: Path) -> None:
-    """The regression guarantee. Every other task's tests/test.sh must not move
-    a byte, so the guard is emitted by the same `workspace_seed.deploy` branch
-    that emits pre_invoke.sh -- and never by `verifier.idempotence` alone.
+    """The regression guarantee. No other task's verifier may declare the guard,
+    so it comes from the same `workspace_seed.deploy` branch that emits
+    pre_invoke.sh -- and never from `verifier.idempotence` alone.
 
-    THE CONDITION IS THE CONJUNCTION, not `seeded` alone. The guard lives
-    INSIDE a live tier's block (gen.py::build_idempotence_block and
-    build_teardown_block each return "" when their own `enabled` is false,
-    before either reaches build_seed_movement_guard), so a brownfield spec that
+    THE CONDITION IS THE CONJUNCTION, not `seeded` alone. The guard belongs to a
+    live tier's configuration (gen.py::build_idempotence_config and
+    build_teardown_config each return None when their own `enabled` is false,
+    before either reaches build_seed_movement_config), so a brownfield spec that
     deploys its seed and deliberately leaves both tiers OFF correctly ships no
     guard. Written as `seeded` alone this test read the first such spec as a
     generation bug -- the docstring's own "never by verifier.idempotence alone"
@@ -2052,15 +1988,18 @@ def test_only_a_seeded_spec_grows_the_movement_guard(tmp_path: Path) -> None:
     plan converged, §5.2 asks the same before it spends a destroy on what may
     be the harness's own seed.
     """
-    guard = "SEED MOVEMENT GUARD"
     expected_dirs = {
         task_dir(spec, arm).resolve()
         for spec in _seed_deploying_specs()
         if spec.verifier.idempotence.enabled or spec.verifier.teardown.enabled
         for arm in spec.arms.enabled_arms()
     }
-    for path in sorted(TASKS_DIR.rglob("tests/test.sh")):
-        has_guard = guard in path.read_text()
+    for path in sorted(TASKS_DIR.rglob("*/tests/verify.py")):
+        cfg = read_config(path)
+        has_guard = any(
+            cfg[tier] is not None and cfg[tier]["seed_guard"] is not None
+            for tier in ("idempotence", "teardown")
+        )
         wants_guard = path.parent.parent.resolve() in expected_dirs
         assert has_guard == wants_guard, (
             f"{path}: movement guard present={has_guard} but this task's spec "
@@ -2083,9 +2022,10 @@ def test_the_receipt_writer_and_the_idempotence_reader_share_one_jq_program(
     for arm in ARMS:
         program = SEED_STATE_IDENTITY_JQ[arm]
         assert program in build_seed_pre_invoke_sh(spec, arm), f"{arm}: writer"
-        assert program in (task_dir(spec, arm) / "tests" / "test.sh").read_text(), (
-            f"{arm}: reader"
-        )
+        guard = read_config(
+            task_dir(spec, arm) / "tests" / "verify.py"
+        )["idempotence"]["seed_guard"]
+        assert guard["identity_jq"] == program, f"{arm}: reader"
 
 
 # ---------------------------------------------------------------------------

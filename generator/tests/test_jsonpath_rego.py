@@ -532,9 +532,10 @@ class TestOnlyTheRegoEngineShipsAPolicy:
         gen.write_tests_dir(spec_rego, "hcl_raw", tmp_path / "tests")
         policy = tmp_path / "tests" / "tier0.rego"
         assert policy.read_text() == build_tier0_rego_file(spec_rego, "hcl_raw")
-        assert 'TIER0_POLICY="$DIR/tier0.rego"' in (
-            tmp_path / "tests" / "static_tiers.sh"
-        ).read_text()
+        tier0 = gen.build_verify_config(spec_rego, "hcl_raw")["tier0"]
+        assert tier0["engine"] == "rego"
+        assert tier0["query"].endswith(".tier0.render")
+        assert 'DIR / "tier0.rego"' in gen.TIERS_PY
 
     def test_going_back_to_jq_removes_the_stale_policy(self, tmp_path, spec, spec_rego):
         tests_dir = tmp_path / "tests"
@@ -542,5 +543,5 @@ class TestOnlyTheRegoEngineShipsAPolicy:
         assert (tests_dir / "tier0.rego").exists()
         gen.write_tests_dir(spec, "hcl_raw", tests_dir)
         assert not (tests_dir / "tier0.rego").exists(), (
-            "a task dir must not keep a policy the emitted script no longer loads"
+            "a task dir must not keep a policy the emitted verifier no longer loads"
         )

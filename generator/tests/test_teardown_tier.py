@@ -35,6 +35,7 @@ from pydantic import ValidationError
 
 import gen
 from spec_model import Spec, load_spec
+from verifier_harness import read_config, stage
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 PILOT_SPEC = REPO_ROOT / "specs" / "named-resource-replacement.yaml"
@@ -152,54 +153,58 @@ NON_TEARDOWN_SPECS = [
 class TestConditionalEmission:
     @pytest.mark.parametrize("path", NON_TEARDOWN_SPECS, ids=lambda p: p.stem)
     def test_a_spec_without_the_tier_emits_no_block(self, path: Path) -> None:
-        """Generation-conditional, not a dead runtime branch: `build_test_sh` is
-        one static template shared by every task, so an always-emitted block
-        would move every existing task's bytes."""
+        """Generation-conditional, not a dead runtime branch: a spec that does
+        not opt in declares no teardown tier at all, so nothing can arm one."""
         spec = load_spec(path)
         for arm in spec.arms.enabled_arms():
-            assert gen.build_teardown_block(spec, arm) == ""
-            assert "SPEC_TEARDOWN_ENABLED" not in gen.build_test_sh(spec, arm)
+            assert gen.build_teardown_config(spec, arm) is None
+            assert gen.build_verify_config(spec, arm)["teardown"] is None
 
     @pytest.mark.parametrize("path", NON_TEARDOWN_SPECS, ids=lambda p: p.stem)
-    def test_test_sh_is_byte_identical_with_the_tier_off(self, path: Path) -> None:
-        """The claim stated as bytes: enabling teardown on the PILOT may not
-        move one byte of any other spec's emitted test.sh. Compared against the
-        same spec generated with the field forcibly cleared, which is what a
-        spec predating the field validates to."""
+    def test_the_verifier_is_identical_with_the_tier_off(self, path: Path) -> None:
+        """The claim stated as emitted bytes: enabling teardown on the PILOT may
+        not move one byte of any other spec's verifier. Compared against the same
+        spec generated with the field forcibly cleared, which is what a spec
+        predating the field validates to."""
         spec = load_spec(path)
         stripped = load_spec(path)
         stripped.verifier.teardown.enabled = False
         for arm in spec.arms.enabled_arms():
-            assert gen.build_test_sh(spec, arm) == gen.build_test_sh(stripped, arm)
+            assert gen.build_verify_py_file(spec, arm) == gen.build_verify_py_file(
+                stripped, arm
+            )
 
-    def test_the_two_tiers_share_one_placeholder_line(self) -> None:
-        """The mechanism behind the byte-identity claim. A SECOND placeholder
-        line would add a blank line to every task that opts into neither tier,
-        which is precisely what generation-conditional emission protects."""
-        spec = load_spec(REPO_ROOT / "specs" / "ecs-swappiness.yaml")
-        assert gen.build_test_sh(spec, "hcl_raw").endswith("fi\n\nexit $rc\n")
+    def test_the_two_tiers_are_one_shared_mechanism(self) -> None:
+        """Both tiers are the SAME function over their own configuration, so
+        neither can grow a branch the other lacks."""
+        assert gen.TIERS_PY.count("def live_tier(") == 1
+        pilot = load_spec(PILOT_SPEC)
+        idem = gen.build_idempotence_config(pilot, "hcl_raw")
+        down = gen.build_teardown_config(pilot, "hcl_raw")
+        assert set(idem) == set(down)
 
     @pytest.mark.parametrize("arm", ["awscdk", "hcl_raw", "terraconstructs"])
     def test_the_block_is_emitted_on_every_arm_of_the_opted_in_spec(
         self, pilot: Spec, arm: str
     ) -> None:
-        text = (gen.task_dir(pilot, arm) / "tests" / "test.sh").read_text()
-        assert "SPEC_TEARDOWN_ENABLED" in text
-        assert "/logs/verifier/teardown-result.json" in text
-        assert "/logs/verifier/teardown.log" in text
-        assert gen.TEARDOWN_COMMAND[arm].replace(
+        cfg = read_config(gen.task_dir(pilot, arm) / "tests" / "verify.py")["teardown"]
+        assert cfg is not None
+        assert cfg["enabled_env"] == "SPEC_TEARDOWN_ENABLED"
+        assert cfg["result"] == "teardown-result.json"
+        assert cfg["log"] == "teardown.log"
+        assert cfg["command"] == gen.TEARDOWN_COMMAND[arm].replace(
             "__WORKSPACE_ID__", pilot.workspace_identity()
-        ) in text
+        )
 
     @pytest.mark.parametrize("arm", ["awscdk", "hcl_raw", "terraconstructs"])
     def test_teardown_runs_after_idempotence(self, pilot: Spec, arm: str) -> None:
         """ORDERING IS LOAD-BEARING (SCHEMA.md §5.2): destroying first would
         invalidate the live check and the idempotence tier alike, so both
         earlier blocks must already have reached their verdicts."""
-        text = (gen.task_dir(pilot, arm) / "tests" / "test.sh").read_text()
-        live = text.index("SPEC_LIVE_CHECK_ENABLED")
-        idem = text.index("idempotence tier (specs/SCHEMA.md §5.1)")
-        down = text.index("teardown tier (specs/SCHEMA.md §5.2)")
+        body = gen.TIERS_PY
+        live = body.index("rc = live_check(rc)")
+        idem = body.index('cfg["idempotence"]')
+        down = body.index('cfg["teardown"]')
         assert live < idem < down, (live, idem, down)
 
     @pytest.mark.parametrize("arm", ["awscdk", "hcl_raw", "terraconstructs"])
@@ -233,15 +238,20 @@ class TestConditionalEmission:
         exits 0 both for "CloudFormation deleted the stack" and for "there was
         nothing to delete". Exit 0 is believed only alongside the completion
         marker; without it the outcome is not_verifiable, never clean."""
-        text = (gen.task_dir(pilot, "awscdk") / "tests" / "test.sh").read_text()
+        branches = gen.build_teardown_config(pilot, "awscdk")["branches"]
         marker = gen.TEARDOWN_COMPLETION_MARKER["awscdk"]
         assert marker
-        assert (
-            f'if [ "$down_rc" -eq 0 ] \\\n'
-            f"               && grep -qF '{marker}' "
-            f"/logs/verifier/teardown.log; then" in text
-        ), text
-        assert "without printing its own completion marker" in text
+        clean = next(b for b in branches if b["outcome"] == "clean")
+        assert clean["rc"] == 0 and clean["marker"] == marker
+        unmarked = [
+            b for b in branches
+            if b["rc"] == 0 and b["outcome"] == "not_verifiable"
+            and "without printing its own completion marker" in b["reason"]
+        ]
+        assert unmarked, branches
+        # Ordered before the failure verdict, or a never-deployed run is
+        # convicted of a failed destroy instead of skipped with a reason.
+        assert branches.index(clean) < branches.index(unmarked[0])
 
     def test_the_schema_text_says_it_is_not_a_cleanup_mechanism(self) -> None:
         """The sentence that keeps someone from later "improving" the tier into
@@ -249,10 +259,8 @@ class TestConditionalEmission:
         it: the framework reset is what returns the account to baseline."""
         schema = (REPO_ROOT / "specs" / "SCHEMA.md").read_text()
         assert "not a cleanup mechanism" in schema.lower()
-        spec = load_spec(PILOT_SPEC)
-        block = gen.build_teardown_block(spec, "hcl_raw")
-        assert "NOT a cleanup mechanism" in block
-        assert "is NOT retried here" in block
+        assert "NOT a cleanup mechanism" in gen.build_teardown_config.__doc__
+        assert "is not retried" in gen.build_teardown_config.__doc__
 
     def test_no_new_file_is_emitted_into_tests(self, pilot: Spec) -> None:
         """The tier writes only under /logs, so `_GENERATED_TESTS_FILES` — the
@@ -365,32 +373,18 @@ def _run_teardown(
     synth_removes_state: bool = False,
     no_receipt: bool = False,
 ) -> tuple[dict | None, str]:
-    """Execute the REAL emitted tests/test.sh teardown tier in a sandbox.
+    """Execute the REAL emitted verifier's teardown tier in a sandbox.
 
-    Returns the parsed teardown-result.json (None when the block wrote none)
-    and the reward file's contents. `static_tiers.sh` is stubbed to the PASSING
-    static verdict (1.0), so a 0.0 in the result is the gating block's doing.
+    Returns the parsed teardown-result.json (None when the tier wrote none) and
+    the reward file's contents. The static tiers are pinned to the PASSING
+    verdict (1.0), so a 0.0 in the result is the gating block's doing.
     """
     spec = load_spec(PILOT_SPEC)
-    case = f"{arm}-{destroy_rc}-{state}-{gating}"
-    root = tmp_path / f"{case}-{seed_moved}-{synth_removes_state}-{no_receipt}"
-    tests, logs, project, bins = (
-        root / "tests",
-        root / "box-logs",
-        root / "box-project",
-        root / "box-bin",
-    )
-    for d in (tests, logs / "verifier", project, bins):
-        d.mkdir(parents=True, exist_ok=True)
-
-    src = (gen.task_dir(spec, arm) / "tests" / "test.sh").read_text()
-    body = src.replace("/logs/", f"{logs}/").replace("/app/project", str(project))
-    (tests / "test.sh").write_text(body)
-    (tests / "static_tiers.sh").write_text(
-        "#!/usr/bin/env bash\n" f'echo "1.0" > "{logs}/verifier/reward.txt"\n' "exit 0\n"
-    )
-    for f in ("test.sh", "static_tiers.sh"):
-        (tests / f).chmod(0o755)
+    case = f"{arm}-{destroy_rc}-{state}-{gating}-{seed_moved}"
+    box = stage(tmp_path, spec, arm,
+                name=f"{case}-{synth_removes_state}-{no_receipt}")
+    box.static_tiers("1.0")
+    project = box.project
 
     # Every binary the three arms' destroy commands reach, all answering with
     # the requested exit code; `cd` into the synth dir still has to succeed.
@@ -400,16 +394,14 @@ def _run_teardown(
     tf_state = project / f"terraform.{spec.workspace_identity()}.tfstate"
     synth = f"rm -f '{tf_state}'; exit 0" if synth_removes_state else "exit 0"
     for tool in ("terraform", "npx", "cdktn", "cdk", "aws"):
-        (bins / tool).write_text(
-            "#!/usr/bin/env bash\n"
+        box.stub(
+            tool,
             f'case " $* " in *" synth "*) {synth} ;; *" init "*) exit 0 ;; esac\n'
             "case \" $* \" in *describe-stacks*) "
             f"printf '%s' \"$TEARDOWN_CFN_OUT\"; exit 0 ;; esac\n"
             f"printf '%s' \"$TEARDOWN_STUB_OUT\"\n"
-            f"exit {destroy_rc}\n"
+            f"exit {destroy_rc}",
         )
-    for f in bins.iterdir():
-        f.chmod(0o755)
     (project / "cdktf.out" / "stacks" / spec.workspace_identity()).mkdir(
         parents=True, exist_ok=True
     )
@@ -418,35 +410,23 @@ def _run_teardown(
             (project / name).write_text(
                 _STATE_JSON if seed_moved else _SEED_STATE_JSON
             )
-    # The pilot deploys a workspace seed, so the emitted block carries the SEED
+    # The pilot deploys a workspace seed, so the emitted tier carries the SEED
     # MOVEMENT GUARD and reads this receipt before it will spend a destroy.
     if not no_receipt:
-        (logs / "seed-deploy-receipt.json").write_text(
-            json.dumps(
-                {"outcome": "seed_deployed", "state_identity": _SEED_IDENTITY[arm]}
-            )
-        )
+        box.seed_receipt(outcome="seed_deployed", state_identity=_SEED_IDENTITY[arm])
 
-    subprocess.run(
-        [shutil.which("bash") or "bash", str(tests / "test.sh")],
-        capture_output=True,
-        text=True,
-        env={
-            **os.environ,
-            "PATH": f"{bins}{os.pathsep}{os.environ['PATH']}",
-            "TEARDOWN_STUB_OUT": destroy_stdout,
-            "TEARDOWN_CFN_OUT": _CFN_JSON if seed_moved else _SEED_CFN_JSON,
-            "SPEC_TEARDOWN_ENABLED": "true",
-            "SPEC_TEARDOWN_GATING": "true" if gating else "false",
-            "SPEC_IDEMPOTENCE_ENABLED": "false",
-            "SPEC_SEED_DEPLOY_REQUIRED": "false",
-            "SPEC_LIVE_CHECK_ENABLED": "false",
-        },
-    )
-    result_path = logs / "verifier" / "teardown-result.json"
+    res = box.run("test.sh", env={
+        "TEARDOWN_STUB_OUT": destroy_stdout,
+        "TEARDOWN_CFN_OUT": _CFN_JSON if seed_moved else _SEED_CFN_JSON,
+        "SPEC_TEARDOWN_ENABLED": "true",
+        "SPEC_TEARDOWN_GATING": "true" if gating else "false",
+        "SPEC_IDEMPOTENCE_ENABLED": "false",
+        "SPEC_SEED_DEPLOY_REQUIRED": "false",
+        "SPEC_LIVE_CHECK_ENABLED": "false",
+    })
+    result_path = box.logs / "teardown-result.json"
     result = json.loads(result_path.read_text()) if result_path.exists() else None
-    reward = (logs / "verifier" / "reward.txt").read_text().strip()
-    return result, reward
+    return result, (res.reward or "").strip()
 
 
 _CLEAN_STDOUT = {
@@ -562,11 +542,11 @@ def test_the_seed_movement_guard_is_emitted_on_every_arm(
     """§5.2 claims the never-deployed case is caught by "the same per-arm
     mechanisms §5.1 already defines", and the guard is one of them. The two
     tiers emit it from ONE function, so their per-arm mechanics cannot drift."""
-    block = gen.build_teardown_block(pilot, arm)
-    assert "SEED MOVEMENT GUARD" in block
-    assert gen.SEED_STATE_IDENTITY_JQ[arm] in block
-    assert gen.SEED_DEPLOY_RECEIPT_PATH in block
-    assert 'down_outcome="not_verifiable"' in block
+    guard = gen.build_teardown_config(pilot, arm)["seed_guard"]
+    assert guard is not None
+    assert guard["identity_jq"] == gen.SEED_STATE_IDENTITY_JQ[arm]
+    assert gen.SEED_DEPLOY_RECEIPT_PATH in guard["no_identity_reason"]
+    assert "no destroy is attempted" in guard["unmoved_reason"].lower()
 
 
 def test_the_guard_speaks_for_the_teardown_tier_not_the_idempotence_one() -> None:
@@ -644,7 +624,9 @@ def test_the_post_synth_re_probe_aborts_the_terraconstructs_destroy(
 @pytest.mark.parametrize("arm", ("hcl_raw", "terraconstructs", "awscdk"))
 def test_only_terraconstructs_carries_the_rc_9_branch(pilot: Spec, arm: str) -> None:
     """The branch rides the ONE arm whose command can raise the code, so no
-    other arm's tests/test.sh moves a byte for a case it cannot reach."""
-    block = gen.build_teardown_block(pilot, arm)
-    branch = f'elif [ "$down_rc" -eq {gen.IDEMPOTENCE_STATE_VANISHED_RC} ]; then'
-    assert (branch in block) == (arm == "terraconstructs"), block
+    other arm's verifier declares an outcome for a case it cannot reach."""
+    branches = gen.build_teardown_config(pilot, arm)["branches"]
+    reserved = [
+        b for b in branches if b["rc"] == gen.IDEMPOTENCE_STATE_VANISHED_RC
+    ]
+    assert bool(reserved) == (arm == "terraconstructs"), branches

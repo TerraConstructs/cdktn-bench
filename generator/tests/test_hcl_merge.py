@@ -1,7 +1,7 @@
 """The HCL pre-parser is a FILE, not a heredoc.
 
 `oracle.hcl_traversal`'s `.tf` -> JSON pre-parse is a generated
-tests/hcl_merge.py that tests/static_tiers.sh invokes. Two properties are
+tests/hcl_merge.py that tests/tiers.py invokes. Two properties are
 pinned here because both are silent when they break:
 
   * the emitted program's bytes and what it may read -- only sys.argv[1] and
@@ -31,12 +31,14 @@ sys.path.insert(0, str(REPO_ROOT / "generator"))
 
 from gen import (  # noqa: E402
     HCL_MERGE_PY,
+    TIERS_PY,
     build_hcl_merge_py,
-    build_static_tiers_sh,
+    build_verify_config,
     task_dir,
     write_tests_dir,
 )
 from spec_model import Spec, load_spec  # noqa: E402
+from verifier_harness import stage  # noqa: E402
 
 # The one spec with `oracle.hcl_traversal: true`. A second one joins this list
 # rather than getting its own copy of these tests.
@@ -80,22 +82,28 @@ def test_the_program_is_stdlib_only_and_reads_its_two_arguments() -> None:
         assert third_party not in HCL_MERGE_PY
 
 
-def test_static_tiers_invokes_the_file_and_holds_no_heredoc(spec: Spec) -> None:
-    text = build_static_tiers_sh(spec, "hcl_raw")
-    assert 'HCL_MERGE_PY="$DIR/hcl_merge.py"' in text
-    assert 'python3 "$HCL_MERGE_PY" "$ARTIFACT" "$HCL_MERGED"' in text
-    assert "CDKTN_HCL_MERGE_PY" not in text
-    assert "import glob" not in text
+def test_the_verifier_invokes_the_file_and_holds_no_heredoc(spec: Spec) -> None:
+    assert build_verify_config(spec, "hcl_raw")["tier1"]["hcl"] == "merge"
+    assert 'DIR / "hcl_merge.py"' in TIERS_PY
+    assert '["python3", str(merge), str(artifact), str(merged)]' in TIERS_PY
+    assert "import glob" not in TIERS_PY
 
 
-def test_a_missing_pre_parser_is_lib_missing_not_a_verdict(spec: Spec) -> None:
+def test_a_missing_pre_parser_is_lib_missing_not_a_verdict(
+    spec: Spec, tmp_path: Path
+) -> None:
     """Fail-closed, and through the SAME status as a missing resolver: the
     pre-parser is part of the oracle, so its absence can only mean the document
     was never readable -- never that the solution is wrong."""
-    text = build_static_tiers_sh(spec, "hcl_raw")
-    guard = text.index('elif [ ! -f "$HCL_MERGE_PY" ]; then')
-    nxt = text.index("elif", guard + 1)
-    assert 'HCL_MERGE_STATUS="LIB_MISSING"' in text[guard:nxt]
+    box = stage(tmp_path, spec, "hcl_raw")
+    artifact = box.artifact({"planned_values": {}})
+    tiers = box.tiers()
+    cfg = box.config()["tier1"]
+    assert tiers._hcl_input(cfg, artifact) == ("OK", box.logs / "oracle-input.json")
+    box.drop("hcl_merge.py")
+    assert tiers._hcl_input(cfg, artifact)[0] == "LIB_MISSING"
+    box.drop("hcl_traversal.rego")
+    assert tiers._hcl_input(cfg, artifact)[0] == "LIB_MISSING"
 
 
 def test_the_real_generated_task_ships_it_on_hcl_raw_only(spec: Spec) -> None:
@@ -113,9 +121,9 @@ def test_the_real_generated_task_ships_it_on_hcl_raw_only(spec: Spec) -> None:
 
 def test_turning_the_flag_off_removes_a_stale_copy(tmp_path: Path) -> None:
     """A task dir must never keep claiming an oracle component the emitted
-    script no longer calls: a leftover hcl_merge.py beside a static_tiers.sh
-    with no invocation of it reads as a working pre-parse to anyone auditing
-    the directory."""
+    verifier no longer calls: a leftover hcl_merge.py beside a verify.py that
+    declares no merge reads as a working pre-parse to anyone auditing the
+    directory."""
     raw = yaml.safe_load(HCL_SPEC.read_text())
     on = Spec.model_validate(raw)
     tests = tmp_path / "tests"

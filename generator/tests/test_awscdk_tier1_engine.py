@@ -32,11 +32,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SPEC_PATH = REPO_ROOT / "specs" / "ecs-swappiness.yaml"
 
 
-def _tier1_block(script: str) -> str:
-    """The emitted tier-1 section, from its header echo to the summary line."""
-    start = script.index('echo "== tier-1:')
-    end = script.index('echo "== summary:', start)
-    return script[start:end]
+def _tier1(spec, arm: str) -> dict:
+    """The emitted verifier's tier-1 configuration: which engine grades this
+    arm, with which policy file and query, and which statuses cost the reward."""
+    return gen.build_verify_config(spec, arm)["tier1"]
 
 
 @pytest.fixture
@@ -56,11 +55,11 @@ class TestDefaultIsTheIncumbent:
         assert spec.oracle.awscdk_tier1_engine == "cfn_guard"
 
     def test_default_awscdk_tier1_still_runs_cfn_guard(self, spec):
-        block = _tier1_block(gen.build_static_tiers_sh(spec, "awscdk"))
-        assert 'echo "== tier-1: cfn-guard =="' in block
-        assert 'POLICY="$DIR/policy.guard"' in block
-        assert "cfn-guard validate --data" in block
-        assert "opa eval" not in block
+        tier1 = _tier1(spec, "awscdk")
+        assert tier1["engine"] == "cfn_guard"
+        assert tier1["header"] == "cfn-guard"
+        assert tier1["policy"] == "policy.guard"
+        assert tier1["query"] is None, "a cfn-guard arm declares no Rego query"
 
     def test_default_task_toml_explanation_names_cfn_guard(self, spec):
         chain = gen.verification_explanation(spec, "awscdk")
@@ -73,40 +72,34 @@ class TestRegoSelectionSwapsTheEngine:
         construction. If these two blocks ever diverge, awscdk is being graded
         at a different strictness than hcl_raw again -- the exact thing
         DECISIONS.md Amendment 29 §4 forbids."""
-        awscdk = _tier1_block(gen.build_static_tiers_sh(spec_rego, "awscdk"))
-        hcl_raw = _tier1_block(gen.build_static_tiers_sh(spec, "hcl_raw"))
-        assert awscdk == hcl_raw
+        assert _tier1(spec_rego, "awscdk") == _tier1(spec, "hcl_raw")
 
     def test_awscdk_rego_block_preserves_every_failure_semantic(self, spec_rego):
-        block = _tier1_block(gen.build_static_tiers_sh(spec_rego, "awscdk"))
-        assert 'tier1_status="SKIPPED_NO_ASSERTS"' in block
-        assert 'tier1_status="TOOL_MISSING"' in block
-        assert "/logs/verifier/tier1-unavailable" in block
-        assert 'tier1_status="SKIPPED_STUB"' in block
-        assert "/logs/verifier/tier1-unauthored" in block
-        assert 'tier1_status="PASS"' in block
-        assert 'tier1_status="FAIL"' in block
-        assert "HAS_TIER1_ASSERTS=true" in block
-        assert 'command -v opa' in block
-        assert "cfn-guard" not in block.replace(
-            "# tier-1 (Rego/cfn-guard-graded) structural_asserts", ""
-        )
+        """Every status the mechanism can report is one shared library's, so
+        selecting an engine cannot weaken any of them -- and the engine the
+        selector picked really is opa."""
+        tier1 = _tier1(spec_rego, "awscdk")
+        assert tier1["engine"] == "opa"
+        assert tier1["policy"] == "policy.rego"
+        assert tier1["has_asserts"] is True
+        assert tier1["query"].endswith(".deny")
+        assert tier1["not_verifiable_query"].endswith(".not_verifiable")
+        for status in ("SKIPPED_NO_ASSERTS", "TOOL_MISSING", "SKIPPED_STUB",
+                       "PASS", "FAIL"):
+            assert status in gen.TIERS_PY, (
+                f"{status} is not a status tests/tiers.py can report"
+            )
+        for marker in ("tier1-unavailable", "tier1-unauthored"):
+            assert marker in gen.TIERS_PY
 
     def test_hard_failure_reward_gate_is_untouched(self, spec, spec_rego):
-        """The gate lives outside the tier-1 block; assert it is the same text
-        on both engines so a rego scenario cannot silently score a
-        TOOL_MISSING/SKIPPED_STUB run as a pass."""
-        gate = (
-            '&& [ "$tier1_status" != "FAIL" ]',
-            '&& [ "$tier1_status" != "TOOL_MISSING" ]',
-            '&& [ "$tier1_status" != "SKIPPED_STUB" ]',
-        )
-        for script in (
-            gen.build_static_tiers_sh(spec, "awscdk"),
-            gen.build_static_tiers_sh(spec_rego, "awscdk"),
-        ):
-            for fragment in gate:
-                assert fragment in script
+        """The same three statuses cost the reward on both engines, so a rego
+        scenario cannot silently score a TOOL_MISSING/SKIPPED_STUB run as a
+        pass."""
+        for candidate in (spec, spec_rego):
+            assert _tier1(candidate, "awscdk")["bad_statuses"] == [
+                "FAIL", "TOOL_MISSING", "SKIPPED_STUB",
+            ]
 
     def test_task_toml_explanation_names_the_rego_cfn_bundle(self, spec_rego):
         chain = gen.verification_explanation(spec_rego, "awscdk")

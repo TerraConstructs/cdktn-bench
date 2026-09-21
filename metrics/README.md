@@ -282,7 +282,7 @@ symmetry too.
 ## `gates/emit_result.py` additions (this task)
 
 Two additive extensions, driven by what `generator/gen.py`'s generated
-`tests/static_tiers.sh` actually writes to `/logs/verifier/` (checked
+verifier actually writes to `/logs/verifier/` (checked
 directly, not assumed) — neither changes any existing required field or
 existing caller's behavior; `metrics/emit_fixture_rows.py` and every prior
 test still pass unmodified:
@@ -290,9 +290,9 @@ test still pass unmodified:
 - **`read_tier_evidence(trial_dir)`** — parses
   `<trial_dir>/verifier/test-stdout.txt` for the per-assert
   `PASS [name]`/`FAIL [name]` lines and the `tier1_status=...` summary line
-  `build_static_tiers_sh`'s generated script always produces. Returns
-  `None` when the file doesn't exist (verifier never ran a
-  static_tiers.sh-shaped `test.sh`) — never an empty dict, so a caller can
+  the generated verifier always produces. Returns
+  `None` when the file doesn't exist (the verifier never ran a `test.sh`
+  emitted by this generator) — never an empty dict, so a caller can
   tell "no evidence at all" apart from "evidence exists but a toolchain
   step failed before tier-0/1 ever ran" (`{"tier0": {}, "tier1_status":
   None}`). Always attached to `build_result_record()`'s output as

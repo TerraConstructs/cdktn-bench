@@ -1,13 +1,13 @@
 """A declared hand-authored live oracle is never replaced by the stub.
 
 The generator's stub live_check.py prints `{"status": "not_implemented"}` and
-no `outcome` at all. tests/test.sh reads a missing `outcome` as
+no `outcome` at all. The verifier reads a missing `outcome` as
 "not_verifiable", and under gating that forces reward 0.0 for EVERY solution
 on that arm, correct ones included, with exit 0 everywhere and nothing in the
 logs naming the cause. Two guards keep that from being reachable: generation
 refuses to write the stub over a spec that declares a hand-authored check, and
-test.sh refuses to grade a stub that reached the container anyway (the same
-rule as static_tiers.sh's is_stub_policy for tier-1 bundles).
+the verifier refuses to grade a stub that reached the container anyway (the
+same rule as its is_stub_policy for tier-1 bundles).
 """
 
 from __future__ import annotations
@@ -15,8 +15,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from gen import build_test_sh, write_tests_dir
+from gen import write_tests_dir
 from spec_model import load_spec
+from verifier_harness import stage
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SFN_JSONATA = REPO_ROOT / "specs" / "sfn-jsonata.yaml"
@@ -40,13 +41,19 @@ def test_an_existing_hand_authored_live_check_survives(tmp_path: Path) -> None:
     assert (tests_dir / "live_check.py").read_bytes() == body
 
 
-def test_test_sh_refuses_to_grade_a_stub_live_check() -> None:
+def test_the_verifier_refuses_to_grade_a_stub_live_check(tmp_path: Path) -> None:
     """A stub VOIDS the row -- no reward file, so harbor reports INVALID --
-    instead of publishing the 0.0 the gating block would otherwise write."""
-    body = build_test_sh(load_spec(SFN_JSONATA), "awscdk")
-    guard = body.index('= "not_implemented" ]')
-    gating = body.index('SPEC_LIVE_CHECK_GATING:-false')
-    assert guard < gating, "the stub guard must run before the gating block"
-    tail = body[guard : guard + 600]
-    assert "rm -f /logs/verifier/reward.txt" in tail
-    assert "exit 1" in tail
+    instead of publishing the 0.0 the gating block would otherwise write. Run
+    WITH gating armed, since that is the configuration where the difference
+    between voiding and scoring is the whole point."""
+    spec = load_spec(SFN_JSONATA)
+    box = stage(tmp_path, spec, "awscdk")
+    box.artifact({"Resources": {}})
+    box.tests.joinpath("live_check.py").write_text(
+        'import json\nprint(json.dumps({"status": "not_implemented"}))\n'
+    )
+    res = box.run("test.sh", env={"SPEC_LIVE_CHECK_ENABLED": "true",
+                                  "SPEC_LIVE_CHECK_GATING": "true"})
+    assert res.rc != 0
+    assert res.reward is None, "a stub oracle published a score"
+    assert "GENERATOR STUB" in res.stderr

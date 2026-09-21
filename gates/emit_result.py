@@ -225,10 +225,10 @@ def classify_infra_failure(trial_dir: str | Path) -> dict[str, Any] | None:
 
 
 def read_tier1_not_verifiable(trial_dir: str | Path) -> tuple[bool, str | None]:
-    """Read the non-gating `/logs/verifier/tier1-not-verifiable` marker a
-    generated `tests/static_tiers.sh` tees whenever a scenario's tier-1
-    `policy.rego` defines a `not_verifiable` rule that fired for this
-    trial's plan (`generator/gen.py::build_static_tiers_sh`; the rule
+    """Read the non-gating `/logs/verifier/tier1-not-verifiable` marker the
+    generated verifier tees whenever a scenario's tier-1 `policy.rego`
+    defines a `not_verifiable` rule that fired for this trial's plan
+    (`tests/tiers.py`, emitted from `generator/verify_py.py`; the rule
     contract itself is `specs/SCHEMA.md` §4.2.1's option-3 bullet).
 
     Without this flag, a trial whose tier-1 action-allowlist was never
@@ -247,7 +247,7 @@ def read_tier1_not_verifiable(trial_dir: str | Path) -> tuple[bool, str | None]:
 
     Returns ``(present, detail)``: ``present`` is always a bool (``True``
     iff the marker file exists); ``detail`` is the marker's own text
-    (already human-readable -- written by `build_static_tiers_sh`) when
+    (already human-readable -- written by `tests/tiers.py`) when
     the file exists and is non-empty, else ``None``.
 
     Multi-step: the marker is relocated to
@@ -286,11 +286,10 @@ def read_tier1_not_verifiable(trial_dir: str | Path) -> tuple[bool, str | None]:
 # structural_asserts) and so contains no `]`.
 _TIER0_ASSERT_LINE_RE = re.compile(r"^\s*(PASS|FAIL)\s*\[([^\]]+)\]", re.MULTILINE)
 
-# `== summary: tier0_pass=$tier0_pass tier1_status=$tier1_status ==` --
-# generator/gen.py::build_static_tiers_sh's template, the last thing echoed
-# before the reward is written. A toolchain step that failed first `exit 0`s
-# before this line runs, in which case tier1_status is reported absent below
-# rather than guessed.
+# `== summary: tier0_pass=N tier1_status=X ==` -- the last line the generated
+# verifier (`tests/tiers.py`) prints before writing the reward. A toolchain step
+# that failed first returns before this line runs, in which case tier1_status is
+# reported absent below rather than guessed.
 _TIER1_SUMMARY_RE = re.compile(r"tier1_status=(\S+)")
 
 
@@ -302,7 +301,7 @@ def read_tier_evidence(trial_dir: str | Path) -> dict[str, Any] | None:
 
     Two different granularities, and this function is honest about which is
     which -- there is no third option available from the current oracle design
-    (specs/SCHEMA.md §4.2 structural_asserts; generator/gen.py's tier-1 block):
+    (specs/SCHEMA.md §4.2 structural_asserts; `tests/tiers.py::tier_1`):
 
     - **tier-0 is per-catch-real**: each tier-"0" `structural_assert` is
       independently invoked and independently echoes its own PASS/FAIL
@@ -311,12 +310,12 @@ def read_tier_evidence(trial_dir: str | Path) -> dict[str, Any] | None:
       `structural_assert.name` (specs/SCHEMA.md §4.2), under `"tier0"`.
     - **tier-1 is bundle-only**: every tier-"1" `structural_assert` for a
       given arm/scenario is graded by ONE `opa eval`/`cfn-guard validate`
-      call over the whole policy file (generator/gen.py's tier1_block),
+      call over the whole policy file (`tests/tiers.py::tier_1`),
       producing exactly one `tier1_status` for the WHOLE bundle -- there
       is no per-tier-1-assert breakdown to read, because the oracle itself
-      never computes one -- the tier-1 assert *names* are compiled into a
-      bash `#`-comment for human readability (build_static_tiers_sh's
-      `tier1_comment`) and never echoed to stdout at runtime. A
+      never computes one -- the tier-1 assert *names* are recorded in the
+      task's own `tests/verify.py` CONFIG (`tier1.asserts`) for a reader and
+      never echoed to stdout at runtime. A
       tier-attribution table
       built from this data can therefore report "which tier-0 catch" a
       trial died on, or "the tier-1 bundle as a whole", but never "which
@@ -324,7 +323,8 @@ def read_tier_evidence(trial_dir: str | Path) -> dict[str, Any] | None:
       must treat all of a scenario/arm's tier-"1" catches as one unit.
 
     Returns ``None`` if `verifier/test-stdout.txt` doesn't exist (verifier
-    never ran, or ran a non-static_tiers.sh test.sh) -- never an empty dict,
+    never ran, or ran a test.sh that is not this generator's) -- never an
+    empty dict,
     so a caller can distinguish "no evidence file at all" from "the file
     exists but a toolchain step failed before tier-0/1 ever ran" (the
     latter yields ``{"tier0": {}, "tier1_status": None}``, not ``None``).
@@ -1119,7 +1119,7 @@ def build_result_record(
         # Per-catch tier-attribution evidence (read_tier_evidence's docstring
         # has the tier-0-real / tier-1-bundle-only caveat). Attached regardless
         # of validity_class: a bypassed/infra-invalid trial's verifier may still
-        # have left evidence from a prior static_tiers.sh run in the same
+        # have left evidence from a prior static-tier run in the same
         # container, and its presence is itself diagnostic.
         "tier_evidence": tier_evidence,
     }

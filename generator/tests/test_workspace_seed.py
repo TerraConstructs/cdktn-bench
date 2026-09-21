@@ -36,6 +36,7 @@ from pydantic import ValidationError
 
 import gen
 from spec_model import Spec, load_spec
+from verifier_harness import read_config
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 PILOT_SPEC = REPO_ROOT / "specs" / "named-resource-replacement.yaml"
@@ -474,15 +475,14 @@ class TestGreenfieldRegressionGuarantee:
         assert not spec.verifier.idempotence.enabled
 
     @pytest.mark.parametrize("path", GREENFIELD_SPECS, ids=lambda p: p.stem)
-    def test_test_sh_carries_no_idempotence_block(self, path: Path) -> None:
-        """`build_test_sh` is one static template shared by every task. The
-        idempotence tier is GENERATION-conditional (not a dead runtime branch)
-        precisely so an always-emitted block cannot move these bytes."""
+    def test_the_verifier_declares_no_idempotence_tier(self, path: Path) -> None:
+        """The idempotence tier is GENERATION-conditional (not a dead runtime
+        branch), so a spec that does not opt in declares no tier at all and
+        nothing can arm one."""
         spec = load_spec(path)
         for arm in spec.arms.enabled_arms():
-            text = gen.build_test_sh(spec, arm)
-            assert "SPEC_IDEMPOTENCE_ENABLED" not in text, f"{path.stem}/{arm}"
-            assert gen.build_idempotence_block(spec, arm) == ""
+            assert gen.build_idempotence_config(spec, arm) is None, f"{path.stem}/{arm}"
+            assert gen.build_verify_config(spec, arm)["idempotence"] is None
 
     @pytest.mark.parametrize("path", GREENFIELD_SPECS, ids=lambda p: p.stem)
     def test_task_toml_carries_no_seed_digest(self, path: Path) -> None:
@@ -493,31 +493,38 @@ class TestGreenfieldRegressionGuarantee:
                 gen.task_dir(spec, arm) / "task.toml"
             ).read_text()
 
-    def test_idempotence_block_replaces_exactly_one_blank_line(self) -> None:
-        """The mechanism behind the byte-identity claim, pinned directly: the
-        placeholder occupies the blank line that separates the live-check block
-        from `exit $rc`, and an empty replacement restores it."""
-        spec = load_spec(REPO_ROOT / "specs" / "ecs-swappiness.yaml")
-        text = gen.build_test_sh(spec, "hcl_raw")
-        assert text.endswith("fi\n\nexit $rc\n")
+    def test_the_shipped_entry_point_is_the_same_file_everywhere(self) -> None:
+        """The mechanism behind the byte-identity claim: harbor's entry point is
+        one shim with no generation-conditional text at all, so no tier's
+        emission can move it."""
+        greenfield = load_spec(REPO_ROOT / "specs" / "ecs-swappiness.yaml")
+        brownfield = load_spec(PILOT_SPEC)
+        assert gen.build_test_sh(greenfield, "hcl_raw") == gen.build_test_sh(
+            brownfield, "hcl_raw"
+        )
 
 
 class TestIdempotenceEmission:
     @pytest.mark.parametrize("arm", ["awscdk", "hcl_raw", "terraconstructs"])
-    def test_block_emitted_for_the_opted_in_spec(self, pilot: Spec, arm: str) -> None:
-        text = (gen.task_dir(pilot, arm) / "tests" / "test.sh").read_text()
-        assert "SPEC_IDEMPOTENCE_ENABLED" in text
-        assert "SPEC_IDEMPOTENCE_GATING" in text
-        assert "/logs/verifier/idempotence-result.json" in text
-        assert gen.IDEMPOTENCE_COMMAND[arm].replace(
+    def test_tier_emitted_for_the_opted_in_spec(self, pilot: Spec, arm: str) -> None:
+        cfg = read_config(
+            gen.task_dir(pilot, arm) / "tests" / "verify.py"
+        )["idempotence"]
+        assert cfg is not None
+        assert cfg["enabled_env"] == "SPEC_IDEMPOTENCE_ENABLED"
+        assert cfg["gating_env"] == "SPEC_IDEMPOTENCE_GATING"
+        assert cfg["result"] == "idempotence-result.json"
+        assert cfg["command"] == gen.IDEMPOTENCE_COMMAND[arm].replace(
             "__WORKSPACE_ID__", pilot.workspace_identity()
-        ) in text
+        )
 
     def test_awscdk_uses_cdk_diff_not_a_second_synth(self, pilot: Spec) -> None:
         """A second synth + template self-diff is vacuous by construction (CDK
         synth is deterministic) and would silently hand this arm a free pass."""
-        text = (gen.task_dir(pilot, "awscdk") / "tests" / "test.sh").read_text()
-        assert "cdk diff --fail" in text
+        cfg = read_config(
+            gen.task_dir(pilot, "awscdk") / "tests" / "verify.py"
+        )["idempotence"]
+        assert "cdk diff --fail" in cfg["command"]
         assert "cdk synth" not in gen.IDEMPOTENCE_COMMAND["awscdk"]
 
     @pytest.mark.parametrize("arm", ["hcl_raw", "terraconstructs"])
@@ -536,13 +543,17 @@ class TestIdempotenceEmission:
         stopped there, which is exactly how `awscdk` came to record an
         unresolvable AWS environment as a genuine `pending_changes` verdict.
         """
-        text = (gen.task_dir(pilot, arm) / "tests" / "test.sh").read_text()
-        probe = gen.IDEMPOTENCE_STATE_PROBE[arm].replace(
+        cfg = read_config(
+            gen.task_dir(pilot, arm) / "tests" / "verify.py"
+        )["idempotence"]
+        assert cfg["probe"] == gen.IDEMPOTENCE_STATE_PROBE[arm].replace(
             "__WORKSPACE_ID__", pilot.workspace_identity()
         )
-        assert f'[ ! -s "/app/project/{probe}" ]' in text
-        assert "An offline plan with no state ALWAYS reports pending changes" in text
-        assert 'idem_outcome="not_verifiable"' in text
+        assert (
+            "An offline plan with no state ALWAYS reports pending changes"
+            in cfg["probe_reason"]
+        )
+        assert "not_verifiable" in gen.TIERS_PY
 
     def test_awscdk_never_deployed_is_skipped_with_a_reason(self, pilot: Spec) -> None:
         """The `awscdk` half of the same guarantee, via a different mechanism.
@@ -564,7 +575,9 @@ class TestIdempotenceEmission:
         The exit code is therefore believed ONLY when the marker is also
         present; every other exit-1 falls through to not_verifiable.
         """
-        text = (gen.task_dir(pilot, "awscdk") / "tests" / "test.sh").read_text()
+        cfg = read_config(
+            gen.task_dir(pilot, "awscdk") / "tests" / "verify.py"
+        )["idempotence"]
         marker = gen.IDEMPOTENCE_COMPLETION_MARKER["awscdk"]
         assert marker, "the awscdk arm has no other never-deployed guard"
         assert gen.IDEMPOTENCE_STATE_PROBE["awscdk"] == "", (
@@ -572,16 +585,15 @@ class TestIdempotenceEmission:
             "guard that can never fire"
         )
         # The pending verdict is gated on the marker, not on the exit code alone.
-        pending_rc = gen.IDEMPOTENCE_PENDING_RC["awscdk"]
-        assert (
-            f'elif [ "$idem_rc" -eq {pending_rc} ] \\\n'
-            f"               && grep -qF '{marker}' "
-            f"/logs/verifier/idempotence.log; then" in text
-        ), text
+        pending = next(
+            b for b in cfg["branches"] if b["outcome"] == "pending_changes"
+        )
+        assert pending["rc"] == gen.IDEMPOTENCE_PENDING_RC["awscdk"]
+        assert pending["marker"] == marker
         # ...and the fall-through says WHY, rather than silently mapping to a
         # verdict about deployed reality that was never observed.
-        assert "without printing its own completion marker" in text
-        assert "Offline this is ALWAYS the outcome" in text
+        assert "without printing its own completion marker" in cfg["default"]["reason"]
+        assert "Offline this is ALWAYS the outcome" in cfg["default"]["reason"]
 
     def test_every_arm_has_exactly_one_never_deployed_guard(self, pilot: Spec) -> None:
         """The invariant behind the two tests above, stated once so a future arm
@@ -597,9 +609,14 @@ class TestIdempotenceEmission:
             )
 
     def test_gating_is_fail_closed(self, pilot: Spec) -> None:
-        text = (gen.task_dir(pilot, "hcl_raw") / "tests" / "test.sh").read_text()
-        assert '[ "$idem_outcome" != "converged" ]' in text
-        assert 'echo "0.0" > /logs/verifier/reward.txt' in text
+        """Only the positive outcome keeps the static reward; every other one --
+        including the three that mean "could not be established" -- costs it."""
+        cfg = read_config(
+            gen.task_dir(pilot, "hcl_raw") / "tests" / "verify.py"
+        )["idempotence"]
+        assert cfg["positive"] == "converged"
+        assert 'outcome != tier["positive"]' in gen.TIERS_PY
+        assert 'reward("0.0")' in gen.TIERS_PY
 
     def test_task_toml_env_carries_both_flags(self, pilot: Spec) -> None:
         for arm in pilot.arms.enabled_arms():

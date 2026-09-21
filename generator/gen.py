@@ -43,6 +43,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from jsonpath_jq import jsonpath_to_jq  # noqa: E402
 from jsonpath_rego import build_tier0_rego  # noqa: E402
 from tier0_py import OPS_PY, OPS_SELFTEST_OK, Tier0Entry, build_tier0_py  # noqa: E402
+from verify_py import (  # noqa: E402
+    TIERS_PY,
+    build_static_tiers_sh_shim,
+    build_test_sh_shim,
+    build_verify_py,
+)
 from spec_model import Arm, Spec, Step, load_spec  # noqa: E402
 from oracles.emit import emit_oracles  # noqa: E402
 from gates.equipping import _discover_equipping_files  # noqa: E402
@@ -1753,27 +1759,6 @@ def build_steps_toml(spec: Spec, live) -> list[str]:
 # from tasks/anchor/smoke/tests/test.sh)
 # ---------------------------------------------------------------------------
 
-# The tier-1 delegation guard tests/static_tiers.sh carries. A policy file the
-# generator only ever scaffolded (never hand-authored, SCHEMA.md §8.2 point 7)
-# keeps a stub marker: an un-authored policy means this scenario's
-# Rego/cfn-guard is not written yet, so the tier is skipped, never failed.
-IS_STUB_POLICY_SH = textwrap.dedent(
-    """\
-    is_stub_policy() {
-      local f="$1"
-      [ ! -s "$f" ] && return 0
-      # Two markers, either of which means un-authored: GENERATOR-STUB, the
-      # line every oracles/emit.py skeleton carries (emit.py is the sole
-      # writer of policy.rego/policy.guard -- see generate_oracles), and the
-      # literal "TODO(Slice D)" those skeletons also carry, matched as a
-      # fallback so stripping the first line alone cannot make a placeholder
-      # look authored.
-      grep -q -e "GENERATOR-STUB" -e "TODO(Slice D)" "$f" 2>/dev/null && return 0
-      return 1
-    }
-    """
-).rstrip("\n")
-
 # The shared aws-CLI runner every hand-authored tests/live_check.py calls
 # instead of subprocess.run. Written into the same tests/ directory as
 # ops.py, and imported by file name (live_check.py is run as
@@ -2083,85 +2068,10 @@ def build_tier0_rego_file(spec: Spec, arm: Arm, step: Step | None = None) -> str
     return build_tier0_rego(tier0_rego_pkg(spec), entries)
 
 
-# The default (`oracle.tier0_engine: jq`) tier-0 block: one call to the
-# generated tests/tier0.py, which carries this arm's assert table and drives
-# jq through tests/ops.py (DECISIONS.md Amendment 43 -- the tier-0 driver is
-# Python, the paths stay jq). Its exit status is the whole verdict, so no
-# per-assert shell suffix survives.
-#
-# FAIL CLOSED ON A MISSING TOOL, with the same marker discipline the tier-1
-# block uses: python3 runs the driver and jq resolves every path, so without
-# either of them not one assert could be asked, which is a broken arm image
-# rather than a silent pass. Both arms of the check set tier0_pass=0, which the
-# final reward gate already maps to 0.0.
-TIER0_PY_BLOCK = textwrap.dedent(
-    """\
-    if ! command -v python3 >/dev/null 2>&1 || ! command -v jq >/dev/null 2>&1; then
-      tier0_pass=0
-      {
-        echo "python3 and jq are both required to evaluate the tier-0"
-        echo "structural asserts (tests/tier0.py drives tests/ops.py, which"
-        echo "invokes jq); at least one is missing from this image, so no"
-        echo "assert was evaluated -- a run-invalidating condition, not a"
-        echo "silent pass."
-      } | tee /logs/verifier/tier0-unavailable
-    elif ! python3 "$DIR/tier0.py" "$ARTIFACT"; then
-      tier0_pass=0
-    fi
-    """
-).rstrip("\n")
-
-
-# The tier-0 block `oracle.tier0_engine: rego` substitutes for the jq
-# driver above (specs/SCHEMA.md §4.5.1). ONE `opa eval` per trial
-# returns the whole tier-0 report, because the compiled rules already hold
-# every assert and per-assert shelling out would only re-add the bash layer
-# this engine exists to remove.
-#
-# The verdict is the FIRST line and is compared as a WHOLE STRING. The log
-# lines after it quote resolved artifact values, which the agent controls, so a
-# substring search for "TIER0_PASS=1" anywhere in the output would let a
-# planned resource NAME spoof a tier-0 pass.
-#
-# Both failure branches mirror the tier-1 block's own discipline: a missing
-# `opa` is TOOL_MISSING (a broken arm image), an `opa eval` that aborts is an
-# ORACLE defect, and each drops its own marker under /logs/verifier rather than
-# passing silently. Neither writes a verdict of its own -- they set
-# tier0_pass=0, which the final reward gate already maps to 0.0.
-TIER0_REGO_BLOCK = textwrap.dedent(
-    """\
-    TIER0_POLICY="$DIR/tier0.rego"
-    if ! command -v opa >/dev/null 2>&1; then
-      tier0_pass=0
-      {
-        echo "opa is not installed in this image, but this scenario's tier-0"
-        echo "asserts are graded by Rego (oracle.tier0_engine) -- this is a"
-        echo "run-invalidating condition, not a silent pass."
-      } | tee /logs/verifier/tier0-unavailable
-    elif ! TIER0_OUT="$(opa eval -f raw -I -d "$TIER0_POLICY" \\
-          "data.cdktn_bench.__PKG__.tier0.render" \\
-          < "$ARTIFACT" 2>/logs/verifier/tier0-opa-stderr.log)"; then
-      tier0_pass=0
-      {
-        echo "opa eval ABORTED instead of returning tier-0 outcomes, so not one"
-        echo "structural assert was evaluated. This is a defect in the ORACLE"
-        echo "(a Rego runtime error), NOT a judgement about this solution."
-        cat /logs/verifier/tier0-opa-stderr.log 2>/dev/null
-      } | tee /logs/verifier/tier0-engine-error
-    else
-      printf '%s\\n' "$TIER0_OUT"
-      if [ "${TIER0_OUT%%$'\\n'*}" != "TIER0_PASS=1" ]; then
-        tier0_pass=0
-      fi
-    fi
-    """
-)
-
-
 # The `.tf`/`.tf.json` -> JSON pre-parse the `oracle.hcl_traversal` opt-in
 # adds to the hcl_raw arm's oracle (specs/SCHEMA.md §4.6). Emitted as its own
-# tests/hcl_merge.py, invoked by the shell block build_hcl_merge_block()
-# substitutes into the tier-1 block.
+# tests/hcl_merge.py, which tests/tiers.py invokes when it builds the tier-1
+# input document.
 #
 # WHY PYTHON AND NOT A SHELL LOOP: the merged document has to be valid JSON
 # with the parsed files under one key, and `jq -s` over a shell-built list is
@@ -2368,84 +2278,44 @@ def build_hcl_merge_py() -> str:
     return HCL_MERGE_PY_HEADER + "\n" + HCL_MERGE_PY
 
 
-def build_hcl_merge_block() -> str:
-    return textwrap.dedent(
-        """\
-        # --- tier-1 input: plan JSON + the agent's own parsed .tf files ------
-        # (oracle.hcl_traversal, specs/SCHEMA.md §4.6). See generator/gen.py's
-        # build_hcl_merge_py() and the block comment above the tier-1 rego
-        # branch for why this exists, why the glob is here and not in the
-        # policy, and why every failure below is loud rather than a score.
-        HCL_LIB="$DIR/hcl_traversal.rego"
-        HCL_MERGE_PY="$DIR/hcl_merge.py"
-        HCL_MERGED="/logs/verifier/oracle-input.json"
-        HCL_MERGE_STATUS="OK"
-        if ! command -v hcl2json >/dev/null 2>&1; then
-          HCL_MERGE_STATUS="TOOL_MISSING"
-        elif [ ! -f "$HCL_LIB" ]; then
-          HCL_MERGE_STATUS="LIB_MISSING"
-          echo "shared traversal library not found at $HCL_LIB" \\
-            > /logs/verifier/tier1-hcl-merge.log
-        elif [ ! -f "$HCL_MERGE_PY" ]; then
-          # Same class as LIB_MISSING and reported through the same status: the
-          # pre-parser is part of the oracle, and a task dir missing it can only
-          # produce an unreadable document, never a judgement about a solution.
-          HCL_MERGE_STATUS="LIB_MISSING"
-          echo "HCL pre-parser not found at $HCL_MERGE_PY" \\
-            > /logs/verifier/tier1-hcl-merge.log
-        elif python3 "$HCL_MERGE_PY" "$ARTIFACT" "$HCL_MERGED" \\
-              > /logs/verifier/tier1-hcl-merge.log 2>&1
-        then
-          # Every rule that ever read `input` keeps reading the same bytes;
-          # the document just carries one extra top-level key now.
-          ARTIFACT="$HCL_MERGED"
-        else
-          HCL_MERGE_STATUS="PARSE_FAILED"
-        fi
-        """
-    )
+# Which tier-1 input an `oracle.hcl_traversal` spec gets on which arm (specs/
+# SCHEMA.md §4.6). The two halves differ and conflating them was an executed
+# false FAIL on a correct solution in each direction:
+#   the shared Rego LIBRARY loads on BOTH TF-shaped arms, because
+#     oracles/rego/<id>/policy.rego is one file that grades both -- the moment
+#     it imports the resolver, an arm without the library file makes every
+#     `hcl.slot(...)` UNDEFINED and the reference solution is denied.
+#   the `.tf` MERGE runs on hcl_raw ONLY, because terraconstructs synthesizes
+#     cdk.tf.json and emits no `locals` block -- the parse would glob nothing,
+#     write an EMPTY `_hcl`, and trip the policy's own "no .tf source was
+#     supplied" fail-closed deny.
+def hcl_input_mode(spec: Spec, arm: Arm) -> str | None:
+    if not spec.oracle.hcl_traversal:
+        return None
+    if arm == "hcl_raw":
+        return "merge"
+    if arm == "terraconstructs":
+        return "lib"
+    return None
 
 
-# The terraconstructs half of `oracle.hcl_traversal`: the shared library is
-# LOADED (the one policy.rego both TF-shaped arms run imports it), but no HCL
-# is PARSED, because this arm has no `.tf` files -- it synthesizes
-# `cdk.tf.json` and emits no `locals` block at all (verified across five real
-# cdk.tf.json documents; docs/design/conftest-hcl-traversal-spike.md §9). Its
-# references are already direct, so the resolver resolves them straight out of
-# the plan's own `.references` list with no `_hcl` document at all.
-#
-# Running build_hcl_merge_block() here instead would glob nothing, write an
-# EMPTY `_hcl`, and trip the policy's own "no .tf source was supplied"
-# fail-closed deny -- turning a correct solution into a 0.0. Omitting the
-# library instead makes every `hcl.slot(...)` call UNDEFINED, which denies the
-# correct solution too. Both were executed; this block is the shape that is
-# right on both counts.
-def build_hcl_lib_only_block() -> str:
-    return textwrap.dedent(
-        """\
-        # --- shared tier-1 Rego library (oracle.hcl_traversal, specs/
-        # --- SCHEMA.md §4.6). This arm LOADS the resolver but PARSES no HCL:
-        # --- it synthesizes cdk.tf.json and emits no `locals` block, so every
-        # --- reference in its plan is already direct. `HCL_MERGE_STATUS` is
-        # --- reused verbatim from the hcl_raw branch so both arms share one
-        # --- ENGINE_ERROR path; only LIB_MISSING is reachable here.
-        HCL_LIB="$DIR/hcl_traversal.rego"
-        HCL_MERGE_STATUS="OK"
-        if [ ! -f "$HCL_LIB" ]; then
-          HCL_MERGE_STATUS="LIB_MISSING"
-          echo "shared traversal library not found at $HCL_LIB" \\
-            > /logs/verifier/tier1-hcl-merge.log
-        fi
-        """
-    )
+# The merged tier-1 input document. Declared in the static_tiers.sh shim as
+# well, because the path is part of the hcl_traversal oracle's contract and a
+# hand-authored fixture reads it back out of that file rather than hardcoding a
+# path the host-side gates rewrite.
+HCL_MERGED_PATH = "/logs/verifier/oracle-input.json"
 
 
-def build_static_tiers_sh(spec: Spec, arm: Arm, step: Step | None = None) -> str:
+def build_toolchain_steps(spec: Spec, arm: Arm) -> list[tuple[str, str]]:
+    """The `(label, command)` steps the verifier runs before it grades anything:
+    the arm's build, synth and plan, in that order.
+
+    Each label names the step in the grading transcript (`== build: ... ==`,
+    `BUILD FAILED`), which is how gates/oracle_falsifiability.py attributes a
+    catch to the toolchain rather than to a tier.
+    """
     per_arm = getattr(spec.instruction.per_arm, arm)
     oc = per_arm.output_contract
-    assert_names = None if step is None else set(spec.step_assert_names(step))
-    tier0_entries, tier1_names = build_tier0_table(spec, arm, assert_names)
-
     toolchain_steps: list[tuple[str, str]] = []
     # terraconstructs: the TypeScript compile is the load-bearing GATE for
     # this arm (docs/ts-runtime-spike2-results.md "The two proven hazards"),
@@ -2562,575 +2432,131 @@ def build_static_tiers_sh(spec: Spec, arm: Arm, step: Step | None = None) -> str
                 f"{oc.artifact_path!r}"
             )
 
-    step_blocks = []
-    for label, command in toolchain_steps:
-        # The command string is the spec author's raw shell (often containing
-        # `&&`/`||`/`;` to chain multiple steps, e.g. hcl_raw's
-        # "terraform init && terraform validate && terraform plan ... && terraform show ...").
-        # `if ! {command}; then` is WRONG for any such compound command: bash
-        # binds `!` to only the first simple command in the list, so
-        # `if ! a && b; then` runs `a`, negates *its* exit status, and the
-        # `&&` short-circuits `b` out entirely on the (! a)==false path --
-        # i.e. on `a`'s success. Wrapping the whole command in a subshell
-        # `( ... )` makes `!` negate the compound command's overall exit
-        # status instead, which is what "fail this step if any part of the
-        # chain fails" actually requires.
-        # The preview echo goes through `shlex.quote`, never raw interpolation
-        # into a double-quoted string. A command carrying a literal `"` or a
-        # newline -- terraconstructs' tf-plan step has both (`"$TF_RC"`, and
-        # init/plan/show chained) -- would otherwise close the outer echo
-        # argument and turn `>`/`>>` meant as literal text into REAL
-        # redirections, letting a human-readable label corrupt files or diverge
-        # from the `if ! ( {command} )` execution below. The cost is that `$VAR`
-        # is not expanded in the preview, which is acceptable: the command that
-        # actually runs is the unmodified `{command}` on the very next line.
-        step_blocks.append(
-            f"echo {shlex.quote(f'== {label}: {command} ==')}\n"
-            f"if ! ( {command} ); then\n"
-            f'  echo "{label.upper()} FAILED"\n'
-            f'  echo "0.0" > /logs/verifier/reward.txt\n'
-            f"  exit 0\n"
-            f"fi\n"
-        )
-    toolchain_block = "\n".join(step_blocks)
+    return toolchain_steps
 
-    # `jq` (the default) runs the generated tests/tier0.py driver; `rego`
-    # replaces the whole block with one `opa eval` of the compiled
-    # tests/tier0.rego. The applicable-assert COUNT is the same either way, so
-    # the header line and every consumer of the `== summary:` line are
-    # untouched.
+
+def build_verify_config(spec: Spec, arm: Arm, step: Step | None = None) -> dict:
+    """Everything tests/verify.py declares about one task: the toolchain, the
+    artifact, the two tiers' engines, and every reason string the live tiers can
+    record.
+
+    Every string that varies between specs, arms and steps is resolved HERE, so
+    tests/tiers.py stays byte-identical everywhere and a reviewer can diff one
+    task's config against its spec.
+    """
+    per_arm = getattr(spec.instruction.per_arm, arm)
+    oc = per_arm.output_contract
+    assert_names = None if step is None else set(spec.step_assert_names(step))
+    tier0_entries, tier1_names = build_tier0_table(spec, arm, assert_names)
+    pkg = spec.id.replace("-", "_")
+
+    tier0: dict = {"engine": spec.oracle.tier0_engine, "total": len(tier0_entries)}
     if spec.oracle.tier0_engine == "rego":
-        tier0_block = TIER0_REGO_BLOCK.replace("__PKG__", tier0_rego_pkg(spec)).rstrip("\n")
-    else:
-        tier0_block = TIER0_PY_BLOCK
-    tier0_total = len(tier0_entries)
+        tier0["query"] = f"data.cdktn_bench.{tier0_rego_pkg(spec)}.tier0.render"
 
-    tier1_comment = (
-        "# tier-1 (Rego/cfn-guard-graded) structural_asserts for this arm: "
-        + (", ".join(tier1_names) if tier1_names else "(none)")
-    )
+    # The awscdk arm grades the synthesized CloudFormation template with EITHER
+    # cfn-guard (the incumbent) or OPA/Rego (`oracle.awscdk_tier1_engine`,
+    # specs/SCHEMA.md §4.5: cfn-guard 3.2.0 cannot express a cross-resource
+    # logical-id join, so a scenario needing one is graded by the engine the
+    # other arms use). Both feed the same artifact; only the policy differs.
+    cfn_guard = arm == "awscdk" and spec.oracle.awscdk_tier1_engine == "cfn_guard"
+    hcl = hcl_input_mode(spec, arm)
+    # ENGINE_ERROR -- "the oracle did not run" -- must never be scored as a
+    # pass; it is run-invalidating exactly as TOOL_MISSING is. It is only a
+    # reachable status where the hardened eval path is emitted, which is the
+    # hcl_traversal arms.
+    bad_statuses = ["FAIL", "TOOL_MISSING", "SKIPPED_STUB"]
+    if hcl is not None:
+        bad_statuses.append("ENGINE_ERROR")
+    tier1: dict = {
+        "engine": "cfn_guard" if cfn_guard else "opa",
+        "header": "cfn-guard" if cfn_guard else "OPA/Rego",
+        "policy": "policy.guard" if cfn_guard else "policy.rego",
+        # A generation-time constant: the names are known here, and the three
+        # reasons tier-1 ran no real check stay distinguishable at runtime.
+        "has_asserts": bool(tier1_names),
+        "asserts": list(tier1_names),
+        "query": None if cfn_guard else f"data.cdktn_bench.{pkg}.deny",
+        "not_verifiable_query": (
+            None if cfn_guard else f"data.cdktn_bench.{pkg}.not_verifiable"
+        ),
+        "hcl": hcl,
+        # Capture `opa eval`'s exit code instead of piping it into jq, so an
+        # aborted evaluation is ENGINE_ERROR rather than an unexplained FAIL
+        # charged to the solution as 0.0.
+        "hardened": hcl is not None,
+        "bad_statuses": bad_statuses,
+    }
 
-    # HAS_TIER1_ASSERTS is a generation-time constant baked into the script,
-    # not a runtime bash computation, since tier1_names is already known here.
-    # It keeps three different reasons tier-1 ran no real check apart, which a
-    # single non-gating "SKIPPED" status would conflate:
-    #   - SKIPPED_NO_ASSERTS: this scenario has no tier-"1" structural_asserts
-    #     at all -- legitimately nothing to run, always non-gating.
-    #   - SKIPPED_STUB: the policy file is still a generator scaffold
-    #     (is_stub_policy), i.e. nobody has hand-authored this scenario's
-    #     Rego/cfn-guard yet. A HARD FAILURE once HAS_TIER1_ASSERTS is true (see
-    #     the final reward gate below), with its own
-    #     /logs/verifier/tier1-unauthored marker: grading it as a pass would
-    #     award full reward to a solution that violates every catch the
-    #     un-authored policy is supposed to hold.
-    #   - TOOL_MISSING: this scenario DOES declare tier-1 asserts, but the
-    #     grading tool is not on PATH in this image -- a broken/incomplete arm
-    #     image, not "nothing to check". Also a hard failure, with a dedicated
-    #     /logs/verifier/tier1-unavailable marker, so it stays distinguishable
-    #     from a real policy FAIL in the logs.
-    has_tier1_asserts = "true" if tier1_names else "false"
-
-    # Which engine grades tier-1 here. The TF-shaped arms are always OPA/Rego
-    # over `terraform show -json`; the awscdk arm grades the synthesized
-    # CloudFormation template with EITHER cfn-guard (the default, unchanged
-    # incumbent) or OPA/Rego (`oracle.awscdk_tier1_engine: rego`, specs/
-    # SCHEMA.md §4.5 -- ROADMAP.md M8: cfn-guard 3.2.0 cannot express a
-    # cross-resource logical-id join, so a scenario needing one must be graded
-    # by the same engine the other arms use, per DECISIONS.md Amendment 29 §4).
-    # Both awscdk branches feed the SAME $ARTIFACT (cdk.out/ScenarioStack.
-    # template.json); only the policy language/file differs.
-    if arm == "awscdk" and spec.oracle.awscdk_tier1_engine == "cfn_guard":
-        tier1_block = textwrap.dedent(
-            f"""\
-            echo
-            echo "== tier-1: cfn-guard =="
-            {tier1_comment}
-            POLICY="$DIR/policy.guard"
-            HAS_TIER1_ASSERTS={has_tier1_asserts}
-            tier1_status="SKIPPED_NO_ASSERTS"
-            if [ "$HAS_TIER1_ASSERTS" = "true" ]; then
-              if ! command -v cfn-guard >/dev/null 2>&1; then
-                tier1_status="TOOL_MISSING"
-                {{
-                  echo "cfn-guard is not installed in this image, but this scenario"
-                  echo "declares tier-1 structural_asserts -- this is a"
-                  echo "run-invalidating condition, not a silent pass."
-                }} | tee /logs/verifier/tier1-unavailable
-              elif is_stub_policy "$POLICY"; then
-                tier1_status="SKIPPED_STUB"
-                {{
-                  echo "  SKIPPED_STUB: $POLICY is still a generator stub (hand-authored in Slice D)."
-                  echo "this scenario declares tier-1 structural_asserts, but its tier-1"
-                  echo "policy is not yet hand-authored -- this is a run-invalidating"
-                  echo "condition (an un-authored scenario cannot be graded), not a silent pass."
-                }} | tee /logs/verifier/tier1-unauthored
-              elif cfn-guard validate --data "$ARTIFACT" --rules "$POLICY"; then
-                tier1_status="PASS"
-              else
-                tier1_status="FAIL"
-              fi
-            fi
-            """
-        )
-    else:
-        # `arm != "awscdk"` (TF-shaped plan JSON), OR awscdk with
-        # `oracle.awscdk_tier1_engine: rego` (CFN template JSON). The emitted
-        # shell is IDENTICAL in both cases -- same tool, same policy filename,
-        # same package name, same SKIPPED_NO_ASSERTS / TOOL_MISSING /
-        # SKIPPED_STUB / PASS / FAIL statuses, same non-gating not_verifiable
-        # probe -- because `opa eval ... < "$ARTIFACT"` does not care which
-        # JSON document it is handed. What differs is only WHICH policy.rego
-        # write_tests_dir() copied in: oracles/rego/<id>/ (TF shape) vs
-        # oracles/rego-cfn/<id>/ (CFN shape). Keeping the two branches on one
-        # code path is what makes the byte-identity guarantee for every
-        # existing (default-engine) spec checkable by inspection.
-        pkg = spec.id.replace("-", "_")
-        # --- HCL traversal (`oracle.hcl_traversal: true`, specs/SCHEMA.md
-        # --- §4.6) ------------------------------------------------------
-        #
-        # `terraform show -json` does not emit `locals`, so a plan's
-        # `.configuration...references` list dead-ends on `local.x`: the
-        # document says the argument was SET to that symbol and says nothing
-        # about what the symbol HOLDS. Two proven oracle defects came out of
-        # that one fact -- a false PASS (a wrong-type ARN laundered through a
-        # local) and a false FAIL (a correct DRY hoist the oracle could not
-        # follow); see docs/design/conftest-hcl-traversal-spike.md §1.
-        #
-        # When a spec opts in, this arm's generated script parses the agent's
-        # own `.tf`/`.tf.json` files with `hcl2json` (pinned + sha256-verified
-        # in arms/hcl-raw/environment/Dockerfile, 4.1 MB, no network) and
-        # merges the result into the plan document under ONE reserved key,
-        # `_hcl`. THE ENGINE DOES NOT CHANGE and `input` stays byte-identical
-        # for every pre-existing rule in every scenario -- only new rules read
-        # `_hcl`. That is deliberate and it is why conftest was rejected as
-        # the engine: conftest's `--combine` reshapes `input` into an array of
-        # {path, contents} documents, which would rewrite the meaning of every
-        # existing rule in the repo and replace a proven reward contract, for
-        # a parser that is byte-identically the same one (conftest embeds
-        # `tmccombs/hcl2json`; 68 MB vs 4.1 MB, spike memo §7).
-        #
-        # THE GLOB HAPPENS IN THE SHELL, NEVER IN THE POLICY. A Rego policy
-        # can neither glob nor list a directory, and `parse_config_file` on a
-        # missing file is UNDEFINED rather than an error -- i.e. a policy that
-        # merely looks and moves on fails OPEN. The agent owns `main.tf` but
-        # nothing stops them putting the `locals` block in a second file they
-        # created; executed, that made every symbol unresolvable and DENIED a
-        # correct solution (spike memo §8). `*.tf.json` is globbed explicitly
-        # for the same reason: terraform accepts it and a `*.tf` glob misses
-        # it, so it is handled deliberately instead of discovered via a false
-        # fail. It is already JSON, so it is read as-is rather than through
-        # hcl2json.
-        #
-        # EVERY FAILURE OF THIS STEP IS LOUD. hcl2json absent -> TOOL_MISSING
-        # (a broken arm image, not a bad solution). A `.tf` terraform accepted
-        # that hcl2json cannot parse -> ENGINE_ERROR (parser skew between the
-        # two pinned hashicorp/hcl builds; a defect in the ORACLE's toolchain,
-        # never charged to the agent). Missing library file -> ENGINE_ERROR.
-        # An `opa eval` that ABORTS rather than returning a verdict ->
-        # ENGINE_ERROR, printed, never scored: today's un-hardened gate pipes
-        # `opa eval` straight into `jq -e 'length == 0'`, and an aborted
-        # evaluation writes nothing to stdout, which makes `jq -e` exit 4 and
-        # the gate record `tier1_status=FAIL` -- reward 0.0 on a CORRECT
-        # solution with no message naming what failed. That is exactly how the
-        # spike's `eval_conflict_error` defect turned an oracle bug into a
-        # score (memo §5.9), and it is why "denied" and "did not evaluate"
-        # must not share a word.
-        #
-        # SCOPE OF THE HARDENING, STATED HONESTLY: the ENGINE_ERROR branch
-        # below is emitted ONLY inside this opt-in block. The un-hardened
-        # `opa eval | jq -e` gate is still what every other scenario runs, so
-        # an oracle crash there is still graded as the agent's failure. That
-        # is a REAL, KNOWN residual and it is left open here on purpose: this
-        # landing's blast radius is contractually zero for every other spec
-        # (every other generated file must regenerate byte-identically), and
-        # promoting the hardening repo-wide changes every scenario's
-        # tests/static_tiers.sh. It should be done, in its own change, with
-        # its own regeneration sweep.
-        # TWO SCOPES, and conflating them was an executed FALSE FAIL on a
-        # CORRECT solution -- caught by `make falsifiability`, which is
-        # exactly the loud direction this design is supposed to fail in:
-        #
-        #   hcl_lib   -- BOTH TF-shaped arms. `oracles/rego/<id>/policy.rego`
-        #                is ONE file that grades hcl_raw AND terraconstructs.
-        #                The moment it says `import data.cdktn_bench.hcl`,
-        #                EVERY arm that loads it needs the library file too:
-        #                without it `hcl.slot(...)` is UNDEFINED, so the
-        #                acceptance rule never matches and the reference
-        #                solution is DENIED. Executed: terraconstructs scored
-        #                0.0 with tier1_status=FAIL until the library was
-        #                copied in for that arm as well.
-        #   hcl_merge -- hcl_raw ONLY. The `_hcl` document is the parsed
-        #                CONTENT of the agent's `.tf` files, and there are no
-        #                `.tf` files on terraconstructs (it synthesizes
-        #                `cdk.tf.json` and emits no `locals` block at all).
-        #                Running the merge there would glob nothing, produce
-        #                an EMPTY `_hcl`, and trip the policy's own
-        #                "no .tf source was supplied" fail-closed deny -- a
-        #                second false fail, in the opposite direction, from
-        #                the opposite mistake.
-        #
-        # The library's absence is therefore its own loud status
-        # (LIB_MISSING -> ENGINE_ERROR) on both arms, while only hcl_raw runs
-        # the parse.
-        hcl_lib = spec.oracle.hcl_traversal and arm in ("hcl_raw", "terraconstructs")
-        hcl_merge = spec.oracle.hcl_traversal and arm == "hcl_raw"
-        hcl_traversal = hcl_lib
-        lib_d = ' -d "$HCL_LIB"' if hcl_lib else ""
-        merge_block = ""
-        if hcl_merge:
-            merge_block = build_hcl_merge_block()
-        elif hcl_lib:
-            merge_block = build_hcl_lib_only_block()
-        # The hcl2json probe is emitted only where hcl2json is actually RUN.
-        # On terraconstructs `HCL_MERGE_STATUS` can only ever be OK or
-        # LIB_MISSING, and emitting a branch for a status that arm cannot
-        # reach would be a shell comment pretending to be a check.
-        tool_missing_branch = (
-            textwrap.dedent(
-                """\
-                  elif [ "$HCL_MERGE_STATUS" = "TOOL_MISSING" ]; then
-                    tier1_status="TOOL_MISSING"
-                    {
-                      echo "hcl2json is not installed in this image, but this scenario's"
-                      echo "tier-1 oracle resolves HCL symbols (oracle.hcl_traversal) --"
-                      echo "this is a run-invalidating condition, not a silent pass."
-                    } | tee /logs/verifier/tier1-unavailable
-"""
-            ).rstrip("\n")
-            if hcl_merge
-            else ""
-        )
-        tier1_engine_error_branch = (
-            (tool_missing_branch + "\n" if tool_missing_branch else "")
-            + textwrap.dedent(
-                """\
-                  elif [ "$HCL_MERGE_STATUS" != "OK" ]; then
-                    tier1_status="ENGINE_ERROR"
-                    {
-                      echo "the tier-1 oracle's HCL pre-parse did not complete, so the"
-                      echo "policy was never evaluated. This is a defect in the ORACLE's"
-                      echo "own toolchain (hcl2json/terraform parser skew, or a missing"
-                      echo "library file), NOT a judgement about this solution -- the run"
-                      echo "is invalid rather than failed. Details:"
-                      cat /logs/verifier/tier1-hcl-merge.log 2>/dev/null
-                    } | tee /logs/verifier/tier1-engine-error
-"""
-            ).rstrip("\n")
-            if hcl_lib
-            else ""
-        )
-        if hcl_traversal:
-            # Captures `opa eval`'s exit code instead of piping it straight
-            # into `jq`, so "the oracle did not run" is a distinct, loud
-            # status rather than an unexplained FAIL. See the block comment
-            # above for the executed defect this closes.
-            tier1_eval_clause = textwrap.dedent(
-                f"""\
-                  elif ! TIER1_OUT="$(opa eval -f raw -I -d "$POLICY"{lib_d} "data.cdktn_bench.{pkg}.deny" \\
-                        < "$ARTIFACT" 2>/logs/verifier/tier1-opa-stderr.log)"; then
-                    tier1_status="ENGINE_ERROR"
-                    {{
-                      echo "opa eval ABORTED instead of returning a verdict, so this"
-                      echo "solution was never actually graded. This is a defect in the"
-                      echo "ORACLE (a Rego runtime error -- eval_conflict_error, a type"
-                      echo "error, a builtin error), NOT a judgement about the solution."
-                      cat /logs/verifier/tier1-opa-stderr.log 2>/dev/null
-                    }} | tee /logs/verifier/tier1-engine-error
-                  elif printf '%s' "$TIER1_OUT" | jq -e 'length == 0' >/dev/null 2>&1; then
-                    tier1_status="PASS"
-"""
-            ).rstrip("\n")
-        else:
-            # `lib_d` is "" for every spec that does not opt in, so this is
-            # the VERBATIM previous text and every already-generated
-            # tests/static_tiers.sh regenerates byte-identically.
-            tier1_eval_clause = textwrap.dedent(
-                f"""\
-                  elif opa eval -f raw -I -d "$POLICY"{lib_d} "data.cdktn_bench.{pkg}.deny" \\
-                        < "$ARTIFACT" | jq -e 'length == 0' >/dev/null 2>&1; then
-                    tier1_status="PASS"
-"""
-            ).rstrip("\n")
-        tier1_block = textwrap.dedent(
-            f"""\
-            echo
-            echo "== tier-1: OPA/Rego =="
-            {tier1_comment}
-            POLICY="$DIR/policy.rego"
-            __MERGE_BLOCK__HAS_TIER1_ASSERTS={has_tier1_asserts}
-            tier1_status="SKIPPED_NO_ASSERTS"
-            if [ "$HAS_TIER1_ASSERTS" = "true" ]; then
-              if ! command -v opa >/dev/null 2>&1; then
-                tier1_status="TOOL_MISSING"
-                {{
-                  echo "opa is not installed in this image, but this scenario"
-                  echo "declares tier-1 structural_asserts -- this is a"
-                  echo "run-invalidating condition, not a silent pass."
-                }} | tee /logs/verifier/tier1-unavailable
-              elif is_stub_policy "$POLICY"; then
-                tier1_status="SKIPPED_STUB"
-                {{
-                  echo "  SKIPPED_STUB: $POLICY is still a generator stub (hand-authored in Slice D)."
-                  echo "this scenario declares tier-1 structural_asserts, but its tier-1"
-                  echo "policy is not yet hand-authored -- this is a run-invalidating"
-                  echo "condition (an un-authored scenario cannot be graded), not a silent pass."
-                }} | tee /logs/verifier/tier1-unauthored
-              __ENGINE_ERROR_BRANCH__
-              __EVAL_CLAUSE__
-              else
-                tier1_status="FAIL"
-              fi
-              # not_verifiable: a plan-time-unknown encoded policy attribute
-              # (e.g. a correct solution referencing another resource's
-              # .arn) makes some tier-1 value-content facts genuinely
-              # unverifiable from plan JSON alone -- specs/SCHEMA.md §4.2.1
-              # mandates this be LOGGED, never silent. `data.cdktn_bench.
-              # {pkg}.not_verifiable` is an OPTIONAL rule a scenario's
-              # policy.rego may define (see oracles/rego/toy-ssm-parameter/
-              # policy.rego for the worked example) -- captured to a
-              # variable first, not piped straight through `jq -e`, because
-              # a policy.rego that never defines this rule at all makes `opa
-              # eval` print NOTHING (not "[]"), which would make a bare
-              # `jq -e 'length==0'` FAIL (invalid empty input) and the
-              # naive `if ! ... ; then write-marker` shape write a false
-              # marker on every scenario that simply hasn't adopted this
-              # rule yet -- verified directly: `opa eval` on a policy.rego
-              # with no not_verifiable rule at all produces empty raw
-              # output, not "[]". This does NOT affect tier1_status/reward
-              # either way -- it is a non-gating, informational marker only.
-              if command -v opa >/dev/null 2>&1 && ! is_stub_policy "$POLICY"; then
-                NOT_VERIFIABLE_OUTPUT="$(opa eval -f raw -I -d "$POLICY"{lib_d} "data.cdktn_bench.{pkg}.not_verifiable" < "$ARTIFACT" 2>/dev/null)"
-                if [ -n "$NOT_VERIFIABLE_OUTPUT" ] \\
-                   && echo "$NOT_VERIFIABLE_OUTPUT" | jq -e 'length > 0' >/dev/null 2>&1; then
-                  {{
-                    echo "tier-1 policy declares one or more facts NOT independently"
-                    echo "verifiable from plan JSON alone (specs/SCHEMA.md sect 4.2.1)."
-                    echo "This is informational only -- it does NOT deny the plan and"
-                    echo "does NOT affect tier1_status/reward. Details:"
-                    echo "$NOT_VERIFIABLE_OUTPUT" | jq -r '.[]'
-                  }} | tee /logs/verifier/tier1-not-verifiable
-                fi
-              fi
-            fi
-            """
-        )
-        # Token substitution AFTER dedent, for the reason the outer template's
-        # own NOTE spells out: `textwrap.dedent` computes the common leading
-        # whitespace across EVERY line of its input, so interpolating a
-        # multi-line block (whose own lines start at column 0 or 2) into the
-        # f-string BEFORE dedent collapses that common prefix to "" and turns
-        # dedent into a no-op. Each token below sits at exactly the column its
-        # replacement text is written for -- `__MERGE_BLOCK__` at column 0
-        # (top-level shell statements), the two `__*_CLAUSE__`/`__*_BRANCH__`
-        # tokens at 2 (inside the `if [ "$HAS_TIER1_ASSERTS" ... ]` body) --
-        # and each replacement's FIRST line is written unindented with every
-        # continuation line carrying its own absolute indentation.
-        #
-        # The default (no `oracle.hcl_traversal`) substitution is empty for
-        # the merge and the engine-error branch and is the VERBATIM previous
-        # text for the eval clause, so every already-generated
-        # tests/static_tiers.sh in this repo regenerates BYTE-IDENTICALLY.
-        # That is a hard requirement of this change, not an aspiration: `git
-        # diff --stat` after `make gen-all` must show nothing but the one
-        # opted-in scenario.
-        tier1_block = (
-            tier1_block.replace("__MERGE_BLOCK__", merge_block)
-            .replace(
-                "  __ENGINE_ERROR_BRANCH__\n",
-                textwrap.indent(tier1_engine_error_branch + "\n", "  ") if tier1_engine_error_branch else "",
-            )
-            .replace("  __EVAL_CLAUSE__\n", textwrap.indent(tier1_eval_clause + "\n", "  "))
-        )
-
-    # ENGINE_ERROR is only ever a reachable status inside the
-    # `oracle.hcl_traversal` branch above (see its own block comment on why
-    # the hardening is scoped rather than repo-wide), so the extra gate line
-    # is emitted only there. `""` everywhere else keeps every other generated
-    # script byte-identical.
-    tier1_extra_gate = ""
-    if arm in ("hcl_raw", "terraconstructs") and spec.oracle.hcl_traversal:
-        tier1_extra_gate = ' \\\n   && [ "$tier1_status" != "ENGINE_ERROR" ]'
-
-    # Step-scoped header line, appended only for a multi-step task so every
-    # single-step task's generated script stays byte-identical. It names WHICH
-    # step's oracle this is, because a multi-step task ships one of these per
-    # step and they differ only by which asserts they run.
-    if step is None:
-        step_note = ""
-    else:
-        scope = (
-            "the FULL tier suite -- this is the final step, so its grading is "
-            "identical to what the single-step form of this scenario graded."
-            if step.oracle.structural_asserts is None
-            else "a SUBSET of this spec's structural_asserts: "
-            + ", ".join(spec.step_assert_names(step))
-            + "."
-        )
-        step_note = "\n" + "\n".join(
-            textwrap.wrap(
-                f"STEP {step.name!r} oracle (SCHEMA.md §2.6): {scope}",
-                width=72,
-                initial_indent="# ",
-                subsequent_indent="# ",
-            )
-            + textwrap.wrap(
-                f"It lives in steps/{step.name}/tests/, never in the shared "
-                "tests/: Harbor uploads the shared tests dir during EVERY step's "
-                "verification and only empties /tests at the start of the NEXT "
-                "step's verification, so step-specific oracle text placed there "
-                "is readable inside a later step's agent phase (DECISIONS.md "
-                "Amendment 26 §7 rule 1).",
-                width=72,
-                initial_indent="# ",
-                subsequent_indent="# ",
-            )
-        )
-
-    # Live AWS is the only trial mode (aws-access.html): this arm's toolchain
-    # (terraform init/plan, or cdktn synth's own STS/partition data sources)
-    # needs REAL ambient AWS credentials, staged by aws-bench ahead of this
-    # container's pre_invoke/verifier phases run -- neither TF-shaped arm's
-    # bootstrap file carries an offline fixture. A missing/broken
-    # credential chain here is test INFRASTRUCTURE failing, not a bad
-    # solution, so it must VOID this row, never score 0.0 (which would be
-    # indistinguishable from a genuinely wrong answer). Preflighting with a
-    # cheap, read-only `aws sts get-caller-identity` catches that BEFORE any
-    # toolchain command runs, so a solution is never blamed for it.
-    #
-    # Writes NO reward.txt, and drops the /logs/verifier/aws-unavailable marker
-    # its caller keys off: build_test_sh short-circuits the WHOLE verifier on
-    # that marker, before any gating block can turn this into a 0.0, so the
-    # trial ends with no reward file at all and harbor's own
-    # RewardFileNotFoundError reports it INVALID -- the same run_invalid
-    # contract test.sh's SPEC_SEED_DEPLOY_REQUIRED guard uses.
-    #
-    # The rule is ARM-INDEPENDENT: every arm whose verifier reaches AWS at all
-    # preflights. A TF-shaped arm always does, through its toolchain. An
-    # awscdk arm's synth/tier-0/tier-1 chain does not (`cdk synth
-    # --no-lookups`) -- but a live check does, so a spec that enables one
-    # arms this on awscdk too. Without it, the identical credential fault
-    # that VOIDS an hcl_raw row would reach live_check.py as an api-error and
-    # test.sh's gating block would publish it as reward 0.0: the same
-    # infrastructure fault scored as an agent failure on one arm of a
-    # scenario and as no result on another, which biases every cross-arm
-    # comparison the scenario exists to make.
-    #
-    # REGION comes first. The staged credentials file carries credential keys
-    # only (aws_bench/utils/credentials_provider.py), no arm Dockerfile sets
-    # AWS_DEFAULT_REGION and no task.toml does -- without it the preflight `aws`
-    # call itself dies with exit 253 (`NoRegion`) BEFORE reaching AWS and would
-    # void every row, perfect solutions included. Same two lines build_test_sh
-    # and build_pre_invoke_sh carry, for the same measured reason; `:=` so a
-    # region the harness DOES inject always wins.
+    # Live AWS is the only trial mode (aws-access.html), so a TF-shaped arm's
+    # toolchain always needs real ambient credentials and an awscdk arm's live
+    # check does. A broken credential chain is test INFRASTRUCTURE failing: it
+    # must VOID the row, never score 0.0, which is indistinguishable from a
+    # genuinely wrong answer. The rule is arm-independent for exactly that
+    # reason -- the same fault scored as an agent failure on one arm of a
+    # scenario and as no result on another biases every cross-arm comparison the
+    # scenario exists to make.
     live_here = spec.verifier.live_check if step is None else step_live_check(spec, step)
-    aws_preflight = ""
-    if arm in ("hcl_raw", "terraconstructs") or live_here.enabled:
-        aws_preflight = textwrap.dedent(
-            """\
-            : "${AWS_DEFAULT_REGION:=us-east-1}"
-            export AWS_DEFAULT_REGION
-            rm -f /logs/verifier/aws-unavailable /logs/verifier/aws-unavailable.json
-            if ! aws sts get-caller-identity >/dev/null 2>&1; then
-              {
-                echo "aws-unavailable: 'aws sts get-caller-identity' failed --"
-                echo "no working AWS credentials in this environment. This is a"
-                echo "run-invalidating test-infrastructure condition, NOT a bad"
-                echo "solution -- no toolchain command was ever attempted."
-              } | tee /logs/verifier/aws-unavailable
-              jq -n \\
-                '{outcome: "run_invalid", status: "run_invalid", reason: "aws sts get-caller-identity failed -- no working AWS credentials in this environment"}' \\
-                > /logs/verifier/aws-unavailable.json 2>/dev/null \\
-                || echo '{"outcome":"run_invalid","status":"run_invalid","reason":"aws credentials unavailable"}' > /logs/verifier/aws-unavailable.json
-              exit 1
-            fi
-            """
+    return {
+        "spec_id": spec.id,
+        "arm": arm,
+        "step": None if step is None else step.name,
+        "aws_preflight": arm in ("hcl_raw", "terraconstructs") or live_here.enabled,
+        "toolchain": build_toolchain_steps(spec, arm),
+        "artifact": oc.artifact_path,
+        "tier0": tier0,
+        "tier1": tier1,
+        "idempotence": build_idempotence_config(spec, arm),
+        "teardown": build_teardown_config(spec, arm),
+    }
+
+
+def build_verify_py_file(spec: Spec, arm: Arm, step: Step | None = None) -> str:
+    return build_verify_py(
+        spec.id, arm, build_verify_config(spec, arm, step), verify_step_note(spec, step)
+    )
+
+
+def verify_step_note(spec: Spec, step: Step | None) -> str:
+    """The step-scoped note in a step oracle's own verify.py docstring: WHICH
+    step's oracle this is, since a multi-step task ships one per step and they
+    differ only in which asserts they run."""
+    if step is None:
+        return ""
+    scope = (
+        "the FULL tier suite -- this is the final step, so its grading is "
+        "identical to what the single-step form of this scenario graded."
+        if step.oracle.structural_asserts is None
+        else "a SUBSET of this spec's structural_asserts: "
+        + ", ".join(spec.step_assert_names(step))
+        + "."
+    )
+    return "\n\n" + "\n".join(
+        textwrap.wrap(
+            f"STEP {step.name!r} oracle (SCHEMA.md §2.6): {scope}",
+            width=79,
+            break_on_hyphens=False,
         )
-
-    template = textwrap.dedent(
-        """\
-        #!/usr/bin/env bash
-        # Generated -- generator/gen.py, from ../../../../specs/__SPEC_ID__.yaml.
-        # Tier-0/1 static verifier for the __ARM__ arm. Do not hand-edit;
-        # regenerate instead (`make gen SPEC=specs/__SPEC_ID__.yaml`).__STEP_NOTE__
-        #
-        # Reward contract (reused from tasks/anchor/smoke/tests/test.sh):
-        # writes a bare float to /logs/verifier/reward.txt
-        # (harbor/verifier/verifier.py::_parse_reward_text).
-        set -uo pipefail
-        DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-        mkdir -p /logs/verifier
-
-        __IS_STUB_POLICY__
-
-        __AWS_PREFLIGHT__
-        cd /app/project
-
-        __TOOLCHAIN_BLOCK__
-        ARTIFACT="/app/project/__ARTIFACT_PATH__"
-        if [ ! -s "$ARTIFACT" ]; then
-          echo "MISSING ARTIFACT: $ARTIFACT"
-          echo "0.0" > /logs/verifier/reward.txt
-          exit 0
-        fi
-
-        echo
-        echo "== tier-0: structural asserts (__TIER0_TOTAL__ applicable) =="
-        tier0_pass=1
-        __TIER0_BLOCK__
-
-        __TIER1_BLOCK__
-        echo
-        echo "== summary: tier0_pass=$tier0_pass tier1_status=$tier1_status =="
-        if [ "$tier0_pass" = "1" ] \\
-           && [ "$tier1_status" != "FAIL" ] \\
-           && [ "$tier1_status" != "TOOL_MISSING" ] \\
-           && [ "$tier1_status" != "SKIPPED_STUB" ]__TIER1_EXTRA_GATE__; then
-          echo "1.0" > /logs/verifier/reward.txt
-        else
-          echo "0.0" > /logs/verifier/reward.txt
-        fi
-        exit 0
-        """
+        + [""]
+        + textwrap.wrap(
+            f"It lives in steps/{step.name}/tests/, never in the shared "
+            "tests/: Harbor uploads the shared tests dir during EVERY step's "
+            "verification and only empties /tests at the start of the NEXT "
+            "step's verification, so step-specific oracle text placed there "
+            "is readable inside a later step's agent phase (DECISIONS.md "
+            "Amendment 26 §7 rule 1).",
+            width=79,
+            break_on_hyphens=False,
+        )
     )
-    # NOTE on why substitution happens AFTER dedent, not via an f-string
-    # dedented as a whole (the bug this replaced): textwrap.dedent computes
-    # the common leading-whitespace prefix across every line of its input.
-    # `toolchain_block`/`tier0_block`/`tier1_block` are themselves multi-line
-    # strings whose own lines start at column 0 (by design -- see their own
-    # construction above). Interpolating them into an f-string BEFORE
-    # dedent-ing the result means those column-0 lines are part of what
-    # dedent looks at, so the common prefix across the whole text collapses
-    # to "" and dedent becomes a no-op -- every literal template line
-    # (including the `#!/usr/bin/env bash` shebang) stays indented at the
-    # template's own source-code indentation, breaking direct execve (only
-    # bash's `#!`-missing fallback rescued it before). Doing the token
-    # replacement on the ALREADY-dedented template fixes this: at
-    # substitution time every `__TOKEN__` placeholder is a single line at
-    # column 0 (same position the multi-line blocks were always meant to
-    # occupy), so no further re-indentation is needed or performed.
-    result = (
-        template.replace("__SPEC_ID__", spec.id)
-        .replace("__ARM__", arm)
-        .replace("__STEP_NOTE__", step_note)
-        .replace("__IS_STUB_POLICY__", IS_STUB_POLICY_SH)
-        .replace("__AWS_PREFLIGHT__", aws_preflight)
-        .replace("__TOOLCHAIN_BLOCK__", toolchain_block)
-        .replace("__ARTIFACT_PATH__", oc.artifact_path)
-        .replace("__TIER0_TOTAL__", str(tier0_total))
-        .replace("__TIER0_BLOCK__", tier0_block)
-        .replace("__TIER1_BLOCK__", tier1_block)
-        # ENGINE_ERROR ("the oracle did not run") must never be scored as a
-        # pass -- it is run-invalidating, exactly like TOOL_MISSING. The token
-        # sits INSIDE the existing final `[ ... ]` line and substitutes to the
-        # empty string for every spec that does not opt in, so those scripts
-        # regenerate byte-identically.
-        .replace("__TIER1_EXTRA_GATE__", tier1_extra_gate)
+
+
+def build_static_tiers_sh(spec: Spec, arm: Arm, step: Step | None = None) -> str:
+    """tests/static_tiers.sh, now a shim over tests/verify.py --static-only."""
+    hcl = hcl_input_mode(spec, arm)
+    return build_static_tiers_sh_shim(
+        spec.id, arm, HCL_MERGED_PATH if hcl == "merge" else None
     )
-    assert result.startswith("#!/usr/bin/env bash\n"), (
-        "generated static_tiers.sh must start with a byte-0 shebang -- "
-        "template dedent/substitution order regressed"
-    )
-    return result
 
 
 # Reserved exit code an arm's idempotence command uses to say "I aborted before
@@ -3230,7 +2656,7 @@ IDEMPOTENCE_STATE_PROBE: dict[Arm, str] = {
     # (docs/design/single-step-seed-deploy.md §4.3). A wrong path here makes the
     # probe -- not the deploy -- fail, and reports `not_verifiable` for an apply
     # AWS itself confirmed. Workspace-root-RELATIVE, as this dict's docstring
-    # says: build_idempotence_block prefixes /app/project/.
+    # says: build_idempotence_config's probe_reason prefixes /app/project/.
     "terraconstructs": "terraform.__WORKSPACE_ID__.tfstate",
     # awscdk keeps NO local state -- `cdk diff` reads the deployed CFN stack, so
     # "never deployed / no credentials" is not a question any local file can
@@ -3369,11 +2795,9 @@ TEARDOWN_SEED_MOVEMENT_TEXTS = SeedMovementTexts(
 )
 
 
-def build_seed_movement_guard(
-    arm: Arm, probe: str, *, indent: str, texts: SeedMovementTexts
-) -> str:
-    """The SEED MOVEMENT guard, emitted by both live tiers (`texts` says which)
-    and only for a spec that declares `workspace_seed.deploy`.
+def build_seed_movement_config(arm: Arm, probe: str, *, texts: SeedMovementTexts) -> dict:
+    """The SEED MOVEMENT guard's own strings, for a spec that declares
+    `workspace_seed.deploy`.
 
     WHAT IT REPLACES. The calling tier's state probe -- "nothing was applied (no
     deploy state at /app/project/<probe>)" -- cannot fire on a brownfield spec:
@@ -3384,204 +2808,100 @@ def build_seed_movement_guard(
     inherits the harness's work, silently -- as `converged` under §5.1, and as a
     `clean` destroy OF THE SEED under §5.2.
 
-    THE MECHANISM. `pre_invoke.sh` stamps the identity of the state IT
-    deployed into `/logs/seed-deploy-receipt.json` (`state_identity`, see
-    SEED_STATE_IDENTITY_JQ). This guard re-reads the identity of the state that
-    is there NOW and requires it to have MOVED. Unchanged means the agent
-    applied nothing, which is `not_verifiable` -- never a positive verdict, and
-    under §5.2 never a destroy either.
+    THE MECHANISM. `pre_invoke.sh` stamps the identity of the state IT deployed
+    into the receipt (`state_identity`, see SEED_STATE_IDENTITY_JQ). The guard
+    re-reads the identity of the state that is there NOW and requires it to have
+    MOVED. Unchanged is `not_verifiable` -- never a positive verdict, and under
+    §5.2 never a destroy either, because each tier's third value means "could
+    not be established" and an agent that applied nothing establishes nothing
+    about idempotence or teardown.
 
-    WHY not_verifiable RATHER THAN pending_changes / destroy_failed: each tier's
-    third value means "could not be established" (§5.1, §5.2). "The agent
-    applied nothing" establishes nothing about idempotence or teardown at all --
-    there is no agent-produced deployment to be idempotent about or to tear
-    down. It is also gate-equivalent under either tier's `gating`, which
-    downgrades every non-positive outcome, so the honest label costs nothing.
-
-    FAIL-CLOSED ON THE TF ARMS, FAIL-QUIET ON awscdk, and the asymmetry is
-    deliberate: the TF arms read a LOCAL file, so an unreadable identity is a
-    broken artifact this verifier is holding in its hand. awscdk must ask
-    CloudFormation, and offline -- where the tier's own command cannot resolve
-    an AWS environment either -- an unanswered question is not evidence about
-    the account. So awscdk narrows the claim to the case where the answer
-    arrived and matched; the completion-marker guard below still catches the
-    rest.
+    FAIL-CLOSED ON THE TF ARMS, FAIL-QUIET ON awscdk, deliberately: the TF arms
+    read a LOCAL file, so an unreadable identity is a broken artifact this
+    verifier is holding in its hand. awscdk must ask CloudFormation, and an
+    unanswered question is not evidence about the account -- so it records the
+    abstention on stderr and leaves the verdict to the completion-marker guard,
+    because abstaining silently is the repo's signature failure mode.
     """
     receipt = SEED_DEPLOY_RECEIPT_PATH
-    jq_identity = SEED_STATE_IDENTITY_JQ[arm]
-    p = texts.var_prefix
-    if probe:
-        now = (
-            'now_identity="$(jq -er ' + "'" + jq_identity + "' "
-            + f'"/app/project/{probe}"' + ' 2>/dev/null)"'
-        )
-        unreadable = "\n".join(
-            [
-                'elif [ -z "$now_identity" ]; then',
-                f'  {p}_outcome="not_verifiable"',
-                f'  {p}_reason="'
-                + texts.unreadable.format(receipt=receipt, probe=probe)
-                + '"',
-            ]
-        )
-        moved_test = '[ "$seed_identity" = "$now_identity" ]'
-    else:
-        now = (
-            "now_identity=\"$(aws cloudformation describe-stacks "
-            "--stack-name ScenarioStack --output json 2>/dev/null "
-            f"| jq -er '{jq_identity}' 2>/dev/null)\""
-        )
-        # `-n` FIRST: on awscdk an empty answer means the question never
-        # reached CloudFormation, which is not evidence that the agent did
-        # nothing. See this function's docstring.
-        #
-        # But abstaining SILENTLY is the repo's signature failure mode -- the
-        # guard simply does not fire, the reason keeps whatever preceded it,
-        # and the operator cannot distinguish "the guard ran and the state had
-        # moved" from "the guard never got an answer". The verdict stays
-        # deliberately unchanged; only the record is added.
-        unreadable = "\n".join(
-            [
-                'elif [ -z "$now_identity" ]; then',
-                f'  echo "[{texts.tier_label}] SEED MOVEMENT GUARD ABSTAINED: '
-                "describe-stacks on ScenarioStack returned no readable stack "
-                "identity, so this tier could not check whether the agent's own "
-                "deployment moved the harness-seeded state. The verdict below "
-                "rests on the completion-marker guard alone "
-                '(specs/SCHEMA.md §2.7.1, finding H)." >&2',
-            ]
-        )
-        moved_test = '[ "$seed_identity" = "$now_identity" ]'
-    body = [
-        *texts.header,
-        'seed_identity="$(jq -r ' + "'" + '.state_identity // ""' + "' "
-        + receipt + ' 2>/dev/null)"',
-        now,
-        'if [ -z "$seed_identity" ]; then',
-        f'  {p}_outcome="not_verifiable"',
-        f'  {p}_reason="'
-        + texts.no_identity.format(receipt=receipt, probe=probe)
-        + '"',
-    ]
-    if unreadable:
-        body += unreadable.splitlines()
-    body += [
-        f"elif {moved_test}; then",
-        f'  {p}_outcome="not_verifiable"',
-        f'  {p}_reason="' + texts.unmoved.format(receipt=receipt, probe=probe) + '"',
-        "fi",
-    ]
-    return "\n".join(indent + line for line in body)
+    return {
+        "probe": probe,
+        "identity_jq": SEED_STATE_IDENTITY_JQ[arm],
+        "no_identity_reason": texts.no_identity.format(receipt=receipt, probe=probe),
+        "unreadable_reason": (
+            texts.unreadable.format(receipt=receipt, probe=probe) if probe else ""
+        ),
+        "abstain_line": (
+            ""
+            if probe
+            else f"[{texts.tier_label}] SEED MOVEMENT GUARD ABSTAINED: "
+            "describe-stacks on ScenarioStack returned no readable stack "
+            "identity, so this tier could not check whether the agent's own "
+            "deployment moved the harness-seeded state. The verdict below "
+            "rests on the completion-marker guard alone "
+            "(specs/SCHEMA.md §2.7.1, finding H)."
+        ),
+        "unmoved_reason": texts.unmoved.format(receipt=receipt, probe=probe),
+    }
 
 
-def build_idempotence_block(spec: Spec, arm: Arm) -> str:
-    """The generated `tests/test.sh` idempotence-tier block, or "" when this
-    spec leaves `verifier.idempotence` disabled.
+def build_idempotence_config(spec: Spec, arm: Arm) -> dict | None:
+    """The idempotence tier's configuration (specs/SCHEMA.md §5.1), or None when
+    this spec leaves `verifier.idempotence` disabled.
 
-    Generation-conditional (not a runtime-gated branch like live_check's) on
-    purpose: `build_test_sh` is otherwise one static template shared by every
-    task, and adding an always-emitted block would move every existing task's
-    `tests/test.sh` bytes. §2.7/§5.1's regression guarantee is that a spec which
-    does not opt in generates byte-identically to before this feature existed.
+    "Is the agent's own toolchain still reporting a pending change against what
+    it just deployed?" LIVE-ONLY by construction: with nothing deployed there is
+    nothing to be idempotent about AND the exit code carries no signal -- an
+    offline `terraform plan -detailed-exitcode` is always 2, and an offline `cdk
+    diff` cannot resolve an AWS environment at all (exit 1, the same code it uses
+    for "changes found"). Both cases are caught below and reported
+    not_verifiable WITH a reason, never fake-passed.
     """
-    # "" replaces the template's own placeholder LINE with an empty line, so a
-    # spec that does not opt in emits byte-identical tests/test.sh.
     if not spec.verifier.idempotence.enabled:
-        return ""
+        return None
     wid = spec.workspace_identity()
     command = IDEMPOTENCE_COMMAND[arm].replace("__WORKSPACE_ID__", wid)
     probe = IDEMPOTENCE_STATE_PROBE[arm].replace("__WORKSPACE_ID__", wid)
-    pending_rc = IDEMPOTENCE_PENDING_RC[arm]
-    # Emitted ONLY for a spec whose seed the harness actually deploys, so every
-    # other task's tests/test.sh stays byte-identical (§5.1's own regression
-    # guarantee). See build_seed_movement_guard for the argument.
-    seeded = spec.workspace_seed is not None and spec.workspace_seed.deploy is not None
-    # Indent follows where the guard lands: inside the `else` of the file probe
-    # on the TF arms (6 spaces of emitted script = 4 here), at the probe's own
-    # level on awscdk, which has no file to probe (2).
-    movement_guard = (
-        build_seed_movement_guard(
-            arm,
-            probe,
-            indent="    " if probe else "  ",
-            texts=IDEMPOTENCE_SEED_MOVEMENT_TEXTS,
-        )
-        if seeded
-        else ""
-    )
-    if probe:
-        lines = [
-            f'  if [ ! -s "/app/project/{probe}" ]; then',
-            '    idem_outcome="not_verifiable"',
-            f'    idem_reason="nothing was applied (no deploy state at '
-            f'/app/project/{probe}), so there is no converged state to '
-            f're-check. An offline plan with no state ALWAYS reports pending '
-            f'changes, so this is reported as unverifiable rather than as a '
-            f'real pending-changes verdict."',
-        ]
-        if movement_guard:
-            # THE PROBE ABOVE IS A TAUTOLOGY ON A SEEDED SPEC: the seed's own
-            # pre_invoke.sh writes that exact file before the agent's first
-            # token, so `[ ! -s ... ]` can never be true here. It is KEPT --
-            # it still speaks for a seed that vanished mid-trial -- and the
-            # else branch below is what carries the signal.
-            lines += ["  else", movement_guard]
-        lines += ["  fi"]
-        probe_block = "\n".join(lines)
-    elif movement_guard:
-        # No local state to probe on this arm -- CloudFormation IS the state --
-        # so the seed movement guard stands where the file probe would, and
-        # asks the same question of the stack instead.
-        probe_block = "\n".join(
-            [
-                "  # This arm keeps no local deploy state to probe: cdk diff reads",
-                "  # the DEPLOYED stack, so the never-deployed / no-credentials",
-                "  # guarantee is delivered AFTER the run by the completion-marker",
-                "  # guard below (IDEMPOTENCE_COMPLETION_MARKER in generator/gen.py).",
-                movement_guard,
-            ]
-        )
-    else:
-        probe_block = "\n".join(
-            [
-                "  : # This arm keeps no local deploy state, so there is no file to",
-                "    # probe: cdk diff reads the DEPLOYED stack. The same",
-                "    # never-deployed / no-credentials guarantee is delivered AFTER",
-                "    # the run instead, by the completion-marker guard below --",
-                "    # see IDEMPOTENCE_COMPLETION_MARKER in generator/gen.py.",
-            ]
-        )
-    # The post-synth re-probe's abort (terraconstructs only, see
-    # IDEMPOTENCE_COMMAND). Emitted ONLY for an arm whose command can raise it,
-    # so no other arm's tests/test.sh moves a byte. Ordered BEFORE the pending
-    # test: the whole point is that this rc must never be read as a verdict.
-    vanished_branch = ""
-    if f"exit {IDEMPOTENCE_STATE_VANISHED_RC}" in IDEMPOTENCE_COMMAND[arm]:
-        # Indentation is LITERAL in-container indentation: this string is
-        # substituted after textwrap.dedent() has already run on the template
-        # (see the comment on the __PENDING_TEST__ replace below), so it must
-        # match the emitted file's own levels -- `elif` at 4, its body at 6.
-        vanished_branch = (
-            f'elif [ "$idem_rc" -eq {IDEMPOTENCE_STATE_VANISHED_RC} ]; then\n'
-            '      idem_outcome="not_verifiable"\n'
-            '      idem_reason="the deploy state this tier was about to '
-            "check disappeared when the command re-synthesized the stack "
-            "directory, so the plan below it would have run against no state at "
-            "all (an offline plan with no state ALWAYS reports pending changes) "
-            '-- see idempotence.log"\n'
-            "    "
-        )
     marker = IDEMPOTENCE_COMPLETION_MARKER[arm]
-    # Exit code alone decides on the TF arms (three distinct codes). Where the
-    # code is ambiguous (awscdk: 1 means both "changes found" and "could not
-    # run"), a completed run must ALSO have printed the arm's completion marker
-    # before its exit code is believed.
-    pending_test = f'[ "$idem_rc" -eq {pending_rc} ]'
-    if marker:
-        pending_test += (
-            f" \\\n               && grep -qF '{marker}' /logs/verifier/idempotence.log"
+    seeded = spec.workspace_seed is not None and spec.workspace_seed.deploy is not None
+
+    branches = [
+        {
+            "rc": 0,
+            "outcome": "converged",
+            "reason": "the arm's own converged-state check reported no pending change",
+        }
+    ]
+    # The post-synth re-probe's abort, for the one arm whose command can raise
+    # it. Ordered BEFORE the pending test: the whole point of the reserved code
+    # is that it must never be read as a verdict.
+    if f"exit {IDEMPOTENCE_STATE_VANISHED_RC}" in IDEMPOTENCE_COMMAND[arm]:
+        branches.append(
+            {
+                "rc": IDEMPOTENCE_STATE_VANISHED_RC,
+                "outcome": "not_verifiable",
+                "reason": "the deploy state this tier was about to check "
+                "disappeared when the command re-synthesized the stack "
+                "directory, so the plan below it would have run against no state "
+                "at all (an offline plan with no state ALWAYS reports pending "
+                "changes) -- see idempotence.log",
+            }
         )
-    unverifiable_reason = (
+    # Exit code alone decides on the TF arms (three distinct codes). Where the
+    # code is AMBIGUOUS -- awscdk's 1 means both "changes found" and "could not
+    # run" -- a completed run must ALSO have printed the arm's completion marker
+    # before its exit code is believed.
+    pending: dict = {
+        "rc": IDEMPOTENCE_PENDING_RC[arm],
+        "outcome": "pending_changes",
+        "reason": "the deployed state still differs from the configuration -- "
+        "see idempotence.log",
+    }
+    if marker:
+        pending["marker"] = marker
+    branches.append(pending)
+
+    default_reason = (
         "idempotence command exited $idem_rc (tool missing, credentials, or a "
         "broken working tree) -- see idempotence.log"
         if not marker
@@ -3592,61 +2912,34 @@ def build_idempotence_block(spec: Spec, arm: Arm) -> str:
         "outcome, so it is reported as unverifiable rather than as a real "
         "pending-changes verdict."
     )
-    return textwrap.dedent(
-        f"""\
-
-        # --- idempotence tier (specs/SCHEMA.md §5.1) ------------------------
-        # "Is the agent's own toolchain still reporting a pending change
-        # against what it just deployed?" LIVE-ONLY by construction: with
-        # nothing deployed there is nothing to be idempotent about AND the
-        # command's exit code carries no signal -- an offline
-        # `terraform plan -detailed-exitcode` is always 2, and an offline
-        # `cdk diff` cannot resolve an AWS environment at all (it exits 1, the
-        # same code it uses for "changes found"). Both cases are caught below
-        # and reported not_verifiable WITH a reason, never fake-passed.
-        # Emitted only because this spec sets verifier.idempotence.enabled.
-        if [ "${{SPEC_IDEMPOTENCE_ENABLED:-false}}" = "true" ]; then
-          idem_outcome="not_verifiable"
-          idem_reason="tier did not run"
-          idem_rc=""
-        __PROBE_BLOCK__
-          if [ "$idem_outcome" = "not_verifiable" ] && [ "$idem_reason" = "tier did not run" ]; then
-            ( cd /app/project && {command} ) > /logs/verifier/idempotence.log 2>&1
-            idem_rc=$?
-            if [ "$idem_rc" -eq 0 ]; then
-              idem_outcome="converged"
-              idem_reason="the arm's own converged-state check reported no pending change"
-            __VANISHED_BRANCH__elif __PENDING_TEST__; then
-              idem_outcome="pending_changes"
-              idem_reason="the deployed state still differs from the configuration -- see idempotence.log"
-            else
-              idem_outcome="not_verifiable"
-              idem_reason="__UNVERIFIABLE_REASON__"
-            fi
-          fi
-          jq -n --arg o "$idem_outcome" --arg r "$idem_reason" --arg rc "$idem_rc" \\
-            '{{outcome: $o, reason: $r, exit_code: $rc, arm: "{arm}"}}' \\
-            > /logs/verifier/idempotence-result.json
-          if [ "${{SPEC_IDEMPOTENCE_GATING:-false}}" = "true" ] \\
-             && [ "$idem_outcome" != "converged" ]; then
-            echo "GATING: idempotence outcome was '$idem_outcome' ($idem_reason) -- downgrading reward to 0.0" >&2
-            echo "0.0" > /logs/verifier/reward.txt
-            rc=1
-          fi
-        fi
-"""
-    ).replace(
-        "__PROBE_BLOCK__", probe_block
-    ).replace(
-        # Substituted AFTER dedent on purpose: both strings carry their own
-        # in-container indentation, and interpolating them into the f-string
-        # would let textwrap.dedent recompute the common prefix from a line
-        # that is not part of the template's own indentation.
-        "__PENDING_TEST__",
-        pending_test,
-    ).replace("__UNVERIFIABLE_REASON__", unverifiable_reason).replace(
-        "__VANISHED_BRANCH__", vanished_branch
-    )
+    return {
+        "label": "idempotence",
+        "arm": arm,
+        "enabled_env": "SPEC_IDEMPOTENCE_ENABLED",
+        "gating_env": "SPEC_IDEMPOTENCE_GATING",
+        "log": "idempotence.log",
+        "result": "idempotence-result.json",
+        "positive": "converged",
+        "command": command,
+        "probe": probe,
+        "probe_reason": (
+            f"nothing was applied (no deploy state at /app/project/{probe}), so "
+            "there is no converged state to re-check. An offline plan with no "
+            "state ALWAYS reports pending changes, so this is reported as "
+            "unverifiable rather than as a real pending-changes verdict."
+            if probe
+            else ""
+        ),
+        "seed_guard": (
+            build_seed_movement_config(
+                arm, probe, texts=IDEMPOTENCE_SEED_MOVEMENT_TEXTS
+            )
+            if seeded
+            else None
+        ),
+        "branches": branches,
+        "default": {"outcome": "not_verifiable", "reason": default_reason},
+    }
 
 
 # The teardown tier's per-arm command (SCHEMA.md §5.2), injected by the
@@ -3712,404 +3005,113 @@ TEARDOWN_COMPLETION_MARKER: dict[Arm, str] = {
 }
 
 
-def build_teardown_block(spec: Spec, arm: Arm) -> str:
-    """The generated `tests/test.sh` teardown-tier block, or "" when this spec
-    leaves `verifier.teardown` disabled.
+def build_teardown_config(spec: Spec, arm: Arm) -> dict | None:
+    """The teardown tier's configuration (specs/SCHEMA.md §5.2), or None when
+    this spec leaves `verifier.teardown` disabled.
 
-    Generation-conditional, as `build_idempotence_block` is and for the same
-    reason: a spec that does not opt in generates byte-identically to a spec
-    that predates the field (SCHEMA.md §5.2).
+    Does the agent's own toolchain destroy what it deployed? The tier GRADES the
+    destroy and is NOT a cleanup mechanism -- the framework's post-trial reset
+    returns the account to baseline whatever this reports -- and tests/tiers.py
+    runs it AFTER the live check and the idempotence tier, because destroying
+    first invalidates both.
 
-    ORDERING IS LOAD-BEARING. The block is emitted AFTER the live check and
-    AFTER the idempotence block, because destroying first invalidates both.
-    The tier GRADES the destroy; the framework's post-trial reset, not this
-    block, is what returns the account to baseline.
+    An offline destroy with no state exits 0 having removed nothing, so every
+    such case is not_verifiable WITH a reason, never clean. A destroy that fails
+    for a transient AWS reason is not retried: the transient-AWS retry wraps
+    `tests/_live_lib.py::run_aws` and a toolchain run is not an `aws` call, so
+    such a run records destroy_failed and under gating costs the trial its
+    reward.
     """
     if not spec.verifier.teardown.enabled:
-        return ""
+        return None
     wid = spec.workspace_identity()
     command = TEARDOWN_COMMAND[arm].replace("__WORKSPACE_ID__", wid)
     probe = TEARDOWN_STATE_PROBE[arm].replace("__WORKSPACE_ID__", wid)
     marker = TEARDOWN_COMPLETION_MARKER[arm]
-    # Emitted ONLY for a spec whose seed the harness deploys: on any other spec
-    # the file probe below is the whole never-deployed guard, and emitting more
-    # would move tasks' bytes (§5.2's regression guarantee). On a seeded spec
-    # the probe cannot fire, so without this guard a destroy of the HARNESS's
-    # seed would be recorded as the agent's own clean teardown.
     seeded = spec.workspace_seed is not None and spec.workspace_seed.deploy is not None
-    movement_guard = (
-        build_seed_movement_guard(
-            arm,
-            probe,
-            indent="    " if probe else "  ",
-            texts=TEARDOWN_SEED_MOVEMENT_TEXTS,
-        )
-        if seeded
-        else ""
-    )
-    if probe:
-        lines = [
-            f'  if [ ! -s "/app/project/{probe}" ]; then',
-            '    down_outcome="not_verifiable"',
-            f'    down_reason="nothing was applied (no deploy state at '
-            f'/app/project/{probe}), so there is nothing to destroy and no '
-            f'destroy is attempted. An offline destroy with no state exits 0 '
-            f'having removed nothing, so this is reported as unverifiable '
-            f'rather than as a real clean verdict."',
-        ]
-        if movement_guard:
-            # The probe above cannot fire on a seeded spec: pre_invoke.sh
-            # writes that exact file before the agent's first token. It is kept
-            # for a seed that vanished mid-trial; this branch carries the signal.
-            lines += ["  else", movement_guard]
-        lines += ["  fi"]
-        probe_block = "\n".join(lines)
-    elif movement_guard:
-        # CloudFormation is this arm's state, so the movement guard stands where
-        # the file probe would and asks the same question of the stack.
-        probe_block = "\n".join(
-            [
-                "  # No local deploy state to probe: cdk destroy acts on the",
-                "  # DEPLOYED stack, so the never-deployed / no-credentials",
-                "  # guarantee comes from the completion-marker guard below.",
-                movement_guard,
-            ]
-        )
-    else:
-        probe_block = "\n".join(
-            [
-                "  : # No local deploy state to probe: cdk destroy acts on the",
-                "    # DEPLOYED stack, so the never-deployed / no-credentials",
-                "    # guarantee comes from the completion-marker guard below.",
-            ]
-        )
-    # The post-synth re-probe's abort (terraconstructs only, see
-    # TEARDOWN_COMMAND). Emitted ONLY for an arm whose command can raise it, so
-    # no other arm's tests/test.sh moves a byte. The indentation is literal
-    # in-container indentation: this string is substituted after dedent().
-    vanished_branch = ""
-    if f"exit {IDEMPOTENCE_STATE_VANISHED_RC}" in TEARDOWN_COMMAND[arm]:
-        vanished_branch = (
-            f'elif [ "$down_rc" -eq {IDEMPOTENCE_STATE_VANISHED_RC} ]; then\n'
-            '      down_outcome="not_verifiable"\n'
-            '      down_reason="the deploy state this tier was about to destroy '
-            "disappeared when the command re-synthesized the stack directory, so "
-            "the destroy below it would have run against no state at all (an "
-            "offline destroy with no state exits 0 having removed nothing) -- see "
-            'teardown.log"\n'
-            "    "
-        )
-    clean_test = '[ "$down_rc" -eq 0 ]'
+
+    # CLAIM ONLY WHAT THE EXIT CODE PROVES. On a brownfield spec the destroy also
+    # removes what the seed deployed, so "removed everything the agent deployed"
+    # would be false.
+    clean: dict = {
+        "rc": 0,
+        "outcome": "clean",
+        "reason": "the arm's own destroy ran to completion against the deployed state",
+    }
     if marker:
-        clean_test += (
-            f" \\\n               && grep -qF '{marker}' /logs/verifier/teardown.log"
+        clean["marker"] = marker
+    branches = [clean]
+    if f"exit {IDEMPOTENCE_STATE_VANISHED_RC}" in TEARDOWN_COMMAND[arm]:
+        branches.append(
+            {
+                "rc": IDEMPOTENCE_STATE_VANISHED_RC,
+                "outcome": "not_verifiable",
+                "reason": "the deploy state this tier was about to destroy "
+                "disappeared when the command re-synthesized the stack directory, "
+                "so the destroy below it would have run against no state at all "
+                "(an offline destroy with no state exits 0 having removed "
+                "nothing) -- see teardown.log",
+            }
         )
+    if marker:
         # An exit 0 that never printed the completion line never reached the
         # stack, so it is not evidence about the account. It must precede the
-        # failure branch, or a never-deployed run is convicted of a failed
+        # failure verdict, or a never-deployed run is convicted of a failed
         # destroy instead of being skipped with a reason.
-        vanished_branch += (
-            'elif [ "$down_rc" -eq 0 ]; then\n'
-            '      down_outcome="not_verifiable"\n'
-            '      down_reason="the destroy command exited 0 without printing '
-            "its own completion marker, so it never deleted the stack "
-            "(unresolvable AWS environment, credentials, network, or no such "
-            'stack) -- see teardown.log"\n'
-            "    "
+        branches.append(
+            {
+                "rc": 0,
+                "outcome": "not_verifiable",
+                "reason": "the destroy command exited 0 without printing its own "
+                "completion marker, so it never deleted the stack (unresolvable "
+                "AWS environment, credentials, network, or no such stack) -- see "
+                "teardown.log",
+            }
         )
-    # CLAIM ONLY WHAT THE EXIT CODE PROVES. On a brownfield spec the destroy
-    # also removes what the seed deployed, so "removed everything the agent
-    # deployed" would be false. What is established is that the arm's own
-    # destroy ran to completion against the deployed state.
-    clean_reason = (
-        "the arm's own destroy ran to completion against the deployed state"
-    )
-    failed_reason = (
-        "the destroy command exited $down_rc -- the agent's teardown does not "
-        "leave the account clean. See teardown.log"
-    )
-    return textwrap.dedent(
-        f"""\
-
-        # --- teardown tier (specs/SCHEMA.md §5.2) ---------------------------
-        # Does the agent's own toolchain destroy what it deployed? Runs after
-        # the live check and the idempotence tier: destroying first invalidates
-        # both. It GRADES the destroy and is NOT a cleanup mechanism -- the
-        # framework's post-trial reset returns the account to baseline whatever
-        # this tier reports.
-        # An offline destroy with no state exits 0 having removed nothing, so
-        # every such case below is not_verifiable WITH a reason, never clean.
-        # A destroy that fails for a transient AWS reason is NOT retried here:
-        # it records destroy_failed, and under gating costs the trial its reward.
-        if [ "${{SPEC_TEARDOWN_ENABLED:-false}}" = "true" ]; then
-          down_outcome="not_verifiable"
-          down_reason="tier did not run"
-          down_rc=""
-        __PROBE_BLOCK__
-          if [ "$down_outcome" = "not_verifiable" ] && [ "$down_reason" = "tier did not run" ]; then
-            ( cd /app/project && {command} ) > /logs/verifier/teardown.log 2>&1
-            down_rc=$?
-            if __CLEAN_TEST__; then
-              down_outcome="clean"
-              down_reason="__CLEAN_REASON__"
-            __VANISHED_BRANCH__else
-              down_outcome="destroy_failed"
-              down_reason="__FAILED_REASON__"
-            fi
-          fi
-          jq -n --arg o "$down_outcome" --arg r "$down_reason" --arg rc "$down_rc" \\
-            '{{outcome: $o, reason: $r, exit_code: $rc, arm: "{arm}"}}' \\
-            > /logs/verifier/teardown-result.json
-          if [ "${{SPEC_TEARDOWN_GATING:-false}}" = "true" ] \\
-             && [ "$down_outcome" != "clean" ]; then
-            echo "GATING: teardown outcome was '$down_outcome' ($down_reason) -- downgrading reward to 0.0" >&2
-            echo "0.0" > /logs/verifier/reward.txt
-            rc=1
-          fi
-        fi
-"""
-    ).replace(
-        "__PROBE_BLOCK__", probe_block
-    ).replace(
-        # Substituted AFTER dedent, like build_idempotence_block's placeholders:
-        # these strings carry their own in-container indentation.
-        "__CLEAN_TEST__",
-        clean_test,
-    ).replace("__CLEAN_REASON__", clean_reason).replace(
-        "__FAILED_REASON__", failed_reason
-    ).replace(
-        "__VANISHED_BRANCH__", vanished_branch
-    )
+    return {
+        "label": "teardown",
+        "arm": arm,
+        "enabled_env": "SPEC_TEARDOWN_ENABLED",
+        "gating_env": "SPEC_TEARDOWN_GATING",
+        "log": "teardown.log",
+        "result": "teardown-result.json",
+        "positive": "clean",
+        "command": command,
+        "probe": probe,
+        "probe_reason": (
+            f"nothing was applied (no deploy state at /app/project/{probe}), so "
+            "there is nothing to destroy and no destroy is attempted. An offline "
+            "destroy with no state exits 0 having removed nothing, so this is "
+            "reported as unverifiable rather than as a real clean verdict."
+            if probe
+            else ""
+        ),
+        "seed_guard": (
+            build_seed_movement_config(arm, probe, texts=TEARDOWN_SEED_MOVEMENT_TEXTS)
+            if seeded
+            else None
+        ),
+        "branches": branches,
+        "default": {
+            "outcome": "destroy_failed",
+            "reason": "the destroy command exited $down_rc -- the agent's "
+            "teardown does not leave the account clean. See teardown.log",
+        },
+    }
 
 
 def build_test_sh(spec: Spec, arm: Arm) -> str:
-    # Runtime-gated on SPEC_LIVE_CHECK_ENABLED, from this task's own
-    # `[verifier] env` (build_task_toml). That is the ONLY condition: a second,
-    # runner-supplied env var would be unsatisfiable by construction, and
-    # nothing but the spec's own verifier.live_check.enabled should decide
-    # whether live_check.py runs. task.toml's `[verifier] env` does reach this
-    # script's process environment -- harbor/verifier/verifier.py::verify merges
-    # and resolves it before `environment.exec`.
-    #
-    # GATING: when task.toml also sets SPEC_LIVE_CHECK_GATING=true
-    # (verifier.live_check.gating), live_check.py's own JSON `.outcome` is
-    # folded into reward.txt -- AND semantics: 1.0 iff the static tiers already
-    # say 1.0 AND the outcome is "pass". "not_verifiable" and "fail_stale" both
-    # downgrade to 0.0, fail-closed: a live check that could not run, or that
-    # observed staleness, must never silently pass a trial. Still one static
-    # template -- both branches are runtime-gated on env vars, so a spec with
-    # neither var set generates this same text and takes the non-gating path.
-    #
-    # The interpreter is guarded even though python3 is installed in every arm
-    # image, because a silent regression (an image rebuilt without it) must not
-    # be indistinguishable from a genuine "no live API found" verdict:
-    #   1. live_check.py's stdout and stderr go to separate files, so a
-    #      crash/traceback can never corrupt (or masquerade as) the JSON
-    #      outcome file.
-    #   2. The interpreter's exit code is captured BEFORE gating reads the
-    #      result file. Any nonzero (127 = python3 missing; anything else =
-    #      live_check.py itself crashed) overwrites live_check-result.json with
-    #      an explicit `{"outcome": "run_invalid", ...}` -- a THIRD bucket,
-    #      distinct from "pass" and from the legitimate
-    #      "not_verifiable"/"fail_stale" verdicts. Gating still fails closed on
-    #      it; this only changes what the failure is diagnosed as, so a reviewer
-    #      reads "the interpreter/script broke" rather than "the verifier
-    #      legitimately couldn't find the API".
-    return textwrap.dedent(
-        """\
-        #!/usr/bin/env bash
-        # Generated -- generator/gen.py. Verifier entry point: exec the real
-        # static-tier chain, then (only if this scenario's task.toml sets
-        # SPEC_LIVE_CHECK_ENABLED=true, i.e. verifier.live_check.enabled is
-        # true for this spec) run live_check.py. If task.toml ALSO sets
-        # SPEC_LIVE_CHECK_GATING=true (verifier.live_check.gating), fold
-        # live_check.py's own JSON `.outcome` into reward.txt (AND
-        # semantics -- see gen.py::build_test_sh's own comment for the
-        # full rationale); otherwise live_check.py stays purely
-        # observational, exactly as before. A missing/crashing python3
-        # interpreter is its own distinct "run_invalid" outcome (see
-        # gen.py::build_test_sh's own comment), never silently folded into
-        # a legitimate "not_verifiable" verdict. Do not hand-edit;
-        # regenerate instead.
-        set -uo pipefail
-        DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    """tests/test.sh, now a shim over tests/verify.py.
 
-        # ---- BROWNFIELD SEED DEPLOY, FAIL-CLOSED (SCHEMA.md §2.7.1) ---------
-        # Every anti-vacuity layer of the seed-deploy mechanism lives inside
-        # pre_invoke/pre_invoke.sh, and aws_bench/task/aws_trial.py runs that
-        # file if and only if it is on disk -- `if
-        # self.task.has_phase_script(ScriptType.PRE_INVOKE):`, no else branch,
-        # no log line, and has_phase_script is pure file existence. A task tree
-        # that lost its pre_invoke/ directory (stale generator, bad image
-        # layer, truncated upload) therefore runs the whole trial against an
-        # EMPTY account in total silence, on which this scenario's live oracle
-        # passes for free (docs/brownfield-seed-not-deployed.md).
-        #
-        # The verifier is the one component that always runs, so it is the one
-        # that refuses. SPEC_SEED_DEPLOY_REQUIRED comes from this task's own
-        # [verifier].env (build_task_toml), written by the SAME generator
-        # branch that emits pre_invoke/pre_invoke.sh; the receipt is written by
-        # that script on its success path only, at a path ScriptRunner's step-7
-        # cleanup does not reach (gen.py::SEED_DEPLOY_RECEIPT_PATH explains why
-        # it cannot be /logs/pre_invoke/seed-proof.json).
-        #
-        # NOT a reward of 0.0, and the difference is the whole point: 0.0 is a
-        # MEASUREMENT -- it says the agent failed. This says no measurement
-        # exists. So it runs BEFORE static_tiers.sh, exits without ever writing
-        # /logs/verifier/reward.txt, and lets harbor's own
-        # RewardFileNotFoundError (harbor/verifier/verifier.py::verify) abort
-        # the trial with no reward key at all -- the same shape _prepare's
-        # ScriptExecutionError gives a seed that failed while it COULD still
-        # run. A machine-readable marker is left beside it for the operator.
-        #
-        # Emitted unconditionally and gated at RUNTIME on the env var, matching
-        # every other branch in this file, so a task that later GAINS a seed
-        # cannot end up with a tests/ directory that has no gate in it.
-        if [ "${SPEC_SEED_DEPLOY_REQUIRED:-false}" = "true" ]; then
-          seed_receipt_outcome=""
-          if [ -s "__SEED_RECEIPT__" ]; then
-            seed_receipt_outcome="$(jq -r '.outcome // ""' "__SEED_RECEIPT__" 2>/dev/null)"
-          fi
-          if [ "$seed_receipt_outcome" != "seed_deployed" ]; then
-            echo "SEED DEPLOY REQUIRED BUT NOT PROVEN: this task.toml sets" >&2
-            echo "SPEC_SEED_DEPLOY_REQUIRED=true, so pre_invoke/pre_invoke.sh must have" >&2
-            echo "deployed and proven this scenario's brownfield seed before the agent" >&2
-            echo "started -- but __SEED_RECEIPT__ says" >&2
-            echo "'${seed_receipt_outcome:-<absent>}'. The account this verifier is about to" >&2
-            echo "read was NEVER SEEDED, so a 'pass' from it would prove nothing" >&2
-            echo "(docs/brownfield-seed-not-deployed.md). REFUSING TO GRADE: no reward file" >&2
-            echo "is written, so this trial reports as INVALID rather than as a score." >&2
-            jq -n --arg o "${seed_receipt_outcome:-}" \\
-              '{outcome: "run_invalid", status: "run_invalid", reason: ("SPEC_SEED_DEPLOY_REQUIRED=true but the seed receipt at __SEED_RECEIPT__ is absent or not seed_deployed (found: " + (if $o == "" then "<absent>" else $o end) + ") -- pre_invoke/pre_invoke.sh did not run to completion in this container"), receipt_path: "__SEED_RECEIPT__"}' \\
-              > /logs/verifier/seed-deploy-missing.json 2>/dev/null \\
-              || echo '{"outcome":"run_invalid","status":"run_invalid","reason":"seed receipt absent"}' > /logs/verifier/seed-deploy-missing.json
-            exit 1
-          fi
-        fi
-
-        "$DIR/static_tiers.sh"
-        rc=$?
-
-        # AWS UNAVAILABLE => THE ROW IS VOID, NOT A ZERO. static_tiers.sh
-        # preflights `aws sts get-caller-identity` on the Terraform-shaped arms
-        # and drops this marker when there is no working credential chain
-        # (gen.py::build_static_tiers_sh). A nonzero rc from static_tiers.sh
-        # does NOT stop this script, and every block below it writes
-        # /logs/verifier/reward.txt on a gating failure -- so without this
-        # short-circuit a broken credential chain would score 0.0, i.e. an
-        # infrastructure failure wearing the costume of a wrong answer. Exit
-        # here instead, before any reward file exists, so harbor's own
-        # RewardFileNotFoundError aborts the trial as INVALID -- the same
-        # contract as the SPEC_SEED_DEPLOY_REQUIRED guard above.
-        if [ -f /logs/verifier/aws-unavailable ]; then
-          echo "AWS UNAVAILABLE: static_tiers.sh could not reach AWS -- see" >&2
-          echo "/logs/verifier/aws-unavailable. REFUSING TO GRADE: no reward file" >&2
-          echo "is written, so this trial reports as INVALID rather than as a score." >&2
-          rm -f /logs/verifier/reward.txt
-          exit 1
-        fi
-
-        if [ "${SPEC_LIVE_CHECK_ENABLED:-false}" = "true" ] \\
-           && [ -f "$DIR/live_check.py" ]; then
-          # REGION. The verifier container is handed credentials but NOT a
-          # region, so without these two lines every `aws` call a
-          # live_check.py makes dies with exit 253 (`NoRegion`) BEFORE
-          # reaching AWS. live_check.py cannot tell that apart from a real
-          # API error, reports "not_verifiable", and the gating below fails
-          # closed to 0.0 -- an infrastructure failure wearing the costume
-          # of an agent failure: a correct, deployed, converged solution
-          # scores 0.0 with `"failures": []` and nothing marks the trial
-          # invalid.
-          #
-          # Set in the GENERATOR, not in the hand-authored live_check.py
-          # files: the region is a property of the environment the verifier
-          # runs in, not of any one oracle. `:=` so a region the harness
-          # DOES inject always wins; the literal is the region this bench is
-          # pinned to by its own SCP.
-          : "${AWS_DEFAULT_REGION:=us-east-1}"
-          export AWS_DEFAULT_REGION
-          if command -v python3 >/dev/null 2>&1; then
-            python3 "$DIR/live_check.py" \\
-              > /logs/verifier/live_check-result.json \\
-              2> /logs/verifier/live_check-stderr.log
-            py_rc=$?
-          else
-            py_rc=127
-            echo "python3: command not found" > /logs/verifier/live_check-stderr.log
-            : > /logs/verifier/live_check-result.json
-          fi
-
-          if [ "$py_rc" -ne 0 ]; then
-            echo "live_check.py did not complete (python3 exit $py_rc) -- see live_check-stderr.log; NOT a legitimate live-check verdict" >&2
-            jq -n --arg rc "$py_rc" \\
-              '{outcome: "run_invalid", status: "run_invalid", reason: ("interpreter/script failed, exit " + $rc + " -- see live_check-stderr.log")}' \\
-              > /logs/verifier/live_check-result.json
-          fi
-
-          # A live_check.py still carrying the generator stub's payload
-          # (`"status": "not_implemented"`) proves the hand-authored oracle
-          # this spec declares never reached the container. It prints no
-          # `outcome`, so the gating block below would read "not_verifiable"
-          # and score EVERY solution 0.0, correct ones included. Same rule as
-          # static_tiers.sh's is_stub_policy: a missing oracle VOIDS the row,
-          # it never grades it. No reward file is written, so harbor's own
-          # RewardFileNotFoundError reports the trial INVALID.
-          if [ "$(jq -r '.status // ""' /logs/verifier/live_check-result.json 2>/dev/null)" = "not_implemented" ]; then
-            echo "GENERATOR STUB: tests/live_check.py is the inert generator stub, not this spec's" >&2
-            echo "hand-authored live oracle. REFUSING TO GRADE: no reward file is written, so this" >&2
-            echo "trial reports as INVALID rather than as a score." >&2
-            rm -f /logs/verifier/reward.txt
-            exit 1
-          fi
-
-          if [ "${SPEC_LIVE_CHECK_GATING:-false}" = "true" ]; then
-            live_outcome="$(jq -r '.outcome // "not_verifiable"' /logs/verifier/live_check-result.json 2>/dev/null)"
-            if [ -z "$live_outcome" ]; then
-              live_outcome="not_verifiable"
-            fi
-            live_kind="$(jq -r '.not_verifiable_kind // ""' /logs/verifier/live_check-result.json 2>/dev/null)"
-
-            # AWS never answered => the row is void, not a zero. Same rule as
-            # the aws-unavailable marker above: "transient-exhausted" (every
-            # attempt at a call timed out or was throttled) and "api-error"
-            # (the call could not be made -- no credentials, no CLI, an API
-            # refusal) are test-infrastructure failures, indistinguishable from
-            # a wrong solution once written as 0.0. Writing no reward file makes
-            # harbor's RewardFileNotFoundError report the trial invalid, keeping
-            # a regional throttle out of tokens-to-green. Every other
-            # not_verifiable kind is a statement about the account and still
-            # gates to 0.0 below.
-            case "$live_outcome:$live_kind" in
-              not_verifiable:transient-exhausted|not_verifiable:api-error)
-                echo "LIVE CHECK UNANSWERED ($live_kind): AWS never answered -- see" >&2
-                echo "/logs/verifier/live_check-result.json. REFUSING TO GRADE: no reward" >&2
-                echo "file is written, so this trial reports as INVALID rather than as a score." >&2
-                rm -f /logs/verifier/reward.txt
-                exit 1
-                ;;
-            esac
-
-            if [ "$live_outcome" != "pass" ]; then
-              echo "GATING: live_check.py outcome was '$live_outcome' (not 'pass') -- downgrading reward to 0.0" >&2
-              echo "0.0" > /logs/verifier/reward.txt
-              rc=1
-            fi
-          fi
-        fi
-        __IDEMPOTENCE_BLOCK__
-        exit $rc
-        """
-    ).replace(
-        # ONE placeholder line carries BOTH live tiers, teardown always second:
-        # destroying first invalidates the live check and the idempotence tier
-        # alike (specs/SCHEMA.md §5.2). A second placeholder LINE would add a
-        # blank line to every task that opts into neither, breaking the
-        # byte-identity their generation-conditional emission protects.
-        "__IDEMPOTENCE_BLOCK__",
-        build_idempotence_block(spec, arm) + build_teardown_block(spec, arm),
-    ).replace(
-        "__SEED_RECEIPT__", SEED_DEPLOY_RECEIPT_PATH
-    )
+    Harbor executes this exact path, so the entry point stays a file with a
+    shebang; every tier it used to inline is tests/tiers.py, and everything that
+    varies per task is tests/verify.py's own config. One static shim for every
+    task, with no generation-conditional text at all: which tiers run is decided
+    by the config and by this task.toml's own `[verifier] env`, so a task that
+    later GAINS a live check or a seed cannot end up with a verifier that has no
+    gate in it.
+    """
+    return build_test_sh_shim()
 
 
 def build_live_check_py(spec: Spec, arm: Arm) -> str:
@@ -4285,7 +3287,7 @@ SEED_DEPLOY_REQUIRED_ENV_KEY = "SPEC_SEED_DEPLOY_REQUIRED"
 #
 # ONE constant, TWO emitters -- pre_invoke.sh stamps it into the receipt and
 # tests/test.sh's idempotence tier re-reads it -- so the writer and the reader
-# cannot drift apart. It exists because `build_idempotence_block`'s "nothing was
+# cannot drift apart. It exists because the idempotence tier's "nothing was
 # applied (no deploy state at ...)" probe is a TAUTOLOGY on a seeded spec: the
 # seed deploy writes that exact file before the agent's first token, so a
 # `converged` verdict alone cannot distinguish "the agent deployed and
@@ -4394,7 +3396,7 @@ SEED_STATE_PROOF: dict[Arm, str] = {
 # SOURCE differs per arm -- a local state file on the TF arms, the
 # describe-stacks response this proof already fetched on awscdk -- but the jq
 # program is SEED_STATE_IDENTITY_JQ's, verbatim, in both this writer and
-# build_idempotence_block's reader.
+# the idempotence tier's reader.
 SEED_STATE_IDENTITY_SOURCE: dict[Arm, str] = {
     "awscdk": "/logs/pre_invoke/seed-cfn.json",
     "hcl_raw": "/app/project/terraform.tfstate",
@@ -4572,7 +3574,7 @@ def build_seed_pre_invoke_sh(spec: Spec, arm: Arm) -> str:
     # therefore written at LITERAL column 0 in SEED_STATE_PROOF and in
     # assert_blocks above. Leaving them inside the f-string would make
     # textwrap.dedent()'s common prefix "" and emit the whole script indented
-    # eight spaces. Same mechanism, same reason, as build_idempotence_block's
+    # eight spaces. Same mechanism, same reason, as the live tiers'
     # own vanished_branch splice.
     template = textwrap.dedent(
         f"""\
@@ -4935,6 +3937,11 @@ _GENERATED_TESTS_FILES = (
     "ops.py",
     "tier0.py",
     "_live_lib.py",
+    # The verifier: tiers.py is the mechanism (byte-identical everywhere),
+    # verify.py this task's config, and the two .sh files are the shims harbor
+    # and every hand-authored solve.sh execute (generator/verify_py.py).
+    "tiers.py",
+    "verify.py",
     "static_tiers.sh",
     "test.sh",
     "live_check.py",
@@ -4987,6 +3994,9 @@ def write_tests_dir(spec: Spec, arm: Arm, tests_dir: Path, step: Step | None = N
     # must never disagree about what `set_eq` means.
     (tests_dir / "ops.py").write_text(OPS_PY)
     (tests_dir / "tier0.py").write_text(build_tier0_py_file(spec, arm, step))
+    # One mechanism file and one config file; the two .sh are shims over them.
+    (tests_dir / "tiers.py").write_text(TIERS_PY)
+    (tests_dir / "verify.py").write_text(build_verify_py_file(spec, arm, step))
     (tests_dir / "static_tiers.sh").write_text(build_static_tiers_sh(spec, arm, step))
     # Only the `rego` engine's static_tiers.sh sources this policy; under the
     # default `jq` the task dir must not carry one, and a leftover from a spec
@@ -5003,7 +4013,7 @@ def write_tests_dir(spec: Spec, arm: Arm, tests_dir: Path, step: Step | None = N
     # is the only legal value when live_check.enabled=False, and those specs
     # keep the always-overwrite-the-stub behavior.
     live_check_path = tests_dir / "live_check.py"
-    written = ["ops.py", "tier0.py", "static_tiers.sh", "test.sh"]
+    written = ["ops.py", "tier0.py", "tiers.py", "verify.py", "static_tiers.sh", "test.sh"]
     if step is None or live.enabled:
         if live.enabled and live.hand_authored and not live_check_path.exists():
             # Falling through would write build_live_check_py's STUB, whose

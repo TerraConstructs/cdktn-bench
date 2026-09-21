@@ -73,10 +73,13 @@ if [ -n "$unrelated" ]; then
   exit 1
 fi
 
+# Every file under tests/ that can carry an assert: the tier-0 filters, the
+# tier-1 policy, this task's verifier config and the mechanism it calls.
+# static_tiers.sh only runs them, so grepping it would prove nothing.
 # `ecr_repo_destroy_force_delete` (the Rego package) and
 # `ecr-repo-destroy-force-delete` (the scenario id) both contain the attribute
 # name as a substring and read nothing; only a real field access counts.
-reading_asserts="$(grep -F force_delete tests/static_tiers.sh tests/policy.rego 2>/dev/null \
+reading_asserts="$(grep -F force_delete tests/tier0.py tests/policy.rego tests/verify.py tests/tiers.py 2>/dev/null \
   | grep -v 'ecr_repo_destroy_force_delete' \
   | grep -v 'ecr-repo-destroy-force-delete' || true)"
 if [ -n "$reading_asserts" ]; then

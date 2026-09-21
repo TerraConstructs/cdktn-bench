@@ -6,7 +6,7 @@ The bug: after a real live `terraform apply` (this scenario's whole point --
 see specs/apigw-redeploy.yaml), the working tree's `terraform.tfstate` (or,
 on terraconstructs, `cdktf.out/stacks/hello-version-api/terraform.tfstate`)
 names a REAL, previously-applied REST API/Lambda/IAM role. `tests/
-static_tiers.sh` then runs `terraform init && terraform plan` to grade the
+verify.py` then runs `terraform init && terraform plan` to grade the
 FINAL delivered file -- and by DEFAULT, `terraform plan` refreshes every
 resource already tracked in state, which means a real
 `GetRestApi`/`GetFunction` call per resource. That makes the grade depend
@@ -15,7 +15,7 @@ on the delivered file: a PERFECT solution scores reward 0.0 for a reason
 that has nothing to do with its own correctness. The fix (DECISIONS.md Slice G
 amendment): `-refresh=false` on this scenario's `terraform plan` invocation
 (both hcl_raw's spec-level `plan_command` and terraconstructs' generator-
-hardcoded tf-plan step, gen.py's `build_static_tiers_sh`), gated on
+hardcoded tf-plan step, gen.py's `build_toolchain_steps`), gated on
 `spec.verifier.live_check.enabled` so every other spec's generated output
 is unaffected (see that gate's own comment).
 
@@ -25,7 +25,7 @@ real, deep proof: stages a sandbox with the CORRECT solution's final
 `terraform.tfstate` naming a real-looking `aws_api_gateway_rest_api` (built
 from this exact provider version's own `terraform providers schema -json`
 output, not guessed field names), and proves BOTH directions:
-  (a) the CURRENT (fixed) generated tests/static_tiers.sh reaches reward
+  (a) the CURRENT (fixed) generated verifier reaches reward
       1.0 despite the residual state, with every AWS call pointed at
       `gates/aws_stub.py` (which answers `sts:GetCallerIdentity` and 400s
       everything else), so a regression that reintroduced a refresh call
@@ -36,7 +36,7 @@ output, not guessed field names), and proves BOTH directions:
       proving this fixture genuinely exercises the refresh code path
       instead of vacuously passing regardless of the flag.
 
-`test_terraconstructs_static_tiers_sh_has_refresh_false` covers the other
+`test_terraconstructs_verifier_has_refresh_false` covers the other
 arm structurally (the generated tf-plan step must contain the flag) plus a
 real, un-seeded end-to-end run (npm ci + cdktn synth + terraform init/plan)
 proving the flag's addition didn't regress the ordinary (no residual state)
@@ -255,7 +255,7 @@ def _stage_grading_tests(task: Path, spec, project: Path) -> None:
 def _stage_hcl_raw_sandbox(tmp: Path, spec) -> Path:
     """Build a `<tmp>/project` sandbox: this spec's hcl_raw workspace +
     tests/, the fixture rev2 main.tf, and real (tiny, valid) Lambda zips --
-    everything `tests/static_tiers.sh` needs to run exactly as it would in a
+    everything the generated verifier needs to run exactly as it would in a
     real trial, minus the AWS credentials it must NOT need."""
     task = task_dir(spec, "hcl_raw")
     project = tmp / "project"
@@ -275,6 +275,8 @@ def _stage_hcl_raw_sandbox(tmp: Path, spec) -> Path:
         cwd=src_dir, check=True, capture_output=True,
     )
 
+    # The shim exports the two in-container paths the verifier runs under, so
+    # rewriting them there repoints the whole chain at this sandbox.
     static_tiers = project / "tests" / "static_tiers.sh"
     text = static_tiers.read_text()
     text = text.replace("/logs/verifier", str(logs))
@@ -357,7 +359,7 @@ def test_hcl_raw_residual_state_does_not_break_static_tier_offline() -> None:
 
     with tempfile.TemporaryDirectory(prefix="apigw-redeploy-b3-") as tmp_s, running_stub() as env:
         # Live AWS is the only trial mode (aws-access.html): the generated
-        # static_tiers.sh opens with an `aws sts get-caller-identity`
+        # the verifier opens with an `aws sts get-caller-identity`
         # preflight, and the aws provider's own STS/data-source calls are
         # real requests. `env` (gates/aws_stub.py::running_stub()) is the
         # credential-free stand-in: it answers GetCallerIdentity and 400s
@@ -384,15 +386,18 @@ def test_hcl_raw_residual_state_does_not_break_static_tier_offline() -> None:
         _write_residual_rest_api_state(project, schema_json)
 
         static_tiers = project / "tests" / "static_tiers.sh"
-        fixed_text = static_tiers.read_text()
+        # The plan step is the verifier's own configuration; the shim only
+        # starts it.
+        verify_py = project / "tests" / "verify.py"
+        fixed_text = verify_py.read_text()
         assert "-refresh=false" in fixed_text, (
-            "expected the generated static_tiers.sh's terraform plan step to "
+            "expected the generated verifier's terraform plan step to "
             "carry -refresh=false (B3 fix, DECISIONS.md Slice G amendment) -- "
             "if this assertion fails, the fix regressed at the generator/spec "
             "level before this test ever got a chance to prove it works"
         )
 
-        # (a) THE FIX: current (generated) static_tiers.sh, with the residual
+        # (a) THE FIX: the current (generated) verifier, with the residual
         # state present and only the credential-free stub reachable, must
         # still reach reward 1.0.
         proc = subprocess.run(
@@ -416,9 +421,12 @@ def test_hcl_raw_residual_state_does_not_break_static_tier_offline() -> None:
         # refresh this triggers still hits a real (400) error -- the
         # network dependency (a two-service-away call, not a credential
         # gap) is what this negative control exercises either way.
-        reverted_text = fixed_text.replace(" -refresh=false", "")
+        # The flag is stripped with its own trailing space rather than a
+        # leading one: the emitted config wraps the command across adjacent
+        # string literals, so the flag can begin a line.
+        reverted_text = fixed_text.replace("-refresh=false ", "")
         assert reverted_text != fixed_text, "the -refresh=false string substitution did not change anything"
-        static_tiers.write_text(reverted_text)
+        verify_py.write_text(reverted_text)
         reward_file.unlink()
 
         proc2 = subprocess.run(
@@ -436,24 +444,24 @@ def test_hcl_raw_residual_state_does_not_break_static_tier_offline() -> None:
 
 
 @requires_terraconstructs_toolchain
-def test_terraconstructs_static_tiers_sh_has_refresh_false() -> None:
+def test_terraconstructs_verifier_has_refresh_false() -> None:
     """Structural + end-to-end-without-residual-state proof for the other
     TF-shaped arm -- see this module's own docstring for why the deep
     hand-crafted-state proof above is hcl_raw-only."""
     spec = load_spec(SPEC_PATH)
     task = task_dir(spec, "terraconstructs")
-    static_tiers_text = (_grading_tests_dir(task, spec) / "static_tiers.sh").read_text()
-    assert "-refresh=false" in static_tiers_text, (
-        "expected apigw-redeploy's generated terraconstructs static_tiers.sh "
+    verify_text = (_grading_tests_dir(task, spec) / "verify.py").read_text()
+    assert "-refresh=false" in verify_text, (
+        "expected apigw-redeploy's generated terraconstructs verifier "
         "tf-plan step to carry -refresh=false (B3 fix) -- see gen.py's "
-        "build_static_tiers_sh, gated on spec.verifier.live_check.enabled"
+        "build_toolchain_steps, gated on spec.verifier.live_check.enabled"
     )
 
     with tempfile.TemporaryDirectory(prefix="apigw-redeploy-b3-tc-") as tmp_s, running_stub() as env:
         # Live AWS is the only trial mode (aws-access.html): cdktn synth
         # emits `data.aws_caller_identity`/`data.aws_partition` unconditionally
         # (see the large comment this test's own module docstring quotes),
-        # and the generated static_tiers.sh opens with an `aws sts
+        # and the generated verifier opens with an `aws sts
         # get-caller-identity` preflight -- both need somewhere real (if
         # credential-free) to resolve against, hence the stub.
         tmp = Path(tmp_s)

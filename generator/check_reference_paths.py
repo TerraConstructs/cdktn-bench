@@ -61,7 +61,8 @@ def _prepare_project(
     COPYs into WORKDIR /app/project -- flattened, no 'workspace'/'app' prefix,
     matching real container layout) with the fixture file dropped in at
     entry_file, plus that task's own tests/ for its real, already-generated
-    static_tiers.sh, tier-0 driver and compiled tier0.rego."""
+    verifier -- the static_tiers.sh shim, tests/verify.py and tests/tiers.py,
+    the tier-0 driver and the compiled tier0.rego."""
     task = task_dir(spec, arm)
     project = tmp / "project"
     shutil.copytree(task / "environment" / ARM_WORKSPACE_SUBDIR[arm], project)
@@ -103,7 +104,9 @@ def _prepare_project(
 
     tests_dst = project / "tests"
     tests_dst.mkdir(exist_ok=True)
-    for driver in ("ops.py", "tier0.py"):
+    # The verifier and its drivers: tiers.py is the mechanism, verify.py this
+    # task's config, ops.py + tier0.py the tier-0 driver the config names.
+    for driver in ("ops.py", "tier0.py", "tiers.py", "verify.py"):
         shutil.copy2(task / "tests" / driver, tests_dst / driver)
     # The compiled tier-0 Rego, for a spec whose `oracle.tier0_engine` is
     # `rego`: static_tiers.sh loads it from its own directory, and without it
@@ -113,9 +116,9 @@ def _prepare_project(
     if tier0_rego.exists():
         shutil.copy2(tier0_rego, tests_dst / "tier0.rego")
     static_text = (task / "tests" / "static_tiers.sh").read_text()
-    # Repoint the two absolute, in-container paths static_tiers.sh bakes in at
-    # this host-side scratch dir (same technique gates/oracle_falsifiability.py
-    # uses).
+    # The shim EXPORTS the two in-container paths the verifier runs under, so
+    # rewriting them here repoints the whole chain at this host-side scratch dir
+    # (same technique gates/oracle_falsifiability.py uses).
     static_text = static_text.replace("/app/project", str(project))
     logs_dir = tmp / "logs" / "verifier"
     logs_dir.mkdir(parents=True, exist_ok=True)
