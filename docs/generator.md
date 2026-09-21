@@ -11,10 +11,8 @@ referenced from the file it describes.
         task.toml, instruction.md, environment/, tests/, solution/ (stub only)
     oracles/<id>/intent.md
     oracles/rego/<id>/policy.rego        (stub only if missing)
-    oracles/cfn-guard/<id>/policy.guard  (stub only if missing; awscdk tier-1
-                                          engine "cfn_guard" only)
-    oracles/rego-cfn/<id>/policy.rego    (stub only if missing; awscdk tier-1
-                                          engine "rego" only — CFN-shaped Rego,
+    oracles/rego-cfn/<id>/policy.rego    (stub only if missing — the awscdk
+                                          arm's CFN-shaped Rego bundle,
                                           specs/SCHEMA.md §4.5)
 
 `<scenario_id>` is the aws-bench shard `generator/shards.py` assigns.

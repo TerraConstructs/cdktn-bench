@@ -9,7 +9,7 @@ The graded fact is what a `{% ... %}` JSONata expression COMPUTES. Every static
 tier this scenario has reads the expression as an opaque string: `tsc`
 type-checks the TypeScript string type, `cdk synth` copies it verbatim into the
 template, `terraform validate`/`plan` treat the whole ASL document as one
-JSON-encoded attribute, and the tier-1 cfn-guard/Rego bundles inspect ASL
+JSON-encoded attribute, and the tier-1 Rego bundles inspect ASL
 STRUCTURE (which keys and substrings are present), never JSONata SEMANTICS. A
 flipped comparison operator or a wrong arithmetic expression is therefore
 syntactically valid JSONata, structurally valid ASL, and invisible to

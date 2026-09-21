@@ -10,7 +10,7 @@ fixtures before any current path is removed.
 | tier | source | executable | engine in the verifier image |
 |---|---|---|---|
 | 0 | `oracle.structural_asserts` (JSONPath subset + op + expected) | `generator/jsonpath_jq.py` compiles each path to a jq filter; `tests/_assert_lib.sh::assert_check` applies the op | `jq` (67 KB) |
-| 1 | `oracles/rego/<id>/policy.rego`, `oracles/rego-cfn/<id>/policy.rego`, `oracles/cfn-guard/<id>/policy.guard` | `opa eval -f raw -I -d policy.rego data.cdktn_bench.<pkg>.deny`; `cfn-guard validate` on awscdk unless `awscdk_tier1_engine: rego` | `opa` 1.19.0 (57 MB static), `cfn-guard` 3.2.0 on awscdk only |
+| 1 | `oracles/rego/<id>/policy.rego`, `oracles/rego-cfn/<id>/policy.rego` | `opa eval -f raw -I -d policy.rego data.cdktn_bench.<pkg>.deny` on every arm (DECISIONS.md Amendment 45: cfn-guard is retired from the oracle) | `opa` 1.19.0 (57 MB static) |
 
 Corpus at 20 specs: 117 tier-0 asserts over nine ops (`eq` 43, `exists` 31,
 `contains` 17, `set_eq` 8, `regex` 6, `not_exists` 4, `absent_or_eq` 3, `in` 3,
@@ -148,7 +148,6 @@ day; the live battery reuses an existing read-only scenario.
 ## 4. What this does not change
 
 * Prompts, catches, `predicted_tier_caught`, the live and teardown tiers.
-* cfn-guard on awscdk where `awscdk_tier1_engine` is `cfn_guard`; a later
-  amendment may retire it once every awscdk policy has a Rego twin, which is
-  a separate decision with its own strictness-parity proof.
+* cfn-guard, which DECISIONS.md Amendment 45 already retired from the oracle
+  and kept installed in the awscdk image as an arm capability.
 * The result schema and every published row.

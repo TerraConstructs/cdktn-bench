@@ -234,7 +234,7 @@ make parity SPEC=specs/<scenario-id>.yaml
 
 `make gen` is the **only** thing allowed to write into
 `tasks/<scenario-id>/{awscdk,hcl-raw,terraconstructs}/` and
-`oracles/{rego,cfn-guard}/<scenario-id>/` — never hand-edit generated
+`oracles/{rego,rego-cfn}/<scenario-id>/` — never hand-edit generated
 output (`SCHEMA.md`'s own top-of-file rule). Files marked hand-authored in
 the spec (see §5 below) are the one exception: the generator writes them
 once, then never overwrites an existing one.
@@ -439,11 +439,12 @@ hoc role. Procedure:
 
 ## 5. Oracle-authoring steps
 
-Every catch needs to be caught **twice, at equal strictness** — once in
-Rego (the TF-shaped arms) and once in cfn-guard (the CDK arm) — plus a
+Every catch needs to be caught **twice, at equal strictness** — once over
+`terraform show -json` plan JSON (the TF-shaped arms) and once over the
+synthesized CloudFormation template (the CDK arm), both in Rego — plus a
 human-readable statement of ground truth they're both derived from.
 Sequence (`specs/SCHEMA.md` §4/§8, `oracles/rego/README.md`,
-`oracles/cfn-guard/README.md`):
+`oracles/rego-cfn/README.md`):
 
 1. **`oracle.intent`** in the spec YAML — a natural-language paragraph
    stating exactly what a correct final artifact looks like. Write this
@@ -459,7 +460,7 @@ Sequence (`specs/SCHEMA.md` §4/§8, `oracles/rego/README.md`,
    static_tiers.sh` (compiled jq, run on every trial); tier "1" needs a
    hand-authored policy per the next step.
 3. **`make gen`**, then hand-author `oracles/rego/<scenario-id>/policy.rego`
-   and `oracles/cfn-guard/<scenario-id>/policy.guard` for every tier-1
+   and `oracles/rego-cfn/<scenario-id>/policy.rego` for every tier-1
    assert — the generator scaffolds an inert `GENERATOR-STUB` skeleton for
    both (`oracles/emit.py`, the single writer for both file types); a
    scenario whose tier-1 policy is still a stub scores every trial's

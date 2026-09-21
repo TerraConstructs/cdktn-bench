@@ -326,7 +326,7 @@ against a hand-authored, oracle-correct reference fixture — rather than agains
 the spec author's mental model of what the artifact looks like.
 
 Tier-1 entries are never executed as declared paths by the generated verifier
- (tier 1 is Rego/cfn-guard-graded), so a broken `tf_jsonpath` there is inert
+ (tier 1 is Rego-graded), so a broken `tf_jsonpath` there is inert
 documentation that nothing else would ever catch. `.planned_values...
 aws_iam_role_policy...values.policy` resolves to NOTHING at plan time whenever
 the policy's Resource references a provider-computed attribute; an `op: in`

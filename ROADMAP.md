@@ -524,6 +524,14 @@ be published until the two metric-biasing findings are resolved.
 
 ### M8 — OPA as the grading engine on all three arms; cfn-guard as a measured capability
 
+**Status: DONE.** Every one of the 20 scenarios grades awscdk tier-1 with
+`oracles/rego-cfn/<id>/policy.rego` over the synthesized template, read by the
+same `opa eval ... deny` line the TF arms run over plan JSON. `cfn_guard` is no
+longer a selectable engine — a spec declaring it fails validation — and
+`oracles/cfn-guard/` is deleted. cfn-guard stays installed in the awscdk image
+as an arm capability. DECISIONS.md Amendment 45; `make falsifiability` and
+`make grading-proof` green on the whole corpus before and after.
+
 **Problem, proven by execution.** cfn-guard 3.2.0 cannot express a cross-resource
 join (no logical-id join between a role and the policy that names it), so the
 awscdk tier-1 for `iam-managed-policy-exclusive-vs-attachment` degraded into a
@@ -537,8 +545,9 @@ equal-strictness grading binding.
 
 **Fix.** Make **OPA/Rego the grading engine on every arm**, including awscdk
 (synth → `ScenarioStack.template.json` → the same OPA engine the TF arms already
-use). One policy language, one identity domain, parity by construction. Backport
-to the awscdk arms that benefit most rather than converting everything at once.
+use). One policy language, one identity domain, parity by construction —
+converted scenario by scenario, then made the only engine once the last one
+landed.
 
 **cfn-guard is retained, but reclassified.** It stays supported as an arm
 capability — it is a real tool an awscdk team actually has. It just cannot be

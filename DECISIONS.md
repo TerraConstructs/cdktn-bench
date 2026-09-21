@@ -8434,3 +8434,64 @@ two earlier attempts of this run were voided by GitHub's release CDN
 truncating the pinned opa download inside the task image builds, which is
 what the build-time asset mirror (Amendment 43, "Build-time asset mirror")
 closed; no verifier behaviour was involved.
+
+## Amendment 45 — OPA/Rego grades tier 1 on every arm; cfn-guard is retired from the oracle and kept as a capability — ACCEPTED
+
+Tier 1 on the `awscdk` arm is now `opa eval -f raw -I -d policy.rego
+'data.cdktn_bench.<id>.deny'` over `cdk.out/ScenarioStack.template.json`, the
+same line the TF arms run over `terraform show -json`. `oracle
+.awscdk_tier1_engine` has one value, `rego`, and it is the default; a spec
+declaring the retired `cfn_guard` fails validation with a message naming its
+replacement. `oracles/cfn-guard/` is deleted, `policy.guard` is no longer a
+generated file, and `tests/tiers.py` invokes no engine but `opa`.
+
+**Why.** cfn-guard 3.2.0 cannot express a cross-resource join, so every intent
+that stated one had to be encoded as a proxy — a count equality, an allowlist,
+a bare existence check. A proxy is unsound in both directions: on
+`iam-managed-policy-exclusive-vs-attachment` a policy reaching one role scored
+1.0 and a policy attached to both roles from both sides scored 0.0, while the
+byte-equivalent Terraform solution scored the opposite way each time. Amendment
+29 (physical resource identity is never load-bearing; arms are graded at equal
+strictness) makes that binding to fix, and three fix rounds established it as a
+tooling ceiling rather than fixer error.
+
+**Equal strictness is now structural, not a review promise.** One policy
+language and one identity domain — logical ids on the CFN side, plan addresses
+on the TF side, never a physical name — on every arm, with the two bundles kept
+in separate trees because their `input` documents are unrelated
+(`specs/SCHEMA.md` §4.5).
+
+**cfn-guard stays installed in `arms/awscdk/environment/Dockerfile`** and is
+supported as a measured arm capability an agent may run. It is never the
+grading authority. "awscdk has more guardrail tooling" must not be evidenced by
+its existence — Terraform has conftest/OPA, Checkov, tfsec and Sentinel.
+
+**Per-scenario strictness differences from the retired bundles.** Each is
+recorded in its policy's own header. None changes a shipped fixture's verdict.
+
+| scenario | difference | evidence |
+|---|---|---|
+| `acm-dns-validation-record-wiring` | stronger: `HostedZoneId` must name a hosted zone created here, not merely exist | derived template with a literal zone id passes cfn-guard, denies under Rego |
+| `apigw-openapi`, `apigw-redeploy` | stronger: every Method's logical id must appear in the Deployment's `DependsOn`, replacing `count(DependsOn) >= count(Methods)` | the gap the retired bundle's own header recorded: a `DependsOn` naming three non-Method resources passed |
+| `lambda-log-group-ownership-and-retention` | stronger on both disjuncts: the convention name must match exactly, not by `/aws/lambda/` prefix; `LoggingConfig.LogGroup` must name a group declared here | two derived templates pass real cfn-guard 3.2.0 and deny under Rego |
+| `named-resource-replacement` | cfn-guard was unsound in the REJECTING direction: an intrinsic `CidrIp` raised a comparison error it scored as "allows 0.0.0.0/0", failing the idiomatic VPC-scoped solution | `Peer.ipv4(vpc.vpcCidrBlock)` template, cfn-guard exit 19; Rego denies nothing and records `not_verifiable` |
+| `s3-bucket-hardening-decomposition` | stronger: TLS-deny `Resource` entries must resolve to THIS bucket (was `count >= 2`), `KMSMasterKeyID` must name a declared `AWS::KMS::Key`, and every SSE entry is read rather than the first | the retired bundle's own header recorded both proxies |
+| `s3-lambda-log-retention`, `s3-notification-custom-resource-tax` | stronger: `SourceArn` and the notification `Function` must resolve to a bucket/function declared here, replacing `'Fn::GetAtt' EXISTS` | the retired bundles' own headers |
+| `sfn-jsonata` | stronger: the decoded ASL is walked, where cfn-guard could only regex the encoded `DefinitionString` — its language check passed a top-level-JSONPath machine and its key alternation fired inside string values | argued from both policy texts; no fixture exercises either shape |
+| `toy-ssm-parameter` | one-for-one port. The awscdk bundle still grades "Resource is not `*`" where the TF half grades "the policy references the created parameter" — a pre-existing gap, unchanged | schema worked example, not a corpus scenario |
+| the other seven | none | |
+
+Two joins were repaired while landing: `s3-lambda-log-retention` and
+`s3-notification-custom-resource-tax` read the reference through any intrinsic
+(`Ref`/`Fn::GetAtt`, nested in `Fn::Join`/`Fn::Sub`), as the TF half's
+`.references` list does. Accepting a top-level `Fn::GetAtt` only was STRICTER
+than the TF half and false-FAILed the `Fn::Sub` spelling of the identical
+reference — the same parity break `s3-notification-authoritative-singleton` had
+already had to repair.
+
+**Evidence.** `make falsifiability` and `make grading-proof` green on all 20
+scenarios plus the toy, before and after; `make check-paths`,
+`make tier1-coverage`, `ci/check-smoke-drift.sh` and the full test suite green.
+No harness behaviour changes: the tier-1 status ladder, the hard-failure reward
+gate, every marker file and the `== summary:` line are untouched, so this
+amendment is ACCEPTED on landing rather than on a live run.

@@ -331,7 +331,7 @@ takes 25–35 s. The saving is ~10 ms per graded row.
   `include-projection-without-non-key-attributes` terraconstructs + awscdk),
   `s3-lambda-log-retention` (`log-retention-not-a-valid-enum-value` hcl-raw +
   terraconstructs).
-* **cfn-guard arms.** Scenarios whose awscdk tier 1 is `cfn_guard` have no Rego
+* **cfn-guard arms** (no longer reachable — Amendment 45 retired the engine). Scenarios whose awscdk tier 1 was `cfn_guard` had no Rego
   policy for that arm and are out of scope by construction, as the memo says.
 * **`rego_hints`, `opa test` unit tests, and any policy path not reachable from
   the two graded queries.** Only `deny` and `not_verifiable` were compared,
