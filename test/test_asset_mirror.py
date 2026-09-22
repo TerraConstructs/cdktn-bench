@@ -28,7 +28,11 @@ def manifest():
 
 
 def test_every_arm_has_a_dockerfile():
-    assert len(DOCKERFILES) == 3
+    """Counted off arms/ rather than hardcoded, so adding an arm (hcl-modules
+    did, in M3 phase 4) extends the per-Dockerfile parametrisation below instead
+    of failing here."""
+    arms = sorted(p.name for p in (REPO_ROOT / "arms").iterdir() if p.is_dir())
+    assert [p.parent.parent.name for p in DOCKERFILES] == arms
 
 
 @pytest.mark.parametrize("dockerfile", DOCKERFILES, ids=lambda p: p.parent.parent.name)

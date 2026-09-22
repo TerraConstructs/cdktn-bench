@@ -8566,6 +8566,51 @@ environment" until M2 lands design B — so M2 lands in place, with no new hosti
 (g) `allow_internet` stays at Harbor's default: the forced `host` override never
 consults DNS, so masking does not depend on it.
 
+**Phase 4 landed** (still DRAFT — this amendment promotes with the pilot in phase
+5). What exists: 21 `module@version` trees across 19 names committed under
+`arms/hcl-modules/environment/modules/` with a `manifest.json` the image build
+re-checks file by file, refreshed by `scripts/vendor_modules.py`
+(`docs/hcl-modules-vendoring.md`); the responder
+(`arms/hcl-modules/environment/tf-registry/responder.py`) as the compose sidecar
+`tf-registry`, the arm's own image with a different command, serving
+`versions`/`download`, `/v1/modules/search` and the (f) `/mcp` skeleton whose
+nine tool names are derived in test from the memo that read them off
+`terraform-mcp-server` v1.3.0; and `gates/tf_registry.py`, which gives a host
+gate the same registry. `terraform init` succeeds under `docker run --network
+none` for all 21 vendored modules with no service-discovery request, and the
+allowlist refuses an unlisted version rather than reaching upstream.
+
+Three things the build settled against the decisions as written:
+
+- **(c)'s first half is void.** No arm image declares a `USER` and `gen.py`
+  refuses one for a seeded spec, so the agent is uid 0 and no file mode hides the
+  tree from it. What replaces it is content discipline: the vendored bytes are
+  upstream's own, and the manifest carries no bench judgement — in particular no
+  `decoy` flag, which is the module-selection answer in machine-readable form.
+  Which four modules are decoys lives only in `scripts/vendor_modules.pins.json`,
+  a host-side input that reaches no build context.
+- **(c)'s second half is too broad as worded.** A registry module calls its own
+  submodules by relative path, so `ecs`, `eks` and `rds` each install
+  `.terraform/modules/modules.json` entries whose `Source` is `./modules/...`;
+  denying every non-registry `Source` would refuse three vendored modules. The
+  rule phase 5 implements is scoped to the calls the ROOT module makes — an entry
+  whose `Key` carries no dot — which is the only set the agent wrote, and the
+  preflight asserts it against a fixture that installs three relative-source
+  entries so it cannot pass vacuously.
+- **The provider union is eight, not the nine of the spec matrix.** It is
+  recomputed from the vendored bytes rather than restated: `hashicorp/random` is
+  missing from the matrix and is needed by the `rds` decoy's unconditionally
+  called `db_instance` submodule, and `kreuzwerker/docker` is deliberately
+  excluded — its only declarer builds container images and needs a daemon the
+  agent container has not got, and mirroring it measured 370s of a 415s mirror
+  step against Harbor's 600s cold build timeout. Its absence is a loud `init`
+  failure, not a silent one, because the CLI config carries no `direct {}`
+  fallback.
+
+(d) is settled as written: `kms` is vendored and served at 4.2.2 and 4.0.0, `acm`
+at 6.3.1 and 6.2.0 (the pin `apigateway-v2` calls unconditionally), and every
+floor in the tree is satisfied by the 6.66.0 / 1.15.8 pair `arms/hcl-raw` carries.
+
 ---
 
 ## Amendment 47 — equipping hash scheme 2: Harbor's own equipping channels are in the hash — ACCEPTED

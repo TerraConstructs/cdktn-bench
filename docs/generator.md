@@ -16,13 +16,17 @@ referenced from the file it describes.
                                           specs/SCHEMA.md §4.5)
 
 `<scenario_id>` is the aws-bench shard `generator/shards.py` assigns. A fourth arm
-exists in the schema, `hcl-modules` (`DECISIONS.md` Amendment 46): no spec enables
-it, and `gen.ARMS_PENDING_IMAGE` refuses to emit it while
-`arms/hcl-modules/environment/` holds no Dockerfile, so it appears in no task path
-yet. `make build-arms` and `make preflight` skip an arm whose `environment/` is
-empty for the same reason;
-`generator/tests/test_hcl_modules_arm.py::test_pending_arms_are_exactly_the_ones_without_an_image`
-is what stops that skip from hiding a deleted Dockerfile on a shipped arm.
+exists in the schema, `hcl-modules` (`DECISIONS.md` Amendment 46). Its IMAGE landed
+in M3 phase 4 — `make build-arms` and `make preflight` build and run it like any
+other arm — but this module has no per-arm writers for it (no `write_environment()`
+branch, no `ARM_MEMORY_MB` entry), so `gen.ARMS_PENDING_IMAGE` still refuses to emit
+it and it appears in no task path yet; the phase-5 pilot is what closes that. No spec
+enables it either, which is the second, independent reason `make gen-all` stays
+byte-identical.
+`generator/tests/test_hcl_modules_arm.py::test_pending_arms_are_exactly_the_ones_the_generator_cannot_write`
+keeps that set honest in both directions, and `::test_every_arm_has_an_image` stops
+the Makefile's "skip an arm whose `environment/` is empty" from hiding a deleted
+Dockerfile on a shipped arm.
 
 It also COPIES (never writes) one shared, hand-authored library into a task's
 `tests/` when the spec asks for it:

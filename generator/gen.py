@@ -68,11 +68,15 @@ ARM_DIRNAME: dict[Arm, str] = {
     "terraconstructs": "terraconstructs",
     "hcl_modules": "hcl-modules",
 }
-# An arm whose image and environment tree do not exist yet: `arms/<dirname>/`
-# holds its README and an empty environment/, `make build-arms` and
-# `make preflight` skip it, and generate_arm() refuses to emit a task for it.
-# generator/tests/test_hcl_modules_arm.py is what keeps this set honest, so a
-# DELETED Dockerfile on a shipped arm still fails rather than being skipped.
+# An arm generate_arm() refuses to emit a task for, because this module has no
+# per-arm writers for it: no write_environment() branch (so nothing would author
+# its entry_file) and no ARM_MEMORY_MB entry (so build_task_toml would KeyError).
+# The NAME predates the image: hcl_modules carried no environment/Dockerfile at
+# all until the module delivery landed (DECISIONS.md Amendment 46 (a)-(b)) and
+# now carries one -- `make build-arms` and `make preflight` build and run it --
+# while its task emission still waits on the pilot's module-based references.
+# generator/tests/test_hcl_modules_arm.py is what keeps this set honest in both
+# directions.
 ARMS_PENDING_IMAGE: frozenset[Arm] = frozenset({"hcl_modules"})
 # A task's aws-bench scenario is its PARENT DIRECTORY under tasks/:
 # aws-bench-datasets' registry generator (aws_bench/scripts/update_registry.py)
@@ -4346,12 +4350,13 @@ def write_multi_step_layout(spec: Spec, arm: Arm, arm_dir: Path) -> None:
 def generate_arm(spec: Spec, arm: Arm) -> Path:
     if arm in ARMS_PENDING_IMAGE:
         raise NotImplementedError(
-            f"arm {arm!r} cannot be generated yet: {ARMS_DIR / ARM_DIRNAME[arm]} has "
-            "no environment/Dockerfile, so there is no image to run the emitted task "
-            "in and no toolchain for its verifier. Enabling it in a spec requires the "
-            "arm's delivery to land first (docs/design/tf-modules-arm.md milestones "
-            "4-5: the vendored module set, the registry sidecar and the plan "
-            "normaliser)."
+            f"arm {arm!r} cannot be generated yet: this module has no per-arm "
+            f"writers for it -- write_environment() would not author its entry_file "
+            f"and ARM_MEMORY_MB has no entry -- so the emitted task would have an "
+            f"empty workspace and no verifier toolchain. The arm image itself exists "
+            f"({ARMS_DIR / ARM_DIRNAME[arm] / 'environment' / 'Dockerfile'}); what "
+            "is still missing is the pilot's module-based references "
+            "(docs/design/tf-modules-arm.md milestone 5)."
         )
     arm_dir = task_dir(spec, arm)
     arm_dir.mkdir(parents=True, exist_ok=True)

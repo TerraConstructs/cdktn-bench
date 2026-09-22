@@ -19,6 +19,7 @@ Nothing here writes to the repo, and no call reaches real AWS.
 
 from __future__ import annotations
 
+import contextlib
 import shutil
 import sys
 import time
@@ -32,10 +33,15 @@ sys.path.insert(0, str(REPO_ROOT / "generator"))
 sys.path.insert(0, str(REPO_ROOT / "gates"))
 
 import oracle_falsifiability as of  # noqa: E402
+import tf_registry  # noqa: E402
 from gen import ARM_DIRNAME, task_dir  # noqa: E402
 from spec_model import Arm, Spec, Step  # noqa: E402
 
 ARMS: tuple[Arm, ...] = ("hcl_raw", "terraconstructs", "awscdk")
+
+# The only arm whose toolchain needs more than the AWS stub: its modules resolve
+# from the loopback registry, never from registry.terraform.io.
+REGISTRY_ARM: Arm = "hcl_modules"
 
 # Kept working copies are for reproducing a divergence by hand; the installed
 # dependency trees are ~600 MB per run and reproducible from the lockfiles.
@@ -85,6 +91,23 @@ def install(work_dir: Path) -> KeptTempDir:
     keep = KeptTempDir(work_dir)
     of.tempfile = types.SimpleNamespace(TemporaryDirectory=keep)
     return keep
+
+
+@contextlib.contextmanager
+def arm_env(arm: Arm, env: dict[str, str]) -> Iterator[dict[str, str]]:
+    """`env` for one arm's fixture runs; unchanged for every arm but this one.
+
+    `hcl_modules` additionally runs under gates/tf_registry.py::running_registry,
+    which adds the `TF_CLI_CONFIG_FILE` whose `host` override points
+    `registry.terraform.io`'s modules service at the loopback responder. Other
+    arms declare no modules, so handing them that config would only couple three
+    green arms to a fourth arm's subprocess.
+    """
+    if arm != REGISTRY_ARM:
+        yield env
+        return
+    with tf_registry.running_registry(env=env) as registry_env:
+        yield registry_env
 
 
 def tests_dir(task: Path, step: Step | None) -> Path:
@@ -181,27 +204,28 @@ def collect(
         if not task.is_dir():
             continue
         artifact_rel = getattr(spec.instruction.per_arm, arm).output_contract.artifact_path
-        for step, name, solve in plan_runs(spec, arm):
-            tdir = tests_dir(task, step)
-            if not (tdir / "static_tiers.sh").exists():
-                continue
-            if any(not (tdir / f).exists() for f in require_tests):
-                continue
-            label = f"{spec.id}/{ARM_DIRNAME[arm]}/{name}"
-            t0 = time.time()
-            run = of._run_solve(
-                task, arm, solve, label,
-                artifact_rel=artifact_rel, step=step, env=env,
-            )
-            work = keep.last
-            plan = work / "project" / artifact_rel if work else None
-            merged = work / "logs" / "verifier" / "oracle-input.json" if work else None
-            collected = Collected(
-                label=label, spec_id=spec.id, arm=arm, fixture=name, step=step,
-                task=task, tests=tdir,
-                plan=plan if plan and plan.is_file() and plan.stat().st_size else None,
-                merged=merged if merged and merged.is_file() and merged.stat().st_size else None,
-                reward=run.reward, seconds=round(time.time() - t0, 1), workdir=work,
-            )
-            prune(work)
-            yield collected
+        with arm_env(arm, env) as run_env:
+            for step, name, solve in plan_runs(spec, arm):
+                tdir = tests_dir(task, step)
+                if not (tdir / "static_tiers.sh").exists():
+                    continue
+                if any(not (tdir / f).exists() for f in require_tests):
+                    continue
+                label = f"{spec.id}/{ARM_DIRNAME[arm]}/{name}"
+                t0 = time.time()
+                run = of._run_solve(
+                    task, arm, solve, label,
+                    artifact_rel=artifact_rel, step=step, env=run_env,
+                )
+                work = keep.last
+                plan = work / "project" / artifact_rel if work else None
+                merged = work / "logs" / "verifier" / "oracle-input.json" if work else None
+                collected = Collected(
+                    label=label, spec_id=spec.id, arm=arm, fixture=name, step=step,
+                    task=task, tests=tdir,
+                    plan=plan if plan and plan.is_file() and plan.stat().st_size else None,
+                    merged=merged if merged and merged.is_file() and merged.stat().st_size else None,
+                    reward=run.reward, seconds=round(time.time() - t0, 1), workdir=work,
+                )
+                prune(work)
+                yield collected

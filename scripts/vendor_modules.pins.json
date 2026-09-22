@@ -1,0 +1,176 @@
+{
+  "repo_owner": "terraform-aws-modules",
+  "repo_prefix": "terraform-aws-",
+  "registry_namespace": "terraform-aws-modules",
+  "registry_provider": "aws",
+  "modules": [
+    {
+      "name": "vpc",
+      "version": "6.7.3",
+      "tag": "v6.7.3",
+      "commit": "b3abd6df2ecf052451a361ed55b8f06f8742a795",
+      "decoy": false,
+      "why": "named-resource-replacement (root + modules/vpc-endpoints)"
+    },
+    {
+      "name": "ecr",
+      "version": "3.2.0",
+      "tag": "v3.2.0",
+      "commit": "b6ef04d088cf91d5ba9505132e9ff7c9f847ed5d",
+      "decoy": false,
+      "why": "ecr-repo-destroy-force-delete"
+    },
+    {
+      "name": "lambda",
+      "version": "8.8.2",
+      "tag": "v8.8.2",
+      "commit": "9d32ec285f7c30c784516ff546ae282cce71e8a7",
+      "decoy": false,
+      "why": "every lambda-bearing spec (root + modules/alias)"
+    },
+    {
+      "name": "acm",
+      "version": "6.3.1",
+      "tag": "v6.3.1",
+      "commit": "aae84c011dd68ace1beb5d10e1feddfe9a334953",
+      "decoy": false,
+      "why": "acm-dns-validation-record-wiring"
+    },
+    {
+      "name": "acm",
+      "version": "6.2.0",
+      "tag": "v6.2.0",
+      "commit": "0fb9ca5d0b8ea28414fdf085bc3a2628d700758e",
+      "decoy": false,
+      "why": "transitive: apigateway-v2 main.tf calls acm at exactly 6.2.0, uncounted by any count/for_each"
+    },
+    {
+      "name": "route53",
+      "version": "6.5.1",
+      "tag": "v6.5.1",
+      "commit": "883f987d6bb328c09bd4dfc5a04024534b371d59",
+      "decoy": false,
+      "why": "acm-dns-validation-record-wiring (hosted zone)"
+    },
+    {
+      "name": "dynamodb-table",
+      "version": "5.5.2",
+      "tag": "v5.5.2",
+      "commit": "c38423ae6c92825e7cc4376c7f81deb20a676f2b",
+      "decoy": false,
+      "why": "ddb-gsi-attribute-definitions"
+    },
+    {
+      "name": "sns",
+      "version": "7.1.1",
+      "tag": "v7.1.1",
+      "commit": "61ac1dc530fd08965a0ce480352e554cc827ff05",
+      "decoy": false,
+      "why": "s3-notification-authoritative-singleton"
+    },
+    {
+      "name": "kms",
+      "version": "4.2.2",
+      "tag": "v4.2.2",
+      "commit": "d25e459bd43d8d0bdff7c250ba6b237a12be7381",
+      "decoy": false,
+      "why": "s3-bucket-hardening-decomposition; the version an agent would pick"
+    },
+    {
+      "name": "kms",
+      "version": "4.0.0",
+      "tag": "v4.0.0",
+      "commit": "28846a0d9ba83629f006847f25f0e69bd05116b1",
+      "decoy": false,
+      "why": "transitive: eks and route53 both pin exactly 4.0.0"
+    },
+    {
+      "name": "security-group",
+      "version": "6.0.0",
+      "tag": "v6.0.0",
+      "commit": "58d8e895915f5573767081142d063b7caf7a2b47",
+      "decoy": false,
+      "why": "named-resource-replacement, standalone alternative to vpc//modules/vpc-endpoints"
+    },
+    {
+      "name": "ecs",
+      "version": "7.6.1",
+      "tag": "v7.6.1",
+      "commit": "60b428812ddcffe48abc6af0988fe826c89da961",
+      "decoy": false,
+      "why": "ecs-swappiness (modules/service + modules/container-definition)"
+    },
+    {
+      "name": "s3-bucket",
+      "version": "5.16.1",
+      "tag": "v5.16.1",
+      "commit": "5dc2f1f89743ab935114b0b039bc88044a672ca2",
+      "decoy": false,
+      "why": "every bucket spec (root + modules/notification + modules/object)"
+    },
+    {
+      "name": "iam",
+      "version": "6.8.2",
+      "tag": "v6.8.2",
+      "commit": "55514b7873c411040395e024a422684998da77c2",
+      "decoy": false,
+      "why": "iam-managed-policy-exclusive-vs-attachment (modules/iam-role)"
+    },
+    {
+      "name": "step-functions",
+      "version": "5.1.1",
+      "tag": "v5.1.1",
+      "commit": "16c7a1ffaa72643d714a7b3924216edce9413482",
+      "decoy": false,
+      "why": "sfn-jsonata"
+    },
+    {
+      "name": "apigateway-v2",
+      "version": "6.1.1",
+      "tag": "v6.1.1",
+      "commit": "95e6a1d56d6d761ec12c89b36b29aad03a421b2f",
+      "decoy": false,
+      "why": "apigwv2-route-settings-zero-vs-unset"
+    },
+    {
+      "name": "autoscaling",
+      "version": "9.3.2",
+      "tag": "v9.3.2",
+      "commit": "f90a581bcca0bab571022a021db155f2860e9b32",
+      "decoy": false,
+      "why": "asg-launch-template-tag-propagation"
+    },
+    {
+      "name": "alb",
+      "version": "10.5.1",
+      "tag": "v10.5.1",
+      "commit": "6c6e48c10d450d01cf6715346e926df0b858efc2",
+      "decoy": true,
+      "why": "decoy: no spec needs a load balancer"
+    },
+    {
+      "name": "sqs",
+      "version": "5.2.2",
+      "tag": "v5.2.2",
+      "commit": "dd73a96c0155bc324dda5256f3e7a9ea2c710195",
+      "decoy": true,
+      "why": "decoy: no spec needs a queue"
+    },
+    {
+      "name": "rds",
+      "version": "7.2.2",
+      "tag": "v7.2.2",
+      "commit": "175da043429cbbe41c512f976105719f6d0e538c",
+      "decoy": true,
+      "why": "decoy: no spec needs a database; carries the tightest terraform floor (>= 1.11.1)"
+    },
+    {
+      "name": "eks",
+      "version": "21.25.1",
+      "tag": "v21.25.1",
+      "commit": "5bb7855c49194aabb2e36448ed990931f1c932ae",
+      "decoy": true,
+      "why": "decoy: no spec needs a cluster; carries the tightest aws floor (>= 6.59)"
+    }
+  ]
+}

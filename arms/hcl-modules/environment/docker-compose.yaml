@@ -1,0 +1,56 @@
+# The tf-registry sidecar (DECISIONS.md Amendment 46 (a): the registry is this
+# arm's own image run with a different command).
+#
+# Harbor merges a task's environment/docker-compose.yaml on top of its own base
+# compose (harbor/environments/docker/docker-compose-build.yaml, which defines
+# the agent service `main` with `build: context: ${CONTEXT_DIR}`) and runs one
+# compose project per trial, so a service declared here is a container the agent
+# — and the verifier, which executes in the same environment — reaches by name on
+# the project's default network. That name is what ../terraformrc points at.
+#
+# ONE IMAGE, TWO COMMANDS. tf-registry builds the SAME context with the SAME
+# Dockerfile as `main`, so the resulting images have identical RootFS layers and
+# identical config (verified) and the sidecar cannot drift from the tree the
+# agent reads. They are not the same image ID — BuildKit stamps each build with
+# its own attestation — and collapsing them would take a fixed `image:` tag,
+# which two concurrent trials of DIFFERENT tasks would race on. Identical
+# contents under two IDs is the safer half of that trade, and leaving `image:`
+# unset on both keeps Harbor's own image naming untouched.
+#
+# allow_internet stays at Harbor's default (Amendment 46 (g)): masking the public
+# registry does not depend on the network policy, because the forced `host` block
+# in cli.tfrc means Terraform never resolves registry.terraform.io at all.
+services:
+  main:
+    # The agent must not start against a registry that is not yet serving: a
+    # `terraform init` one second too early fails with a connection error that
+    # reads like an offline-arm bug.
+    depends_on:
+      tf-registry:
+        condition: service_healthy
+
+  tf-registry:
+    build:
+      context: .
+    # `--bind 0.0.0.0` is required and widens nothing: the responder's default
+    # bind is 127.0.0.1, which another container cannot reach, and the responder
+    # opens no outbound socket of its own (gates/tests/test_tf_registry.py::
+    # test_responder_opens_no_outbound_connection).
+    command:
+      - python3
+      - /opt/tf-registry/responder.py
+      - --root
+      - /opt/terraform-modules
+      - --port
+      - "8081"
+      - --bind
+      - 0.0.0.0
+    healthcheck:
+      # The discovery document is the one endpoint with no arguments. Terraform
+      # itself never requests it (the host block skips discovery), so answering
+      # it proves the process is serving without warming anything.
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8081/.well-known/terraform.json"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 2s

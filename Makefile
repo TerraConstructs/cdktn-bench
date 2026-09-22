@@ -68,7 +68,7 @@ preflight:
 			continue; \
 		fi; \
 		case "$$arm" in \
-			hcl-raw) entrypoint=/opt/preflight/preflight.sh ;; \
+			hcl-raw|hcl-modules) entrypoint=/opt/preflight/preflight.sh ;; \
 			*) entrypoint=/usr/local/bin/preflight.sh ;; \
 		esac; \
 		if docker image inspect "$$image" >/dev/null 2>&1; then \

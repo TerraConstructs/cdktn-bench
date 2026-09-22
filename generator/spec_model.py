@@ -48,8 +48,9 @@ CatchTierStr = Literal["0", "1", "live", "teardown"]
 # registry modules, gated per spec like terraconstructs (DECISIONS.md Amendment 46,
 # which makes module use an ARM rather than a scenario treatment because it changes
 # the authoring substrate and must be judged by identical metrics per arm). Its
-# image, module delivery and plan normaliser land later; `gen.ARMS_PENDING_IMAGE`
-# is what refuses to emit it until then.
+# image, module delivery and plan normaliser have landed (M3 phases 3-4); its
+# generator-side writers have not, so `gen.ARMS_PENDING_IMAGE` still refuses to emit
+# it until the phase-5 pilot.
 Arm = Literal["awscdk", "hcl_raw", "terraconstructs", "hcl_modules"]
 
 ID_RE = re.compile(r"^[a-z][a-z0-9-]*$")

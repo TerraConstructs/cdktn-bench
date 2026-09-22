@@ -41,6 +41,85 @@ Consumers: `gates/oracle_falsifiability.py`, `gates/grading_proof.py`,
 `check_arm` and `_run_solve` accept an `env=` so a standalone call still works
 (starting a one-off stub of its own).
 
+## tf-registry
+
+`gates/tf_registry.py` + `arms/hcl-modules/environment/tf-registry/responder.py`
+— the offline Terraform **module** registry the `hcl_modules` arm resolves
+against. Providers have a `filesystem_mirror`; modules have no mirror mechanism
+at all, so vendoring plus a responder is the whole option space
+(`docs/design/tf-module-registry-loopback.md` §4).
+
+`responder.py` serves one vendored tree (`--root`, the directory holding
+`manifest.json`) on one ephemeral loopback port and answers six things:
+
+| request | response |
+| --- | --- |
+| `GET /.well-known/terraform.json` | `{"modules.v1": "/v1/modules/"}` — the compose healthcheck's probe; Terraform never asks, because the `host` override skips discovery |
+| `GET /v1/modules/<ns>/<name>/aws/versions` | every manifest version of that module, newest last |
+| `GET /v1/modules/<ns>/<name>/aws/<version>/download` | `204` + `X-Terraform-Get` at an absolute `/tarballs/<name>-<version>.tar.gz` URL |
+| `GET /tarballs/<name>-<version>.tar.gz` | the module directory's CONTENTS, built on first request and cached |
+| `GET /v1/modules/search?q=` | manifest-backed name/description match, every module answered alike |
+| `POST /mcp` | MCP streamable-http `initialize` / `tools/list` / `tools/call` |
+
+The manifest is the whole world. A namespace other than
+`terraform-aws-modules`, an unvendored module, or an unvendored version is a
+404 whose body names the allowlist or the newest version that does exist —
+never a passthrough, because a responder that could answer an unlisted version
+from upstream would break the arm's offline guarantee silently. The file opens
+no outbound connection at all, and
+`gates/tests/test_tf_registry.py::test_responder_opens_no_outbound_connection`
+runs it under a `socket.connect` audit hook to prove it.
+
+The tarball strips the vendored directory name: go-getter extracts the archive
+**as** the module root, so a retained top directory puts every `.tf` file one
+level below where Terraform looks.
+
+Nothing the responder serves says which modules are decoys, and neither does the
+manifest it reads: that flag is the module-selection answer, and it lives only in
+`scripts/vendor_modules.pins.json` on the host
+(`docs/hcl-modules-vendoring.md`).
+
+`POST /mcp` is the phase-4 skeleton of the bench-owned index tool
+(`docs/design/registry-index-tool.md` design B): the nine tool names and input
+schemas of `terraform-mcp-server`'s `registry` toolset, with every call
+answering a **successful** result reading `<tool>: not available in this
+environment`. A successful decline rather than an error is deliberate — an
+error reads to an agent as an outage worth retrying, while the text states the
+bound it is working inside. M2 replaces the bodies, not the hosting.
+
+`running_registry(root)` is the host-gate lifecycle, shaped like
+`running_stub()`: it starts the responder once, waits for its `PORT=<n>`
+announcement, writes a temporary `TF_CLI_CONFIG_FILE`, and yields the
+environment every toolchain subprocess must use. That config **concatenates**
+whatever config the caller's environment already names (the arm's
+`provider_installation { filesystem_mirror … }`) with a
+`host "registry.terraform.io" { services = { "modules.v1" = … } }` override.
+Concatenation, not replacement: the blocks are independent, and dropping the
+provider half to gain the module half would send provider installation back to
+the network. The override is also what makes plain HTTP legal — it skips
+service discovery entirely, and without it Terraform always discovers over
+HTTPS.
+
+A `host` block **replaces the whole service map**, so the override restates
+`providers.v1` at its real URL as well: overriding `modules.v1` alone makes
+Terraform report that `registry.terraform.io` "does not offer a Terraform
+provider registry" and fail `init` at the provider stage. Inside the arm image
+the `filesystem_mirror` answers providers and that line is never reached; on
+the host, which has no mirror, it is what keeps provider installation working
+exactly as it does for the other three Terraform-shaped arms.
+
+The yielded environment additionally carries `CDKTN_BENCH_TF_REGISTRY_URL` and
+`CDKTN_BENCH_TF_REGISTRY_LOG`. The log holds one `ACCESS <method> <path>
+<status>` line per request and is the **only** evidence that a module came from
+the responder rather than from `registry.terraform.io`: the end-to-end test
+asserts the `versions`, `download` and tarball lines appear after a real
+`terraform init`, and that no discovery request does. A dead-proxy environment
+variable would prove only that outbound failed, not where the bytes came from.
+
+Consumer: `gates/artifact_collector.py::arm_env`, which is identity for every
+arm but `hcl_modules` — three green arms must not come to depend on a fourth
+arm's subprocess.
+
 ## oracle-falsifiability
 
 `gates/oracle_falsifiability.py`.

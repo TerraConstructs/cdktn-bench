@@ -306,8 +306,9 @@ arms:
   - `enabled: true` → `reason` cites the composition trap this scenario is
     chosen to measure on the modules rung, and the arm requires the same shape
     terraconstructs requires: an `instruction.per_arm.hcl_modules` entry.
-    Generation still refuses until the arm's image exists
-    (`generator/gen.py::ARMS_PENDING_IMAGE`), and a **brownfield** spec cannot
+    Generation still refuses until the generator gains this arm's per-arm
+    writers (`generator/gen.py::ARMS_PENDING_IMAGE`; the arm's image itself
+    landed in M3 phase 4), and a **brownfield** spec cannot
     enable it at all until `workspace_seed.entry_file` gains a module-based seed
     body (§2.7).
   - `enabled: false` → `reason` states the gap (a missing module-based reference,

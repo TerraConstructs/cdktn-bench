@@ -9,6 +9,7 @@
       "binary": false,
       "arms": [
         "awscdk",
+        "hcl-modules",
         "hcl-raw",
         "terraconstructs"
       ],
@@ -23,6 +24,7 @@
       "binary": false,
       "arms": [
         "awscdk",
+        "hcl-modules",
         "hcl-raw",
         "terraconstructs"
       ]
@@ -57,6 +59,7 @@
       "container_path": "/usr/local/bin/hcl2json",
       "binary": true,
       "arms": [
+        "hcl-modules",
         "hcl-raw"
       ]
     },
@@ -68,6 +71,7 @@
       "container_path": "/usr/local/bin/hcl2json",
       "binary": true,
       "arms": [
+        "hcl-modules",
         "hcl-raw"
       ]
     },
@@ -80,6 +84,7 @@
       "binary": true,
       "arms": [
         "awscdk",
+        "hcl-modules",
         "hcl-raw",
         "terraconstructs"
       ]
@@ -93,6 +98,7 @@
       "binary": true,
       "arms": [
         "awscdk",
+        "hcl-modules",
         "hcl-raw",
         "terraconstructs"
       ]
@@ -106,6 +112,7 @@
       "binary": true,
       "arms": [
         "awscdk",
+        "hcl-modules",
         "hcl-raw",
         "terraconstructs"
       ]
@@ -119,6 +126,7 @@
       "binary": true,
       "arms": [
         "awscdk",
+        "hcl-modules",
         "hcl-raw",
         "terraconstructs"
       ]
@@ -131,6 +139,7 @@
       "container_path": "/tmp/terraform.zip",
       "binary": false,
       "arms": [
+        "hcl-modules",
         "hcl-raw"
       ]
     },
@@ -142,6 +151,7 @@
       "container_path": "/tmp/terraform.zip",
       "binary": false,
       "arms": [
+        "hcl-modules",
         "hcl-raw"
       ]
     }

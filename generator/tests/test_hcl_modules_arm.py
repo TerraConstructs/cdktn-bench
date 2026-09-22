@@ -136,16 +136,18 @@ class TestEnabling:
         with pytest.raises(ValidationError, match=r"missing \['hcl_modules'\]"):
             _mutated(raw, mutate)
 
-    def test_generation_refuses_until_the_image_lands(self, pilot_raw: dict) -> None:
+    def test_generation_refuses_until_the_pilot_lands(self, pilot_raw: dict) -> None:
         """The refusal is a sentence, not a KeyError from a half-populated arm
-        map: the module delivery, the sidecar and the plan normaliser are what
-        make a task runnable (docs/design/tf-modules-arm.md milestones 4-5)."""
+        map. Phase 4 landed the image, the vendored module set and the registry
+        sidecar; what a runnable task still needs is the pilot's module-based
+        references, which are what a write_environment() branch would have to
+        author (docs/design/tf-modules-arm.md milestone 5)."""
         def mutate(d: dict) -> None:
             d["arms"]["hcl_modules"] = {"enabled": True, "reason": "pilot composition trap"}
             d["instruction"]["per_arm"]["hcl_modules"] = _per_arm_block(d)
 
         spec = _mutated(pilot_raw, mutate)
-        with pytest.raises(NotImplementedError, match="no environment/Dockerfile"):
+        with pytest.raises(NotImplementedError, match="no per-arm writers"):
             gen.generate_arm(spec, "hcl_modules")
 
 
@@ -175,13 +177,26 @@ class TestEnumSites:
     def test_the_audit_patterns_are_the_terraform_ones(self) -> None:
         assert ARM_TOKEN_PATTERNS["hcl-modules"] == ARM_TOKEN_PATTERNS["hcl-raw"]
 
-    def test_pending_arms_are_exactly_the_ones_without_an_image(self) -> None:
-        """Keeps `ARMS_PENDING_IMAGE` honest in both directions, so the
-        Makefile's "skip an arm with an empty environment/" cannot hide a
-        DELETED Dockerfile on a shipped arm."""
+    def test_pending_arms_are_exactly_the_ones_the_generator_cannot_write(self) -> None:
+        """Keeps `ARMS_PENDING_IMAGE` honest in both directions. An arm the
+        generator DOES emit must have every per-arm map filled or the failure is
+        a KeyError in the middle of a generation run; an arm it refuses must be
+        missing one, or the refusal is hiding code that already works.
+        `ARM_MEMORY_MB` is the check because it is the map build_task_toml reads
+        unconditionally."""
+        for arm in get_args(Arm):
+            assert (arm in gen.ARM_MEMORY_MB) is (arm not in gen.ARMS_PENDING_IMAGE), arm
+
+    def test_every_arm_has_an_image(self) -> None:
+        """`make build-arms` and `make preflight` SKIP an arm whose environment/
+        holds nothing but .gitkeep; this is what stops that skip from hiding a
+        DELETED Dockerfile. It is now required of every arm without exception:
+        hcl-modules ships an image from phase 4 (DECISIONS.md Amendment 46
+        (a)-(b)) even though its task emission waits on the phase-5 pilot, so no
+        arm's environment/ is empty any more and the skip covers nothing."""
         for arm in get_args(Arm):
             dockerfile = REPO_ROOT / "arms" / gen.ARM_DIRNAME[arm] / "environment" / "Dockerfile"
-            assert dockerfile.is_file() is (arm not in gen.ARMS_PENDING_IMAGE), arm
+            assert dockerfile.is_file(), arm
 
     def test_the_arm_directory_carries_its_identity(self) -> None:
         readme = (REPO_ROOT / "arms" / "hcl-modules" / "README.md").read_text()

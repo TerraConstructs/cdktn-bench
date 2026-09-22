@@ -37,6 +37,15 @@ Dockerfile pin is missing from it, if an arm's `ASSET_MIRROR` default drifts
 from the fixed URL, or if a fetch does not probe the mirror and fall back to
 its upstream URL.
 
+**What the derivation cannot see is a build step that is not a `curl`.** Both
+Terraform arms pre-warm a provider `filesystem_mirror` with `terraform providers
+mirror`, which fetches from `releases.hashicorp.com` on its own and so is outside
+this mirror entirely. `arms/hcl-raw` pays that for one provider; `arms/hcl-modules`
+pays it for the eight its vendored module tree declares, measured at ~45s against
+Harbor's 600s cold-build timeout. A ninth would need that headroom argued rather
+than assumed — `arms/hcl-modules/README.md` records why `kreuzwerker/docker`, at
+370s on its own, is excluded.
+
 ## Populate, serve, build
 
 ```bash
