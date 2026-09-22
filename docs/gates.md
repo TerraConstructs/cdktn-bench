@@ -560,10 +560,13 @@ than a heredoc inside the emitted shell, and the lift is only safe if the
 document it writes to `/logs/verifier/oracle-input.json` — the real tier-1
 input for an `oracle.hcl_traversal` spec — is unchanged. So the gate runs a
 baseline copy of the program taken from a git revision
-(`REV=`/`--baseline-rev`, default `HEAD`) against each fixture's kept working
-copy and compares the two documents by sha256, for the spec's reference fixture
-and every broken fixture it ships. Only a revision predating the lift carries
-the heredoc, so once it is committed the baseline is that commit's parent.
+(`REV=`/`--baseline-rev`, default the parent of the lift commit, the last
+revision whose `static_tiers.sh` still carries the heredoc) against each
+fixture's kept working copy and compares the two documents by sha256, for the
+spec's reference fixture and every broken fixture it ships. The baseline reads
+the same `plan.normalised.json` the generated program merged, so a
+module-shaped fixture compares the merge and not the normaliser
+(`normaliser-parity` owns raw-versus-normalised).
 
 The program reads only its two arguments and the `*.tf`/`*.tf.json` files in
 its working directory, so `--reuse <dir>` compares a tree

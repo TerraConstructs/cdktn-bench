@@ -66,12 +66,22 @@ def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def merge_input(plan: Path) -> Path:
+    """The document the generated merge actually read: the verifier writes
+    `plan.normalised.json` beside `plan.json` (module resources hoisted; a
+    module-free plan is byte-identical) and merges that, so the baseline must
+    read the same bytes or a module-shaped fixture differs for that reason
+    alone. gates/plan_normaliser_parity.py owns raw-vs-normalised."""
+    normalised = plan.with_name(plan.stem + ".normalised.json")
+    return normalised if normalised.is_file() else plan
+
+
 def compare(program: Path, workdir: Path, plan: Path, merged: Path) -> tuple[str, str]:
     """(sha256 of the generated file's document, sha256 of the baseline's)."""
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / "oracle-input.json"
         proc = subprocess.run(
-            ["python3", str(program), str(plan), str(out)],
+            ["python3", str(program), str(merge_input(plan)), str(out)],
             cwd=workdir, capture_output=True, text=True, check=False,
         )
         if proc.returncode != 0 or not out.is_file():
@@ -112,10 +122,12 @@ def collect_rows(spec_path: Path, work: Path):
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("spec", nargs="?", type=Path)
-    # Only a revision PREDATING the lift carries the heredoc; once it is
-    # committed the baseline is that commit's parent, not HEAD.
-    ap.add_argument("--baseline-rev", default="HEAD",
-                    help="revision whose static_tiers.sh heredoc is the baseline")
+    # Only a revision PREDATING the lift carries the heredoc: the parent of
+    # the commit that moved it into tests/hcl_merge.py is the last one that
+    # does, so HEAD can never be the baseline.
+    ap.add_argument("--baseline-rev", default="ee93231~1",
+                    help="revision whose static_tiers.sh heredoc is the baseline "
+                         "(default: the parent of the lift commit)")
     ap.add_argument("--reuse", type=Path,
                     help="grade a tree gates/tier0_parity.py --out wrote")
     ap.add_argument("--work-dir", type=Path, help="keep each fixture's working copy here")
