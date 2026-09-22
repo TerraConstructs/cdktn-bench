@@ -77,9 +77,16 @@ def shard_for(spec, arm: str) -> str:
     Read-only tasks share shard 0: they co-run under the admission gate's
     reader-preferring lock, so extra accounts buy them nothing. A mutating task
     holds the gate exclusively for its whole trial plus its reset, so its arms
-    spread over shards 1..N-1 — at N >= 4 one spec's three arms never wait on
-    each other. The per-spec offset rotates each spec's arm->shard mapping to
-    even out mutating load; two specs' same-arm trials may still share a shard.
+    spread over shards 1..N-1 — one spec's arms never wait on each other once
+    N-1 reaches the number of arms it runs. The per-spec offset rotates each
+    spec's arm->shard mapping to even out mutating load; two specs' same-arm
+    trials may still share a shard.
+
+    With `hcl_modules` enabled a spec runs FOUR arms, so N = 4 (three mutating
+    shards) now puts two of one mutating spec's arms on the same account. No
+    spec is in that position today — every scenario that enables the arm is
+    read-only and lands on shard 0 — and raising `shard_count` to 5 is the fix
+    when one is, an owner action with real AWS consequences (shards.toml).
     """
     if arm not in ARM_ORDER:
         raise ValueError(f"unknown arm {arm!r}; expected one of {ARM_ORDER}")

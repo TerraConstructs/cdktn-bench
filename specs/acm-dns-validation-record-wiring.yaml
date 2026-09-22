@@ -219,6 +219,25 @@ arms:
       blueprint's own note that an EARLIER graded assessment guessed "no
       acm/route53 L2s in 0.2.13" -- that guess was wrong; see
       docs/design/batch-a-greenfield-blueprints.md §8(d).)
+  hcl_modules:
+    enabled: true
+    reason: >
+      One of the three pilot composition-trap scenarios
+      (docs/design/tf-modules-arm.md §3). docs/design/hcl-modules-spec-matrix.md
+      §1 gives this scenario a FULL module fit:
+      `terraform-aws-modules/acm/aws` 6.3.1 authors the certificate, one
+      `aws_route53_record` per distinct validated domain name and the
+      `aws_acm_certificate_validation` inside one call, which is precisely the
+      graph this scenario measures -- while the hosted zone has no module
+      counterpart in the vendored set and stays a raw `aws_route53_zone` the
+      agent must still wire into the call through the module's `zone_id`
+      input. That split (the module composes the wiring, the agent composes
+      the module into the rest of the configuration) is what makes the
+      scenario a composition trap on this rung rather than a restatement of
+      hcl_raw. All four of this scenario's TF-shaped catches stay
+      representable here; the two the module's own defaults would otherwise
+      hide are reachable through its published inputs, and each catch's own
+      comment below records which and the verdict the fixture earns.
 
 instruction:
   shared_body: |
@@ -245,6 +264,15 @@ instruction:
         json_fields: []
     hcl_raw:
       language_line: "Author this as hand-written Terraform HCL (no modules)."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields: []
+    hcl_modules:
+      language_line: "Author this as Terraform HCL composed from `terraform-aws-modules` registry modules: they are the real `terraform-aws-modules` sources, served at an allowlisted set of versions you can discover at this environment's registry endpoint."
       output_contract:
         entry_file: main.tf
         artifact_path: plan.json
@@ -280,8 +308,16 @@ catches:
       (zero qualifying records found -- the count check fails outright,
       whether zero or any count other than 2) and, if a validation resource
       exists at all with no records to reference, by
-      `validation-waits-for-records` too.
-    applies_to: [hcl_raw, terraconstructs]
+      `validation-waits-for-records` too. REACHABLE ON hcl_modules through the
+      acm module's own published `create_route53_records` input (variables.tf:78,
+      default `true`): setting it to `false` leaves the certificate and the
+      validation resource in the plan and removes both records, which is the
+      same end state as omitting the record blocks on hcl_raw. Verified by a
+      real `terraform init`/`plan` against the vendored acm 6.3.1 served by the
+      loopback registry: zero `aws_route53_record` instances planned,
+      `validation-records-one-per-domain` denies with "found 0", tier 0 passes
+      in full first.
+    applies_to: [hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       # `.awscdk` is required by the schema but does not fire on that arm:
       # `applies_to` excludes it (no agent-authored Route53 record exists
@@ -314,7 +350,27 @@ catches:
       awscdk for the same reason as `no-validation-records-at-all`.
       Caught by `validation-records-one-per-domain`: exactly 1 qualifying
       record found, not 2.
-    applies_to: [hcl_raw, terraconstructs]
+      ON hcl_modules THE MISTAKE IS UNREACHABLE BY OMISSION BUT STILL
+      REACHABLE BY AN INPUT, so the catch stays and its tier does not move.
+      docs/design/hcl-modules-spec-matrix.md §2 records this catch as REMOVED
+      on this arm because `local.distinct_domain_names` (acm 6.3.1 main.tf:6)
+      `distinct()`s the name list before the one-record-per-domain `count`
+      (main.tf:52-54). The first half of that is confirmed and is exactly the
+      module-default behaviour this scenario's own module-composed reference
+      relies on: a plain call with no name-list input plans two records, so an
+      agent cannot collapse to one by getting the wiring wrong. The second
+      half is not: `distinct_domain_names` is a published input (variables.tf:120,
+      default `[]`) and `coalescelist(var.distinct_domain_names, distinct(...))`
+      takes it VERBATIM ahead of the module's own `distinct()`, so
+      `distinct_domain_names = ["storefront.example.com"]` plans exactly one
+      record, for the apex, while the certificate still carries the `www` SAN
+      -- the same wrong end state as the hcl_raw fixture, reached through the
+      module's own interface rather than around it. Verified by a real
+      `terraform plan` against the vendored module: one
+      `aws_route53_record.validation[0]` planned, tier 0 passes in full, and
+      `validation-records-one-per-domain` denies with "found 1". The matrix row
+      needs the correction.
+    applies_to: [hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       # "0" -- see no-validation-records-at-all's comment above (same
       # coverage-gate reasoning; `applies_to` excludes awscdk here too).
@@ -340,7 +396,21 @@ catches:
       "wait" resource for the agent to omit. Caught by
       `validation-waits-for-records`: zero `aws_acm_certificate_validation`
       resources exist in the plan.
-    applies_to: [hcl_raw, terraconstructs]
+      ON hcl_modules the module's `wait_for_validation` input (variables.tf:25,
+      default `true`) is what declares the resource, so the omission is not
+      reachable by leaving something out -- it takes an explicit
+      `wait_for_validation = false`, which gates the resource's `count` to 0
+      (main.tf:69). The tier does not move, but only because the policy was
+      corrected: acm 6.3.1 declares the `aws_acm_certificate_validation` BLOCK
+      unconditionally, so the block is in `configuration` whatever the flag
+      says, and the original fail-closed rule -- which counted CONFIGURATION
+      resources -- scored this fixture 1.0 with an empty `deny` (verified: a
+      real plan of `wait_for_validation = false`, graded by the policy as it
+      stood, produced no deny at all while nothing in the plan waits for the
+      records). The rule now counts PLANNED `aws_acm_certificate_validation`
+      resources instead, which is the identical set on a module-free plan (an
+      unconditional block always plans one instance) and the honest one here.
+    applies_to: [hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       # "0" -- see no-validation-records-at-all's comment above (same
       # coverage-gate reasoning; `applies_to` excludes awscdk here too).
@@ -440,11 +510,21 @@ catches:
       Either reachability path is a typed, valid value nothing in any
       toolchain rejects and, where it reaches a plan at all, is caught only
       by `validation-method-is-dns`.
-    applies_to: [awscdk, hcl_raw, terraconstructs]
+      On hcl_modules `validation_method` is a plain passthrough input
+      (variables.tf:61, default `null`) written straight onto the certificate
+      (main.tf:22), so `validation_method = "EMAIL"` plans
+      `values.validation_method == "EMAIL"` exactly as the hand-written
+      resource does and the same tier-0 assert decides it -- verified by a real
+      plan against the vendored module. (The module ALSO drops both validation
+      records when the method is not DNS, so tier 1 would deny too; tier 0
+      still runs first and is the tier that catches it, unchanged from the
+      other arms.)
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       awscdk: "0"
       hcl: "0"
       terraconstructs_override: null
+      hcl_modules_override: null
 
 oracle:
   intent: >
@@ -465,9 +545,10 @@ oracle:
     EMAIL: a certificate that needs a human to click a confirmation link
     does not satisfy "reaches ISSUED on its own".
 
-    On the Terraform-shaped arms (hcl_raw, terraconstructs), which have no
-    CloudFormation-native mechanism to create and clean up DNS validation
-    records on the agent's behalf, the configuration must itself create one
+    On the Terraform-shaped arms (hcl_raw, terraconstructs, hcl_modules),
+    which have no CloudFormation-native mechanism to create and clean up DNS
+    validation records on the agent's behalf, the configuration must itself
+    create one
     DNS record per distinct validated domain name -- two records total, one
     for the apex and one for the `www` alias, never a single record reused
     for both (that only ever validates the domain whose challenge it
@@ -478,7 +559,14 @@ oracle:
     also exist, and its own `validation_record_fqdns` must reference the
     record resources this configuration created -- a certificate with
     nothing downstream ever waiting on it never blocks anything on
-    non-issuance, so "ISSUED" is never actually confirmed by the plan.
+    non-issuance, so "ISSUED" is never actually confirmed by the plan. What
+    matters on those arms is which resources the plan contains and how they
+    reference each other, never which blocks the agent typed: a registry
+    module that composes the certificate, the two records and the waiting
+    resource from one call satisfies every one of these facts exactly as
+    hand-written resource blocks do, and the zone each record must live in is
+    the one this configuration creates whether the record reads it directly
+    or through the module input the zone was passed to.
 
     On the awscdk arm, CloudFormation and ACM create and clean up the DNS
     validation records themselves once the certificate's domain validation
@@ -501,7 +589,7 @@ oracle:
     - name: hosted-zone-exists
       description: "A public Route53 hosted zone exists."
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Route53::HostedZone')]"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_route53_zone')]"
       op: exists
@@ -509,7 +597,7 @@ oracle:
     - name: certificate-exists
       description: "A public ACM certificate exists."
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::CertificateManager::Certificate')]"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_acm_certificate')]"
       op: exists
@@ -521,7 +609,7 @@ oracle:
         every arm regardless of how the hosted zone's own name was
         authored).
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::CertificateManager::Certificate')].Properties.DomainName"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_acm_certificate')].values.domain_name"
       op: eq
@@ -583,7 +671,7 @@ oracle:
         correct expectation on this arm shape the way it is on awscdk's
         static CFN template.
       tier: "0"
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_acm_certificate')].values.subject_alternative_names[*]"
       op: set_eq
       expected: ["storefront.example.com", "www.storefront.example.com"]
@@ -595,7 +683,7 @@ oracle:
         on every arm, so only a value-content check (never a toolchain
         rejection) catches it.
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::CertificateManager::Certificate')].Properties.ValidationMethod"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_acm_certificate')].values.validation_method"
       op: eq
@@ -622,7 +710,7 @@ oracle:
         `one-record-for-two-domains` (count 1) identically -- "not equal
         to 2" is the one predicate that fires on both.
       tier: "1"
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_route53_record')].expressions.zone_id.references[*]"
       op: regex
       expected: "^aws_route53_zone\\."
@@ -640,7 +728,7 @@ oracle:
         reinforces `no-validation-records-at-all` (a validation resource
         with nothing to reference).
       tier: "1"
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_acm_certificate_validation')].expressions.validation_record_fqdns.references[*]"
       op: regex
       expected: "^aws_route53_record\\."

@@ -343,7 +343,73 @@ package cdktn_bench.iam_managed_policy_exclusive_vs_attachment
 
 import rego.v1
 
-configured_resources := input.configuration.root_module.resources
+# Every resource the configuration declares, in the SAME address domain the
+# normalised `planned_values` already uses: a module body's own addresses and
+# references are module-local, so a call path prefix is what makes the two
+# sides join. On a module-free plan the prefix is empty and this is exactly
+# `input.configuration.root_module.resources`.
+#
+# `walk` rather than recursion (Rego forbids a recursive rule): a body is a
+# configuration scope when it is the document root or the value of a
+# `module_calls.<name>.module` key, and its call path is every name that
+# follows a `module_calls` step.
+config_scope_path(path) if count(path) == 0
+
+config_scope_path(path) if path[count(path) - 1] == "module"
+
+module_prefix(path) := concat(".", [sprintf("module.%s", [path[i]]) |
+	some i
+	path[i - 1] == "module_calls"
+])
+
+qualify(prefix, name) := name if prefix == ""
+
+qualify(prefix, name) := concat(".", [prefix, name]) if prefix != ""
+
+config_scopes contains scope if {
+	walk(input.configuration.root_module, [path, body])
+	is_object(body)
+	config_scope_path(path)
+	scope := {"prefix": module_prefix(path), "resources": object.get(body, "resources", [])}
+}
+
+# Address and references qualified together. Qualifying a `var.`/`each.`/
+# `local.` reference too is harmless: nothing below matches one, and the
+# alternative -- enumerating which reference kinds name a resource -- is the
+# list that goes stale when a new one appears.
+qualified_resource(prefix, r) := object.union(r, {
+	"address": qualify(prefix, r.address),
+	"expressions": {attr: qualified_expression(prefix, expr) |
+		some attr, expr in object.get(r, "expressions", {})
+	},
+	"for_each_expression": qualified_expression(prefix, object.get(r, "for_each_expression", null)),
+})
+
+qualified_expression(prefix, expr) := out if {
+	is_object(expr)
+	refs := object.get(expr, "references", null)
+	is_array(refs)
+	out := object.union(expr, {"references": [qualify(prefix, ref) | some ref in refs]})
+}
+
+# An expression that names nothing (a constant, a nested block, or the absent
+# `for_each_expression` of an un-iterated resource) passes through. It must
+# still produce a value: an undefined expression makes the whole enclosing
+# `qualified_resource` undefined, which drops the resource from the
+# configuration silently -- the wrong-answer-no-error failure this join exists
+# to avoid.
+qualified_expression(_, expr) := expr if not is_object(expr)
+
+qualified_expression(_, expr) := expr if {
+	is_object(expr)
+	not is_array(object.get(expr, "references", null))
+}
+
+configured_resources := [r |
+	some scope in config_scopes
+	some res in scope.resources
+	r := qualified_resource(scope.prefix, res)
+]
 
 planned_resources := input.planned_values.root_module.resources
 
@@ -453,7 +519,17 @@ role_addresses_by_block[block_addr] := addrs if {
 	}
 }
 
-resource_address_prefix(ref) := concat(".", array.slice(split(ref, "."), 0, 2))
+# A reference names a resource block when it IS that block's address or
+# continues it with an attribute (`.name`) or an instance key (`["a"]`).
+# Matching against the block addresses this plan actually has, rather than
+# slicing a fixed number of dot-separated segments off the reference, is what
+# keeps the resolution correct for a module-qualified address, whose own
+# prefix contributes segments of its own.
+reference_names_block(ref, block_addr) if ref == block_addr
+
+reference_names_block(ref, block_addr) if startswith(ref, concat("", [block_addr, "."]))
+
+reference_names_block(ref, block_addr) if startswith(ref, concat("", [block_addr, "["]))
 
 # The `["key"]`/`[N]` instance suffix of a planned address, or undefined
 # when the address has none (an ordinary, un-iterated resource).
@@ -512,14 +588,14 @@ attachment_instance_policy_arn_known(r) if {
 # Empty (contributing no edge, never a wrong one) when neither names a
 # role resource.
 attachment_block_referenced_role_blocks(block) := addrs if {
-	addrs := {addr |
-		some refs in [
-			object.get(block, ["expressions", "role", "references"], []),
-			object.get(block, ["for_each_expression", "references"], []),
-		]
+	refs := array.concat(
+		object.get(block, ["expressions", "role", "references"], []),
+		object.get(block, ["for_each_expression", "references"], []),
+	)
+	addrs := {block_addr |
+		some block_addr, _ in role_addresses_by_block
 		some ref in refs
-		startswith(ref, "aws_iam_role.")
-		addr := resource_address_prefix(ref)
+		reference_names_block(ref, block_addr)
 	}
 }
 

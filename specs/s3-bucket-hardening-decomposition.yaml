@@ -446,6 +446,25 @@ arms:
       anyway: the arm still has a full, real L2 path for 3 of the 4
       controls and the fourth is a one-resource L1 addition, not a
       show-stopping gap.
+  hcl_modules:
+    enabled: true
+    reason: >
+      One of the three pilot composition-trap scenarios
+      (docs/design/tf-modules-arm.md §3). docs/design/hcl-modules-spec-matrix.md
+      §1 gives it a full module fit: `terraform-aws-modules/s3-bucket/aws`
+      5.16.1 authors the bucket and all four of the decomposed sub-resources
+      this scenario is built on, and `terraform-aws-modules/kms/aws` 4.2.2
+      authors the key -- so the six-resource decomposition the hcl_raw agent
+      assembles by hand becomes two module calls plus the inputs that wire
+      them together, which is the composition this rung measures. Two of the
+      module's defaults move a catch and both moves are recorded on the catch
+      itself: the four public-access flags default `true` (the omission shape
+      of `bpa-partially-set` becomes unreachable; the explicit-regression
+      shape stays), and `attach_deny_insecure_transport_policy` builds the
+      two-ARN deny statement itself (which removes `tls-policy-misses-object-arn`
+      through that input, while the module's other policy input still reaches
+      it). Verified against real plans through the loopback registry, not read
+      off the module source.
 
 instruction:
   shared_body: |
@@ -468,6 +487,15 @@ instruction:
         json_fields: []
     hcl_raw:
       language_line: "Author this as hand-written Terraform HCL (no modules)."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields: []
+    hcl_modules:
+      language_line: "Author this as Terraform HCL composed from `terraform-aws-modules` registry modules: they are the real `terraform-aws-modules` sources, served at an allowlisted set of versions you can discover at this environment's registry endpoint."
       output_contract:
         entry_file: main.tf
         artifact_path: plan.json
@@ -688,7 +716,7 @@ oracle:
     - name: versioning-enabled
       description: "The bucket's versioning configuration status is Enabled."
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.VersioningConfiguration.Status"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_versioning')].values.versioning_configuration[*].status"
       op: eq
@@ -702,7 +730,7 @@ oracle:
         silently violates "a KMS key that we control" (this scenario's
         `sse-left-at-s3-managed` anti-L2 catch).
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.BucketEncryption.ServerSideEncryptionConfiguration[*].ServerSideEncryptionByDefault.SSEAlgorithm"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_server_side_encryption_configuration')].values.rule[*].apply_server_side_encryption_by_default[*].sse_algorithm"
       op: eq
@@ -725,7 +753,7 @@ oracle:
     - name: bpa-block-public-acls
       description: "PublicAccessBlockConfiguration.BlockPublicAcls / block_public_acls is true."
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.PublicAccessBlockConfiguration.BlockPublicAcls"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_public_access_block')].values.block_public_acls"
       op: eq
@@ -734,7 +762,7 @@ oracle:
     - name: bpa-block-public-policy
       description: "PublicAccessBlockConfiguration.BlockPublicPolicy / block_public_policy is true."
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.PublicAccessBlockConfiguration.BlockPublicPolicy"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_public_access_block')].values.block_public_policy"
       op: eq
@@ -743,7 +771,7 @@ oracle:
     - name: bpa-ignore-public-acls
       description: "PublicAccessBlockConfiguration.IgnorePublicAcls / ignore_public_acls is true."
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.PublicAccessBlockConfiguration.IgnorePublicAcls"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_public_access_block')].values.ignore_public_acls"
       op: eq
@@ -752,7 +780,7 @@ oracle:
     - name: bpa-restrict-public-buckets
       description: "PublicAccessBlockConfiguration.RestrictPublicBuckets / restrict_public_buckets is true."
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.PublicAccessBlockConfiguration.RestrictPublicBuckets"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_public_access_block')].values.restrict_public_buckets"
       op: eq
@@ -864,7 +892,7 @@ oracle:
         oracles/rego/.../policy.rego's `bucket_ref_count`, which this
         JSONPath/op pair cannot itself express.)
       tier: "1"
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_s3_bucket_policy')].expressions.policy.references[*]"
       op: regex
       expected: "^aws_s3_bucket\\."
@@ -883,7 +911,7 @@ oracle:
         REFERENCES the `aws_s3_bucket` resource this configuration creates
         (a graph edge) -- never a literal/hardcoded bucket name string.
       tier: "1"
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_s3_bucket_versioning' || @.type=='aws_s3_bucket_server_side_encryption_configuration' || @.type=='aws_s3_bucket_public_access_block' || @.type=='aws_s3_bucket_policy')].expressions.bucket.references[*]"
       op: regex
       expected: "^aws_s3_bucket\\."
@@ -918,7 +946,7 @@ oracle:
         resource this configuration creates -- a hardcoded/imported key ARN
         literal has no such reference and resolves this path to zero nodes.
       tier: "1"
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_s3_bucket_server_side_encryption_configuration')].expressions.rule[*].apply_server_side_encryption_by_default[*].kms_master_key_id.references[*]"
       op: regex
       expected: "^aws_kms_key\\."
@@ -1079,6 +1107,14 @@ catches:
       "Enabled" (awscdk/terraconstructs: VersioningConfiguration is omitted
       entirely when `versioned` is falsy, same 0-node failure) -- fails
       outright either way, the cheapest possible tier.
+      ON hcl_modules the module keeps the mistake: `versioning` is a
+      `map(string)` input defaulting to `{}` (s3-bucket 5.16.1
+      variables.tf:174) and the sub-resource's own `count` is
+      `length(keys(var.versioning)) > 0` (main.tf:242), so a call that omits
+      the input plans no versioning resource at all -- the same zero-node
+      failure as dropping the block. Measured on a real plan through the
+      loopback registry: tier 0, `versioning-enabled`.
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       awscdk: "0"
       hcl: "0"
@@ -1106,6 +1142,22 @@ catches:
       nudge toward the two-ARN shape) is the realistic failure mode;
       typing `enforceSSL: true` on either L2 makes this mistake
       structurally unreachable through ordinary use.
+      ON hcl_modules THE MODULE REMOVES IT THROUGH ONE INPUT AND KEEPS IT
+      THROUGH ANOTHER. `attach_deny_insecure_transport_policy` (s3-bucket
+      5.16.1 variables.tf:513) builds the statement itself, with
+      `[bucket.arn, "${bucket.arn}/*"]` unconditionally (main.tf:1110-1113):
+      through that input the one-ARN shape cannot be expressed, which is why
+      the module-composed reference solution uses it. `attach_policy` +
+      a hand-written `policy` JSON (variables.tf:438) reaches the mistake
+      exactly as hcl_raw does, and that is the fixture. Measured on real
+      plans: the module's own `data.aws_iam_policy_document.combined` puts
+      the policy behind a `local`, so neither the policy attribute's
+      references nor its planned value carry the Resource list -- the
+      oracle gained a module-composed path that reads the PLANNED
+      deny-insecure-transport document instead (which the correct shape has
+      and the hand-written one does not), and the hand-written fixture is
+      denied at tier 1 with that reason rather than passing unverified.
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       awscdk: "1"
       hcl: "1"
@@ -1127,6 +1179,17 @@ catches:
       the two omitted flags to an explicit, present `false` in
       `.planned_values` (1 resolved node, wrong value). Either way, `eq
       true` fails the two omitted flags' asserts.
+      ON hcl_modules THE MISTAKE'S SHAPE MOVES BUT ITS TIER DOES NOT. All
+      four flags default `true` (s3-bucket 5.16.1 variables.tf:565-587), the
+      opposite of the raw provider's defaults, and the public-access-block
+      resource itself is gated on `attach_public_policy`, also `true`
+      (main.tf:1278) -- so the OMISSION shape is not a mistake here at all:
+      a call that passes none of the four plans all four `true` and scores
+      1.0 (measured, on a real plan). What stays reachable is the explicit
+      regression, two of the four passed as `false`, which is the fixture.
+      Measured: tier 0, `bpa-block-public-policy` and
+      `bpa-restrict-public-buckets`.
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       awscdk: "0"
       hcl: "0"
@@ -1150,6 +1213,12 @@ catches:
       contributes, per the prereg's own anti-L2 taxonomy definition.
       Caught directly: `sse-is-kms`'s `eq "aws:kms"` check resolves to
       `"AES256"` instead, failing at the cheapest tier on every arm.
+      ON hcl_modules the algorithm is a plain passthrough
+      (`server_side_encryption_configuration.rule.apply_server_side_encryption_by_default.sse_algorithm`,
+      s3-bucket 5.16.1 variables.tf:184-197 -> main.tf:280), so the typed
+      enum trap is reproduced by passing the same string. Measured: tier 0,
+      `sse-is-kms`.
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       awscdk: "0"
       hcl: "0"
@@ -1176,6 +1245,21 @@ catches:
       `Fn::GetAtt`); a matching hcl_raw fixture leaves
       `.expressions.kms_master_key_id` holding only a `.constant_value`,
       never a `.references` entry matching `^aws_kms_key\.`.
+      ON hcl_modules the mistake is the same literal, passed as the module's
+      `kms_master_key_id` input -- but the CORRECT shape changes, and with it
+      what the oracle has to read. A module-composed solution passes
+      `module.<kms call>.key_arn`, which matches no `aws_kms_key` address
+      anywhere, and the s3-bucket module writes its own encryption block as a
+      `dynamic` block, which Terraform's configuration representation omits
+      entirely -- so the attribute the graph-edge rule reads does not exist on
+      this arm. Measured: with the oracle as it stood, the module-composed
+      reference was DENIED by this rule while the literal-ARN fixture passed
+      vacuously (every rule read `configuration.root_module.resources`, which
+      a module plan leaves empty). The rule now resolves the edge one scope
+      up, from the module CALL's own arguments, following a
+      `module.<call>.<output>` reference into that output's expression.
+      Measured after: tier 1, reference 1.0.
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       awscdk: "1"
       hcl: "1"
@@ -1205,6 +1289,11 @@ catches:
       bucket" regex once the Rego package also confirms the referenced
       address does not match the scenario's own bucket resource -- see
       rego_hints).
+      NOT REPRESENTABLE ON hcl_modules either, for the same kind of reason as
+      on awscdk: every sub-resource's `bucket` argument is written inside the
+      module as `aws_s3_bucket.this[0].id` (s3-bucket 5.16.1 main.tf:246, 269,
+      1282, 714) and no input reaches it, so a call cannot point one control
+      at a different bucket. A fixture here would be a correct solution.
     applies_to: [hcl_raw, terraconstructs]
     predicted_tier_caught:
       awscdk: "1"

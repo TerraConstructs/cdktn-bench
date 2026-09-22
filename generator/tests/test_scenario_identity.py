@@ -64,6 +64,18 @@ ALL_SPECS = [load_spec(p) for p in ALL_SPEC_PATHS]
 # would make any vocabulary scan meaningless noise.
 SCAN_EXCLUDE = {"package-lock.json"}
 
+# The hcl_modules arm's task dir carries the vendored `terraform-aws-modules`
+# trees, because the Dockerfile COPYs them. Upstream Terraform source is not
+# bench-authored text -- `lifecycle`, `create_before_destroy` and
+# `throttling_burst_limit` are the library's public surface, and discovering
+# them is the skill this arm measures. What makes the exemption safe is that
+# every file's sha256 is in `manifest.json` and the manifest's commit is the
+# pinned tag's, so no byte in a `<name>-<version>/` directory is ours
+# (generator/tests/test_vendored_modules.py, which owns that proof). The one
+# bench-authored file in the tree is `manifest.json` itself, and it is NOT
+# exempted here -- the responder answers `/v1/modules/search` out of it.
+VENDORED_MODULES_DIR = "modules"
+
 # Phrases that match a deny-list pattern for a reason unrelated to any
 # scenario's trap, and that live in the SHARED ARM IMAGE SOURCES
 # (`arms/<arm>/environment/**`) rather than in generated text.
@@ -74,6 +86,14 @@ ARM_BOILERPLATE = (
     # arms/awscdk/environment/workspace/lib/example-stack.ts, describing what
     # the generator does to the placeholder stack the arm image ships:
     "replaced by the generator",
+    # Two LANGUAGE builtins the hcl-modules arm's registry tooling calls, in
+    # arms/hcl-modules/environment/{preflight.sh,tf-registry/responder.py}.
+    # Prose is reworded when it trips the deny list; a shell trap handler and
+    # Python's own `replace` cannot be, and neither says anything about a
+    # scenario. Scrubbed as the call site rather than as the bare word, so a
+    # sentence using either word still trips.
+    "trap '",
+    ".replace(",
 )
 
 
@@ -95,9 +115,14 @@ def _agent_visible_files(spec: Spec, arm: str):
         prompt may not name the fix.
     """
     root = gen.task_dir(spec, arm)
-    for path in sorted((root / "environment").rglob("*")):
-        if path.is_file() and path.name not in SCAN_EXCLUDE:
-            yield path, True
+    env_dir = root / "environment"
+    for path in sorted(env_dir.rglob("*")):
+        if not path.is_file() or path.name in SCAN_EXCLUDE:
+            continue
+        rel = path.relative_to(env_dir).parts
+        if len(rel) > 2 and rel[0] == VENDORED_MODULES_DIR:
+            continue
+        yield path, True
     prompts = [p for p in (root / "instruction.md",) if p.is_file()]
     prompts += sorted(root.glob("steps/*/instruction.md"))
     # "All but the last" is only a correct scope if directory order IS step

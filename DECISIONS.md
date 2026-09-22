@@ -8611,6 +8611,68 @@ Three things the build settled against the decisions as written:
 at 6.3.1 and 6.2.0 (the pin `apigateway-v2` calls unconditionally), and every
 floor in the tree is satisfied by the 6.66.0 / 1.15.8 pair `arms/hcl-raw` carries.
 
+**Phase 5, offline half landed** (still DRAFT: this amendment promotes on the
+live trials, which need the operator's own environment). The generator emits the
+arm, the pilot's three specs enable it, and the four static gates are green on
+all four arms. Two rules are new in the SHARED verifier: (c)'s scoped
+registry-source deny, which reports as a toolchain-tier failure with the
+offending call named and is proven by a fixture that calls a local copy; and a
+generation-time refusal of `allow_internet: false` together with this arm, since
+the modules come from a sidecar on the compose network and Harbor's no-network
+compose sets `network_mode: none` on the main container only — which is the
+sharp edge behind (g), where `allow_internet` staying at Harbor's default was a
+DNS argument and is now also a reachability one.
+
+What the module defaults did to each pilot's catches, each verdict measured on a
+real plan through the loopback registry rather than read off the module source:
+
+- `acm-dns-validation-record-wiring` — no catch removed. The matrix's claim that
+  `one-record-for-two-domains` is REMOVED holds only for the omission shape: the
+  module `distinct()`s its own name list, but `distinct_domain_names` is a
+  published input that `coalescelist` takes verbatim ahead of it, so the
+  one-record end state is still reachable. `missing-certificate-validation-resource`
+  is HIDDEN behind `wait_for_validation` (default true) and exposed the oracle's
+  own defect: the fail-closed rule counted CONFIGURATION resources, and the
+  module declares the block unconditionally, so a fixture with nothing waiting
+  scored 1.0. It counts PLANNED resources now — the identical set on a
+  module-free plan.
+- `iam-managed-policy-exclusive-vs-attachment` — no catch removed and no tier
+  moved. Three of its six catches have no module path at all (no submodule
+  creates `aws_iam_policy_attachment`, `aws_iam_role_policy_attachments_exclusive`,
+  or takes `managed_policy_arns`), which makes them reachable only by leaving
+  the module — still the agent's own mistake, so the catches stay. The one
+  default that moved anything, `use_name_prefix`, moved a CORRECT solution to
+  0.0 under the shipped oracle; it ships as a second reference, not a broken
+  fixture.
+- `s3-bucket-hardening-decomposition` — one catch's SHAPE moves and one is
+  removed through one input while staying reachable through another.
+  `bpa-partially-set`: all four public-access flags default `true`, so the
+  omission shape is a correct solution (kept as a second reference) and the
+  fixture is an explicit regression. `tls-policy-misses-object-arn`:
+  `attach_deny_insecure_transport_policy` emits both ARNs unconditionally, so
+  that input REMOVES the mistake, while `attach_policy` + a hand-written
+  document still reaches it. `subresource-targets-wrong-bucket` is REMOVED
+  outright — every sub-resource's `bucket` is wired inside the module and no
+  input reaches it — so `applies_to` excludes the arm and no fixture exists,
+  because a fixture there would score 1.0.
+
+No catch needed an `hcl_modules_override`: every measured tier equals the
+`hcl` column the spec already carried.
+
+The finding that cost the most, and the reason 3B and 5 had to land together:
+the phase-3A normaliser hoists `planned_values` and leaves `configuration` in
+module bodies, so every tier-1 rule keyed on
+`configuration.root_module.resources` graded a module plan against an EMPTY set
+and denied nothing. All three pilot policies were that shape — a correct
+reference and a wrong fixture both scored 1.0, with no error anywhere. Each
+gained a configuration-side module walk that qualifies a body's addresses and
+references with its call path; on a module-free plan the prefix is empty and the
+walk is the identity, which is what keeps the other three arms' falsifiability
+rows where they were. Two things a module body still does not carry — a
+`dynamic` block, which Terraform's configuration representation omits, and a
+`local`, which plan JSON never represents — are resolved from the module CALL's
+own arguments or denied with the reason they have.
+
 ---
 
 ## Amendment 47 — equipping hash scheme 2: Harbor's own equipping channels are in the hash — ACCEPTED

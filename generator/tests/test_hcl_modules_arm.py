@@ -2,13 +2,13 @@
 plumbing: specs/SCHEMA.md §1/§3, DECISIONS.md Amendment 46 (the arm reintroduced,
 gated per spec, closing ROADMAP open decision 4).
 
-The arm has no image yet, so what is testable is exactly the surface that exists:
-
-1. THE DEFAULT — every spec has it disabled, and the default `reason` states the
-   gap, so no spec edit is what keeps the corpus generating byte-identically.
+1. THE DEFAULT — a spec that says nothing about the arm has it disabled, and
+   its default `reason` states the gap, so no spec edit is what keeps the rest
+   of the corpus generating byte-identically. The pilot specs
+   (docs/design/tf-modules-arm.md §3) are the enumerated exception.
 2. ENABLING — takes the same shape terraconstructs takes (per-arm instruction
-   entry required in both directions), and still refuses to generate, because a
-   task whose image does not exist would be a trial nothing can run.
+   entry required in both directions), and now generates a task; a BROWNFIELD
+   spec still cannot, because no arm-specific seed body exists for it.
 3. THE CLOSED ENUMS — one arm added to `Arm` and forgotten in one of the five
    places that key off it (`docs/design/tf-modules-arm.md` §3) is a KeyError deep
    in a generation run, so the coverage is asserted here instead.
@@ -65,23 +65,37 @@ def _per_arm_block(raw: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
+# The three composition-trap scenarios the arm was reintroduced for. Enumerated
+# rather than discovered: enabling the arm on a fourth scenario is a decision
+# (Amendment 46 promotes from DRAFT on the phase-5 live run), and a spec that
+# gained it by a copy-paste edit must turn this list red rather than pass.
+PILOT_SPEC_IDS = frozenset({
+    "acm-dns-validation-record-wiring",
+    "iam-managed-policy-exclusive-vs-attachment",
+    "s3-bucket-hardening-decomposition",
+})
+
+
 @pytest.mark.parametrize("path", ALL_SPEC_PATHS, ids=lambda p: p.stem)
-def test_every_spec_has_the_arm_disabled(path: Path) -> None:
-    """No spec enables it, which is why `make gen-all` is byte-identical to
-    before the arm existed. Enabling one is a decision (Amendment 46 promotes
-    from DRAFT on the phase-5 live run), never a refactor."""
+def test_only_the_pilot_specs_enable_the_arm(path: Path) -> None:
     spec = load_spec(path)
-    assert spec.arms.hcl_modules.enabled is False
-    assert "hcl_modules" not in spec.arms.enabled_arms()
+    expected = spec.id in PILOT_SPEC_IDS
+    assert spec.arms.hcl_modules.enabled is expected
+    assert ("hcl_modules" in spec.arms.enabled_arms()) is expected
 
 
 @pytest.mark.parametrize("path", ALL_SPEC_PATHS, ids=lambda p: p.stem)
-def test_no_spec_writes_the_block(path: Path) -> None:
+def test_a_spec_that_never_mentions_the_arm_still_carries_a_reason(path: Path) -> None:
     """The omitted block carries `HCL_MODULES_DEFAULT_REASON`, so the §1 rule
-    "a reason in both directions" holds for a spec that never mentions the arm."""
+    "a reason in both directions" holds for a spec that never mentions the arm.
+    A pilot spec writes the block and states its own reason instead."""
     raw = yaml.safe_load(path.read_text())
+    spec = load_spec(path)
+    if spec.id in PILOT_SPEC_IDS:
+        assert raw["arms"]["hcl_modules"]["reason"].strip()
+        return
     assert "hcl_modules" not in raw["arms"]
-    assert load_spec(path).arms.hcl_modules.reason == HCL_MODULES_DEFAULT_REASON
+    assert spec.arms.hcl_modules.reason == HCL_MODULES_DEFAULT_REASON
 
 
 def test_default_reason_names_the_gap() -> None:
@@ -136,19 +150,23 @@ class TestEnabling:
         with pytest.raises(ValidationError, match=r"missing \['hcl_modules'\]"):
             _mutated(raw, mutate)
 
-    def test_generation_refuses_until_the_pilot_lands(self, pilot_raw: dict) -> None:
-        """The refusal is a sentence, not a KeyError from a half-populated arm
-        map. Phase 4 landed the image, the vendored module set and the registry
-        sidecar; what a runnable task still needs is the pilot's module-based
-        references, which are what a write_environment() branch would have to
-        author (docs/design/tf-modules-arm.md milestone 5)."""
+    def test_a_pending_arm_refuses_with_a_sentence(self, pilot_raw: dict) -> None:
+        """`ARMS_PENDING_IMAGE` is empty now that every arm has its writers, but
+        it stays the shape a FIFTH arm is introduced through: listed there, it
+        refuses with a sentence instead of failing as a KeyError halfway through
+        a generation run that has already written half a task dir."""
         def mutate(d: dict) -> None:
             d["arms"]["hcl_modules"] = {"enabled": True, "reason": "pilot composition trap"}
             d["instruction"]["per_arm"]["hcl_modules"] = _per_arm_block(d)
 
         spec = _mutated(pilot_raw, mutate)
-        with pytest.raises(NotImplementedError, match="no per-arm writers"):
-            gen.generate_arm(spec, "hcl_modules")
+        monkeypatched = frozenset({"hcl_modules"})
+        original, gen.ARMS_PENDING_IMAGE = gen.ARMS_PENDING_IMAGE, monkeypatched
+        try:
+            with pytest.raises(NotImplementedError, match="no per-arm writers"):
+                gen.generate_arm(spec, "hcl_modules")
+        finally:
+            gen.ARMS_PENDING_IMAGE = original
 
 
 # ---------------------------------------------------------------------------
@@ -210,12 +228,16 @@ class TestEnumSites:
 
 
 class TestTierOverride:
-    def test_no_catch_declares_one_yet(self) -> None:
+    def test_only_a_spec_that_enables_the_arm_may_declare_one(self) -> None:
         """A non-null override names the tier that decides the catch on THIS
-        arm, which cannot be evidence-checked before a module-based reference
-        exists (SCHEMA.md §3's "verify it by reading the source" rule)."""
+        arm, and SCHEMA.md §3 requires that be evidence-checked against a real
+        module-based plan -- which a spec that does not generate the arm has
+        not got."""
         for path in ALL_SPEC_PATHS:
-            for catch in load_spec(path).catches:
+            spec = load_spec(path)
+            if spec.arms.hcl_modules.enabled:
+                continue
+            for catch in spec.catches:
                 assert catch.predicted_tier_caught.hcl_modules_override is None
 
     def test_the_column_accepts_every_catch_tier(self, pilot_raw: dict) -> None:

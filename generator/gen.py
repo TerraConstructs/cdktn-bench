@@ -77,7 +77,12 @@ ARM_DIRNAME: dict[Arm, str] = {
 # while its task emission still waits on the pilot's module-based references.
 # generator/tests/test_hcl_modules_arm.py is what keeps this set honest in both
 # directions.
-ARMS_PENDING_IMAGE: frozenset[Arm] = frozenset({"hcl_modules"})
+# Empty since the pilot's module-based references landed (DECISIONS.md
+# Amendment 46, phase 5): every arm now has a write_environment() branch and an
+# ARM_MEMORY_MB entry. The set is KEPT, not deleted, because it is the shape a
+# fifth arm is introduced through -- an arm listed here refuses generation with
+# a sentence instead of failing as a KeyError halfway through a run.
+ARMS_PENDING_IMAGE: frozenset[Arm] = frozenset()
 # A task's aws-bench scenario is its PARENT DIRECTORY under tasks/:
 # aws-bench-datasets' registry generator (aws_bench/scripts/update_registry.py)
 # derives the scenario from `tasks/<scenario>/<task>/` and expects
@@ -125,6 +130,9 @@ ARM_WORKSPACE_SUBDIR: dict[Arm, str] = {
 ARM_MEMORY_MB: dict[Arm, int] = {
     "awscdk": 4096,
     "hcl_raw": 2048,
+    # hcl_modules runs the same terraform binary over the same .tf files;
+    # the module bodies it additionally installs are source, not a compiler.
+    "hcl_modules": 2048,
     "terraconstructs": 4096,
 }
 
@@ -177,6 +185,10 @@ def shared_body_resolved(spec: Spec, step: Step | None = None) -> str:
 ARM_BOOTSTRAP_FILE: dict[Arm, str] = {
     "awscdk": "bin/app.ts",
     "hcl_raw": "provider.tf",
+    # arms/hcl-modules/environment/workspace/provider.tf is hcl-raw's file with
+    # one tag changed: the two Terraform arms must not differ in provider
+    # configuration, or every cross-arm comparison carries that confound.
+    "hcl_modules": "provider.tf",
     "terraconstructs": "main.ts",
 }
 
@@ -481,8 +493,8 @@ def awscdk_bin_app_ts(spec: Spec) -> str:
     )
 
 
-def hcl_raw_main_tf(spec: Spec) -> str:
-    """The hcl_raw arm's output_contract.entry_file -- resource blocks ONLY.
+def hcl_raw_main_tf(spec: Spec, arm: Arm = "hcl_raw") -> str:
+    """A Terraform arm's output_contract.entry_file -- resource blocks ONLY.
 
     The provider bootstrap must NOT live at the top of this file. main.tf is
     entry_file, and a normal agent solution that rewrites it from scratch --
@@ -498,24 +510,41 @@ def hcl_raw_main_tf(spec: Spec) -> str:
     generated instruction.md also tells the agent not to modify it
     (ownership_note(), above).
     """
-    seed = seed_entry_body(spec, "hcl_raw")
+    seed = seed_entry_body(spec, arm)
     if seed is not None:
         return seed
-    return textwrap.dedent(
+    # hcl_modules authors `module` blocks as well as resource blocks, and the
+    # rule its verifier enforces -- every call the ROOT module makes resolves
+    # from the registry, never from a local path -- is a fact about the
+    # workspace the agent must be able to read somewhere. It is stated here,
+    # in the workspace, and not in instruction.md, which stays byte-identical
+    # across arms except for the one language line (SCHEMA.md §8.2 point 2).
+    blocks = "module and resource blocks" if arm == "hcl_modules" else "resource blocks"
+    header = textwrap.dedent(
         f"""\
         # {spec.workspace_header()}
         #
         # {SKELETON_PROVENANCE_LINE}
-        # This is YOUR file -- add your resource blocks below. The provider
+        # This is YOUR file -- add your {blocks} below. The provider
         # bootstrap (the `terraform` and `provider "aws"` blocks) lives in
         # the separate, pre-seeded ./provider.tf -- do not create a second
         # `provider "aws"` block here, and do not modify provider.tf. Do not
         # hand-edit this header; regenerate instead
         # (`{REGENERATE_HINT}`).
-
-        # TODO(agent): see the task instruction for what to create here.
         """
     )
+    if arm == "hcl_modules":
+        header += textwrap.dedent(
+            """\
+            #
+            # A `module` block is written exactly as it would be against the
+            # public registry (`source = "terraform-aws-modules/<name>/aws"`,
+            # with a `version`); this environment's registry endpoint serves
+            # them. A `source` naming a local path is not a registry source and
+            # the verifier denies it.
+            """
+        )
+    return header + "\n# TODO(agent): see the task instruction for what to create here.\n"
 
 
 def terraconstructs_main_ts(spec: Spec) -> str:
@@ -1000,13 +1029,13 @@ def write_environment(spec: Spec, arm: Arm, dest: Path) -> None:
         example_stack = workspace / "lib" / "example-stack.ts"
         if example_stack.exists():
             example_stack.unlink()
-    elif arm == "hcl_raw":
+    elif arm in ("hcl_raw", "hcl_modules"):
         assert entry_rel == "main.tf", (
-            f"hcl_raw output_contract.entry_file must be main.tf (the provider "
+            f"{arm} output_contract.entry_file must be main.tf (the provider "
             f"bootstrap lives in the separate, non-entry provider.tf "
             f"-- see hcl_raw_main_tf()'s docstring, finding G1), got {entry_rel!r}"
         )
-        (workspace / entry_rel).write_text(hcl_raw_main_tf(spec))
+        (workspace / entry_rel).write_text(hcl_raw_main_tf(spec, arm))
         # provider.tf itself is NOT rewritten here -- it's byte-copied by the
         # copytree above from arms/hcl-raw/environment/workspace/provider.tf
         # and is never per-scenario content.
@@ -1579,6 +1608,12 @@ def build_task_toml(spec: Spec, arm: Arm, task_uuid: str) -> str:
         "cpus = 1",
         f"memory_mb = {ARM_MEMORY_MB[arm]}",
         "storage_mb = 4096",
+    ] + (
+        # Emitted only when a spec turns it OFF: Harbor's own default is true,
+        # so restating it would rewrite every task.toml in the corpus to say
+        # what it already means. See Spec.allow_internet.
+        [] if spec.allow_internet else ["allow_internet = false"]
+    ) + [
         "",
     ] + build_steps_toml(spec, live)
     rendered = "\n".join(lines)
@@ -2303,6 +2338,16 @@ def hcl_input_mode(spec: Spec, arm: Arm) -> str | None:
         return "merge"
     if arm == "terraconstructs":
         return "lib"
+    if arm == "hcl_modules":
+        # Unreachable: Spec._hcl_traversal_excludes_hcl_modules refuses the
+        # combination at load time. An hcl_traversal oracle resolves symbols out
+        # of the .tf files the AGENT wrote, and on this arm the resource that
+        # carries the graded attribute lives inside an installed module body the
+        # merge never reads -- so the policy would resolve nothing and report a
+        # correct solution as wrong.
+        raise AssertionError(
+            "oracle.hcl_traversal cannot be graded on the hcl_modules arm"
+        )
     return None
 
 
@@ -2472,7 +2517,7 @@ def build_verify_config(spec: Spec, arm: Arm, step: Step | None = None) -> dict:
     # and policy addresses. Terraform shapes only: the awscdk arm grades a
     # CloudFormation template, where a nested stack is DENIED by its own rule
     # rather than normalised.
-    normalise = arm in ("hcl_raw", "terraconstructs")
+    normalise = arm in ("hcl_raw", "terraconstructs", "hcl_modules")
     # ENGINE_ERROR -- "the oracle did not run" -- must never be scored as a
     # pass; it is run-invalidating exactly as TOOL_MISSING is. Listed on EVERY
     # arm rather than only where it is reachable (the hardened eval path of an
@@ -2513,7 +2558,8 @@ def build_verify_config(spec: Spec, arm: Arm, step: Step | None = None) -> dict:
         "spec_id": spec.id,
         "arm": arm,
         "step": None if step is None else step.name,
-        "aws_preflight": arm in ("hcl_raw", "terraconstructs") or live_here.enabled,
+        "aws_preflight": arm in ("hcl_raw", "terraconstructs", "hcl_modules")
+        or live_here.enabled,
         "toolchain": build_toolchain_steps(spec, arm),
         "artifact": oc.artifact_path,
         "tier0": tier0,
@@ -2525,6 +2571,18 @@ def build_verify_config(spec: Spec, arm: Arm, step: Step | None = None) -> dict:
     # nothing about a mechanism it does not run.
     if normalise:
         config["normalise_plan"] = True
+    # DECISIONS.md Amendment 46 (c), the rule that makes this arm about
+    # COMPOSING published modules rather than about copying them: every call the
+    # root module makes must resolve from the registry the environment serves.
+    # Declared only here, so no other arm's verifier carries a rule it can
+    # neither break nor satisfy. The scoping (root calls only) and the wording
+    # mirror arms/hcl-modules/environment/preflight.sh, which asserts the same
+    # thing about the image's own fixtures.
+    if arm == "hcl_modules":
+        config["module_sources"] = {
+            "manifest": ".terraform/modules/modules.json",
+            "registry_prefix": "registry.terraform.io/terraform-aws-modules/",
+        }
     return config
 
 
@@ -2614,6 +2672,10 @@ IDEMPOTENCE_STATE_VANISHED_MARKER = "IDEMPOTENCE_STATE_VANISHED:"
 # scenario's operator-facing id names its own pitfall.
 IDEMPOTENCE_COMMAND: dict[Arm, str] = {
     "hcl_raw": "terraform plan -input=false -refresh=false -detailed-exitcode",
+    # Same workspace shape, same state path, same exit-code contract as hcl_raw:
+    # the modules are already installed under .terraform/ by the graded plan, so
+    # this re-plan needs no init of its own.
+    "hcl_modules": "terraform plan -input=false -refresh=false -detailed-exitcode",
     # RE-PROBED AFTER SYNTH, at the ABSOLUTE state path (see
     # docs/design/single-step-seed-deploy.md §4.3). This arm's state is NOT
     # under cdktf.out/: cdktn's `TerraformStack` installs a `LocalBackend` for
@@ -2657,6 +2719,7 @@ IDEMPOTENCE_COMMAND: dict[Arm, str] = {
 # -- with one arm-specific subtlety, see IDEMPOTENCE_COMPLETION_MARKER.
 IDEMPOTENCE_PENDING_RC: dict[Arm, int] = {
     "hcl_raw": 2,
+    "hcl_modules": 2,
     "terraconstructs": 2,
     "awscdk": 1,
 }
@@ -2667,6 +2730,7 @@ IDEMPOTENCE_PENDING_RC: dict[Arm, int] = {
 # as a genuine `pending_changes` verdict).
 IDEMPOTENCE_STATE_PROBE: dict[Arm, str] = {
     "hcl_raw": "terraform.tfstate",
+    "hcl_modules": "terraform.tfstate",
     # terraconstructs state is terraform.<workspace_id>.tfstate at the workspace
     # root, never under cdktf.out/: cdktn's default LocalBackend path is
     # path.join(process.cwd(), `terraform.${stackId}.tfstate`)
@@ -2709,6 +2773,7 @@ IDEMPOTENCE_STATE_PROBE: dict[Arm, str] = {
 # skipped-with-a-reason exactly like the TF arms are by their file probe.
 IDEMPOTENCE_COMPLETION_MARKER: dict[Arm, str] = {
     "hcl_raw": "",
+    "hcl_modules": "",
     "terraconstructs": "",
     "awscdk": "Number of stacks with differences:",
 }
@@ -2981,6 +3046,7 @@ def build_idempotence_config(spec: Spec, arm: Arm) -> dict | None:
 # reward.
 TEARDOWN_COMMAND: dict[Arm, str] = {
     "hcl_raw": "terraform destroy -input=false -auto-approve",
+    "hcl_modules": "terraform destroy -input=false -auto-approve",
     # This arm's state lives at /app/project/terraform.<workspace_id>.tfstate,
     # not under cdktf.out/, so a synth that cleaned the stack directory would
     # leave the destroy with no state -- exiting 0 having removed nothing, and
@@ -3017,6 +3083,7 @@ TEARDOWN_STATE_PROBE: dict[Arm, str] = dict(IDEMPOTENCE_STATE_PROBE)
 # for one that did not.
 TEARDOWN_COMPLETION_MARKER: dict[Arm, str] = {
     "hcl_raw": "",
+    "hcl_modules": "",
     "terraconstructs": "",
     "awscdk": "ScenarioStack: destroyed",
 }
@@ -3339,6 +3406,7 @@ SEED_DEPLOY_REQUIRED_ENV_KEY = "SPEC_SEED_DEPLOY_REQUIRED"
 # not_verifiable on one side and a silent free pass on the other.
 SEED_STATE_IDENTITY_JQ: dict[Arm, str] = {
     "hcl_raw": '"lineage=" + (.lineage|strings) + ";serial=" + (.serial|numbers|tostring)',
+    "hcl_modules": '"lineage=" + (.lineage|strings) + ";serial=" + (.serial|numbers|tostring)',
     "terraconstructs": '"lineage=" + (.lineage|strings) + ";serial=" + (.serial|numbers|tostring)',
     "awscdk": (
         '.Stacks[0] | "stack_id=" + (.StackId|strings) + ";last_update=" '
@@ -3408,6 +3476,9 @@ SEED_STATE_PROOF: dict[Arm, str] = {
         "__STATE_IDENTITY__"
     ),
 }
+# The two Terraform arms keep state at the same path and prove it the same way;
+# aliasing rather than copying is what stops the two proofs drifting apart.
+SEED_STATE_PROOF["hcl_modules"] = SEED_STATE_PROOF["hcl_raw"]
 
 # The `seed_state_identity=` line each state proof ends with. The
 # SOURCE differs per arm -- a local state file on the TF arms, the
@@ -3417,6 +3488,7 @@ SEED_STATE_PROOF: dict[Arm, str] = {
 SEED_STATE_IDENTITY_SOURCE: dict[Arm, str] = {
     "awscdk": "/logs/pre_invoke/seed-cfn.json",
     "hcl_raw": "/app/project/terraform.tfstate",
+    "hcl_modules": "/app/project/terraform.tfstate",
     "terraconstructs": "/app/project/terraform.__WORKSPACE_ID__.tfstate",
 }
 

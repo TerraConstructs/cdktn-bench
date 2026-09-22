@@ -105,14 +105,18 @@ def test_read_only_specs_stay_on_shard_zero(at_n):
             assert shards.shard_for(spec, arm) == "anchor"
 
 
-def test_mutating_arms_get_distinct_shards_from_n_four(at_n):
+def test_mutating_arms_get_distinct_shards_once_there_are_enough(at_n):
+    """As many distinct accounts as there are arms, or as many as exist — a
+    spec's arms never share one while a free shard is left. Written against the
+    arm COUNT rather than a literal, because enabling a fourth arm raises the
+    N at which the property first holds (shards.shard_for's docstring)."""
     mutating = [s for s in real_specs() if _is_mutating(s)]
     assert mutating, "no mutating spec on disk — this test would prove nothing"
     for n in (4, 5, 8):
         at_n(n)
         for spec in mutating:
             assigned = [shards.shard_for(spec, arm) for arm in ARMS]
-            assert len(set(assigned)) == 3, (spec.id, n, assigned)
+            assert len(set(assigned)) == min(len(ARMS), n - 1), (spec.id, n, assigned)
             assert "anchor" not in assigned, (spec.id, n, assigned)
 
 
@@ -121,11 +125,13 @@ def test_mutating_arms_spread_as_evenly_as_possible_below_n_four(at_n):
     at_n(2)
     assert {shards.shard_for(spec, arm) for arm in ARMS} == {"anchor-1"}
     at_n(3)
-    # Two mutating shards, three arms: two on one, one on the other — the best
-    # any assignment can do.
+    # Two mutating shards and more arms than that: the arms are dealt round
+    # robin, so no shard carries two more than another — the best any
+    # assignment can do.
     assigned = [shards.shard_for(spec, arm) for arm in ARMS]
     assert set(assigned) == {"anchor-1", "anchor-2"}
-    assert sorted(assigned.count(s) for s in set(assigned)) == [1, 2]
+    counts = sorted(assigned.count(s) for s in set(assigned))
+    assert counts[-1] - counts[0] <= 1, counts
 
 
 def test_assignment_is_deterministic(at_n):

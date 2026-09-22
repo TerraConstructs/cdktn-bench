@@ -518,6 +518,64 @@ lenient instead of fixing the fixture.
 
 ---
 
+## 6.3 The `hcl_modules` arm
+
+Enabled per spec (`specs/SCHEMA.md` §1), and only for a scenario whose trap is
+about COMPOSITION — how N resources are wired into a working system — because
+that is what a community module encodes and what this rung exists to measure.
+A property-semantics trap belongs on the other three arms; a module that passes
+the property through measures nothing new.
+
+**Authoring the reference.** Use a module where
+`docs/design/hcl-modules-spec-matrix.md` §1 says one fits, and a raw resource
+where it does not (acm's hosted zone has no module counterpart and stays raw —
+wiring the raw resource into the call is part of the composition being
+measured). Write the call as it would be written against the public registry:
+
+```hcl
+module "bucket" {
+  source  = "terraform-aws-modules/s3-bucket/aws"
+  version = "5.16.1"
+  ...
+}
+```
+
+The version must be one the vendored set serves (`arms/hcl-modules/environment/
+modules/manifest.json`); anything else fails `init` with a message listing what
+is available. A `source` naming a local path is DENIED by the verifier before
+either tier runs, reported as `MODULE SOURCES FAILED` — copying a module into
+the workspace is not composing one.
+
+**The red-green rule, for every catch on this arm.** A module default can
+hide a mistake, remove it, or leave it exactly where it was, and which one is
+a fact you MEASURE, never one you read off the module source. For each catch
+the matrix marks hidden or removed:
+
+1. Write the fixture that uses the module in the way that hides or removes the
+   mistake and grade it with the oracle AS IT STANDS. Record that verdict —
+   it is the red, or the vacuous green.
+2. Then decide, and write the decision into the spec beside the catch:
+   * still reachable, same tier → `applies_to` gains `hcl_modules`, the fixture
+     stays under `solution/broken/`;
+   * reachable at a different tier → also set
+     `predicted_tier_caught.hcl_modules_override`;
+   * the module makes it impossible → `applies_to` EXCLUDES the arm, with the
+     one-line reason, and there is **no fixture** — a fixture that scores 1.0
+     is not a broken fixture;
+   * the module's shape turns out to be a CORRECT solution the oracle rejects
+     → that is an oracle defect, not a catch. Fix the oracle and keep the
+     shape as `solution/<name>/solve.sh`, a second reference the gate requires
+     to score 1.0.
+
+**What goes wrong silently.** A fixture that scores 0.0 because `init` failed
+is not a catch — check the tier and the deny message, not just the reward. A
+reference that scores 1.0 because the module made an assert unresolvable, or
+because a tier-1 rule keyed on `configuration.root_module.resources` graded an
+empty set, is an oracle defect and not a pass; `oracles/rego/README.md` has the
+configuration-side walk every policy on this arm needs.
+
+---
+
 ## 6.4 Multi-step scenarios (`steps:`)
 
 A **multi-step** scenario decomposes one arc into N prompts delivered to N

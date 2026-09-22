@@ -27,6 +27,10 @@
         "path": "tasks/anchor/acm-dns-validation-record-wiring-awscdk"
       },
       {
+        "name": "acm-dns-validation-record-wiring-hcl-modules",
+        "path": "tasks/anchor/acm-dns-validation-record-wiring-hcl-modules"
+      },
+      {
         "name": "acm-dns-validation-record-wiring-hcl-raw",
         "path": "tasks/anchor/acm-dns-validation-record-wiring-hcl-raw"
       },
@@ -135,6 +139,10 @@
         "path": "tasks/anchor/iam-managed-policy-exclusive-vs-attachment-awscdk"
       },
       {
+        "name": "iam-managed-policy-exclusive-vs-attachment-hcl-modules",
+        "path": "tasks/anchor/iam-managed-policy-exclusive-vs-attachment-hcl-modules"
+      },
+      {
         "name": "iam-managed-policy-exclusive-vs-attachment-hcl-raw",
         "path": "tasks/anchor/iam-managed-policy-exclusive-vs-attachment-hcl-raw"
       },
@@ -193,6 +201,10 @@
       {
         "name": "s3-bucket-hardening-decomposition-awscdk",
         "path": "tasks/anchor/s3-bucket-hardening-decomposition-awscdk"
+      },
+      {
+        "name": "s3-bucket-hardening-decomposition-hcl-modules",
+        "path": "tasks/anchor/s3-bucket-hardening-decomposition-hcl-modules"
       },
       {
         "name": "s3-bucket-hardening-decomposition-hcl-raw",

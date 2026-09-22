@@ -7,7 +7,7 @@ referenced from the file it describes.
 
 `generator/gen.py` reads one spec under `specs/` and (re)writes:
 
-    tasks/<scenario_id>/<id>-{awscdk,hcl-raw,terraconstructs}/
+    tasks/<scenario_id>/<id>-{awscdk,hcl-raw,terraconstructs,hcl-modules}/
         task.toml, instruction.md, environment/, tests/, solution/ (stub only)
     oracles/<id>/intent.md
     oracles/rego/<id>/policy.rego        (stub only if missing)
@@ -15,16 +15,17 @@ referenced from the file it describes.
                                           arm's CFN-shaped Rego bundle,
                                           specs/SCHEMA.md §4.5)
 
-`<scenario_id>` is the aws-bench shard `generator/shards.py` assigns. A fourth arm
-exists in the schema, `hcl-modules` (`DECISIONS.md` Amendment 46). Its IMAGE landed
-in M3 phase 4 — `make build-arms` and `make preflight` build and run it like any
-other arm — but this module has no per-arm writers for it (no `write_environment()`
-branch, no `ARM_MEMORY_MB` entry), so `gen.ARMS_PENDING_IMAGE` still refuses to emit
-it and it appears in no task path yet; the phase-5 pilot is what closes that. No spec
-enables it either, which is the second, independent reason `make gen-all` stays
-byte-identical.
+`<scenario_id>` is the aws-bench shard `generator/shards.py` assigns. The fourth
+arm, `hcl-modules` (`DECISIONS.md` Amendment 46), is emitted only for a spec that
+enables it — the three pilot composition-trap scenarios. It authors the same
+`main.tf` + `provider.tf` pair as `hcl-raw`, its verifier normalises the plan and
+additionally DENIES a root `module` call whose source is not a registry source,
+and its `environment/` carries the vendored module trees and the registry
+sidecar's compose file. `gen.ARMS_PENDING_IMAGE` is now empty; it stays as the
+shape a FIFTH arm is introduced through, refusing generation with a sentence
+rather than a KeyError halfway through a run, and
 `generator/tests/test_hcl_modules_arm.py::test_pending_arms_are_exactly_the_ones_the_generator_cannot_write`
-keeps that set honest in both directions, and `::test_every_arm_has_an_image` stops
+keeps it honest in both directions. `::test_every_arm_has_an_image` stops
 the Makefile's "skip an arm whose `environment/` is empty" from hiding a deleted
 Dockerfile on a shipped arm.
 

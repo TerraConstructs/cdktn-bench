@@ -22,12 +22,14 @@ docs/gates.md#oracle-falsifiability
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,9 +44,37 @@ from gen import (  # noqa: E402
 from spec_model import Arm, Catch, Spec, Step, load_spec  # noqa: E402
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import tf_registry  # noqa: E402
 from aws_stub import running_stub  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# The only arm whose toolchain needs more than the AWS stub: its modules resolve
+# from the loopback registry, never from registry.terraform.io.
+REGISTRY_ARM: Arm = "hcl_modules"
+
+
+@contextlib.contextmanager
+def arm_env(arm: Arm, env: dict[str, str]) -> Iterator[dict[str, str]]:
+    """`env` for one arm's fixture runs; unchanged for every arm but this one.
+
+    `hcl_modules` additionally runs under gates/tf_registry.py::running_registry,
+    which adds the `TF_CLI_CONFIG_FILE` whose `host` override points
+    `registry.terraform.io`'s modules service at the loopback responder. Without
+    it this arm's `terraform init` resolves its modules from the PUBLIC
+    registry, so the gate would grade a solution the arm's own offline image
+    cannot build. Other arms declare no modules, so handing them that config
+    would only couple three green arms to a fourth arm's subprocess.
+
+    Lives here rather than in gates/artifact_collector.py, which imports this
+    module: both gates need it, and one definition is what keeps them running
+    their fixtures in the same environment.
+    """
+    if arm != REGISTRY_ARM:
+        yield env
+        return
+    with tf_registry.running_registry(env=env) as registry_env:
+        yield registry_env
 
 # The fixed marker string a `predicted_tier_caught: "live"` broken/ fixture's
 # gate run must print, after mechanically confirming the static-
@@ -512,8 +542,8 @@ def check_arm(spec: Spec, arm: Arm, env: dict[str, str] | None = None) -> list[R
     still one stub per arm; a gate's `main()` hoists a single shared `env`
     across every enabled arm, for one stub per gate process."""
     if env is None:
-        with running_stub() as stub_env:
-            return check_arm(spec, arm, env=stub_env)
+        with running_stub() as stub_env, arm_env(arm, stub_env) as run_env:
+            return check_arm(spec, arm, env=run_env)
     task = task_dir(spec, arm)
     solve_sh = task / "solution" / "solve.sh"
     results: list[RunResult] = []
@@ -594,6 +624,28 @@ def check_arm(spec: Spec, arm: Arm, env: dict[str, str] | None = None) -> list[R
                 )
         results.append(bad)
 
+    # ALTERNATE REFERENCES: a directory under solution/ that is neither the
+    # reference nor broken/. Each is a SECOND correct solution, kept because a
+    # shape the oracle must accept is not obvious from the one reference --
+    # the hcl_modules arm's "the module's own defaults already satisfy this,
+    # so the call need not restate it" case. Required to score 1.0, for the
+    # same reason the extra negatives below are required to score 0.0: a
+    # claim about grading that no gate runs is a comment, not a proof.
+    for alt_dir in sorted(p for p in (task / "solution").iterdir() if p.is_dir()):
+        if alt_dir.name == "broken":
+            continue
+        alt_solve = alt_dir / "solve.sh"
+        label = f"{arm}/solution/{alt_dir.name}/solve.sh"
+        if not alt_solve.exists():
+            results.append(RunResult(label, None, False, "directory present but solve.sh missing"))
+            continue
+        alt = _run_solve(
+            task, arm, alt_solve, label,
+            artifact_rel=artifact_rel, step=final_step, env=env,
+        )
+        alt.ok = alt.ok and alt.reward == 1.0
+        results.append(alt)
+
     # Extra, non-catch-named negative fixtures prove an alternate-but-equally-
     # idiomatic shape is caught too (aws_iam_policy +
     # aws_iam_role_policy_attachment on the TF arms, inlinePolicies on awscdk),
@@ -632,7 +684,11 @@ def main(argv: list[str]) -> int:
     # ONE stub for the whole gate process, not one per arm or per solve.sh.
     with running_stub() as env:
         for arm in spec.arms.enabled_arms():
-            for r in check_arm(spec, arm, env):
+            # One registry responder per ARM, inside the one stub per process:
+            # every fixture of this arm shares it, and no other arm pays for it.
+            with arm_env(arm, env) as run_env:
+                results = check_arm(spec, arm, run_env)
+            for r in results:
                 status = "PASS" if r.ok else "FAIL"
                 last_line = r.detail.splitlines()[-1] if r.detail else ""
                 print(f"[{status}] {r.label}: reward={r.reward} -- {last_line}")

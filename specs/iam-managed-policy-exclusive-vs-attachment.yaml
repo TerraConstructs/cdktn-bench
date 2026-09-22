@@ -904,6 +904,28 @@ arms:
       (`lib/aws/iam/managed-policy.js:43`) -- this arm is immune to this
       scenario's first two catches BY CONSTRUCTION, not merely by not
       having tried yet. See catches[].applies_to below.
+  hcl_modules:
+    enabled: true
+    reason: >
+      Composition trap, and one of the three M3 phase-5 pilots
+      (docs/design/tf-modules-arm.md §3): the whole scenario is WHICH
+      attachment surface wires two policies onto two roles, which is exactly
+      the decision `iam//modules/iam-role@6.8.2` makes for the author -- its
+      `policies` map emits one `aws_iam_role_policy_attachment` per entry
+      (that submodule's own `main.tf:300-301`) and no submodule anywhere in
+      `iam@6.8.2` creates `aws_iam_role_policy_attachments_exclusive`, the
+      deprecated global `aws_iam_policy_attachment`, or an
+      `aws_iam_role.managed_policy_arns` argument
+      (docs/design/hcl-modules-spec-matrix.md §1 and §2's iam//modules/iam-role
+      entry). The three exclusive-ownership catches therefore have no module
+      PATH on this arm, which is not the same as being unreachable: raw HCL is
+      legal alongside module calls, so each keeps its `applies_to` entry and
+      its own fixture reaches the mistake the only way this arm can -- by
+      leaving the module. The three per-role wiring catches map onto plain
+      `policies` / `trust_policy_permissions` passthrough and stay reachable
+      through the module itself. That asymmetry -- the module offers no path to
+      the three mistakes it could make, and full passthrough for the three it
+      cannot -- is the module-wins prediction this pilot tests.
 
 instruction:
   shared_body: |
@@ -943,6 +965,16 @@ instruction:
         synth_command: "npx cdktn synth"
         json_fields: []
 
+    hcl_modules:
+      language_line: "Author this as Terraform HCL composed from `terraform-aws-modules` registry modules: they are the real `terraform-aws-modules` sources, served at an allowlisted set of versions you can discover at this environment's registry endpoint."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields: []
+
 catches:
   - name: account-exclusive-policy-attachment
     taxonomy: graph-dependency
@@ -972,11 +1004,18 @@ catches:
       IamRolePolicyAttachment or the commented-out-by-design
       managedPolicyArns path -- see this spec's header comment's
       "terraconstructs immunity" evidence) through ordinary use.
+      REACHABLE BUT MODULE-LESS on hcl_modules: no submodule anywhere in
+      `iam@6.8.2` creates this resource type (docs/design/
+      hcl-modules-spec-matrix.md §2, the iam//modules/iam-role entry), so
+      reaching the mistake means abandoning the role module for raw HCL --
+      which this arm permits and this catch's own fixture does. The module
+      does not HIDE the mistake, it offers no path TO it, which is why the
+      catch stays declared and falsified here rather than excluded.
     predicted_tier_caught:
       awscdk: "0"
       hcl: "0"
       terraconstructs_override: null
-    applies_to: [hcl_raw]
+    applies_to: [hcl_raw, hcl_modules]
 
   - name: deprecated-exclusive-role-attribute
     taxonomy: nested-attribute
@@ -1008,12 +1047,16 @@ catches:
       comments the equivalent Terraform argument OUT of what it ever
       synthesizes (see this spec's header comment) -- through ordinary
       use, an agent on either typed arm cannot reach for the mistake even
-      by trying the "obvious" L2 API path.
+      by trying the "obvious" L2 API path. On hcl_modules the argument is not
+      an input of `iam//modules/iam-role` at all, so the fixture reaches it
+      the only way this arm can: by authoring one of the two roles as a raw
+      `aws_iam_role`. The falsifying assert reads the ROOT configuration
+      tree, which is exactly where such a hand-written role lands.
     predicted_tier_caught:
       awscdk: "0"
       hcl: "0"
       terraconstructs_override: null
-    applies_to: [hcl_raw]
+    applies_to: [hcl_raw, hcl_modules]
 
   - name: role-scoped-exclusive-attachment
     taxonomy: graph-dependency
@@ -1051,12 +1094,15 @@ catches:
       path to this resource type either -- confirmed by direct read of
       the pinned 0.2.13 package's `lib/aws/iam/**` tree, 2026-08-22, see
       this spec's own header comment's terraconstructs-immunity note)
-      through ordinary use.
+      through ordinary use. Module-less but reachable on hcl_modules, for the
+      same reason account-exclusive-policy-attachment is: `iam@6.8.2` creates
+      this resource type in no submodule, so the fixture writes it raw
+      alongside the two role modules.
     predicted_tier_caught:
       awscdk: "0"
       hcl: "0"
       terraconstructs_override: null
-    applies_to: [hcl_raw]
+    applies_to: [hcl_raw, hcl_modules]
 
   - name: policy-attached-to-one-role-only
     taxonomy: graph-dependency
@@ -1084,7 +1130,7 @@ catches:
       awscdk: "1"
       hcl: "1"
       terraconstructs_override: null
-    applies_to: [awscdk, hcl_raw, terraconstructs]
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
 
   - name: s3-readonly-missing-on-one-role
     taxonomy: graph-dependency
@@ -1123,7 +1169,7 @@ catches:
       awscdk: "1"
       hcl: "1"
       terraconstructs_override: null
-    applies_to: [awscdk, hcl_raw, terraconstructs]
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
 
   - name: trust-principals-not-split-across-both-roles
     taxonomy: nested-attribute
@@ -1155,7 +1201,7 @@ catches:
       awscdk: "1"
       hcl: "1"
       terraconstructs_override: null
-    applies_to: [awscdk, hcl_raw, terraconstructs]
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
 
 oracle:
   intent: >
@@ -1202,7 +1248,12 @@ oracle:
     physical name and lets the provider or CDK compute one -- the DEFAULT
     shape on terraconstructs, whose L2 falls back to `namePrefix`
     whenever `roleName` is not supplied -- scores exactly the same as one
-    that sets it, on every arm.
+    that sets it, on every arm. A resource a registry module authors is
+    graded exactly as a root-authored one is, at its module-qualified plan
+    address: composing the roles from terraform-aws-modules'
+    iam//modules/iam-role -- whose `policies` map emits one additive
+    aws_iam_role_policy_attachment per entry -- satisfies every requirement
+    above, and so does writing the same resources by hand.
 
   # REPAIR PASS 10 (2026-08-23), specs/SCHEMA.md §4.5. This scenario's
   # tier-1 fact is a CROSS-RESOURCE JOIN ("the team-defined managed policy
@@ -1251,7 +1302,7 @@ oracle:
         header comment, REPAIR PASS 9 defect 17, for the reproduction that
         forced the move and why tier 0 cannot express it.
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::IAM::Role')].Properties.AssumeRolePolicyDocument.Statement[*].Principal.Service"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_iam_role')].values.assume_role_policy|fromjson.Statement[*].Principal.Service"
       op: contains
@@ -1266,7 +1317,7 @@ oracle:
         see that assert's own note for where the per-role pairing is
         actually graded (tier 1, both oracle files, matching semantics).
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::IAM::Role')].Properties.AssumeRolePolicyDocument.Statement[*].Principal.Service"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_iam_role')].values.assume_role_policy|fromjson.Statement[*].Principal.Service"
       op: contains
@@ -1283,7 +1334,7 @@ oracle:
         see this spec's header comment -- so a correct terraconstructs
         solution trivially passes it too).
       tier: "0"
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_iam_policy_attachment')]"
       op: not_exists
 
@@ -1312,7 +1363,7 @@ oracle:
         against the pinned 0.2.13 package, see this spec's header comment
         -- so a correct terraconstructs solution trivially passes it too).
       tier: "0"
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_iam_role_policy_attachments_exclusive')]"
       op: not_exists
 
@@ -1360,8 +1411,17 @@ oracle:
         deprecated-exclusive-role-attribute broken fixture, which now
         uses the `= []` form specifically (see that catch's own updated
         description) -- FAILS, as required.
+
+        ON hcl_modules this path stays ROOT-ONLY and that is not a blind
+        spot: no submodule of `iam@6.8.2` takes `managed_policy_arns` as an
+        input, so a role carrying the deprecated attribute can only be a raw
+        `aws_iam_role` the agent wrote in its own root configuration, which
+        is the only place this path looks. The normaliser guarantees
+        `configuration.root_module.resources` is present on a module plan, so
+        an all-module solution resolves it to zero nodes and passes rather
+        than dying in jq with "Cannot iterate over null".
       tier: "0"
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_iam_role')].expressions.managed_policy_arns"
       op: not_exists
 
@@ -1501,8 +1561,18 @@ oracle:
 
     - name: customer-metrics-policy-attached-to-both-roles-tf
       description: >
-        (hcl_raw + terraconstructs only -- see
-        customer-metrics-policy-attached-to-both-roles-cfn for awscdk.)
+        (the three Terraform-shaped arms -- see
+        customer-metrics-policy-attached-to-both-roles-cfn for awscdk.) On
+        hcl_modules this entry's own flat path resolves nothing, because a
+        module-composed plan keeps its resources in the call bodies and the
+        JSONPath grammar cannot name a module-qualified address; the module
+        awareness lives in policy.rego's `configured_resources` instead. The
+        entry still names the arm, and MUST: a tier-1 entry is a NAME, never
+        an evaluated path (gen.py::build_tier0_table returns tier-1 asserts
+        as names only, and tests/verify.py reports SKIPPED_NO_ASSERTS and
+        never evaluates the policy when an arm has none), so dropping the arm
+        here turns the whole Rego bundle off on it and every catch predicted
+        at tier 1 stops being graded.
         Graph-edge check, documentation-only (see this entry group's own
         header note above for why a flat path cannot fully express this
         fact): an `aws_iam_role_policy_attachment` resource's `policy_arn`
@@ -1616,7 +1686,7 @@ oracle:
         `solution/broken/cartesian-metrics-on-one-role-only/` and
         `solution/broken/cartesian-s3-on-one-role-only/` (0.0).
       tier: "1"
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_iam_role_policy_attachment')].expressions.policy_arn.references[*]"
       op: regex
       expected: "^aws_iam_policy\\."

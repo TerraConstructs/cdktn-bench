@@ -321,24 +321,33 @@ class TestHostWiring:
 
     def test_other_arms_get_their_environment_unchanged(self, monkeypatch):
         """Arm-gated: three green arms must not depend on a fourth arm's
-        subprocess, so `arm_env` is identity for everything but hcl_modules."""
+        subprocess, so `arm_env` is identity for everything but hcl_modules.
+
+        `arm_env` lives in `oracle_falsifiability`, which every gate that runs
+        a fixture imports -- `artifact_collector` re-exports it, so the two
+        cannot start their fixtures in different environments."""
         import artifact_collector
+        import oracle_falsifiability
+
+        assert artifact_collector.arm_env is oracle_falsifiability.arm_env
 
         def fail(*a, **k):
             raise AssertionError("running_registry started for a non-modules arm")
 
-        monkeypatch.setattr(artifact_collector.tf_registry, "running_registry", fail)
+        monkeypatch.setattr(oracle_falsifiability.tf_registry, "running_registry", fail)
         env = {"PATH": "/usr/bin", "AWS_ENDPOINT_URL": "http://127.0.0.1:1"}
         for arm in artifact_collector.ARMS:
+            if arm == "hcl_modules":
+                continue
             with artifact_collector.arm_env(arm, env) as out:
                 assert out is env
 
     def test_the_modules_arm_gets_the_registry_environment(self, fake_tree, monkeypatch):
-        import artifact_collector
+        import oracle_falsifiability
 
-        monkeypatch.setattr(artifact_collector.tf_registry, "MODULES_ROOT", fake_tree)
+        monkeypatch.setattr(oracle_falsifiability.tf_registry, "MODULES_ROOT", fake_tree)
         env = {"PATH": "/usr/bin"}
-        with artifact_collector.arm_env("hcl_modules", env) as out:
+        with oracle_falsifiability.arm_env("hcl_modules", env) as out:
             assert out["TF_CLI_CONFIG_FILE"] != env.get("TF_CLI_CONFIG_FILE")
             assert Path(out["TF_CLI_CONFIG_FILE"]).read_text().count('"modules.v1"   = ') == 1
 

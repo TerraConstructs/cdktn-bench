@@ -116,9 +116,13 @@ asserts the `versions`, `download` and tarball lines appear after a real
 `terraform init`, and that no discovery request does. A dead-proxy environment
 variable would prove only that outbound failed, not where the bytes came from.
 
-Consumer: `gates/artifact_collector.py::arm_env`, which is identity for every
+Consumer: `gates/oracle_falsifiability.py::arm_env`, which is identity for every
 arm but `hcl_modules` — three green arms must not come to depend on a fourth
-arm's subprocess.
+arm's subprocess. It lives there rather than in `gates/artifact_collector.py`,
+which imports it: `falsifiability`, `grading-proof` and `normaliser-parity` all
+run this arm's fixtures, and one definition is what keeps them running in the
+same environment. Each wraps ONE responder per arm inside its one AWS stub per
+process.
 
 ## oracle-falsifiability
 
@@ -566,10 +570,10 @@ changes.
 
 The plan normaliser (docs/generator.md#the-plan-normaliser-in-teststierspy)
 hoists module resources into `planned_values.root_module.resources`, the shape
-every assert and policy already addresses. It runs on both Terraform-shaped
-arms for **every** spec, not only the module ones — so the whole corpus's
-grading now flows through it, and the corpus has no module in it. This gate is
-the proof that nothing moved. For each collected artifact it grades the RAW
+every assert and policy already addresses. It runs on all three
+Terraform-shaped arms for **every** spec, not only the module ones — so the
+whole corpus's grading flows through it, and everything but the `hcl_modules`
+pilot is module-free. This gate is the proof that nothing moved there. For each collected artifact it grades the RAW
 document and the NORMALISED one and requires:
 
 | compared | requirement |
@@ -580,6 +584,9 @@ document and the NORMALISED one and requires:
 
 The `awscdk` arm is not collected at all: its CONFIG declares no normaliser, so
 re-grading it would report agreement about a mechanism that did not run.
+Collecting `hcl_modules` additionally starts the loopback registry responder
+(`gates/tf_registry.py`), without which its fixtures' `terraform init` would
+resolve from the public registry or not at all.
 
 ### A module-shaped fixture is held to the opposite contract
 
@@ -592,7 +599,13 @@ never move ONTO it. Its tier-1 sets and its bytes are printed as "the hoist
 changed, in the loud direction" rather than demanded, and whether the fixture's
 reward still lands where the spec says is `make falsifiability`'s question.
 
-The corpus has exactly one such fixture:
+Every `hcl_modules` fixture of the three pilot scenarios is module-shaped and
+lands in that column, so the gate now reports a two-digit module-shaped count
+rather than a single one; "identical raw versus normalised" is not expected of
+any of them, and a run in which they WERE identical would mean the normaliser
+had stopped hoisting.
+
+The longest-standing such fixture, and the only one on a module-free arm, is
 `s3-notification-authoritative-singleton/hcl-raw/broken/all-wiring-hidden-inside-a-module`,
 the deliberate false-fail where correct wiring is hidden in a `module` block.
 Its seven tier-0 asserts were all `unresolvable` (the resources were invisible)

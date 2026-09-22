@@ -39,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from oracle_falsifiability import (  # noqa: E402
     LIVE_ONLY_CONFIRMED_MARKER,
     RunResult,
+    arm_env,
     check_arm,
     observed_tier,
     predicted_tier,
@@ -176,7 +177,11 @@ def main(argv: list[str]) -> int:
     # ONE stub for the whole gate process; every arm's check_arm run shares it.
     with running_stub() as env:
         for arm in spec.arms.enabled_arms():
-            results = check_arm(spec, arm, env)
+            # hcl_modules resolves its modules from the loopback registry
+            # responder, never from registry.terraform.io -- one per arm, inside
+            # the one stub per process. Every other arm is handed `env` as is.
+            with arm_env(arm, env) as run_env:
+                results = check_arm(spec, arm, run_env)
             good = next((r for r in results if r.label == f"{arm}/solution/solve.sh"), None)
 
             if good is None or good.reward is None:

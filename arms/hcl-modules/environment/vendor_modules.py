@@ -13,7 +13,7 @@ Modes:
   (default)         fetch every pin from codeload, prune, write the tree and
                     `manifest.json`. Network; owner-run on a version bump.
   --verify          re-hash the tree under `--root` against its own
-                    `manifest.json` and fail on drift, on an extra file or on
+                    `manifest.json` and fail on a changed byte, on an extra file or on
                     a missing one. Offline, stdlib only, no pin file needed —
                     this is the mode the image build runs against
                     `/opt/terraform-modules`.
@@ -249,7 +249,7 @@ def cmd_fetch(root: Path, pins: dict) -> int:
 def _replace_tree(target: Path, files: dict[str, bytes]) -> None:
     """Write the pruned tree, removing whatever stood there first: a refresh
     that only overwrote would leave a file the new version deleted behind, and
-    `--verify` would then fail on the stale extra."""
+    `--verify` would then fail on the left-over extra."""
     if target.exists():
         _rmtree(target)
     for rel, data in files.items():
@@ -304,7 +304,7 @@ def cmd_verify(root: Path) -> int:
 
 
 def cmd_check_upstream(pins: dict) -> int:
-    drift = 0
+    disagreements = 0
     for mod in pins["modules"]:
         repo = repo_name(pins, mod["name"])
         url = GITHUB_TAG_REF.format(
@@ -319,20 +319,20 @@ def cmd_check_upstream(pins: dict) -> int:
             return 2
         obj = ref["object"]
         # An annotated tag's ref points at the tag object, whose own sha is not
-        # the commit; these repos tag lightweight, so anything else is drift to
+        # the commit; these repos tag lightweight, so anything else is a change to
         # look at rather than a sha to compare.
         if obj["type"] != "commit":
-            print(f"DRIFT {mod['name']}@{mod['version']}: {mod['tag']} is a "
+            print(f"MISMATCH {mod['name']}@{mod['version']}: {mod['tag']} is a "
                   f"{obj['type']}, not a lightweight tag")
-            drift += 1
+            disagreements += 1
         elif obj["sha"] != mod["commit"]:
-            print(f"DRIFT {mod['name']}@{mod['version']}: {mod['tag']} -> "
+            print(f"MISMATCH {mod['name']}@{mod['version']}: {mod['tag']} -> "
                   f"{obj['sha']}, pinned {mod['commit']}")
-            drift += 1
+            disagreements += 1
         else:
             print(f"ok    {mod['name']}@{mod['version']} {mod['tag']} {obj['sha']}")
-    if drift:
-        _fail(f"{drift} pin(s) disagree with upstream")
+    if disagreements:
+        _fail(f"{disagreements} pin(s) disagree with upstream")
         return 1
     return 0
 

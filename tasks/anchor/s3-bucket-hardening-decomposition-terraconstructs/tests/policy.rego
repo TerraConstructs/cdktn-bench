@@ -157,7 +157,145 @@ package cdktn_bench.s3_bucket_hardening_decomposition
 
 import rego.v1
 
-configured_resources := input.configuration.root_module.resources
+# Every resource the configuration declares, in the SAME address domain the
+# normalised `planned_values` already uses: a module body's own addresses and
+# references are module-local, so a call path prefix is what makes the two
+# sides join. On a module-free plan the prefix is empty and this is exactly
+# `input.configuration.root_module.resources`.
+#
+# `walk` rather than recursion (Rego forbids a recursive rule): a body is a
+# configuration scope when it is the document root or the value of a
+# `module_calls.<name>.module` key, and its call path is every name that
+# follows a `module_calls` step.
+config_scope_path(path) if count(path) == 0
+
+config_scope_path(path) if path[count(path) - 1] == "module"
+
+module_prefix(path) := concat(".", [sprintf("module.%s", [path[i]]) |
+	some i
+	path[i - 1] == "module_calls"
+])
+
+qualify(prefix, name) := name if prefix == ""
+
+qualify(prefix, name) := concat(".", [prefix, name]) if prefix != ""
+
+config_scopes contains scope if {
+	walk(input.configuration.root_module, [path, body])
+	is_object(body)
+	config_scope_path(path)
+	scope := {"prefix": module_prefix(path), "resources": object.get(body, "resources", [])}
+}
+
+# Address and references qualified together, EVERY reference including the
+# `var.`/`local.`/`each.` ones. Enumerating which reference kinds name a
+# resource is the list that goes stale when a new kind appears, and the one
+# rule below that keys on a reference kind -- the local-value rule, which
+# denies a policy whose Resource list is spelled through a `locals` block --
+# is one this arm must not reach anyway: inside a module EVERY policy is
+# spelled through a local, and that rule's remedy ("reference the
+# aws_s3_bucket resource directly") is advice about a file the agent did not
+# write. Qualification takes `local.policy` out of that rule's reach, and
+# `module_policy_unverifiable` below says the true thing instead.
+qualified_resource(prefix, r) := object.union(r, {
+	"address": qualify(prefix, r.address),
+	# The call path this resource was declared under, kept alongside the
+	# qualified address because a NESTED BLOCK's own references are not
+	# qualified above and have to be qualified where they are read.
+	"prefix": prefix,
+	"expressions": {attr: qualified_expression(prefix, expr) |
+		some attr, expr in object.get(r, "expressions", {})
+	},
+})
+
+qualified_expression(prefix, expr) := out if {
+	is_object(expr)
+	refs := object.get(expr, "references", null)
+	is_array(refs)
+	out := object.union(expr, {"references": [qualify(prefix, ref) | some ref in refs]})
+}
+
+# A NESTED BLOCK's expression is a list of blocks rather than a
+# `{"references": [...]}` object (`rule`, and
+# `apply_server_side_encryption_by_default` inside it, are read that way by
+# `kms_master_key_refs` below). It passes through unqualified, and that is not
+# a gap: a module body never carries one on a plan this oracle grades -- the
+# vendored s3-bucket module writes both of those as `dynamic` blocks, which
+# Terraform's configuration representation omits entirely -- so the only
+# nested blocks reaching here are the root module's own, where the prefix is
+# empty and qualification is the identity. The KMS edge inside a module call
+# is resolved from the CALL's arguments instead (`call_kms_key_refs`).
+#
+# An expression that names nothing (a constant) passes through for the same
+# reason it must produce a value at all: an undefined expression makes the
+# whole enclosing `qualified_resource` undefined, which drops the resource
+# from the configuration silently -- the wrong-answer-no-error failure this
+# join exists to avoid.
+qualified_expression(_, expr) := expr if not is_object(expr)
+
+qualified_expression(_, expr) := expr if {
+	is_object(expr)
+	not is_array(object.get(expr, "references", null))
+}
+
+configured_resources := [r |
+	some scope in config_scopes
+	some res in scope.resources
+	r := qualified_resource(scope.prefix, res)
+]
+
+# The prefix a call named `name` inside the scope `parent` declares its own
+# resources under.
+child_prefix(parent, name) := qualify(parent, sprintf("module.%s", [name]))
+
+# Every `module` block, with the prefix its body's resources carry. `walk`
+# stops at the `module_calls` map, whose keys are the call names; the parent
+# scope is the path up to it, read by the same rule `config_scopes` uses.
+module_call_sites contains site if {
+	walk(input.configuration.root_module, [path, body])
+	is_object(body)
+	path[count(path) - 1] == "module_calls"
+	some name, call in body
+	parent := module_prefix(array.slice(path, 0, count(path) - 1))
+	site := {"parent": parent, "prefix": child_prefix(parent, name), "call": call}
+}
+
+# Every reference a call's ARGUMENTS make, qualified to the CALLER's scope --
+# the only place a module resource's inputs are visible, since a module body
+# names them `var.<x>` and the plan carries no link back.
+call_argument_refs(prefix) := {ref |
+	some site in module_call_sites
+	site.prefix == prefix
+	some _, expr in object.get(site.call, "expressions", {})
+	is_object(expr)
+	some raw in object.get(expr, "references", [])
+	ref := qualify(site.parent, raw)
+}
+
+# `module.<call>.<output>` -> what that output's own expression references,
+# qualified into the called module's scope. One hop, no further: an output
+# built from another call's output is not followed, and the edge below then
+# simply does not resolve.
+module_output_refs(ref) := refs if {
+	some site in module_call_sites
+	some name, out in object.get(object.get(site.call, "module", {}), "outputs", {})
+	ref == concat(".", [site.prefix, name])
+	refs := {qualify(site.prefix, r) |
+		some r in object.get(out.expression, "references", [])
+	}
+}
+
+# A reference names a resource block when it IS that block's address or
+# continues it with an attribute (`.arn`) or an instance key (`[0]`). Matching
+# against the block addresses this plan actually declares, rather than testing
+# a fixed `aws_s3_bucket.`/`aws_kms_key.` prefix, is what keeps the resolution
+# correct for a module-qualified address, whose own prefix contributes
+# segments of its own.
+reference_names_block(ref, block_addr) if ref == block_addr
+
+reference_names_block(ref, block_addr) if startswith(ref, concat("", [block_addr, "."]))
+
+reference_names_block(ref, block_addr) if startswith(ref, concat("", [block_addr, "["]))
 
 planned_resources := input.planned_values.root_module.resources
 
@@ -216,11 +354,18 @@ policy_references(bp) := refs if {
 	# `data_policy_docs[ref]` one-hop precedent exactly.
 	some ref in direct
 	doc := policy_documents_by_addr[ref]
-	refs := [ref2 |
-		some stmt in doc.expressions.statement
-		some ref2 in object.get(stmt.resources, "references", [])
-	]
+	refs := doc_resource_refs(doc)
 } else := object.get(bp.expressions.policy, "references", [])
+
+# The resource addresses one `aws_iam_policy_document`'s statements name. Its
+# `statement` blocks are a nested-block LIST, which `qualified_expression`
+# passes through unqualified, so the qualification happens here, against the
+# document's own call path -- empty, and therefore the identity, on a
+# module-free plan.
+doc_resource_refs(doc) := [qualify(doc.prefix, ref) |
+	some stmt in object.get(doc.expressions, "statement", [])
+	some ref in object.get(object.get(stmt, "resources", {}), "references", [])
+]
 
 # Counts occurrences of the BUCKET RESOURCE'S BARE ADDRESS itself (never a
 # `.arn`-suffixed -- or any other attribute-suffixed -- string) among the
@@ -322,6 +467,39 @@ resolved_policy_covers_for_bucket(bucket_addr) if {
 	resolved_policy_covers(bp, bucket_addr)
 }
 
+# MODULE-COMPOSED POLICY. A module builds its bucket policy by combining
+# several `aws_iam_policy_document` data sources through a `local`, and a
+# `local` has no representation anywhere in plan JSON -- so the policy
+# attribute's own references dead-end and its planned value is unknown
+# (contagion from the bucket ARN inside it). The evidence that IS in the
+# artifact is the documents themselves: a document DECLARED in the same call
+# and actually PLANNED -- the module's `count` gates it on the input the agent
+# passed, so an unattached document is not planned -- whose statements name
+# this bucket twice, once for the bucket ARN and once for the object-ARN
+# pattern, is the same two-reference fact `bucket_ref_count` demands of a
+# hand-authored policy.
+#
+# Reachable ONLY where the policy is otherwise unverifiable, so no arm's
+# existing verdict moves: on a module-free plan the policy attribute is
+# followable (directly, or one hop into its own document) or its value is
+# resolved, and this path is never consulted.
+module_composed_policy_covers(bp, bucket_addr) if {
+	bp.prefix != ""
+	some doc in configured_resources
+	doc.type == "aws_iam_policy_document"
+	doc.prefix == bp.prefix
+	planned_here(doc.address)
+	count([ref |
+		some ref in doc_resource_refs(doc)
+		ref == bucket_addr
+	]) >= 2
+}
+
+planned_here(config_addr) if {
+	some pr in planned_resources
+	reference_names_block(pr.address, config_addr)
+}
+
 # Per-POLICY (not per-bucket) version of the same resolved-value check, used
 # to guard the locals-only deny rule below: a `bp` whose Resource list is
 # `[local.bucket_arn, "${local.bucket_arn}/*"]` has ALL-`local.`-prefixed
@@ -335,6 +513,11 @@ resolved_policy_covers_for_bucket(bucket_addr) if {
 resolved_policy_covers_any(bp) if {
 	some bucket_addr in bucket_addrs
 	resolved_policy_covers(bp, bucket_addr)
+}
+
+module_composed_policy_covers_for_bucket(bucket_addr) if {
+	some bp in bucket_policies
+	module_composed_policy_covers(bp, bucket_addr)
 }
 
 # LOCALS-HOIST CASE (verifier-found major, 2026-08-21 second pass): a
@@ -443,9 +626,41 @@ deny contains msg if {
 	count(referencing) == 0
 	count(local_only_policies) == 0
 	not resolved_policy_covers_for_bucket(bucket_addr)
+	not module_composed_policy_covers_for_bucket(bucket_addr)
+	not module_policy_unverifiable(bucket_addr)
 	msg := sprintf(
 		"%s: no aws_s3_bucket_policy resource references this bucket's ARN at all -- the TLS-deny requirement cannot be satisfied without one",
 		[bucket_addr],
+	)
+}
+
+# A module-authored bucket policy whose content this artifact does not carry:
+# the module composed it from a `local`, which plan JSON never represents, and
+# its planned value is unknown because the bucket ARN is inside it. Denied,
+# not accepted -- the two-ARN fact is exactly what this scenario measures, and
+# an unverifiable policy is not a verified one -- but with the reason it has
+# rather than the generic rule's "no policy references this bucket at all",
+# which is false here: a policy IS attached. The same documented static-oracle
+# scope limit the local-value rule above records, reached through a module
+# input instead of through a `locals` block.
+module_policy_unverifiable(bucket_addr) if {
+	some bp in bucket_policies
+	bp.prefix != ""
+	bucket_ref_count(bp, bucket_addr) == 0
+	not resolved_policy_covers(bp, bucket_addr)
+	not module_composed_policy_covers(bp, bucket_addr)
+}
+
+deny contains msg if {
+	some bucket_addr in bucket_addrs
+	some bp in bucket_policies
+	bp.prefix != ""
+	bucket_ref_count(bp, bucket_addr) == 0
+	not resolved_policy_covers(bp, bucket_addr)
+	not module_composed_policy_covers(bp, bucket_addr)
+	msg := sprintf(
+		"%s: this module composes its bucket policy from a local value, so neither the policy's own references nor its planned value carry what it grants for %s -- nothing in this plan shows the TLS deny covering the object ARNs as well as the bucket ARN. Pass the policy through the module input that builds the deny-insecure-transport statement itself, whose Resource list this plan does carry.",
+		[bp.address, bucket_addr],
 	)
 }
 
@@ -465,7 +680,8 @@ s3_subresources := [r |
 
 references_a_bucket(r) if {
 	some ref in object.get(r.expressions.bucket, "references", [])
-	startswith(ref, "aws_s3_bucket.")
+	some bucket_addr in bucket_addrs
+	reference_names_block(ref, bucket_addr)
 }
 
 deny contains msg if {
@@ -522,8 +738,37 @@ resolved_kms_key_refs(r) := refs if {
 
 references_a_kms_key(r) if {
 	some ref in resolved_kms_key_refs(r)
-	startswith(ref, "aws_kms_key.")
+	some key_addr in kms_key_addrs
+	reference_names_block(ref, key_addr)
 }
+
+# THE SAME EDGE, READ ONE SCOPE UP, for an SSE configuration a MODULE
+# declares. The module writes its `rule` block as a `dynamic` block, which
+# Terraform's configuration representation omits entirely, so
+# `kms_master_key_refs` above has nothing to read and no amount of address
+# qualification recovers it. What the agent actually authored is the CALL: the
+# key reaches the bucket through one of the call's arguments, so the edge is
+# read there instead, following a `module.<call>.<output>` reference one hop
+# into that output's own expression.
+#
+# Coarser than the direct read in exactly one way, stated here because it is
+# the strictness this arm is graded at: it does not check WHICH argument
+# carries the key, only that the call passes a key this configuration creates.
+# Naming the argument would be naming one module's input, which is not a fact
+# about the scenario. The catch it has to decide -- a hardcoded/imported key
+# ARN literal -- passes no key reference at all and is denied either way.
+references_a_kms_key(r) if {
+	r.prefix != ""
+	some ref in call_argument_refs(r.prefix)
+	some resolved in resolution_of(ref)
+	some key_addr in kms_key_addrs
+	reference_names_block(resolved, key_addr)
+}
+
+# A reference, plus whatever a `module.<call>.<output>` reference resolves to.
+resolution_of(ref) := {ref} | module_output_refs(ref)
+
+resolution_of(ref) := {ref} if not module_output_refs(ref)
 
 deny contains msg if {
 	some r in sse_configs

@@ -1000,8 +1000,9 @@ class StructuralAssert(BaseModel):
                 f"structural_assert {self.name!r}: cfn_jsonpath required "
                 "because 'awscdk' is in applies_to"
             )
-        if (
-            "hcl_raw" in self.applies_to or "terraconstructs" in self.applies_to
+        if any(
+            arm in self.applies_to
+            for arm in ("hcl_raw", "terraconstructs", "hcl_modules")
         ) and not self.tf_jsonpath:
             raise ValueError(
                 f"structural_assert {self.name!r}: tf_jsonpath required "
@@ -1583,6 +1584,16 @@ class Spec(BaseModel):
     # predating the field. A non-empty list makes this a MULTI-STEP task
     # (`[[steps]]` in task.toml, run by cdktn_bench.trial.CdktnMultiStepTrial).
     steps: list[Step] | None = None
+    # Harbor's `[environment] allow_internet`, emitted into task.toml only when
+    # a spec turns it OFF -- so every task.toml in the corpus stays byte-
+    # identical to one written before the field existed. Turning it off means
+    # Harbor's no-network compose, which sets `network_mode: none` on the MAIN
+    # container only: a sidecar the main container must still reach over the
+    # compose network is unreachable under it (aws-access.html; DECISIONS.md
+    # Amendment 46 (g)). `_hcl_modules_needs_the_compose_network` is what makes
+    # that collision a refusal rather than a trial whose `terraform init`
+    # cannot resolve a module.
+    allow_internet: bool = True
     provenance: Provenance
 
     def is_multi_step(self) -> bool:
@@ -1678,6 +1689,43 @@ class Spec(BaseModel):
             raise ValueError(
                 "instruction.per_arm.hcl_modules is set but "
                 "arms.hcl_modules.enabled is false — remove one or the other"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _hcl_modules_needs_the_compose_network(self) -> "Spec":
+        """`allow_internet: false` and `arms.hcl_modules.enabled` cannot both
+        hold. The module sources on this arm come from the tf-registry SIDECAR,
+        a second compose service the main container reaches by name; Harbor's
+        no-network compose sets `network_mode: none` on the main container, so
+        the sidecar is still running and no longer reachable. What the agent
+        would see is `terraform init` failing to resolve every module -- a
+        broken environment wearing the costume of an unsolvable task."""
+        if self.allow_internet or not self.arms.hcl_modules.enabled:
+            return self
+        raise ValueError(
+            "allow_internet is false and arms.hcl_modules.enabled is true: this "
+            "arm resolves its modules from the tf-registry sidecar over the "
+            "compose network, and Harbor's no-network compose sets "
+            "network_mode: none on the MAIN container only -- the sidecar would "
+            "still run and be unreachable, failing `terraform init` for every "
+            "module (DECISIONS.md Amendment 46 (g))"
+        )
+
+    @model_validator(mode="after")
+    def _hcl_traversal_excludes_hcl_modules(self) -> "Spec":
+        """An `oracle.hcl_traversal` policy resolves symbols out of the `.tf`
+        files the AGENT wrote (SCHEMA.md §4.6). On hcl_modules the resource
+        carrying the graded attribute is declared inside an INSTALLED module
+        body, which that merge never reads, so the policy would resolve nothing
+        and grade a correct solution as wrong. Refused here rather than
+        half-supported: gen.py::hcl_input_mode has no mode for it."""
+        if self.oracle.hcl_traversal and self.arms.hcl_modules.enabled:
+            raise ValueError(
+                "oracle.hcl_traversal is true and arms.hcl_modules.enabled is "
+                "true: the HCL merge reads the agent's own .tf files, and on "
+                "this arm the graded resource is declared inside an installed "
+                "module body it never sees (SCHEMA.md §4.6)"
             )
         return self
 

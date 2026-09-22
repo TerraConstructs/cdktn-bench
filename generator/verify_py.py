@@ -648,6 +648,16 @@ def normalise_plan(plan):
                 )
     config_root = (out.get("configuration") or {}).get("root_module")
     if isinstance(config_root, dict):
+        # A root module that declares only `module` blocks carries NO
+        # `resources` key at all, and a tier-0 assert whose jsonpath addresses
+        # `configuration.root_module.resources[...]` then dies inside jq with
+        # "Cannot iterate over null" -- reported UNRESOLVABLE, which fails the
+        # assert for a correct solution. "The root declares no resources" and
+        # "the key is absent" mean the same thing, so the key is made present
+        # and the path resolves to zero nodes. Modular plans only: a
+        # module-free plan must still normalise to itself byte for byte.
+        if modular and "resources" not in config_root:
+            config_root["resources"] = []
         planned_root = (plan.get("planned_values") or {}).get("root_module")
         annotate_module(
             config_root, (),
@@ -687,6 +697,75 @@ def normalised_plan_path(artifact):
         target.write_text(json.dumps(normalise_plan(plan), indent=2) + "\\n")
         NORMALISED[key] = target
     return NORMALISED[key]
+
+
+# --- the module-source rule (hcl_modules only) ------------------------------
+
+MODULE_SOURCE_LABEL = "module sources"
+MODULE_SOURCE_DENIED_LINES = (
+    "a call the ROOT module makes resolves from somewhere other than",
+    "the module registry this environment serves. Every root `module`",
+    "block on this arm must name a registry source under",
+    "%s; a local path (a copy of the vendored",
+    "tree, or a hand-written module inside the workspace) is not one.",
+    "A call an INSTALLED module makes inside its own tree is exempt --",
+    "those are legitimately relative. Offending call(s):",
+)
+
+
+def module_source_denials(rule):
+    """The root `module` calls whose Source is not a registry source, read off
+    `.terraform/modules/modules.json` -- the manifest `terraform init` writes,
+    which records where each installed call actually came from.
+
+    A `Key` of "" is the root module itself and a `Key` containing a dot is a
+    call made INSIDE an installed module (ecs -> ./modules/cluster), so both are
+    exempt: applied to every entry the rule would refuse the vendored modules'
+    own submodules. Identical scoping to
+    arms/hcl-modules/environment/preflight.sh::assert_root_calls_are_registry_sources,
+    which is what stops the image's own fixtures tripping this deny.
+
+    A manifest that does not exist means `init` installed no module at all,
+    which is a configuration with no `module` block in it -- nothing to deny.
+    """
+    manifest = PROJECT / rule["manifest"]
+    if not manifest.is_file():
+        return []
+    try:
+        entries = (json.loads(manifest.read_text()) or {}).get("Modules") or []
+    except ValueError as exc:
+        return ["%s is not JSON: %s" % (manifest, exc)]
+    bad = []
+    for entry in entries:
+        key = entry.get("Key") or ""
+        source = entry.get("Source") or ""
+        if key == "" or "." in key:
+            continue
+        if source.startswith(rule["registry_prefix"]):
+            continue
+        bad.append("module %r -> source %r" % (key, source))
+    return bad
+
+
+def module_sources_ok(cfg):
+    """False having already reported, for an arm that declares the rule and a
+    workspace that breaks it. Reported as a named toolchain-shaped step --
+    `<LABEL> FAILED`, reward 0.0 -- because it is decided before any assert
+    runs, exactly like a failed `terraform plan`."""
+    rule = cfg.get("module_sources")
+    if not rule:
+        return True
+    out("", "== %s: %s ==" % (MODULE_SOURCE_LABEL, rule["manifest"]))
+    bad = module_source_denials(rule)
+    if not bad:
+        return True
+    lines = [line % rule["registry_prefix"] if "%s" in line else line
+             for line in MODULE_SOURCE_DENIED_LINES]
+    (LOGS / "module-source-denied").write_text("\\n".join(lines + bad) + "\\n")
+    out(*lines)
+    out(*bad)
+    out("%s FAILED" % MODULE_SOURCE_LABEL.upper())
+    return False
 
 
 def normalise_artifact(cfg, artifact):
@@ -1024,6 +1103,9 @@ def static_tiers(cfg):
             out("%s FAILED" % label.upper())
             reward("0.0")
             return 0
+    if not module_sources_ok(cfg):
+        reward("0.0")
+        return 0
     artifact = PROJECT / cfg["artifact"]
     if not nonempty(artifact):
         out("MISSING ARTIFACT: %s" % artifact)

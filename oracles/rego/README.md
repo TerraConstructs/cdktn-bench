@@ -1,7 +1,8 @@
 # oracles/rego
 
 Rego/OPA policies graded against `terraform show -json` plan output, for the
-`hcl-raw` and `terraconstructs` arms (both synthesize to Terraform).
+`hcl-raw`, `terraconstructs` and `hcl-modules` arms (all three produce
+Terraform).
 
 One `.rego` bundle per scenario catch (see `docs/iac-abstraction-aws-bench-plan.md`
 Phase 1 seed-scenario table for the planted catches these need to assert on).
@@ -20,12 +21,30 @@ there that Terraform does not emit, and a policy may read all three:
 | `x_after_unknown` | the same resource | the `after_unknown` object `resource_changes` carries for it, joined on `(address, deposed)` |
 | `x_unresolved` | a `configuration` resource or `module_calls.<call>` node | a list of `{reason, detail, attribute?, reference?}`: a reference that crosses a module boundary this document cannot follow |
 
-**A policy needs no module-aware path.** `input.planned_values.root_module.
-resources` already holds every resource at every depth, and `child_modules` is
-gone from the normalised document, so the `walk(...)`/`child_modules` recursion
-the OPA Terraform tutorial teaches would find nothing and is not what to write
-here. Address a module resource exactly as a root one, and read
-`x_module_path` only when the rule genuinely cares WHICH module produced it.
+**On the VALUES side a policy needs no module-aware path.**
+`input.planned_values.root_module.resources` already holds every resource at
+every depth, and `child_modules` is gone from the normalised document, so the
+`walk(...)`/`child_modules` recursion the OPA Terraform tutorial teaches would
+find nothing and is not what to write here. Address a module resource exactly
+as a root one, and read `x_module_path` only when the rule genuinely cares
+WHICH module produced it.
+
+**On the CONFIGURATION side it does.** The normaliser hoists `planned_values`
+and leaves `configuration` in module bodies, so
+`input.configuration.root_module.resources` is EMPTY on a module plan and a
+graph-edge rule reading it denies nothing -- a correct-shaped fixture and a
+wrong one both score 1.0, with no error anywhere. A rule that reads
+`.expressions...references` must therefore union every configuration scope
+(the root plus each `module_calls.<name>.module` body, reachable with `walk`)
+and qualify each body's addresses AND references with its call path, so the
+two sides share one address domain. The three pilot policies carry that block
+verbatim; on a module-free plan the prefix is empty and it is the identity.
+
+Two things a module body does NOT carry, which no amount of qualification
+recovers, and which a rule has to resolve from one scope UP -- the module
+CALL's own arguments -- or deny with an accurate reason:
+a `dynamic` block (Terraform's configuration representation omits it
+entirely), and a `local` (plan JSON has no representation of one at all).
 
 **A "modules are present" guard must not read `child_modules`.** It is gone
 from the normalised document, so a fail-closed rule that spelled "this

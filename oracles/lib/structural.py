@@ -336,7 +336,7 @@ def check_spec_assert(document: dict, assert_spec: dict, *, arm: str) -> AssertR
 
     if arm == "awscdk":
         path_field = "cfn_jsonpath"
-    elif arm in ("hcl_raw", "terraconstructs"):
+    elif arm in ("hcl_raw", "terraconstructs", "hcl_modules"):
         path_field = "tf_jsonpath"
     else:
         raise ValueError(f"unknown arm {arm!r}")

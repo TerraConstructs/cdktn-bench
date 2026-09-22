@@ -266,6 +266,25 @@ exactly as much as the prompt does.)
 
 ---
 
+## 0.2 `allow_internet`
+
+```yaml
+allow_internet: <bool>          # optional, default true
+```
+
+Harbor's own `task.toml [environment] allow_internet`, emitted ONLY when a spec
+sets it to `false` — Harbor's default is `true`, so restating it would rewrite
+every `task.toml` in the corpus to say what it already means.
+
+`false` selects Harbor's no-network compose, which sets `network_mode: none` on
+the MAIN container only. A spec that also enables `arms.hcl_modules` is refused
+at load: that arm resolves its modules from the `tf-registry` sidecar over the
+compose network, so the sidecar would still run and be unreachable, and every
+`terraform init` would fail for a reason that has nothing to do with the
+solution.
+
+---
+
 ## 1. `arms`
 
 ```yaml
@@ -301,16 +320,19 @@ arms:
   scenario treatment and closes ROADMAP open decision 4). Modelled exactly like
   `terraconstructs` — a plain `enabled` bool and a `reason` required in both
   directions — with one difference: **the whole block may be omitted**, which is
-  a disabled arm carrying `spec_model.HCL_MODULES_DEFAULT_REASON`. Every spec
-  omits it today.
+  a disabled arm carrying `spec_model.HCL_MODULES_DEFAULT_REASON`. The three
+  pilot composition-trap scenarios write the block and enable it; every other
+  spec omits it.
   - `enabled: true` → `reason` cites the composition trap this scenario is
     chosen to measure on the modules rung, and the arm requires the same shape
     terraconstructs requires: an `instruction.per_arm.hcl_modules` entry.
-    Generation still refuses until the generator gains this arm's per-arm
-    writers (`generator/gen.py::ARMS_PENDING_IMAGE`; the arm's image itself
-    landed in M3 phase 4), and a **brownfield** spec cannot
-    enable it at all until `workspace_seed.entry_file` gains a module-based seed
-    body (§2.7).
+    Two further combinations are refused at load: `allow_internet: false` (§0.2
+    — the modules come from a sidecar on the compose network), and
+    `oracle.hcl_traversal: true` (§4.6 — the merge reads the agent's own `.tf`
+    files, and on this arm the graded resource is declared inside an installed
+    module body it never sees). A **brownfield** spec cannot enable it at all
+    until `workspace_seed.entry_file` gains a module-based seed body (§2.7);
+    none of the pilot scenarios is brownfield, so that entry is still unwritten.
   - `enabled: false` → `reason` states the gap (a missing module-based reference,
     a trap the available modules cannot express, or a catch no module exposes).
 

@@ -53,7 +53,7 @@ from tier0_parity import grade_driver, tier0_asserts  # noqa: E402
 # The arms whose CONFIG declares `normalise_plan`. An awscdk task grades a
 # CloudFormation template and never calls the normaliser, so re-grading one
 # here would report agreement about a mechanism that did not run.
-NORMALISING_ARMS: tuple[Arm, ...] = ("hcl_raw", "terraconstructs")
+NORMALISING_ARMS: tuple[Arm, ...] = ("hcl_raw", "terraconstructs", "hcl_modules")
 
 
 def load_normaliser():
@@ -299,8 +299,18 @@ def summarise(cells: list[Cell]) -> int:
         print("normaliser-parity: NOT_AUTHORED -- no fixture produced a "
               "gradeable artifact")
         return 3
-    print("normaliser-parity: OK -- every graded artifact grades identically "
-          "raw and normalised")
+    # Two contracts, so two sentences: a module-free artifact must grade
+    # identically, a module-shaped one must NOT (and the gate has just checked
+    # that every change it made was in the loud direction). One sentence
+    # claiming identity for both would read as a pass for a normaliser that had
+    # stopped hoisting.
+    modular = sum(1 for c in graded if c.modular)
+    print(
+        "normaliser-parity: OK -- %d module-free artifact(s) grade identically "
+        "raw and normalised; %d module-shaped one(s) changed only in the loud "
+        "direction (an assert off `unresolvable`, never onto it)"
+        % (len(graded) - modular, modular)
+    )
     return 0
 
 

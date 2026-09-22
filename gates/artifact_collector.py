@@ -19,7 +19,6 @@ Nothing here writes to the repo, and no call reaches real AWS.
 
 from __future__ import annotations
 
-import contextlib
 import shutil
 import sys
 import time
@@ -33,15 +32,11 @@ sys.path.insert(0, str(REPO_ROOT / "generator"))
 sys.path.insert(0, str(REPO_ROOT / "gates"))
 
 import oracle_falsifiability as of  # noqa: E402
-import tf_registry  # noqa: E402
 from gen import ARM_DIRNAME, task_dir  # noqa: E402
+from oracle_falsifiability import arm_env  # noqa: E402
 from spec_model import Arm, Spec, Step  # noqa: E402
 
-ARMS: tuple[Arm, ...] = ("hcl_raw", "terraconstructs", "awscdk")
-
-# The only arm whose toolchain needs more than the AWS stub: its modules resolve
-# from the loopback registry, never from registry.terraform.io.
-REGISTRY_ARM: Arm = "hcl_modules"
+ARMS: tuple[Arm, ...] = ("hcl_raw", "terraconstructs", "awscdk", "hcl_modules")
 
 # Kept working copies are for reproducing a divergence by hand; the installed
 # dependency trees are ~600 MB per run and reproducible from the lockfiles.
@@ -91,23 +86,6 @@ def install(work_dir: Path) -> KeptTempDir:
     keep = KeptTempDir(work_dir)
     of.tempfile = types.SimpleNamespace(TemporaryDirectory=keep)
     return keep
-
-
-@contextlib.contextmanager
-def arm_env(arm: Arm, env: dict[str, str]) -> Iterator[dict[str, str]]:
-    """`env` for one arm's fixture runs; unchanged for every arm but this one.
-
-    `hcl_modules` additionally runs under gates/tf_registry.py::running_registry,
-    which adds the `TF_CLI_CONFIG_FILE` whose `host` override points
-    `registry.terraform.io`'s modules service at the loopback responder. Other
-    arms declare no modules, so handing them that config would only couple three
-    green arms to a fourth arm's subprocess.
-    """
-    if arm != REGISTRY_ARM:
-        yield env
-        return
-    with tf_registry.running_registry(env=env) as registry_env:
-        yield registry_env
 
 
 def tests_dir(task: Path, step: Step | None) -> Path:
