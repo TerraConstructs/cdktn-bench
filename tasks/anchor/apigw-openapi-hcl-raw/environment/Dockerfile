@@ -33,7 +33,7 @@
 # digest together.
 FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
 ARG TERRAFORM_VERSION=1.15.8
-ARG AWS_PROVIDER_VERSION=6.58.0
+ARG AWS_PROVIDER_VERSION=6.66.0
 # NOTE: deliberately no default value here. TARGETARCH is one of BuildKit's
 # predefined platform ARGs, auto-populated from --platform (or the builder's
 # native platform if --platform is omitted). Giving it a literal default

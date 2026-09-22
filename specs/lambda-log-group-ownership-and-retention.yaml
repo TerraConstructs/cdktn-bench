@@ -253,7 +253,7 @@
 # `CfnFunction.Properties.LoggingConfig.LogGroup`, `lambda.generated.d.ts`
 # line 407: "To use a different log group, enter an existing log group or
 # enter a new log group name" -- no naming restriction stated at all).
-# `hashicorp/aws` 6.58.0's `aws_lambda_function.logging_config.log_group`
+# `hashicorp/aws` 6.66.0's `aws_lambda_function.logging_config.log_group`
 # argument and `@cdktn/provider-aws` 24.8.0's 1:1 `logGroup?: string`
 # binding (`lib/lambda-function/index.d.ts:470`) mirror it exactly on the
 # TF-shaped arms. Re-verified directly against this scenario's own pinned

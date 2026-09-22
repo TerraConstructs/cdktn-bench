@@ -391,7 +391,7 @@
     <thead><tr><th>Arm</th><th>Agent-owned entry file</th><th>Bootstrap, not agent-owned</th><th>Also present</th></tr></thead>
     <tbody>
       <tr><td class="id">awscdk</td><td><code>lib/scenario-stack.ts</code></td><td><code>bin/app.ts</code> — the <code>cdk.App</code> entrypoint synth depends on; the instruction names it and forbids touching it</td><td><code>package.json</code> / <code>package-lock.json</code> with <code>node_modules</code> installed at image build, <code>tsconfig.json</code>, <code>cdk.json</code>, and the emitted JS + <code>tsconfig.tsbuildinfo</code> from a build baked at image time so the agent's first compile is the warm incremental one</td></tr>
-      <tr><td class="id">hcl-raw</td><td><code>main.tf</code> — the only file the agent is expected to rewrite wholesale</td><td><code>provider.tf</code> — <code>required_providers</code> pinning <code>hashicorp/aws</code> 6.58.0 and a <code>provider "aws"</code> block with <code>region = "us-east-1"</code> and <code>default_tags</code>. It lives in its own file precisely because a normal solution rewrites <code>main.tf</code> entirely</td><td>a pre-warmed provider filesystem mirror, so <code>terraform init</code> needs no network</td></tr>
+      <tr><td class="id">hcl-raw</td><td><code>main.tf</code> — the only file the agent is expected to rewrite wholesale</td><td><code>provider.tf</code> — <code>required_providers</code> pinning <code>hashicorp/aws</code> 6.66.0 and a <code>provider "aws"</code> block with <code>region = "us-east-1"</code> and <code>default_tags</code>. It lives in its own file precisely because a normal solution rewrites <code>main.tf</code> entirely</td><td>a pre-warmed provider filesystem mirror, so <code>terraform init</code> needs no network</td></tr>
       <tr><td class="id">terraconstructs</td><td><code>lib/scenario-stack.ts</code></td><td><code>main.ts</code> — App + <code>providerConfig</code> bootstrap only, the same two-file split as awscdk</td><td><code>cdktf.json</code>, <code>tsconfig.json</code>, <code>package.json</code> / lock with <code>node_modules</code>, a baked <code>tsc</code>, and its own provider mirror</td></tr>
     </tbody>
   </table>
@@ -442,7 +442,7 @@
         <td><code>tsc</code>, <code>cdk synth</code>, <code>cdk diff</code>, <code>cdk deploy</code> (mutating trials only) — plus the bundled CloudFormation validate plugin's warnings on every synth</td>
         <td class="num">4096 MB</td></tr>
       <tr><td class="id">hcl-raw</td>
-        <td>debian bookworm-slim · terraform 1.15.8 · hashicorp/aws 6.58.0 in a baked filesystem mirror · opa 1.19.0 · hcl2json 0.6.9 · aws CLI v2 · jq, git, python3</td>
+        <td>debian bookworm-slim · terraform 1.15.8 · hashicorp/aws 6.66.0 in a baked filesystem mirror · opa 1.19.0 · hcl2json 0.6.9 · aws CLI v2 · jq, git, python3</td>
         <td><code>terraform init</code> (offline, from the mirror), <code>validate</code>, <code>plan</code>, <code>apply</code> (mutating trials only)</td>
         <td class="num">2048 MB</td></tr>
       <tr><td class="id">terraconstructs</td>

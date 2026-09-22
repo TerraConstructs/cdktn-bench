@@ -26,12 +26,15 @@ file: a **multi-step** task has no root `instruction.md` at all — one per step
 | Component | Version | Source |
 | --- | --- | --- |
 | `terraform` CLI | **1.15.8** | direct download from `releases.hashicorp.com`, sha256-verified against hardcoded checksums (linux\_amd64 and linux\_arm64) from the published `terraform_1.15.8_SHA256SUMS`, not fetched-and-trusted at build time |
-| `hashicorp/aws` provider | **6.58.0** | mirrored into the image via `terraform providers mirror`, which itself verifies HashiCorp's registry signature at build time (`Package authenticated: signed by HashiCorp` in the build log) — not the same version `arms/terraconstructs` mirrors (6.52.0); see `../../DECISIONS.md` "TF provider version per arm" |
+| `hashicorp/aws` provider | **6.66.0** | mirrored into the image via `terraform providers mirror`, which itself verifies HashiCorp's registry signature at build time (`Package authenticated: signed by HashiCorp` in the build log) — not the same version `arms/terraconstructs` mirrors (6.52.0); see `../../DECISIONS.md` "TF provider version per arm" |
 | base image | `debian:bookworm-slim` | **digest-pinned** (`@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241`), not just tag-pinned — see `../../DECISIONS.md` "Pinning standard". Also carries the common agent-container baseline: `bash`, `git`, `curl`, `jq`, `unzip`, `ca-certificates`, AWS CLI v2 (see `../../DECISIONS.md` "Agent-container baseline contract") |
 
-Both pins are current-stable as of 2026-08-06 (`checkpoint-api.hashicorp.com` /
-`registry.terraform.io/v1/providers/hashicorp/aws/versions`). Bump both together and
-re-run `preflight.sh` before merging a version bump.
+The `terraform` pin was current-stable as of 2026-08-06
+(`checkpoint-api.hashicorp.com`); the provider pin moved off 6.58.0 to satisfy the
+`terraform-aws-modules/eks` constraint the `hcl-modules` arm inherits from this
+mirror (`../../DECISIONS.md` Amendment 48). Re-run `preflight.sh` before merging a
+version bump; a Dockerfile change also moves the equipping hash, so the arm images
+must be rebuilt and `env setup` re-run before the next live run.
 
 **WORKDIR is `/app/project`** (was `/workspace` — changed to match `arms/awscdk` and
 `arms/terraconstructs`, per the agent-container baseline contract above).
@@ -65,11 +68,11 @@ The original plan doc (`docs/iac-abstraction-aws-bench-plan.md` line 115) claime
 `s3-lambda-log-retention` seed scenario's headline catch — `retention_in_days = 10`, not
 a valid `RetentionDays` enum value — "passes `validate`, dies at plan/apply-tier
 validation" for the HCL arm. **That is false for the pinned provider (`hashicorp/aws
-6.58.0`) and was never re-checked against it before being written down.** The AWS
-provider's schema `ValidateFunc` for this attribute fires at `validate` time for any
-statically-known (non-computed, non-unknown) value — the same tier `tsc` would catch the
-CDK arm's equivalent typed-enum violation at. Reproduced directly, offline, inside
-`cdktn-bench/hcl-raw:dev`:
+6.66.0`, and for 6.58.0 before it) and was never re-checked against it before being
+written down.** The AWS provider's schema `ValidateFunc` for this attribute fires at
+`validate` time for any statically-known (non-computed, non-unknown) value — the same
+tier `tsc` would catch the CDK arm's equivalent typed-enum violation at. Reproduced
+directly, offline, inside `cdktn-bench/hcl-raw:dev`:
 
 ```
 $ terraform validate
@@ -153,7 +156,8 @@ moment it adds anything that has to *read* something from AWS to compute the pla
   bootstrap calls, not a resource's own CustomizeDiff-triggered service call) —
   `terraform plan` for this resource type fails offline with
   `UnrecognizedClientException: The security token included in the request is
-  invalid` against real AWS, confirmed against the pinned `hashicorp/aws 6.58.0`
+  invalid` against real AWS, confirmed against `hashicorp/aws 6.58.0`, the version
+  pinned when this was checked
   (unresolved upstream: `hashicorp/terraform-provider-aws` issue #39472) — irrelevant
   to a generated task's own workspace, which always plans/applies with real ambient
   credentials against real AWS (see below), so the call just succeeds.
@@ -186,7 +190,7 @@ ambient credentials.
   reason for hand-written HCL to preserve boilerplate it never authored and the
   instruction never mentions.
 - `provider.tf` — the provider bootstrap: just `terraform {}` (pinned
-  `hashicorp/aws` 6.58.0) and a bare `provider "aws" { region = "us-east-1"
+  `hashicorp/aws` 6.66.0) and a bare `provider "aws" { region = "us-east-1"
   default_tags {...} }`, no explicit credentials of any kind — the AWS provider's
   own default credential chain resolves the ambient credentials aws-bench stages
   for the trial. **Not** agent-owned: byte-copied unmodified into every generated
