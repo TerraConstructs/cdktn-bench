@@ -55,9 +55,10 @@
       "enum": [
         "awscdk",
         "hcl-raw",
-        "terraconstructs"
+        "terraconstructs",
+        "hcl-modules"
       ],
-      "description": "Which of the three shipped arms produced this trial (DECISIONS.md Amendment 2)."
+      "description": "Which arm produced this trial. awscdk and hcl-raw are the two primary arms, terraconstructs and hcl-modules are gated per spec (DECISIONS.md Amendments 2 and 46). hcl-modules rows cannot exist until that arm's image lands, so a reader that sees one is reading post-M3 data; the split is per scenario, so cell assignments carry over unchanged."
     },
     "split_group": {
       "type": "string",

@@ -1,10 +1,14 @@
 # A fourth arm: Terraform composed from registry modules
 
-Status: planning note, 2026-09-21. Not scheduled. Three companion surveys
-carry the evidence: `plan-normaliser-survey.md` (plan JSON shapes and prior
-art), `sast-module-handling.md` (how Checkov, Trivy, TFLint and the plan
-readers treat modules), `tf-module-registry-loopback.md` (the offline module
-registry, executed against terraform 1.15.8).
+Status: the design behind DECISIONS.md Amendment 46 and the ROADMAP M3 phase
+list; phases 1-2 have landed, so the schema, the closed enums and
+`hcl_modules_override` exist while no spec enables the arm and no image is
+built.
+
+Three companion surveys carry the evidence: `plan-normaliser-survey.md` (plan
+JSON shapes and prior art), `sast-module-handling.md` (how Checkov, Trivy,
+TFLint and the plan readers treat modules), `tf-module-registry-loopback.md`
+(the offline module registry, executed against terraform 1.15.8).
 
 Owner decisions taken while planning: `hcl_modules` is an ARM, gated per spec
 exactly like terraconstructs (`arms.hcl_modules { enabled, reason }`), never a
@@ -163,8 +167,8 @@ Decided and executed against terraform 1.15.8 with outbound HTTP blocked
 * **Vendoring:** GitHub tag tarballs for the chosen repositories, pinned by
   commit sha plus a per-file manifest (tarball bytes differ between tag and
   commit archives); about 4 MB pruned; Apache-2.0 throughout. Provider
-  coupling: every current version accepts hashicorp/aws 6.58.0 except `eks`
-  21.25.1 (needs 6.59), so eks as a decoy means a mirror bump or an older pin;
+  coupling: every current version accepts hashicorp/aws 6.66.0 (Amendment 48
+  moved the hcl-raw mirror off 6.58.0 because `eks` 21.25.1 needs 6.59);
   eks and lambda pull tls, time, cloudinit, null, external and local into the
   provider mirror. Transitive registry dependency: `kms` exactly 4.0.0 via eks
   and route53, so kms is served at two versions.
@@ -206,8 +210,9 @@ a visible init failure.
   a pilot of three composition-trap scenarios (bucket hardening, ACM record
   wiring, IAM policy attachment) answers M3's prediction first.
 * **Provider pin compatibility.** `terraform-aws-modules` releases carry
-  `required_providers` constraints; the vendored versions must accept
-  hashicorp/aws 6.58.0 or the mirror bump becomes an amendment.
+  `required_providers` constraints; the vendored versions must accept the
+  hcl-raw mirror's hashicorp/aws (6.66.0 since Amendment 48); per-spec
+  constraints are tabulated in `hcl-modules-spec-matrix.md`.
 * **Metrics need no schema change**: a fourth `arm` value in `cell_key`; the
   split is per scenario, so assignments carry over; shards already number
   four. The pre-registration priced three arms, so the factorial and the

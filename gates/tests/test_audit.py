@@ -54,6 +54,7 @@ def test_evidence_matches_expected_pattern_name(arm: str) -> None:
         "awscdk": {"tsc", "cdk synth"},
         "hcl-raw": {"terraform validate", "terraform plan"},
         "terraconstructs": {"cdktn synth"},
+        "hcl-modules": {"terraform validate", "terraform plan"},
     }[arm]
     report = audit_trial(trial_dir(arm, "genuine"), arm)
     found = {e["pattern"] for e in report["evidence"]}

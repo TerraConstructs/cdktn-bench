@@ -10,11 +10,20 @@ with only the repo root on sys.path and fail with ModuleNotFoundError.
 
 from __future__ import annotations
 
+import hashlib
 import json
 
 import pytest
 
-from gates.equipping import compute_equipping_hash
+from gates import equipping
+from gates.equipping import (
+    COMPOSE_REL_PATH,
+    HASH_SCHEME_VERSION,
+    cli_equipping_digests,
+    compute_equipping_hash,
+    harbor_declared_equipping,
+    harbor_equipping_offenders,
+)
 
 # A pre-pinned digest reference: compute_equipping_hash short-circuits
 # docker entirely for "@sha256:" refs (see _resolve_image_digest), so these
@@ -186,3 +195,197 @@ class TestDockerFallback:
             result = compute_equipping_hash(task_dir, bogus_image, EXTRA_CFG)
 
         assert len(result) == 64  # still produces a well-formed hash, just less rigorous
+
+
+# ---------------------------------------------------------------------------
+# HASH SCHEME 2 (DECISIONS.md Amendment 47): Harbor's own equipping channels
+# ---------------------------------------------------------------------------
+
+
+def _write_task_toml(task_dir, body: str) -> None:
+    (task_dir / "task.toml").write_text(body, encoding="utf-8")
+
+
+class TestSchemeTwoChannels:
+    """Each channel changes the trial without touching any file scheme 1 hashed:
+    an `environment/docker-compose.yaml` adds a sidecar service the agent and the
+    verifier both reach, and `task.toml [environment] mcp_servers`/`skills_dir`
+    are read by Harbor when it builds the agent.
+    """
+
+    def test_scheme_version_is_two(self):
+        assert HASH_SCHEME_VERSION == 2
+
+    def test_byte_identical_inputs_hash_alike_with_every_channel_populated(self, tmp_path):
+        hashes = set()
+        for name in ("machine_a", "machine_b"):
+            root = tmp_path / name
+            root.mkdir()
+            task_dir = _make_task_dir(root)
+            (task_dir / "environment").mkdir()
+            (task_dir / COMPOSE_REL_PATH).write_text(
+                "services:\n  tf-registry:\n    command: [responder]\n", encoding="utf-8"
+            )
+            _write_task_toml(
+                task_dir,
+                '[environment]\nskills_dir = "/opt/skills"\n'
+                '[[environment.mcp_servers]]\nname = "tf-index"\n'
+                'transport = "streamable-http"\nurl = "http://tf-registry:8082/mcp"\n',
+            )
+            (task_dir / "skills" / "iac-helper" / "extra.md").write_text("more\n", encoding="utf-8")
+            hashes.add(compute_equipping_hash(task_dir, IMAGE_REF, EXTRA_CFG))
+        assert len(hashes) == 1
+
+    def test_adding_a_compose_file_changes_the_hash(self, tmp_path):
+        task_dir = _make_task_dir(tmp_path)
+        baseline = compute_equipping_hash(task_dir, IMAGE_REF, EXTRA_CFG)
+
+        (task_dir / "environment").mkdir()
+        (task_dir / COMPOSE_REL_PATH).write_text("services:\n  main: {}\n", encoding="utf-8")
+
+        assert compute_equipping_hash(task_dir, IMAGE_REF, EXTRA_CFG) != baseline
+
+    def test_editing_the_compose_file_changes_the_hash(self, tmp_path):
+        task_dir = _make_task_dir(tmp_path)
+        (task_dir / "environment").mkdir()
+        compose = task_dir / COMPOSE_REL_PATH
+        compose.write_text("services:\n  main: {}\n", encoding="utf-8")
+        baseline = compute_equipping_hash(task_dir, IMAGE_REF, EXTRA_CFG)
+
+        compose.write_text("services:\n  main: {}\n  tf-registry: {}\n", encoding="utf-8")
+
+        assert compute_equipping_hash(task_dir, IMAGE_REF, EXTRA_CFG) != baseline
+
+    def test_an_mcp_servers_entry_changes_the_hash(self, tmp_path):
+        task_dir = _make_task_dir(tmp_path)
+        _write_task_toml(task_dir, '[metadata]\nname = "t"\n')
+        baseline = compute_equipping_hash(task_dir, IMAGE_REF, EXTRA_CFG)
+
+        _write_task_toml(
+            task_dir,
+            '[metadata]\nname = "t"\n[[environment.mcp_servers]]\n'
+            'name = "aws-docs"\ntransport = "stdio"\ncommand = "aws-docs-mcp"\n',
+        )
+
+        assert compute_equipping_hash(task_dir, IMAGE_REF, EXTRA_CFG) != baseline
+
+    def test_a_skills_dir_declaration_changes_the_hash(self, tmp_path):
+        task_dir = _make_task_dir(tmp_path)
+        _write_task_toml(task_dir, '[metadata]\nname = "t"\n')
+        baseline = compute_equipping_hash(task_dir, IMAGE_REF, EXTRA_CFG)
+
+        _write_task_toml(task_dir, '[metadata]\nname = "t"\n[environment]\nskills_dir = "/opt/skills"\n')
+
+        assert compute_equipping_hash(task_dir, IMAGE_REF, EXTRA_CFG) != baseline
+
+    def test_a_skill_file_under_a_declared_skills_dir_changes_the_hash(self, tmp_path):
+        """The declared path is a CONTAINER path; it is resolved by basename to the
+        one tree of that name shipping in the task dir, so editing the vendored
+        skill moves the hash through this channel too."""
+        task_dir = _make_task_dir(tmp_path)
+        vendored = task_dir / "environment" / "tuned-skills"
+        vendored.mkdir(parents=True)
+        (vendored / "SKILL.md").write_text("# authoring\n", encoding="utf-8")
+        _write_task_toml(task_dir, '[environment]\nskills_dir = "/opt/tuned-skills"\n')
+        baseline = compute_equipping_hash(task_dir, IMAGE_REF, EXTRA_CFG)
+
+        (vendored / "SKILL.md").write_text("# authoring, revised\n", encoding="utf-8")
+
+        assert compute_equipping_hash(task_dir, IMAGE_REF, EXTRA_CFG) != baseline
+
+    def test_an_unreadable_skills_dir_is_recorded_as_declared_only(self, tmp_path):
+        """No tree of that name ships in the task dir: the declaration is still in
+        the hash, its file list is null, and no guess is made between candidates."""
+        task_dir = _make_task_dir(tmp_path)
+        _write_task_toml(task_dir, '[environment]\nskills_dir = "/opt/absent"\n')
+
+        declared = harbor_declared_equipping(task_dir)
+
+        assert declared["skills_dir"] == {"declared": "/opt/absent", "files": None}
+
+    def test_a_malformed_task_toml_reads_as_nothing_declared(self, tmp_path):
+        task_dir = _make_task_dir(tmp_path)
+        _write_task_toml(task_dir, "this is not toml = = =\n")
+
+        assert harbor_declared_equipping(task_dir) == {"mcp_servers": None, "skills_dir": None}
+
+    def test_scheme_one_and_scheme_two_differ_for_the_same_inputs(self, tmp_path, monkeypatch):
+        """Intended and recorded: a scheme-1 row and a scheme-2 row for
+        byte-identical inputs are not comparable by hash. The asset-mirror image
+        change already moved every arm's hash, so the boundary costs nothing extra
+        (DECISIONS.md Amendment 47)."""
+        task_dir = _make_task_dir(tmp_path)
+        under_two = compute_equipping_hash(task_dir, IMAGE_REF, EXTRA_CFG)
+
+        monkeypatch.setattr(equipping, "HASH_SCHEME_VERSION", 1)
+        under_one = compute_equipping_hash(task_dir, IMAGE_REF, EXTRA_CFG)
+
+        assert under_one != under_two
+
+
+class TestHoldoutChannel:
+    """`generator/gen.py::enforce_no_holdout_equipping` reads this, so the holdout
+    rule covers an MCP server declared inline in `task.toml` and not only a
+    skill/MCP file it can glob for."""
+
+    def test_declared_servers_and_skills_are_named_as_offenders(self, tmp_path):
+        task_dir = _make_task_dir(tmp_path)
+        _write_task_toml(
+            task_dir,
+            '[environment]\nskills_dir = "/opt/skills"\n'
+            '[[environment.mcp_servers]]\nname = "tf-index"\ntransport = "stdio"\n',
+        )
+
+        offenders = harbor_equipping_offenders(task_dir)
+
+        assert any("mcp_servers (tf-index)" in o for o in offenders)
+        assert any("skills_dir = /opt/skills" in o for o in offenders)
+
+    def test_a_task_declaring_neither_has_no_offenders(self, tmp_path):
+        task_dir = _make_task_dir(tmp_path)
+        _write_task_toml(task_dir, '[metadata]\nname = "t"\n')
+
+        assert harbor_equipping_offenders(task_dir) == []
+
+
+class TestCliEquippingDigests:
+    """`scripts/run-bench.sh` records these in `jobs/*/budget.json`: content, not
+    the flag's path, because two different files at one path hashed alike while it
+    held the flag string."""
+
+    def test_a_file_flag_records_its_content_digest_and_no_path(self, tmp_path):
+        cfg = tmp_path / "mcp.json"
+        cfg.write_text('{"mcpServers": {}}', encoding="utf-8")
+
+        entries = cli_equipping_digests([f"--mcp-config={cfg}"])
+
+        assert entries == [
+            {"flag": "--mcp-config", "sha256": hashlib.sha256(cfg.read_bytes()).hexdigest()}
+        ]
+
+    def test_two_identical_files_at_different_paths_digest_alike(self, tmp_path):
+        first = tmp_path / "a" / "mcp.json"
+        second = tmp_path / "b" / "mcp.json"
+        for path in (first, second):
+            path.parent.mkdir()
+            path.write_text('{"mcpServers": {}}', encoding="utf-8")
+
+        assert cli_equipping_digests([f"--mcp-config={first}"]) == cli_equipping_digests(
+            [f"--mcp-config={second}"]
+        )
+
+    def test_a_skill_dir_digest_follows_its_bytes(self, tmp_path):
+        skill = tmp_path / "skills" / "tf-authoring"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("# tf authoring\n", encoding="utf-8")
+        baseline = cli_equipping_digests([f"--skill={skill}"])
+
+        (skill / "REFERENCE.md").write_text("more\n", encoding="utf-8")
+
+        assert cli_equipping_digests([f"--skill={skill}"]) != baseline
+
+    def test_an_unreadable_argument_is_null_not_absent(self, tmp_path):
+        """A typo'd flag must read as unhashable equipping, never as no equipping."""
+        entries = cli_equipping_digests([f"--skill={tmp_path / 'nope'}"])
+
+        assert entries == [{"flag": "--skill", "sha256": None}]

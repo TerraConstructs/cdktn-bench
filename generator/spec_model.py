@@ -44,7 +44,13 @@ TierStr = Literal["0", "1"]
 # teardown may be named, which `Spec._teardown_tier_catch_requires_gating_teardown`
 # enforces.
 CatchTierStr = Literal["0", "1", "live", "teardown"]
-Arm = Literal["awscdk", "hcl_raw", "terraconstructs"]
+# "hcl_modules" is the fourth arm: Terraform composed from `terraform-aws-modules`
+# registry modules, gated per spec like terraconstructs (DECISIONS.md Amendment 46,
+# which makes module use an ARM rather than a scenario treatment because it changes
+# the authoring substrate and must be judged by identical metrics per arm). Its
+# image, module delivery and plan normaliser land later; `gen.ARMS_PENDING_IMAGE`
+# is what refuses to emit it until then.
+Arm = Literal["awscdk", "hcl_raw", "terraconstructs", "hcl_modules"]
 
 ID_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 PLACEHOLDER_TOKEN_RE = re.compile(r"\{\{([A-Za-z0-9_.\-]+)\}\}")
@@ -191,16 +197,50 @@ class TerraconstructsArm(BaseModel):
         return self
 
 
+# The reason an `arms.hcl_modules` block carries when a spec never writes one.
+# Omitting the block is the corpus-wide default, so the default reason must state
+# the gap the same way a hand-written `enabled: false` reason does (SCHEMA.md §1).
+HCL_MODULES_DEFAULT_REASON = (
+    "no module-based reference or per-catch fixtures authored for this scenario "
+    "yet; the arm's module delivery and plan normaliser are unbuilt "
+    "(docs/design/tf-modules-arm.md)"
+)
+
+
+@_strict
+class HclModulesArm(BaseModel):
+    """`arms.hcl_modules`, modelled exactly like `TerraconstructsArm`: a plain
+    `enabled` bool and a `reason` required in both directions. The whole block
+    may be omitted, which is a disabled arm carrying
+    `HCL_MODULES_DEFAULT_REASON` -- terraconstructs has no such default because
+    every spec predates it and states its own coverage claim."""
+
+    enabled: bool = False
+    reason: str = HCL_MODULES_DEFAULT_REASON
+
+    @model_validator(mode="after")
+    def _reason_nonempty(self) -> "HclModulesArm":
+        if not self.reason or not self.reason.strip():
+            raise ValueError(
+                "arms.hcl_modules.reason is required in both directions "
+                "(enabled and disabled) — see SCHEMA.md §1"
+            )
+        return self
+
+
 @_strict
 class Arms(BaseModel):
     awscdk: Literal[True]
     hcl_raw: Literal[True]
     terraconstructs: TerraconstructsArm
+    hcl_modules: HclModulesArm = Field(default_factory=HclModulesArm)
 
     def enabled_arms(self) -> list[Arm]:
         arms: list[Arm] = ["awscdk", "hcl_raw"]
         if self.terraconstructs.enabled:
             arms.append("terraconstructs")
+        if self.hcl_modules.enabled:
+            arms.append("hcl_modules")
         return arms
 
 
@@ -270,6 +310,7 @@ class PerArmMap(BaseModel):
     awscdk: PerArm
     hcl_raw: PerArm
     terraconstructs: PerArm | None = None
+    hcl_modules: PerArm | None = None
 
 
 @_strict
@@ -303,7 +344,7 @@ class Instruction(BaseModel):
 
     def _tokens_used(self) -> set[str]:
         used: set[str] = set(PLACEHOLDER_TOKEN_RE.findall(self.shared_body))
-        for arm_name in ("awscdk", "hcl_raw", "terraconstructs"):
+        for arm_name in ("awscdk", "hcl_raw", "terraconstructs", "hcl_modules"):
             per_arm = getattr(self.per_arm, arm_name)
             if per_arm is not None:
                 used |= set(PLACEHOLDER_TOKEN_RE.findall(per_arm.language_line))
@@ -891,7 +932,13 @@ class WorkspaceSeed(BaseModel):
 class PredictedTierCaught(BaseModel):
     awscdk: CatchTierStr
     hcl: CatchTierStr
+    # Both overrides mean the same thing: `hcl` speaks for the TF-shaped arms as
+    # a group, and an override names the tier for one of them when that arm's own
+    # substrate decides the catch earlier or later. On hcl_modules the mover is a
+    # module default or an unexposed input rather than a typed TS surface
+    # (SCHEMA.md §3, DECISIONS.md Amendment 46).
     terraconstructs_override: CatchTierStr | None = None
+    hcl_modules_override: CatchTierStr | None = None
 
 
 @_strict
@@ -1614,6 +1661,26 @@ class Spec(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _hcl_modules_per_arm_required_iff_enabled(self) -> "Spec":
+        """The same both-directions rule `_terraconstructs_per_arm_required_iff_enabled`
+        applies: an enabled arm with no `per_arm` entry has no language line or
+        output contract to generate from, and a `per_arm` entry for a disabled arm
+        is authored text nothing reads."""
+        hm_enabled = self.arms.hcl_modules.enabled
+        hm_per_arm = self.instruction.per_arm.hcl_modules
+        if hm_enabled and hm_per_arm is None:
+            raise ValueError(
+                "arms.hcl_modules.enabled is true but "
+                "instruction.per_arm.hcl_modules is missing (SCHEMA.md §2)"
+            )
+        if not hm_enabled and hm_per_arm is not None:
+            raise ValueError(
+                "instruction.per_arm.hcl_modules is set but "
+                "arms.hcl_modules.enabled is false — remove one or the other"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _seeded_files_unique_and_no_entry_file_collision(self) -> "Spec":
         paths = [f.path for f in self.seeded_files]
         if len(paths) != len(set(paths)):
@@ -1624,6 +1691,7 @@ class Spec(BaseModel):
                 self.instruction.per_arm.awscdk,
                 self.instruction.per_arm.hcl_raw,
                 self.instruction.per_arm.terraconstructs,
+                self.instruction.per_arm.hcl_modules,
             )
             if per_arm is not None
         }
@@ -1836,6 +1904,7 @@ class Spec(BaseModel):
                 c.predicted_tier_caught.awscdk,
                 c.predicted_tier_caught.hcl,
                 c.predicted_tier_caught.terraconstructs_override,
+                c.predicted_tier_caught.hcl_modules_override,
             }
         )
         if named and not (td.enabled and td.gating):
@@ -2033,7 +2102,7 @@ class Spec(BaseModel):
             return self
         declared_on = [
             arm
-            for arm in ("awscdk", "hcl_raw", "terraconstructs")
+            for arm in ("awscdk", "hcl_raw", "terraconstructs", "hcl_modules")
             if getattr(self.instruction.per_arm, arm) is not None
             and getattr(self.instruction.per_arm, arm).output_contract.deploy_command
         ]

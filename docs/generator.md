@@ -15,7 +15,14 @@ referenced from the file it describes.
                                           arm's CFN-shaped Rego bundle,
                                           specs/SCHEMA.md §4.5)
 
-`<scenario_id>` is the aws-bench shard `generator/shards.py` assigns.
+`<scenario_id>` is the aws-bench shard `generator/shards.py` assigns. A fourth arm
+exists in the schema, `hcl-modules` (`DECISIONS.md` Amendment 46): no spec enables
+it, and `gen.ARMS_PENDING_IMAGE` refuses to emit it while
+`arms/hcl-modules/environment/` holds no Dockerfile, so it appears in no task path
+yet. `make build-arms` and `make preflight` skip an arm whose `environment/` is
+empty for the same reason;
+`generator/tests/test_hcl_modules_arm.py::test_pending_arms_are_exactly_the_ones_without_an_image`
+is what stops that skip from hiding a deleted Dockerfile on a shipped arm.
 
 It also COPIES (never writes) one shared, hand-authored library into a task's
 `tests/` when the spec asks for it:
@@ -245,8 +252,10 @@ over a directory of published result rows:
 ### Enforcement
 
 `generator/gen.py::enforce_no_holdout_equipping()` hard-fails `make gen` if a
-holdout scenario's generated task directory contains skill/MCP/plugin config
-(the same equipping-file discovery `gates/equipping.py`'s hash uses). It reads
+holdout scenario's generated task directory contains skill/MCP/plugin config, or
+declares an MCP server or a skills dir in `task.toml [environment]` (the same
+equipping-file discovery AND the same Harbor-declaration reader
+`gates/equipping.py`'s hash uses — Amendment 47, hash scheme 2). It reads
 `specs/split.yaml`, so a hand-edited split file silently changes what that gate
 permits — `generator/tests/test_split.py::test_matches_committed_split_yaml`
 is what catches the hand-edit.

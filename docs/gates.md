@@ -289,6 +289,19 @@ rewards without checking `validity_class` cannot silently pool them. Every
 record carries `equipping_hash` (`gates/equipping.py`) so results can never be
 pooled across a different instruction/skill/image equipping.
 
+The hash manifest is, under `HASH_SCHEME_VERSION = 2` (Amendment 47): the
+instruction (or every `steps/<name>/instruction.md`), the discovered
+skill/MCP/plugin files, the resolved image digest, `extra_cfg` (with
+`task.toml [metadata] workspace_seed_sha256` folded in), `compose_sha256` for
+`environment/docker-compose.yaml`, and `harbor_equipping` for
+`task.toml [environment] mcp_servers`/`skills_dir` — the last three being Harbor's
+own channels, which scheme 1 did not read. The three keys are always present, null
+when undeclared, so their first use moves a hash instead of pooling two
+differently-equipped trials. Rows minted under scheme 1 and scheme 2 are not
+comparable by hash, deliberately. CLI-supplied equipping is recorded separately as
+content digests in `jobs/*/budget.json` `cli_equipping`
+(`gates/equipping.py::cli_equipping_digests`), never as the flag's path.
+
 ### Multi-step trial-dir layout
 
 `cdktn_bench.trial.CdktnMultiStepTrial` (Harbor's `harbor/trial/multi_step.py`)

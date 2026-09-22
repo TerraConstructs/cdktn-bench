@@ -1,0 +1,11 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "agent": {"name": "claude-code", "version": "test-fixture"},
+  "steps": [
+    {
+      "step_id": 1,
+      "source": "user",
+      "message": "Add a private S3 bucket to main.tf using a registry module, then validate and plan it."
+    }
+  ]
+}

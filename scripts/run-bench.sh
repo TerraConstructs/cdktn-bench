@@ -418,11 +418,17 @@ MAX_TOKENS_JSON="null"
 # script itself to call gates/emit_result.py per trial, which it does not
 # do (Slice F, still pending) -- see this file's own MAX_TOKENS section
 # above for the same "recorded correctly, wired in by hand" caveat.
+# Recorded as CONTENT digests, never as the flag's path: two different files at
+# one path hashed alike while this held the flag string, so a tuned row could be
+# mislabelled (gates/equipping.py::cli_equipping_digests, DECISIONS.md
+# Amendment 47).
 CLI_EQUIPPING_JSON="[]"
 if [ "${#CLI_EQUIP_FLAGS[@]}" -gt 0 ]; then
   CLI_EQUIPPING_JSON="$(uv run python -c '
 import json, sys
-print(json.dumps(sys.argv[1:]))
+sys.path.insert(0, ".")
+from gates.equipping import cli_equipping_digests
+print(json.dumps(cli_equipping_digests(sys.argv[1:])))
 ' "${CLI_EQUIP_FLAGS[@]}")"
 fi
 printf '{\n  "max_iters": %s,\n  "max_tokens": %s,\n  "cli_equipping": %s\n}\n' \

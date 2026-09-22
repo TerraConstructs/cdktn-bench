@@ -8495,3 +8495,116 @@ scenarios plus the toy, before and after; `make check-paths`,
 No harness behaviour changes: the tier-1 status ladder, the hard-failure reward
 gate, every marker file and the `== summary:` line are untouched, so this
 amendment is ACCEPTED on landing rather than on a live run.
+
+---
+
+## Amendment 46 — the `hcl_modules` arm is reintroduced as a per-spec-gated fourth arm — DRAFT
+
+**Status: DRAFT until the phase-5 live promotion trial.** What lands now is
+schema and plumbing only: no spec enables the arm, no image exists, and
+`generator/gen.py::ARMS_PENDING_IMAGE` refuses to emit a task for it.
+
+**`hcl_modules` is an ARM, not a scenario treatment attribute** (this closes
+ROADMAP open decision 4). Composing from `terraform-aws-modules` changes the
+authoring substrate the way a construct library does — what the agent writes,
+what it must discover, and what the plan looks like — so it must be judged with
+identical metrics per arm rather than as a within-arm condition. Gating is
+per spec, exactly like terraconstructs: `arms.hcl_modules {enabled, reason}`,
+with the reason required in both directions (`specs/SCHEMA.md` §1). The omitted
+block is a disabled arm carrying `HCL_MODULES_DEFAULT_REASON`.
+
+**`predicted_tier_caught.hcl_modules_override`** joins `terraconstructs_override`.
+`.hcl` still speaks for the TF-shaped arms as a group; the override names the
+tier when this arm's own substrate moves it. The mover here is a module default
+or an input the module does not expose, not a typed TS surface — a module that
+hides the trapped attribute behind a default changes the catch's tier or removes
+the catch on this arm, which is why `applies_to` remains the other half of the
+answer.
+
+**The factorial is four arms**, with the per-scenario split unchanged: cell
+assignment is a function of the scenario, so `metrics/result_schema.json` gains
+one `arm` enum value and nothing else. The pre-registration priced three arms
+and is restated, not re-derived: its hypotheses are untouched.
+
+**Equipping rows for this arm** (prereg §2.2, `docs/design/registry-index-tool.md`):
+*baseline* is the central vendored `terraform-aws-modules` set at allowlisted
+versions served by the loopback registry sidecar, plus the arm's one-line
+toolchain sentence — design C. *Tuned* is the bench-owned index tool in the same
+sidecar, plus AWS Docs MCP, plus the vendored authoring skill — design B. The
+HashiCorp Terraform MCP server is **not** the tuned equipping: v1.3.0 hard-codes
+the public registry URL (`pkg/client/registry.go:24`) with no env var or flag
+override, so it can neither answer from the allowlist nor run offline.
+
+**Delivery decisions, recorded as the owner-reviewable shape phase 4 builds:**
+
+(a) The sidecar service runs **this arm's own image** with a different `command`
+(the responder), so one image digest in the equipping hash covers the responder,
+the module bytes and the manifest together.
+
+(b) The pruned module tree (about 4 MB, Apache-2.0, LICENSE files retained) is
+**committed in-repo** under `arms/hcl-modules/environment/modules/` with a
+manifest recording the upstream commit sha per module and a per-file sha256,
+refreshed by a script the owner runs. The image build fetches no module bytes
+from GitHub, so the host gates and the image share bytes by construction.
+
+(c) In the agent container the tree is **unreadable to the agent user**, and
+`.terraform/modules/modules.json` sources must be registry sources: a local
+`/opt/...` source is a deny. Version selection therefore stays a measured skill.
+
+(d) `kms` is served at **4.2.2 and 4.0.0** (the exact pin `eks` and `route53`
+carry) and the `eks` provider coupling is a phase-4 deliverable settled against
+the bumped `hcl-raw` provider pin (Amendment 48).
+
+(e) **Nested stacks on `awscdk` are a deny rule, not a normalisation**: an
+unprompted `AWS::CloudFormation::Stack` is refused with a message naming why,
+because the oracle reads the root template only.
+
+(f) From phase 4 the sidecar exposes a `/mcp` endpoint whose `tools/list` is the
+nine registry tool names and whose every call answers "not available in this
+environment" until M2 lands design B — so M2 lands in place, with no new hosting.
+
+(g) `allow_internet` stays at Harbor's default: the forced `host` override never
+consults DNS, so masking does not depend on it.
+
+---
+
+## Amendment 47 — equipping hash scheme 2: Harbor's own equipping channels are in the hash — ACCEPTED
+
+`gates/equipping.py` `HASH_SCHEME_VERSION = 2`. The manifest gains three keys,
+each always present so their first use moves a hash rather than pooling two
+differently-equipped trials:
+
+- `compose_sha256` — sha256 of `environment/docker-compose.yaml`, null when
+  absent. Harbor merges a task's extra services after its base file and runs one
+  compose project per trial, with the verifier in the same environment, so this
+  file is where a sidecar service (the module-registry responder, later the M2
+  index tool) is declared. Nothing else in the manifest walks `environment/`.
+- `harbor_equipping.mcp_servers` — canonical JSON of `task.toml [environment]
+  mcp_servers`, the list Harbor reads when it builds the agent.
+- `harbor_equipping.skills_dir` — the declared container path plus the per-file
+  sha256 list of that tree, sorted by posix path, resolved task-dir-relative and
+  then by basename when exactly one tree of that name ships in the task dir;
+  `files: null` when it is not readable from the host, because a guess between
+  two candidate trees would put a wrong digest in the hash.
+
+**Why now.** Scheme 1 read neither declaration: an inline `mcp_servers` block
+changed the trial and not the hash, so an M2 tuned row could be labelled
+honestly only by hand. `enforce_no_holdout_equipping` was blind to the same
+channel and now reads it, so a holdout scenario declaring an MCP server inline is
+refused at `make gen` the way a shipped `mcp.json` already was.
+`scripts/run-bench.sh` records `--mcp-config`/`--skill` **content** digests in
+`jobs/*/budget.json` `cli_equipping` (`gates/equipping.py::cli_equipping_digests`),
+never the flag's path: two different files at one path hashed alike, and a local
+path is not a property of the trial. An unreadable argument records a null digest,
+so a typo'd flag reads as unhashable equipping rather than as no equipping.
+
+**Comparability.** Rows minted under scheme 1 and scheme 2 are **not** comparable
+by hash, deliberately: byte-identical inputs mint different hashes across the
+boundary. That costs nothing extra, because the build-time asset-mirror image
+change already moved every arm's hash, so no published stratum spans the two.
+
+**ACCEPTED on landing.** This is a host-gate and label change only: no trial
+behaviour moves, no generated byte changes, and no arm's toolchain is touched.
+
+---
+

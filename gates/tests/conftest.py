@@ -19,7 +19,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
-ARMS = ("awscdk", "hcl-raw", "terraconstructs")
+# Every arm gates/audit.py knows a toolchain pattern for, so a new arm arrives
+# here with its own genuine/bypass/infra-failure trajectories rather than
+# silently skipping the audit gate's fixture coverage
+# (test_audit.py asserts this set equals `audit.KNOWN_ARMS`).
+ARMS = ("awscdk", "hcl-raw", "terraconstructs", "hcl-modules")
 SCENARIOS = ("genuine", "bypass", "infra-failure")
 
 

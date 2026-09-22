@@ -38,7 +38,9 @@ SCENARIO_BASE = "anchor"
 
 # Assignment is a function of (spec.id, arm), so the arm order must be fixed
 # here rather than read from a dict whose insertion order could shift.
-ARM_ORDER: tuple[str, ...] = ("awscdk", "hcl_raw", "terraconstructs")
+# A new arm is APPENDED: `ARM_ORDER.index(arm)` is the shard offset, so inserting
+# one anywhere else would move every later arm's task to a different account.
+ARM_ORDER: tuple[str, ...] = ("awscdk", "hcl_raw", "terraconstructs", "hcl_modules")
 
 
 class ShardDrift(RuntimeError):

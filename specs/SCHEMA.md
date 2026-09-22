@@ -275,6 +275,9 @@ arms:
   terraconstructs:
     enabled: <bool>
     reason: <string>
+  hcl_modules:            # optional block; omitted == disabled
+    enabled: <bool>
+    reason: <string>
 ```
 
 - `awscdk` and `hcl_raw` are **literal `true`** — not objects, not `false`.
@@ -293,6 +296,22 @@ arms:
   A `reason` that just says "yes" or "no" fails review; it must be
   independently checkable against the arm's own README the way Slice D's four
   seed scenarios already are.
+- `hcl_modules` is Terraform composed from `terraform-aws-modules` registry
+  modules (`DECISIONS.md` Amendment 46, which makes it an arm rather than a
+  scenario treatment and closes ROADMAP open decision 4). Modelled exactly like
+  `terraconstructs` — a plain `enabled` bool and a `reason` required in both
+  directions — with one difference: **the whole block may be omitted**, which is
+  a disabled arm carrying `spec_model.HCL_MODULES_DEFAULT_REASON`. Every spec
+  omits it today.
+  - `enabled: true` → `reason` cites the composition trap this scenario is
+    chosen to measure on the modules rung, and the arm requires the same shape
+    terraconstructs requires: an `instruction.per_arm.hcl_modules` entry.
+    Generation still refuses until the arm's image exists
+    (`generator/gen.py::ARMS_PENDING_IMAGE`), and a **brownfield** spec cannot
+    enable it at all until `workspace_seed.entry_file` gains a module-based seed
+    body (§2.7).
+  - `enabled: false` → `reason` states the gap (a missing module-based reference,
+    a trap the available modules cannot express, or a catch no module exposes).
 
 ---
 
@@ -1179,6 +1198,7 @@ catches:
       awscdk: "0" | "1" | "live" | "teardown"
       hcl: "0" | "1" | "live" | "teardown"
       terraconstructs_override: "0" | "1" | "live" | "teardown" | null   # optional, default null
+      hcl_modules_override: "0" | "1" | "live" | "teardown" | null       # optional, default null
     applies_to: [awscdk, hcl_raw, terraconstructs]   # optional, default: all 3 (every enabled arm)
 ```
 
@@ -1215,6 +1235,15 @@ spec is exempt (its header says so) and does not need taxonomy diversity.
   catch is falsified by the pinned provider" entry is the standing lesson
   that predicted tiers must be evidence-checked, never assumed, before a
   scenario spec freezes.
+- **`hcl_modules_override`** is the same column for the modules arm (§1,
+  `DECISIONS.md` Amendment 46), and the same evidence rule applies: read the
+  vendored module's own variables and defaults before setting it. What moves the
+  tier here is not a typed surface but the module itself — a module that sets the
+  trapped attribute from a **default**, or does not expose it as an input at all,
+  either shifts which tier decides the catch or removes the catch on this arm,
+  in which case `applies_to` excludes the arm instead. No catch sets it yet; the
+  pilot scenarios author it red-green against a fixture that first shows the
+  current oracle's blind spot (ROADMAP M3 phase 3).
 - **`"live"`** (Slice G addition, `DECISIONS.md` "Amendment 12"): a catch
   whose mistake is invisible to *every* static tier by construction — the
   only discriminating signal is a real AWS call — an

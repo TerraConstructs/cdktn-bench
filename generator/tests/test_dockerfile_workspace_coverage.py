@@ -51,7 +51,9 @@ from gen import (
     _ARTIFACT_DIRS,
     _ARTIFACT_SUFFIXES,
     _JS_ALLOWLIST,
+    ARM_DIRNAME,
     ARM_WORKSPACE_SUBDIR,
+    ARMS_PENDING_IMAGE,
     ARMS_DIR,
     REPO_ROOT,
     dockerfile_context_sources,
@@ -256,9 +258,13 @@ def test_copy_parser_handles_the_shapes_the_arm_dockerfiles_use() -> None:
 def test_workspace_workdir_is_derived_not_guessed() -> None:
     """The appended block must target the directory the arm's OWN workspace
     COPYs land in — /app/project for all three v1 arms (DECISIONS.md
-    "Agent-container baseline contract")."""
+    "Agent-container baseline contract"). An arm whose image has not landed yet
+    has no Dockerfile to read; `gen.ARMS_PENDING_IMAGE` is asserted to be exactly
+    that set in generator/tests/test_hcl_modules_arm.py."""
     for arm, sub in ARM_WORKSPACE_SUBDIR.items():
-        dockerfile = ARMS_DIR / {"hcl_raw": "hcl-raw"}.get(arm, arm) / "environment" / "Dockerfile"
+        if arm in ARMS_PENDING_IMAGE:
+            continue
+        dockerfile = ARMS_DIR / ARM_DIRNAME[arm] / "environment" / "Dockerfile"
         assert dockerfile_workspace_workdir(dockerfile.read_text(), sub) == "/app/project"
 
 

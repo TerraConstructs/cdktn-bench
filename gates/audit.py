@@ -112,6 +112,14 @@ ARM_TOKEN_PATTERNS: dict[str, list[tuple[str, str, frozenset[str] | None]]] = {
         ("cdktn synth", "cdktn", frozenset({"synth", "deploy", "diff"})),
         ("npm run synth", _NPM_SCRIPT_PREFIX + "synth", None),
     ],
+    # Same toolchain as hcl-raw: the modules arm writes .tf files and runs the
+    # same terraform binary, so the same argv proves it ran. Composing from a
+    # registry module is not separate evidence -- `terraform init` downloading a
+    # module is a side effect of the same commands.
+    "hcl-modules": [
+        ("terraform validate", "terraform", frozenset({"validate"})),
+        ("terraform plan", "terraform", frozenset({"plan", "apply"})),
+    ],
 }
 
 KNOWN_ARMS = sorted(ARM_TOKEN_PATTERNS)

@@ -37,6 +37,7 @@ import tomllib
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import get_args
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -51,7 +52,7 @@ from verify_py import (  # noqa: E402
 )
 from spec_model import Arm, Spec, Step, load_spec  # noqa: E402
 from oracles.emit import emit_oracles  # noqa: E402
-from gates.equipping import _discover_equipping_files  # noqa: E402
+from gates.equipping import _discover_equipping_files, harbor_equipping_offenders  # noqa: E402
 from split import spec_group  # noqa: E402
 from shards import shard_for  # noqa: E402
 
@@ -65,7 +66,14 @@ ARM_DIRNAME: dict[Arm, str] = {
     "awscdk": "awscdk",
     "hcl_raw": "hcl-raw",
     "terraconstructs": "terraconstructs",
+    "hcl_modules": "hcl-modules",
 }
+# An arm whose image and environment tree do not exist yet: `arms/<dirname>/`
+# holds its README and an empty environment/, `make build-arms` and
+# `make preflight` skip it, and generate_arm() refuses to emit a task for it.
+# generator/tests/test_hcl_modules_arm.py is what keeps this set honest, so a
+# DELETED Dockerfile on a shipped arm still fails rather than being skipped.
+ARMS_PENDING_IMAGE: frozenset[Arm] = frozenset({"hcl_modules"})
 # A task's aws-bench scenario is its PARENT DIRECTORY under tasks/:
 # aws-bench-datasets' registry generator (aws_bench/scripts/update_registry.py)
 # derives the scenario from `tasks/<scenario>/<task>/` and expects
@@ -104,6 +112,9 @@ ARM_WORKSPACE_SUBDIR: dict[Arm, str] = {
     "awscdk": "workspace",
     "hcl_raw": "workspace",
     "terraconstructs": "app",
+    # hcl_modules authors plain .tf files like hcl_raw; only the module source
+    # of those files differs, so its Dockerfile COPYs the same subdirectory.
+    "hcl_modules": "workspace",
 }
 # DECISIONS.md Amendment 3 "Memory floor for tsc-heavy arms": awscdk and
 # terraconstructs both run tsc against a large jsii-generated type surface.
@@ -4320,6 +4331,15 @@ def write_multi_step_layout(spec: Spec, arm: Arm, arm_dir: Path) -> None:
 
 
 def generate_arm(spec: Spec, arm: Arm) -> Path:
+    if arm in ARMS_PENDING_IMAGE:
+        raise NotImplementedError(
+            f"arm {arm!r} cannot be generated yet: {ARMS_DIR / ARM_DIRNAME[arm]} has "
+            "no environment/Dockerfile, so there is no image to run the emitted task "
+            "in and no toolchain for its verifier. Enabling it in a spec requires the "
+            "arm's delivery to land first (docs/design/tf-modules-arm.md milestones "
+            "4-5: the vendored module set, the registry sidecar and the plan "
+            "normaliser)."
+        )
     arm_dir = task_dir(spec, arm)
     arm_dir.mkdir(parents=True, exist_ok=True)
 
@@ -4602,11 +4622,12 @@ def enforce_no_holdout_equipping(spec: Spec, generated: dict[Arm, Path]) -> None
     subsequent `make gen` would otherwise silently re-bless).
 
     Reuses gates.equipping's own file-discovery glob (skills/ dirs,
-    mcp.json/.mcp.json, plugins.json/plugin.json/marketplace.json) --
-    the exact set of files that ALREADY changes a trial's equipping_hash
-    (metrics/result_schema.json's required field), so "equipping material"
-    means the same thing here as it does on the scoring side, not a
-    second, independently-drifting definition.
+    mcp.json/.mcp.json, plugins.json/plugin.json/marketplace.json) AND its
+    reader for Harbor's declarative channel (`task.toml [environment]
+    mcp_servers`/`skills_dir`) -- the exact set of material that ALREADY changes a
+    trial's equipping_hash (metrics/result_schema.json's required field), so
+    "equipping material" means the same thing here as it does on the scoring
+    side, not a second, independently-drifting definition.
 
     Silent no-op (not an error) when:
       - spec.id has no entry in specs/split.yaml yet (a brand-new scenario
@@ -4632,6 +4653,10 @@ def enforce_no_holdout_equipping(spec: Spec, generated: dict[Arm, Path]) -> None
 
     offending: list[str] = []
     for arm, arm_dir in generated.items():
+        # Harbor's own channel first: `task.toml [environment] mcp_servers` /
+        # `skills_dir` equip a trial without shipping a file this glob can see
+        # (gates/equipping.py, scheme 2).
+        offending.extend(f"{arm}: {name}" for name in harbor_equipping_offenders(arm_dir))
         for rel in sorted(_discover_equipping_files(arm_dir), key=lambda p: p.as_posix()):
             full = arm_dir / rel
             try:
@@ -4650,7 +4675,8 @@ def enforce_no_holdout_equipping(spec: Spec, generated: dict[Arm, Path]) -> None
         raise HoldoutEquippingViolation(
             f"spec {spec.id!r} is assigned to the HOLDOUT split "
             f"(specs/split.yaml) but its generated task directory contains "
-            f"tuned-equipping material (skill/MCP/plugin config). Per "
+            f"tuned-equipping material (skill/MCP/plugin config, or a "
+            f"task.toml [environment] MCP/skills declaration). Per "
             f"prereg §7.1 / DECISIONS.md Amendment 10, tuned equipping must "
             f"be developed on the TRAIN split only -- a holdout scenario is "
             f"for SELECTING among equippings already built on train, never "
@@ -4750,9 +4776,9 @@ def generate(spec_path: Path) -> dict[Arm, Path]:
     generated: dict[Arm, Path] = {}
     for arm in spec.arms.enabled_arms():
         generated[arm] = generate_arm(spec, arm)
-    # tear down a generated but now-disabled terraconstructs dir
-    if not spec.arms.terraconstructs.enabled:
-        stale = task_dir(spec, "terraconstructs")
+    # tear down a generated but now-disabled optional arm's dir
+    for arm in set(get_args(Arm)) - set(spec.arms.enabled_arms()):
+        stale = task_dir(spec, arm)
         if stale.exists():
             shutil.rmtree(stale)
     self_check_parity(spec, generated)

@@ -4,7 +4,7 @@ A shard is an AWS member account (DECISIONS.md Amendment 33), so the two
 properties pinned here are the ones an operator's bill and wall-clock depend
 on: the assignment is a pure function of (spec.id, arm) — never of iteration
 order, mtimes, or generation order — and at N >= 4 one mutating spec's three
-arms never share a shard, which is the whole reason for extra accounts.
+shipped arms never share a shard, which is the whole reason for extra accounts.
 
 Also pins the un-sharded default: at shard_count = 1 everything is "anchor" and
 the materializer is a no-op.
@@ -19,12 +19,18 @@ from pathlib import Path
 
 import pytest
 
+import gen
 import shards
 from spec_model import load_spec
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SPECS_DIR = REPO_ROOT / "specs"
-ARMS = shards.ARM_ORDER
+# The arms that actually produce a task. `ARM_ORDER` is wider: it is the index
+# domain of the assignment, and it carries an arm whose image does not exist yet
+# (gen.ARMS_PENDING_IMAGE), which generates nothing to place on an account. The
+# distinctness property below is a property of placed tasks, so it is read off
+# the arms that have one.
+ARMS = tuple(a for a in shards.ARM_ORDER if a not in gen.ARMS_PENDING_IMAGE)
 
 
 @dataclass

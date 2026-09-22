@@ -639,11 +639,18 @@ def test_equipping_hash_tracks_every_step_instruction(tmp_path: Path) -> None:
 def test_single_step_equipping_hash_is_unchanged_by_the_multistep_branch(
     task_dir,
 ) -> None:
-    """No HASH_SCHEME_VERSION bump: a single-step task still hashes exactly the
-    manifest it always did, so no published result needs re-hashing."""
+    """The multi-step branch adds a KEY, not a scheme: a single-step task hashes
+    the single-step manifest, whose `instruction_md_sha256` and `step_instructions`
+    are mutually exclusive. The scheme-2 keys below are the deliberate hash move
+    (DECISIONS.md Amendment 47), and this manifest is spelled out in full so a
+    future silent addition to it fails here."""
     import hashlib
 
-    from gates.equipping import HASH_SCHEME_VERSION, compute_equipping_hash
+    from gates.equipping import (
+        HASH_SCHEME_VERSION,
+        compute_equipping_hash,
+        harbor_declared_equipping,
+    )
 
     expected_manifest = {
         "hash_scheme_version": HASH_SCHEME_VERSION,
@@ -651,6 +658,8 @@ def test_single_step_equipping_hash_is_unchanged_by_the_multistep_branch(
         "image_ref": FAKE_DIGEST_IMAGE_REF,
         "image_digest": FAKE_DIGEST_IMAGE_REF,
         "extra_cfg": {},
+        "compose_sha256": None,
+        "harbor_equipping": harbor_declared_equipping(task_dir),
         "instruction_md_sha256": hashlib.sha256(
             (Path(task_dir) / "instruction.md").read_bytes()
         ).hexdigest(),

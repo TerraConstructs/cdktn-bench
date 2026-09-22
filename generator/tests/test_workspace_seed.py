@@ -435,13 +435,19 @@ class TestEquippingHash:
             compute_equipping_hash(task, image, {WORKSPACE_SEED_KEY: "deadbeef"})
 
     def test_greenfield_task_hash_is_untouched(self) -> None:
-        """No HASH_SCHEME_VERSION bump, no already-published hash moves: a
-        greenfield task.toml simply has no such key, so the manifest is
-        byte-identical to what it was."""
+        """The seed digest is folded into the EXISTING `extra_cfg` slot, so a
+        greenfield task — whose task.toml has no such key — hashes the manifest a
+        greenfield task always hashed, with no seed field of its own. The
+        `compose_sha256`/`harbor_equipping` keys below are hash scheme 2's, not
+        this feature's (DECISIONS.md Amendment 47)."""
         import hashlib
         import json
 
-        from gates.equipping import HASH_SCHEME_VERSION, compute_equipping_hash
+        from gates.equipping import (
+            HASH_SCHEME_VERSION,
+            compute_equipping_hash,
+            harbor_declared_equipping,
+        )
 
         spec = load_spec(REPO_ROOT / "specs" / "ecs-swappiness.yaml")
         task = gen.task_dir(spec, "hcl_raw")
@@ -452,6 +458,8 @@ class TestEquippingHash:
             "image_ref": image,
             "image_digest": image,
             "extra_cfg": {},
+            "compose_sha256": None,
+            "harbor_equipping": harbor_declared_equipping(task),
             "instruction_md_sha256": hashlib.sha256(
                 (task / "instruction.md").read_bytes()
             ).hexdigest(),

@@ -20,6 +20,7 @@ import pytest
 
 from gates.emit_result import (
     _extract_score_fields,
+    _INFRA_SIGNS,
     BROWNFIELD,
     GREENFIELD,
     INVALID_BYPASS,
@@ -108,15 +109,19 @@ def test_infra_failure_is_refused_and_takes_priority_over_bypass(arm: str, task_
 
 
 def test_infra_kinds_are_distinct_across_arm_fixtures() -> None:
-    """The three infra-failure fixtures were deliberately authored to hit
-    three different infra-failure kinds (oom / docker-daemon / env-auth) so
-    the classifier's pattern table is exercised, not just its first entry."""
+    """The infra-failure fixtures were deliberately authored so that every kind
+    in the classifier's pattern table (oom / docker-daemon / env-auth) is
+    exercised, not just its first entry. The table has three kinds and the bench
+    has four arms, so hcl-modules repeats hcl-raw's: both are terraform arms
+    whose trajectory differs only in the module source it writes."""
     kinds = {arm: classify_infra_failure(trial_dir(arm, "infra-failure"))["kind"] for arm in ARMS}
     assert kinds == {
         "awscdk": "docker-daemon",
         "hcl-raw": "env-auth",
         "terraconstructs": "oom",
+        "hcl-modules": "env-auth",
     }
+    assert set(kinds.values()) == {kind for kind, _ in _INFRA_SIGNS}
 
 
 def test_classify_infra_failure_returns_none_for_clean_trial(task_dir) -> None:
@@ -257,6 +262,7 @@ def test_toolchain_command_not_found_is_invalid_infra_not_bypass(arm: str, task_
         "awscdk": ("npx --no-install cdk synth", "bash: cdk: command not found\nExit code 127"),
         "hcl-raw": ("terraform validate", "bash: terraform: command not found\nExit code 127"),
         "terraconstructs": ("npx --no-install cdktn synth", "bash: cdktn: command not found\nExit code 127"),
+        "hcl-modules": ("terraform validate", "bash: terraform: command not found\nExit code 127"),
     }
     command, observation_text = tool_by_arm[arm]
     trial = Path(__file__).resolve().parent / "fixtures" / arm / "_tmp-degraded-proof"

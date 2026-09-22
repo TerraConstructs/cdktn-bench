@@ -36,6 +36,10 @@ build-arms:
 	for arm_dir in arms/*/; do \
 		arm=$$(basename "$$arm_dir"); \
 		dockerfile="$${arm_dir}environment/Dockerfile"; \
+		if [ ! -f "$$dockerfile" ] && [ -z "$$(ls -A "$${arm_dir}environment" 2>/dev/null | grep -v '^\.gitkeep$$')" ]; then \
+			echo "==> skipping arm $$arm: no image yet (empty environment/, see $${arm_dir}README.md)"; \
+			continue; \
+		fi; \
 		if [ -f "$$dockerfile" ]; then \
 			echo "==> building arm image: $$arm  (context: $${arm_dir}environment/)"; \
 			docker build $$mirror_arg -t "cdktn-bench/$$arm:dev" -f "$$dockerfile" "$${arm_dir}environment"; \
@@ -59,6 +63,10 @@ preflight:
 	for arm_dir in arms/*/; do \
 		arm=$$(basename "$$arm_dir"); \
 		image="cdktn-bench/$$arm:dev"; \
+		if [ ! -f "$${arm_dir}environment/Dockerfile" ] && [ -z "$$(ls -A "$${arm_dir}environment" 2>/dev/null | grep -v '^\.gitkeep$$')" ]; then \
+			echo "==> skipping arm $$arm: no image yet (empty environment/, see $${arm_dir}README.md)"; \
+			continue; \
+		fi; \
 		case "$$arm" in \
 			hcl-raw) entrypoint=/opt/preflight/preflight.sh ;; \
 			*) entrypoint=/usr/local/bin/preflight.sh ;; \

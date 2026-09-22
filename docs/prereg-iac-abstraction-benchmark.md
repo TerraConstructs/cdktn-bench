@@ -35,6 +35,18 @@ A fully-crossed factorial run inside a single agentic harness (**Claude Code**, 
 **12 cells** (2 models × 2 harness × 3 arms). **Trials: Sonnet n = 10, Opus n = 5 per cell.** **10–15 scenarios.**
 Total trajectories ≈ (6 Sonnet cells × 10 + 6 Opus cells × 5) × 12 scenarios = **~1,080**.
 
+> **Restated as built** (`DECISIONS.md` Amendments 2 and 46; hypotheses above
+> unchanged). The bench ships **four** authoring arms: `awscdk` and `hcl_raw` on
+> every scenario, plus `terraconstructs` (the limited-coverage CDKTN arm this
+> document excluded from v1) and `hcl_modules` (the TF-modules arm Amendment 2
+> dropped and Amendment 46 reintroduces), each gated **per spec** with a reason.
+> The factorial is therefore 2 models × 2 harness × 4 arms, populated arm by arm
+> as each arm's scenarios enable it; the split is **per scenario**, so cell
+> assignment is unchanged and a row's `arm` value is the only thing that widens.
+> `hcl_modules` is an arm rather than a treatment on a subset because module use
+> changes the authoring substrate the way a construct library does (ROADMAP open
+> decision 4, closed).
+
 ### 2.1 Arms
 
 - **Raw HCL → TF/OpenTofu.** Hand-written resource-level HCL, no modules. `validate` + `plan` feedback loop.
@@ -54,6 +66,19 @@ Both conditions keep the execute-and-read-error loop. **Tuned** adds each ecosys
 | Model knowledge + execute/validate loop | yes | yes |
 | **Raw HCL** & **TF modules** arms | bare | HashiCorp **Terraform MCP server** + **Anton Babenko** Terraform authoring skills / best practices · **AWS Docs MCP** for `terraform-provider-aws` attribute & valid-string lookup |
 | **AWSCDK L2** arm | bare | **AWS MCP** + AWSCDK agent-tool plugins / **Kiro Powers** + **AWS Docs MCP** |
+
+> **Restated as built for the TF arms** (`DECISIONS.md` Amendment 46,
+> `docs/design/registry-index-tool.md`). The HashiCorp **Terraform MCP server is
+> not** the tuned equipping on `hcl_raw`/`hcl_modules`: v1.3.0 hard-codes the
+> public registry URL (`pkg/client/registry.go:24`) with no override, so it can
+> neither answer from the bench's allowlist nor run offline. The tuned row is the
+> **bench-owned index tool** — the same nine registry tool names, answered from
+> the bench's own module manifest — plus **AWS Docs MCP** (unchanged, and still
+> the deliberate fairness choice for provider docs) plus the vendored authoring
+> skill. On `hcl_modules` the **baseline** row is the vendored
+> `terraform-aws-modules` set at allowlisted versions served by the loopback
+> registry sidecar plus the arm's one-line toolchain sentence: module *availability*
+> is the arm's substrate, and only *discovery tooling* is the tuned level.
 
 Symmetry principle: each arm gets the *same kind* of equipping — an ecosystem docs/MCP layer plus an authoring skill — differing only in substrate. Note both TF arms additionally get AWS Docs MCP so the comparison is not handicapped on provider-attribute lookup; that is a deliberate fairness choice, logged. What makes the comparison unriggable is that no arm gets a capability class the others are denied.
 
@@ -173,10 +198,10 @@ The run/grade/aggregate machinery reuses the **skill-creator** eval loop rather 
 | High-level arm | AWSCDK L2 → CloudFormation (no CDKTN/tf.json arm in v1) |
 | Oracle | Tiered (compile/synth + plan/Rego·cfn-guard); no apply; **no LocalStack/moto** |
 | Headline metric | tokens-to-green (censored) + paired success-rate |
-| Harness (tuned) | TF arms: HashiCorp Terraform MCP + Anton Babenko skills + AWS Docs MCP · CDK arm: AWS MCP + Kiro Powers + AWS Docs MCP. Claude Code only |
+| Harness (tuned) | TF arms: the bench-owned registry index tool (replacing HashiCorp Terraform MCP, Amendment 46) + Anton Babenko skills + AWS Docs MCP · CDK arm: AWS MCP + Kiro Powers + AWS Docs MCP. Claude Code only |
 | Models | Sonnet + Opus → **12 cells** (× 3 arms) |
 | Trials/cell | **Sonnet n = 10, Opus n = 5** (cost-balanced) |
-| Modules | **distinct arm** (TF-native best-practice rung) |
+| Modules | **distinct arm** (TF-native best-practice rung) — gated per spec, reintroduced by Amendment 46 after Amendment 2 dropped it from v1 |
 | Scenarios | 10–15: difficulty spread + 3 catches + 1 anti-L2 |
 | Eval harness | built on Anthropic **skill-creator** (paired runs, assertions, timing.json, train/held-out split) |
 | Scope (v1) | **authoring only** — one-shot tokens-to-green from scratch |

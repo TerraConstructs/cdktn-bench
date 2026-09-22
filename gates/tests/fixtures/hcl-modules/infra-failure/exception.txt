@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "harbor/agents/installed/claude_code.py", line 1142, in run
+    await self._exec(command, env=env, ...)
+harbor.exceptions.AgentExecutionError: claude CLI exited 1 with stderr:
+  API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}
+  Empty auth credentials: ANTHROPIC_API_KEY is not set and CLAUDE_CODE_OAUTH_TOKEN is not set.

@@ -140,8 +140,10 @@ Full rules: `docs/adding-scenarios.md` §1 item 3a. The short form:
   predicted at the teardown tier; first gating teardown), 43 (tier 0 is
   graded by a generated Python driver over the jq filters; jq pinned at 1.7.1),
   44 (the whole per-task verifier is generated Python; the two `.sh`
-  files are shims) and 45 (OPA/Rego grades tier 1 on every arm; cfn-guard is
-  retired from the oracle and kept as an arm capability) are ACCEPTED** (promotion
+  files are shims), 45 (OPA/Rego grades tier 1 on every arm; cfn-guard is
+  retired from the oracle and kept as an arm capability) and 47 (equipping hash
+  scheme 2: Harbor's own `task.toml [environment]` MCP/skills declarations and
+  `environment/docker-compose.yaml` are in the hash) are ACCEPTED** (promotion
   runs for the harness-changing ones under `jobs/amend3*-promotion`).
   Rows produced under them are publishable within
   their own stratum. Any new amendment that changes the harness re-enters
