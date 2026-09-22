@@ -38,7 +38,10 @@ CONFIG = {'spec_id': 'caller-identity-arn-as-principal',
            'not_verifiable_query': 'data.cdktn_bench.caller_identity_arn_as_principal.not_verifiable',
            'hcl': None,
            'hardened': False,
-           'bad_statuses': ['FAIL', 'TOOL_MISSING', 'SKIPPED_STUB']},
+           'bad_statuses': ['FAIL',
+                            'TOOL_MISSING',
+                            'SKIPPED_STUB',
+                            'ENGINE_ERROR']},
  'idempotence': None,
  'teardown': None}
 

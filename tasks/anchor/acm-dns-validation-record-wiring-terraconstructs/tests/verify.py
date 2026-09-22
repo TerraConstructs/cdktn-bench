@@ -48,8 +48,12 @@ CONFIG = {'spec_id': 'acm-dns-validation-record-wiring',
            'not_verifiable_query': 'data.cdktn_bench.acm_dns_validation_record_wiring.not_verifiable',
            'hcl': None,
            'hardened': False,
-           'bad_statuses': ['FAIL', 'TOOL_MISSING', 'SKIPPED_STUB']},
+           'bad_statuses': ['FAIL',
+                            'TOOL_MISSING',
+                            'SKIPPED_STUB',
+                            'ENGINE_ERROR']},
  'idempotence': None,
- 'teardown': None}
+ 'teardown': None,
+ 'normalise_plan': True}
 
 raise SystemExit(tiers.main(CONFIG, sys.argv[1:]))

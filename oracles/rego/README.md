@@ -7,6 +7,54 @@ One `.rego` bundle per scenario catch (see `docs/iac-abstraction-aws-bench-plan.
 Phase 1 seed-scenario table for the planted catches these need to assert on).
 Populated in Slice D, validated by the oracle-equivalence CI in Slice E.
 
+## How a policy addresses a module resource
+
+Every policy on the two Terraform-shaped arms is evaluated against the
+NORMALISED plan, not the raw one
+(`docs/generator.md#the-plan-normaliser-in-teststierspy`). Three keys exist
+there that Terraform does not emit, and a policy may read all three:
+
+| key | where | what it means |
+|---|---|---|
+| `x_module_path` | a resource in `planned_values.root_module.resources` | this resource was HOISTED out of a module; the value is the call chain with instance keys, e.g. `["module.fe[\"a\"]", "module.inner"]`. Its absence means the resource is the root module's own |
+| `x_after_unknown` | the same resource | the `after_unknown` object `resource_changes` carries for it, joined on `(address, deposed)` |
+| `x_unresolved` | a `configuration` resource or `module_calls.<call>` node | a list of `{reason, detail, attribute?, reference?}`: a reference that crosses a module boundary this document cannot follow |
+
+**A policy needs no module-aware path.** `input.planned_values.root_module.
+resources` already holds every resource at every depth, and `child_modules` is
+gone from the normalised document, so the `walk(...)`/`child_modules` recursion
+the OPA Terraform tutorial teaches would find nothing and is not what to write
+here. Address a module resource exactly as a root one, and read
+`x_module_path` only when the rule genuinely cares WHICH module produced it.
+
+**A "modules are present" guard must not read `child_modules`.** It is gone
+from the normalised document, so a fail-closed rule that spelled "this
+configuration uses modules" as `planned_values.root_module.child_modules`
+silently stops firing. `configuration.root_module.module_calls` is left in
+place and is the guard that still holds; on the values side the signal is a
+resource carrying `x_module_path`.
+
+**`x_after_unknown` is the only way to tell unknown from unset.**
+`planned_values` cannot express unknown — the attribute is simply absent from
+`values` — so `not r.values.foo` conflates "the agent never set it" with
+"Terraform cannot know it yet". Where that distinction decides the verdict,
+read `object.get(r, ["x_after_unknown", "foo"], false)` and route the unknown
+case to `not_verifiable`, never to `deny` and never to a pass.
+
+**`x_unresolved` is a REFUSAL, not a value.** The normaliser never resolves a
+reference into a value slot — that is the prior-art shape mistake that destroys
+the three-valued contract. A slot carrying `x_unresolved` means the answer is
+not in this document, so it belongs in `not_verifiable`, or in a fail-closed
+`deny` whose message says the fact could not be established. It never means the
+attribute is absent.
+
+One reason is weaker than the rest and a rule should not lean on it alone:
+`expression_not_represented` says the plan carries a block the configuration
+has no expression for. A `dynamic` block is the case it exists for -- Terraform
+omits those from the configuration representation entirely -- but a
+provider-set default of the same shape is indistinguishable from one here, so
+the reason is named for what was observed and not for what caused it.
+
 ## `lib/` — shared policy libraries (added 2026-08-23)
 
 `oracles/rego/lib/*.rego` holds Rego a scenario policy may **import** rather

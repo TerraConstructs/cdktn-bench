@@ -17,6 +17,7 @@ oracle, an interpreter that died. A 0.0 for one of those would be an
 infrastructure failure wearing the costume of a wrong answer.
 """
 
+import copy
 import json
 import os
 import shutil
@@ -172,6 +173,519 @@ def shell(command, log=None):
         ).returncode
 
 
+# --- the plan normaliser ----------------------------------------------------
+
+# Every tier-0 JSONPath and every Rego policy addresses
+# planned_values.root_module.resources, and a Terraform module puts its
+# resources under root_module.child_modules[*] instead -- so a module resource
+# is invisible to the graders rather than graded and found wrong. The
+# normaliser hoists the values side into the shape the asserts already speak,
+# and only ANNOTATES the configuration side, because a value this document does
+# not carry may never be guessed (docs/design/plan-normaliser-survey.md,
+# "cases that must stay unresolvable"; docs/design/tf-modules-arm.md, "do the
+# oracle tiers survive modules?"). It is Terraform-only; awscdk never calls it.
+#
+# THE INVARIANT: a plan with no module in it normalises to itself under
+# canonical (sorted-key) JSON, so every existing fixture grades identically
+# before and after. It is asserted here on every run, not only in the gate.
+
+NORMALISE_FAILED_LINES = (
+    "the plan normaliser did not produce a document, so no tier graded",
+    "anything. Module resources live under child_modules and every assert",
+    "and policy addresses root_module.resources, so grading the raw plan",
+    "would silently read an empty resource set. This is a defect in the",
+    "ORACLE, NOT a judgement about this solution. Details:",
+)
+
+
+class NormaliseError(Exception):
+    """The plan could not be normalised; grading it would be a guess."""
+
+
+# A reference and why no root-frame value backs it. `module.` is classified
+# separately (it is the only class that applies to a ROOT resource's own
+# expressions) and `var.` needs the enclosing call, so neither is in this table.
+UNRESOLVED_PREFIXES = (
+    ("each.", "iteration",
+     "names one instance of a repeated resource or module call, which the "
+     "configuration representation does not expand"),
+    ("count.", "iteration",
+     "names one instance of a repeated resource or module call, which the "
+     "configuration representation does not expand"),
+    ("local.", "local_symbol",
+     "a module-local value; this document carries no module source to resolve it"),
+    ("path.", "context_symbol", "resolved from the module's own location on disk"),
+    ("terraform.", "context_symbol", "resolved from the running workspace"),
+    ("self.", "context_symbol", "resolved from the resource instance itself"),
+)
+
+# A var chain passed call to call is followed this far and then refused. The
+# depth is a guard against a malformed document, not a modelled limit: real
+# nesting is two or three calls.
+MAX_INPUT_CHAIN = 16
+
+
+def split_address(address):
+    """A Terraform address split on its own dots, with instance keys kept
+    whole: `module.fe["a.b"].aws_s3_bucket.this[0]` has four segments, not
+    five."""
+    parts, buf, depth, quoted, escaped = [], "", 0, False, False
+    for ch in address:
+        if quoted:
+            buf += ch
+            # A `"` inside a for_each key is part of the key, not its end;
+            # reading it as the end leaves every later bracket and dot inside a
+            # quote that never closes, and the address silently collapses into
+            # one segment instead of raising.
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                quoted = False
+            continue
+        if ch == '"':
+            quoted = True
+        elif ch == "[":
+            depth += 1
+        elif ch == "]":
+            depth -= 1
+        elif ch == "." and depth == 0:
+            parts.append(buf)
+            buf = ""
+            continue
+        buf += ch
+    parts.append(buf)
+    return parts
+
+
+def module_segments(address):
+    """`["module.outer", 'module.inner["k"]']` for a child module's own
+    absolute address. Instance keys are kept: the values side is the only place
+    they exist at all."""
+    parts = split_address(address)
+    segments = []
+    while parts:
+        if parts[0] != "module" or len(parts) < 2:
+            raise NormaliseError(
+                "child module address %r is not a chain of module.<call> "
+                "segments" % address
+            )
+        segments.append("module." + parts[1])
+        parts = parts[2:]
+    return segments
+
+
+def call_name(segment):
+    """`module.fe["a"]` -> `fe`. The configuration side has call names and no
+    instance keys, so a join with it has to drop the key."""
+    return segment[len("module."):].split("[", 1)[0]
+
+
+def unknown_index(plan):
+    """`(address, deposed)` -> that resource's `after_unknown`.
+
+    `planned_values` cannot express unknown at all -- an unknown attribute is
+    simply absent from `values`, indistinguishable from unset -- so this is the
+    only place the three-valued grading of a module resource can come from. The
+    `deposed` half of the key is what keeps a deposed object from overwriting
+    the live one at the same address.
+    """
+    index = {}
+    for change in plan.get("resource_changes") or []:
+        if not isinstance(change, dict):
+            continue
+        after_unknown = (change.get("change") or {}).get("after_unknown")
+        if after_unknown is not None:
+            index[(change.get("address"), change.get("deposed"))] = after_unknown
+    return index
+
+
+def count_resources(module):
+    n = len(module.get("resources") or [])
+    for child in module.get("child_modules") or []:
+        n += count_resources(child)
+    return n
+
+
+def hoist_resources(module, unknowns, out):
+    """Depth-first, every resource at every depth, appended and never keyed by
+    address: two calls of one module carry the same local address, and a
+    dictionary keyed on it would silently keep one of them."""
+    for child in module.get("child_modules") or []:
+        if not isinstance(child, dict):
+            raise NormaliseError("a child_modules entry is not an object")
+        segments = module_segments(child.get("address") or "")
+        for resource in child.get("resources") or []:
+            if not isinstance(resource, dict):
+                raise NormaliseError(
+                    "a resource under %s is not an object" % child.get("address")
+                )
+            hoisted = copy.deepcopy(resource)
+            hoisted["x_module_path"] = list(segments)
+            unknown = unknowns.get((resource.get("address"), resource.get("deposed")))
+            if unknown is not None:
+                hoisted["x_after_unknown"] = unknown
+            out.append(hoisted)
+        hoist_resources(child, unknowns, out)
+
+
+def module_addresses(module, out):
+    """Call-name path -> every module INSTANCE address the values side shows
+    for it, which is how a `for_each = toset(...)` call is caught: the
+    configuration emits no for_each_expression for it, and only the instance
+    keys give it away."""
+    for child in module.get("child_modules") or []:
+        segments = module_segments(child.get("address") or "")
+        key = tuple(call_name(s) for s in segments)
+        out.setdefault(key, []).append(child.get("address"))
+        module_addresses(child, out)
+    return out
+
+
+def is_repeated(addresses):
+    return len(addresses) > 1 or any("[" in a for a in addresses)
+
+
+def references_in(node):
+    """Every `references` string anywhere under one expression node. A block
+    argument is a list of expression objects and a nested block is an object of
+    them, so the collection has to recurse or it reads the top level only.
+
+    `constant_value` is skipped: it holds the agent's literal data, which may
+    be a map with a `references` key of its own, and reading that as a
+    Terraform reference invents an unresolvable that the configuration never
+    declared."""
+    found = []
+    if isinstance(node, dict):
+        refs = node.get("references")
+        if isinstance(refs, list):
+            found.extend(r for r in refs if isinstance(r, str))
+        for key, value in node.items():
+            if key not in ("references", "constant_value"):
+                found.extend(references_in(value))
+    elif isinstance(node, list):
+        for item in node:
+            found.extend(references_in(item))
+    return found
+
+
+def reference_mark(reference, frame, depth=0):
+    """Why `reference` cannot be resolved to a root-frame value, or None when
+    it can be. `frame` is the enclosing module call (None in the root module).
+
+    On a ROOT resource's own expressions (depth 0, no frame) only `module.` is
+    classified: `local.`, `count.` and `each.` there are what the existing
+    tiers already own, and marking them would add a key to a module-free plan
+    and break the invariant. Following a module input's chain OUT into the root
+    frame (depth above 0) classifies them, because that mark lands on the
+    MODULE resource, where it is a policy's only signal that the chain ended
+    somewhere this document cannot follow.
+    """
+    if reference == "module" or reference.startswith("module."):
+        # Terraform duplicates a module output read as `module.a.out` AND the
+        # bare `module.a`; the bare half carries no information and would
+        # double every mark.
+        if len(split_address(reference)) < 3:
+            return None
+        return {
+            "reason": "module_output",
+            "detail": "a module output read; the normaliser does not rewrite "
+                      "references across a module boundary, and an indexed read "
+                      "names an instance the configuration cannot select",
+        }
+    if frame is None and depth == 0:
+        return None
+    for prefix, reason, detail in UNRESOLVED_PREFIXES:
+        if reference.startswith(prefix):
+            return {"reason": reason, "detail": detail}
+    # A chain that reaches a ROOT `var.x` has arrived somewhere this document
+    # does carry: the plan's top-level `variables` block holds the run's value.
+    # So does a root resource attribute, which is a root-frame address already.
+    if frame is None or not reference.startswith("var."):
+        return None
+    if depth >= MAX_INPUT_CHAIN:
+        return {
+            "reason": "module_input_chain",
+            "detail": "the chain of module inputs is longer than %d calls"
+                      % MAX_INPUT_CHAIN,
+        }
+    name = split_address(reference[len("var."):])[0].split("[", 1)[0]
+    if frame["repeated"]:
+        return {
+            "reason": "module_input_repeated",
+            "detail": "one configuration node governs every instance of a "
+                      "repeated module call, so its inputs have no single value",
+        }
+    passed = (frame["call"].get("expressions") or {}).get(name)
+    if passed is None:
+        return {
+            "reason": "module_input_default",
+            "detail": "the caller passes no %s, so the value comes from the "
+                      "module's own variables.%s.default, which this document "
+                      "does not carry" % (name, name),
+        }
+    if isinstance(passed, dict) and "constant_value" in passed:
+        return None
+    outer = references_in(passed)
+    if not outer:
+        return {
+            "reason": "module_input_opaque",
+            "detail": "the caller's %s argument has neither a constant value "
+                      "nor a reference" % name,
+        }
+    for ref in outer:
+        mark = reference_mark(ref, frame["parent"], depth + 1)
+        if mark is not None:
+            return {
+                "reason": "module_input_chain",
+                "detail": "the caller's %s argument is %s, which is itself "
+                          "unresolvable (%s)" % (name, ref, mark["reason"]),
+            }
+    return None
+
+
+def unrepresented_marks(resource_config, planned):
+    """Blocks the plan carries that the configuration representation has no
+    expression for. A `dynamic` block is never represented (Terraform's own
+    documented gap), and this is its only trace; a provider-set default of the
+    same shape is indistinguishable here, so the reason says NOT REPRESENTED
+    rather than naming `dynamic`."""
+    expressions = resource_config.get("expressions")
+    expressions = expressions if isinstance(expressions, dict) else {}
+    marks, seen = [], set()
+    for resource in planned:
+        for key in sorted((resource.get("values") or {})):
+            value = resource["values"][key]
+            if key in expressions or key in seen:
+                continue
+            if isinstance(value, list) and value and all(
+                isinstance(v, dict) for v in value
+            ):
+                seen.add(key)
+                marks.append({
+                    "reason": "expression_not_represented",
+                    "attribute": key,
+                    "detail": "the plan carries this block but the "
+                              "configuration representation has no expression "
+                              "for it",
+                })
+    return marks
+
+
+def local_address(address, depth):
+    """A hoisted resource's address as the configuration side spells it:
+    without the module prefix and without the resource's own instance key."""
+    parts = split_address(address)[2 * depth:]
+    if parts:
+        parts[-1] = parts[-1].split("[", 1)[0]
+    return ".".join(parts)
+
+
+def planned_by_config_address(hoisted):
+    """`(call-name path, module-local address)` -> the planned resources one
+    configuration node governs. Instance keys are dropped on both halves, which
+    is the join Regula gets wrong and every `count`/`for_each` module needs."""
+    index = {}
+    for resource in hoisted:
+        segments = resource.get("x_module_path") or []
+        key = (
+            tuple(call_name(s) for s in segments),
+            local_address(resource.get("address") or "", len(segments)),
+        )
+        index.setdefault(key, []).append(resource)
+    return index
+
+
+def annotate_module(module_config, path, addresses, planned, frame):
+    for resource in module_config.get("resources") or []:
+        if not isinstance(resource, dict):
+            continue
+        marks = []
+        expressions = resource.get("expressions")
+        for attribute in sorted(expressions if isinstance(expressions, dict) else {}):
+            for reference in references_in(expressions[attribute]):
+                mark = reference_mark(reference, frame)
+                if mark is not None:
+                    marks.append(dict(mark, attribute=attribute,
+                                      reference=reference))
+        if frame is not None:
+            marks.extend(unrepresented_marks(
+                resource,
+                planned.get((path, local_address(resource.get("address") or "", 0)), []),
+            ))
+        if marks:
+            resource["x_unresolved"] = marks
+    calls = module_config.get("module_calls")
+    for name in sorted(calls if isinstance(calls, dict) else {}):
+        call = calls[name]
+        if not isinstance(call, dict):
+            continue
+        call_path = path + (name,)
+        instances = addresses.get(call_path) or []
+        repeated = is_repeated(instances)
+        marks = []
+        if "count_expression" in call:
+            marks.append({
+                "reason": "module_count",
+                "detail": "one configuration node, N planned instances; a "
+                          "reference through count.index names an instance the "
+                          "configuration cannot select",
+            })
+        if "for_each_expression" in call:
+            marks.append({
+                "reason": "module_for_each",
+                "detail": "one configuration node, N planned instances; a "
+                          "reference through each.key/each.value names an "
+                          "instance the configuration cannot select",
+            })
+        if not marks and repeated:
+            marks.append({
+                "reason": "module_repeated_unrepresented",
+                "detail": "the values side shows %d instance(s) of this call "
+                          "while the configuration declares neither count nor "
+                          "for_each -- the shape `for_each = toset(...)` emits"
+                          % len(instances),
+            })
+        if marks:
+            call["x_unresolved"] = marks
+        body = call.get("module")
+        if isinstance(body, dict):
+            annotate_module(
+                body, call_path, addresses, planned,
+                {"call": call, "repeated": repeated or bool(marks), "parent": frame},
+            )
+
+
+def is_modular(plan):
+    """Does this plan involve a module at all? Three independent signals,
+    because a document can carry any one without the others: a call that
+    declares no resource shows only in `configuration`, and a plan trimmed to
+    `planned_values` shows only there. Nesting needs no recursion -- a nested
+    module is reached through a top-level one.
+    """
+    module = (plan.get("planned_values") or {}).get("root_module")
+    if isinstance(module, dict) and module.get("child_modules"):
+        return True
+    root = (plan.get("configuration") or {}).get("root_module")
+    if isinstance(root, dict) and root.get("module_calls"):
+        return True
+    return any(
+        isinstance(c, dict) and c.get("module_address")
+        for c in plan.get("resource_changes") or []
+    )
+
+
+def canonical(document):
+    return json.dumps(document, sort_keys=True, separators=(",", ":"))
+
+
+def normalise_plan(plan):
+    """The document every static tier grades: module resources hoisted into
+    `planned_values.root_module.resources` (each carrying `x_module_path` and,
+    where `resource_changes` supplies it, `x_after_unknown`), `resource_changes`
+    untouched because it is already flat, and `configuration` annotated with
+    `x_unresolved` wherever a reference crosses a module boundary this document
+    cannot follow.
+
+    Pure and deterministic: no I/O, no clock, no environment.
+    """
+    if not isinstance(plan, dict):
+        raise NormaliseError(
+            "the plan document is %s, not an object" % type(plan).__name__
+        )
+    out = copy.deepcopy(plan)
+    modular = is_modular(plan)
+    module = (out.get("planned_values") or {}).get("root_module")
+    hoisted = []
+    if isinstance(module, dict):
+        expected = count_resources(module)
+        if module.get("child_modules"):
+            hoist_resources(module, unknown_index(out), hoisted)
+            resources = list(module.get("resources") or [])
+            module["resources"] = resources + hoisted
+            del module["child_modules"]
+            if len(module["resources"]) != expected:
+                raise NormaliseError(
+                    "hoisted %d resource(s) where the module tree holds %d -- "
+                    "the normaliser dropped or duplicated one"
+                    % (len(module["resources"]), expected)
+                )
+            # A plan Terraform wrote cannot hold one address twice: they are
+            # absolute and instance-keyed. If one does, refusing is the only
+            # safe answer -- an `eq` assert demands exactly one node, so a
+            # collision turns a held assert into a contradicted one with no
+            # error anywhere, the failure this whole tier is built to avoid.
+            seen, clashing = set(), set()
+            for resource in module["resources"]:
+                address = resource.get("address")
+                if address in seen:
+                    clashing.add(address)
+                seen.add(address)
+            if clashing:
+                raise NormaliseError(
+                    "hoisting put more than one resource at %s in "
+                    "root_module.resources; an assert that graded one node "
+                    "would now read two"
+                    % ", ".join(sorted(str(a) for a in clashing))
+                )
+    config_root = (out.get("configuration") or {}).get("root_module")
+    if isinstance(config_root, dict):
+        planned_root = (plan.get("planned_values") or {}).get("root_module")
+        annotate_module(
+            config_root, (),
+            module_addresses(planned_root, {}) if isinstance(planned_root, dict) else {},
+            planned_by_config_address(hoisted), None,
+        )
+    if not modular and canonical(out) != canonical(plan):
+        raise NormaliseError(
+            "a plan with no module in it must normalise to itself, so that "
+            "every existing fixture grades identically -- this one did not"
+        )
+    return out
+
+
+NORMALISED = {}
+
+
+def normalised_plan_path(artifact):
+    """`<artifact>.normalised.json` beside the artifact, written once per
+    verifier run and reused by every tier after.
+
+    The RAW artifact is left exactly as the toolchain wrote it: the falsifiability
+    collector and the blast-radius read it, and `resource_changes` -- which the
+    normaliser does not touch -- is what they read it for.
+    """
+    key = str(artifact)
+    if key not in NORMALISED:
+        source = Path(artifact)
+        try:
+            plan = json.loads(source.read_text())
+        except ValueError as exc:
+            raise NormaliseError("%s is not JSON: %s" % (artifact, exc))
+        target = source.parent / (source.stem + ".normalised.json")
+        # Key order is the RAW plan's, not sorted: the `_hcl` merge re-dumps
+        # this document in the order it reads it, and gates/hcl_merge_bytes.py
+        # compares those bytes against a baseline run over the raw plan.
+        target.write_text(json.dumps(normalise_plan(plan), indent=2) + "\n")
+        NORMALISED[key] = target
+    return NORMALISED[key]
+
+
+def normalise_artifact(cfg, artifact):
+    """(status, artifact-to-grade). Any status but OK means no tier may grade
+    the document, exactly as an HCL pre-parse failure does: the tiers address
+    `root_module.resources`, so grading an unnormalised module-shaped plan
+    reads an empty resource set and reports a correct solution as wrong."""
+    if not cfg.get("normalise_plan"):
+        return "OK", artifact
+    try:
+        return "OK", normalised_plan_path(artifact)
+    except (NormaliseError, OSError, RecursionError) as exc:
+        (LOGS / "plan-normaliser.log").write_text("%s\n" % exc)
+        return "ENGINE_ERROR", artifact
+
+
 # --- the AWS preflight ------------------------------------------------------
 
 AWS_UNAVAILABLE_LINES = (
@@ -237,10 +751,19 @@ TIER0_OPA_ABORT_LINES = (
 )
 
 
-def tier_0(cfg, artifact):
+def tier_0(cfg, artifact, norm_status="OK"):
     """1 iff every applicable structural assert held. A tier-0 that could not
     run at all reports 0, which the reward gate maps to 0.0 -- never a silent
-    pass."""
+    pass. A normaliser that did not produce a document is one of those: the
+    asserts address root_module.resources, so grading the raw plan of a
+    module-shaped solution would read an empty resource set and report every
+    assert unresolvable with no reason a transcript reader could act on."""
+    if norm_status != "OK":
+        tee(
+            "tier0-engine-error",
+            list(NORMALISE_FAILED_LINES) + read_lines("plan-normaliser.log"),
+        )
+        return 0
     if cfg["engine"] == "rego":
         return _tier0_rego(cfg, artifact)
     if not have("python3") or not have("jq"):
@@ -361,7 +884,7 @@ def _opa_argv(cfg, policy, query):
     return argv + [query]
 
 
-def tier_1(cfg, artifact):
+def tier_1(cfg, artifact, norm_status="OK"):
     """One status for the whole tier-1 bundle, and the five that are not a
     verdict about the solution stay distinguishable in it: SKIPPED_NO_ASSERTS
     (nothing declared), TOOL_MISSING (broken image), SKIPPED_STUB (un-authored
@@ -394,6 +917,12 @@ def tier_1(cfg, artifact):
             ],
         )
         status = "SKIPPED_STUB"
+    elif norm_status != "OK":
+        tee(
+            "tier1-engine-error",
+            list(NORMALISE_FAILED_LINES) + read_lines("plan-normaliser.log"),
+        )
+        status = "ENGINE_ERROR"
     elif cfg["hcl"] == "merge" and hcl_status == "TOOL_MISSING":
         tee("tier1-unavailable", list(HCL2JSON_MISSING_LINES))
         status = "TOOL_MISSING"
@@ -483,9 +1012,13 @@ def static_tiers(cfg):
         out("MISSING ARTIFACT: %s" % artifact)
         reward("0.0")
         return 0
+    # Once per run, before either tier: tier 0, the tier-1 opa input and the
+    # `_hcl` merge all have to grade the SAME document, or a module resource
+    # denied by a policy could be absent from the asserts that scored it.
+    norm_status, graded = normalise_artifact(cfg, artifact)
     out("", "== tier-0: structural asserts (%d applicable) ==" % cfg["tier0"]["total"])
-    tier0_pass = tier_0(cfg["tier0"], artifact)
-    tier1_status = tier_1(cfg["tier1"], artifact)
+    tier0_pass = tier_0(cfg["tier0"], graded, norm_status)
+    tier1_status = tier_1(cfg["tier1"], graded, norm_status)
     out("", "== summary: tier0_pass=%d tier1_status=%s ==" % (tier0_pass, tier1_status))
     held = tier0_pass == 1 and tier1_status not in cfg["tier1"]["bad_statuses"]
     reward("1.0" if held else "0.0")

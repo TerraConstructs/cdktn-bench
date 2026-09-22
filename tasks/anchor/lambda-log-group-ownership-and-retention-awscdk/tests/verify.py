@@ -38,7 +38,10 @@ CONFIG = {'spec_id': 'lambda-log-group-ownership-and-retention',
            'not_verifiable_query': 'data.cdktn_bench.lambda_log_group_ownership_and_retention.not_verifiable',
            'hcl': None,
            'hardened': False,
-           'bad_statuses': ['FAIL', 'TOOL_MISSING', 'SKIPPED_STUB']},
+           'bad_statuses': ['FAIL',
+                            'TOOL_MISSING',
+                            'SKIPPED_STUB',
+                            'ENGINE_ERROR']},
  'idempotence': None,
  'teardown': None}
 

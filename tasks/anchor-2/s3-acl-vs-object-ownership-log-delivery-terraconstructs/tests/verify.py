@@ -49,8 +49,12 @@ CONFIG = {'spec_id': 's3-acl-vs-object-ownership-log-delivery',
            'not_verifiable_query': 'data.cdktn_bench.s3_acl_vs_object_ownership_log_delivery.not_verifiable',
            'hcl': None,
            'hardened': False,
-           'bad_statuses': ['FAIL', 'TOOL_MISSING', 'SKIPPED_STUB']},
+           'bad_statuses': ['FAIL',
+                            'TOOL_MISSING',
+                            'SKIPPED_STUB',
+                            'ENGINE_ERROR']},
  'idempotence': None,
- 'teardown': None}
+ 'teardown': None,
+ 'normalise_plan': True}
 
 raise SystemExit(tiers.main(CONFIG, sys.argv[1:]))

@@ -39,7 +39,10 @@ CONFIG = {'spec_id': 's3-bucket-hardening-decomposition',
            'not_verifiable_query': 'data.cdktn_bench.s3_bucket_hardening_decomposition.not_verifiable',
            'hcl': None,
            'hardened': False,
-           'bad_statuses': ['FAIL', 'TOOL_MISSING', 'SKIPPED_STUB']},
+           'bad_statuses': ['FAIL',
+                            'TOOL_MISSING',
+                            'SKIPPED_STUB',
+                            'ENGINE_ERROR']},
  'idempotence': None,
  'teardown': None}
 

@@ -38,7 +38,10 @@ CONFIG = {'spec_id': 'asg-launch-template-tag-propagation',
            'not_verifiable_query': 'data.cdktn_bench.asg_launch_template_tag_propagation.not_verifiable',
            'hcl': None,
            'hardened': False,
-           'bad_statuses': ['FAIL', 'TOOL_MISSING', 'SKIPPED_STUB']},
+           'bad_statuses': ['FAIL',
+                            'TOOL_MISSING',
+                            'SKIPPED_STUB',
+                            'ENGINE_ERROR']},
  'idempotence': None,
  'teardown': None}
 

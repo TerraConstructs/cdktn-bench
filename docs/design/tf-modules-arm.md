@@ -3,7 +3,16 @@
 Status: the design behind DECISIONS.md Amendment 46 and the ROADMAP M3 phase
 list; phases 1-2 have landed, so the schema, the closed enums and
 `hcl_modules_override` exist while no spec enables the arm and no image is
-built.
+built. Phase 3A has landed too: the plan normaliser of section 1 runs in the
+generated verifier on both Terraform-shaped arms, with its zero-drift gate
+(`make normaliser-parity`, docs/gates.md). Reference rewriting across a module
+boundary is NOT in it -- an unresolvable reference is marked and refused, never
+guessed. Module-shaped fixtures are phase 3B and wait on the vendored module
+set of section 2, because a host gate cannot `terraform init` a fixture that
+calls a module until the registry responder serves one offline; until then the
+hoist is pinned on hand-written plan JSON and on the corpus's one module-shaped
+fixture, `s3-notification-authoritative-singleton`'s
+`all-wiring-hidden-inside-a-module`.
 
 Three companion surveys carry the evidence: `plan-normaliser-survey.md` (plan
 JSON shapes and prior art), `sast-module-handling.md` (how Checkov, Trivy,

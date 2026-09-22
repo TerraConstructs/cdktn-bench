@@ -47,8 +47,12 @@ CONFIG = {'spec_id': 's3-lambda-log-retention',
            'not_verifiable_query': 'data.cdktn_bench.s3_lambda_log_retention.not_verifiable',
            'hcl': None,
            'hardened': False,
-           'bad_statuses': ['FAIL', 'TOOL_MISSING', 'SKIPPED_STUB']},
+           'bad_statuses': ['FAIL',
+                            'TOOL_MISSING',
+                            'SKIPPED_STUB',
+                            'ENGINE_ERROR']},
  'idempotence': None,
- 'teardown': None}
+ 'teardown': None,
+ 'normalise_plan': True}
 
 raise SystemExit(tiers.main(CONFIG, sys.argv[1:]))

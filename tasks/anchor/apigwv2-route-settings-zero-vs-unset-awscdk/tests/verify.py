@@ -39,7 +39,10 @@ CONFIG = {'spec_id': 'apigwv2-route-settings-zero-vs-unset',
            'not_verifiable_query': 'data.cdktn_bench.apigwv2_route_settings_zero_vs_unset.not_verifiable',
            'hcl': None,
            'hardened': False,
-           'bad_statuses': ['FAIL', 'TOOL_MISSING', 'SKIPPED_STUB']},
+           'bad_statuses': ['FAIL',
+                            'TOOL_MISSING',
+                            'SKIPPED_STUB',
+                            'ENGINE_ERROR']},
  'idempotence': None,
  'teardown': None}
 

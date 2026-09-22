@@ -79,6 +79,65 @@ them inside a task dir rather than here:
                          `generator/tests/test_hcl_merge.py` pins both the
                          emitted bytes and the invocation.
 
+### The plan normaliser in `tests/tiers.py`
+
+Terraform puts a module's resources under
+`planned_values.root_module.child_modules[*]`, and every `tf_jsonpath` and every
+Rego policy addresses `planned_values.root_module.resources`. A module resource
+is therefore not graded and found wrong — it is invisible, which reads as a
+correct solution on every value assert and as a contradicted `exists`. The
+normaliser (`tiers.py::normalise_plan`, DECISIONS.md Amendment 46 — the fourth
+Terraform arm composed from registry modules) rewrites the plan into the shape
+the asserts already speak, once per run, before any tier:
+
+| side | what it does |
+|---|---|
+| `planned_values` | hoists every resource from every depth of `child_modules` into `root_module.resources` and drops the emptied `child_modules`. A hoisted resource gains `x_module_path` (the call chain, instance keys kept: `["module.fe[\"a\"]", "module.inner"]`) and, where `resource_changes` supplies one, `x_after_unknown` |
+| `resource_changes` | untouched. It is already flat and carries `module_address`, which is what the blast-radius read needs |
+| `configuration` | `module_calls` left in place, annotated with `x_unresolved` wherever a reference crosses a module boundary this document cannot follow |
+
+`planned_values` **cannot express unknown** — an unknown attribute is simply
+absent from `values`, indistinguishable from unset — so `x_after_unknown`,
+joined from `resource_changes` on `(address, deposed)`, is the only way a policy
+can tell "the agent did not set it" from "Terraform cannot know it yet".
+
+**The normaliser never guesses a value.** It resolves nothing into a value slot;
+where a reference cannot reach a root-frame value it records a reason and stops
+(`module_count`, `module_for_each`, `module_repeated_unrepresented` — the
+`for_each = toset(...)` shape, which emits no `for_each_expression` at all —
+`module_output`, `module_input_default`, `module_input_repeated`,
+`module_input_chain`, `module_input_opaque`, `iteration`, `local_symbol`,
+`context_symbol`, `expression_not_represented`). That list is
+`docs/design/tf-modules-arm.md` §1 and `docs/design/plan-normaliser-survey.md`
+§5, and it is normative: resolving a reference INTO the slot is the prior art's
+shape mistake, and it destroys the held/contradicted/unresolvable distinction
+the whole three-valued contract rests on.
+
+**The invariant:** a plan with no module in it normalises to itself under
+canonical (sorted-key) JSON, so every existing fixture grades identically before
+and after. `normalise_plan` asserts it on every run, not only in
+`make normaliser-parity` (docs/gates.md#normaliser-parity), and it is why no
+`x_` key is ever added to a root-module resource and why `local.`, `count.` and
+`each.` on a ROOT resource's own expressions are deliberately not marked —
+those are what the existing tiers already own. A module input whose chain leads
+back OUT to one of them is a different case and IS marked, because that mark
+lands on the module resource, where it is the only signal a policy gets.
+
+It runs on `hcl_raw` and `terraconstructs` only; `tests/verify.py` declares
+`normalise_plan: True` there and nothing at all on `awscdk`, which grades a
+CloudFormation template where a nested stack is denied by its own rule rather
+than normalised. The document is written to `<artifact>.normalised.json` beside
+the plan and the raw artifact is left exactly as the toolchain wrote it, because
+the falsifiability collector and the live tiers read that one. A normaliser that
+produces no document is `ENGINE_ERROR` on tier 1 and the existing
+"the proof did not run" outcome on tier 0, with a `plan-normaliser.log` and a
+`tier{0,1}-engine-error` marker — never a silent pass, which is why
+`ENGINE_ERROR` is in `bad_statuses`. It is listed on **every** arm, including
+the ones with no engine that can abort: that list is the equal-strictness
+contract between arms (DECISIONS.md Amendment 29 — a catch may not cost the
+reward on one arm and not on another), so an arm that later gains such an
+engine cannot gain a silent pass with it.
+
 ### Live verifier tiers in `tests/verify.py`
 
 Two optional live tiers are declared in `tests/verify.py`, both
@@ -279,6 +338,10 @@ requirements that the target comments reference:
   time. `OUT=<dir>` keeps the collected artifacts so
   `gates/tier0_parity.py --regrade <dir>` can re-check a grader change
   against them with no toolchain at all.
+- **`make normaliser-parity`** (on demand, not part of `make ci`) has the same
+  requirements and the same runtime class as `make tier0-parity`: it runs every
+  fixture of both Terraform-shaped arms for real, and `OUT=<dir>` /
+  `--regrade <dir>` work the same way.
 - **`make check-paths`** runs the arm's real toolchain against a hand-authored,
   oracle-correct reference fixture at
   `generator/tests/fixtures/<spec-id>/<arm>/`, so it needs the same toolchain

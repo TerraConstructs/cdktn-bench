@@ -8,11 +8,12 @@
 #   make check-paths SPEC=specs/_toy/toy-ssm-parameter.yaml
 #   make grading-proof SPEC=specs/_toy/toy-ssm-parameter.yaml
 #   make tier0-parity SPEC=specs/_toy/toy-ssm-parameter.yaml
+#   make normaliser-parity SPEC=specs/_toy/toy-ssm-parameter.yaml
 #   make hcl-merge-bytes SPEC=specs/foo.yaml REUSE=dir
 #   make gen-all      # regenerate every specs/*.yaml (skips specs/_toy/)
 #   make parity-all    # parity-check every specs/*.yaml (skips specs/_toy/)
 
-.PHONY: gen parity falsifiability check-paths tier1-coverage grading-proof gen-all parity-all validate-spec tier0-parity tier0-parity-all hcl-merge-bytes
+.PHONY: gen parity falsifiability check-paths tier1-coverage grading-proof gen-all parity-all validate-spec tier0-parity tier0-parity-all normaliser-parity normaliser-parity-all hcl-merge-bytes
 
 # Validate a spec against generator/spec_model.py without generating anything.
 validate-spec:
@@ -85,6 +86,23 @@ tier0-parity:
 
 tier0-parity-all:
 	uv run python gates/tier0_parity.py --all $(if $(OUT),--out $(OUT),)
+
+# Zero-drift gate on the plan normaliser: grade every reference and broken
+# fixture of both Terraform-shaped arms with the RAW plan and with the
+# NORMALISED one, and require identical per-assert tier-0 outcomes, identical
+# tier-1 deny/not_verifiable sets, and -- for a plan with no module in it,
+# which is every fixture in the corpus today -- canonical byte identity of the
+# two documents. On demand and not in `make ci`, exactly like tier0-parity and
+# for the same reason: it runs every fixture for real and needs the host
+# toolchain. Run it when the normaliser, the tier-0 compiler or a policy
+# changes. `OUT=<dir>` keeps the collected artifacts so `--regrade <dir>`
+# re-checks a normaliser change in seconds. Exit 3 = NOT_AUTHORED.
+normaliser-parity:
+	@if [ -z "$(SPEC)" ]; then echo "usage: make normaliser-parity SPEC=specs/foo.yaml [OUT=dir]" >&2; exit 2; fi
+	uv run python gates/plan_normaliser_parity.py $(SPEC) $(if $(OUT),--out $(OUT),)
+
+normaliser-parity-all:
+	uv run python gates/plan_normaliser_parity.py --all $(if $(OUT),--out $(OUT),)
 
 # Byte gate on the lifted HCL pre-parser: /logs/verifier/oracle-input.json must
 # be byte-for-byte what a baseline copy of the program from REV writes, for the

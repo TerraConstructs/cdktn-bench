@@ -38,7 +38,10 @@ CONFIG = {'spec_id': 'iam-managed-policy-exclusive-vs-attachment',
            'not_verifiable_query': 'data.cdktn_bench.iam_managed_policy_exclusive_vs_attachment.not_verifiable',
            'hcl': None,
            'hardened': False,
-           'bad_statuses': ['FAIL', 'TOOL_MISSING', 'SKIPPED_STUB']},
+           'bad_statuses': ['FAIL',
+                            'TOOL_MISSING',
+                            'SKIPPED_STUB',
+                            'ENGINE_ERROR']},
  'idempotence': None,
  'teardown': None}
 

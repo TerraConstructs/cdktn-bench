@@ -40,7 +40,10 @@ CONFIG = {'spec_id': 's3-notification-authoritative-singleton',
            'not_verifiable_query': 'data.cdktn_bench.s3_notification_authoritative_singleton.not_verifiable',
            'hcl': None,
            'hardened': False,
-           'bad_statuses': ['FAIL', 'TOOL_MISSING', 'SKIPPED_STUB']},
+           'bad_statuses': ['FAIL',
+                            'TOOL_MISSING',
+                            'SKIPPED_STUB',
+                            'ENGINE_ERROR']},
  'idempotence': None,
  'teardown': None}
 

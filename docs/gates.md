@@ -477,6 +477,79 @@ not be graded at all. `3` = `NOT_AUTHORED`: no fixture produced a gradeable
 artifact, the repo's convention for "non-gating because its prerequisite is not
 authored yet".
 
+## normaliser-parity
+
+`gates/plan_normaliser_parity.py` — `make normaliser-parity SPEC=… [OUT=dir]`,
+`make normaliser-parity-all`. **On demand, NOT in `make ci`**, for the same
+reason as `tier0-parity`: it runs every fixture for real and needs the host
+toolchain. Run it when the plan normaliser, the tier-0 compiler or a policy
+changes.
+
+The plan normaliser (docs/generator.md#the-plan-normaliser-in-teststierspy)
+hoists module resources into `planned_values.root_module.resources`, the shape
+every assert and policy already addresses. It runs on both Terraform-shaped
+arms for **every** spec, not only the module ones — so the whole corpus's
+grading now flows through it, and the corpus has no module in it. This gate is
+the proof that nothing moved. For each collected artifact it grades the RAW
+document and the NORMALISED one and requires:
+
+| compared | requirement |
+|---|---|
+| tier 0 | identical per-assert three-valued outcome, from the task's own `tests/ops.py` |
+| tier 1 | identical `deny` and `not_verifiable` SETS from the task's own `policy.rego` — the rule fired or it did not, and OPA's ordering is not part of the contract |
+| the documents | canonical (sorted-key) byte identity |
+
+The `awscdk` arm is not collected at all: its CONFIG declares no normaliser, so
+re-grading it would report agreement about a mechanism that did not run.
+
+### A module-shaped fixture is held to the opposite contract
+
+On a plan that does contain a module the normaliser is SUPPOSED to change the
+grading — that is the mechanism, not drift — so none of the three above is
+required there. What the gate requires instead is that the change runs in the
+loud direction: a tier-0 assert may move OFF `unresolvable`, which is the
+module resource becoming visible to a grader that could not see it, and may
+never move ONTO it. Its tier-1 sets and its bytes are printed as "the hoist
+changed, in the loud direction" rather than demanded, and whether the fixture's
+reward still lands where the spec says is `make falsifiability`'s question.
+
+The corpus has exactly one such fixture:
+`s3-notification-authoritative-singleton/hcl-raw/broken/all-wiring-hidden-inside-a-module`,
+the deliberate false-fail where correct wiring is hidden in a `module` block.
+Its seven tier-0 asserts were all `unresolvable` (the resources were invisible)
+and are all `held` on the normalised document (the wiring really is correct).
+Its 0.0 therefore rests entirely on that scenario's tier-1 deny for module use
+— and since the normaliser drops `child_modules`, the surviving half of that
+deny is the one reading `configuration.root_module.module_calls`
+(oracles/rego/README.md). A change that stopped preserving `module_calls` would
+turn that fixture into a silent 1.0; `make falsifiability` on the spec is what
+holds it.
+
+The normaliser is imported from `generator/verify_py.py`'s own `TIERS_PY`
+template rather than from a task dir, so the gate runs before the corpus is
+regenerated as well as after.
+
+Fixtures come from `gates/artifact_collector.py`, exactly as `tier0-parity`'s
+do, and `OUT=<dir>` / `--regrade <dir>` re-check a normaliser change against a
+collected tree in seconds with no toolchain.
+
+### What it cannot prove
+
+**It grades the artifacts that exist.** All but one fixture in the corpus is
+module-free, so what this gate mostly proves is the zero-drift half: the
+normalised document is the identical document. That the hoist grades a
+module-shaped plan CORRECTLY — as opposed to loudly — is pinned on hand-written
+plan JSON in `generator/tests/test_plan_normaliser.py`: a silent drop, two
+resources landing at one address, an overwritten root resource, a deposed
+object taking the live resource's unknowns. A module-shaped fixture per catch
+is M3 phase 3B, which waits on the vendored modules of phase 4 because a host
+gate cannot `terraform init` a module it cannot resolve offline.
+
+### Exit codes
+
+`0` = no drift. `1` = drift, or an artifact that could not be graded at all.
+`3` = `NOT_AUTHORED`: no fixture produced a gradeable artifact.
+
 ## hcl-merge-bytes
 
 `gates/hcl_merge_bytes.py` — `make hcl-merge-bytes SPEC=… [REUSE=dir] [REV=rev]`,

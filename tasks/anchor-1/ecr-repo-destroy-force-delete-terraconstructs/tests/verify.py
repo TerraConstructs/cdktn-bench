@@ -48,7 +48,10 @@ CONFIG = {'spec_id': 'ecr-repo-destroy-force-delete',
            'not_verifiable_query': 'data.cdktn_bench.ecr_repo_destroy_force_delete.not_verifiable',
            'hcl': None,
            'hardened': False,
-           'bad_statuses': ['FAIL', 'TOOL_MISSING', 'SKIPPED_STUB']},
+           'bad_statuses': ['FAIL',
+                            'TOOL_MISSING',
+                            'SKIPPED_STUB',
+                            'ENGINE_ERROR']},
  'idempotence': None,
  'teardown': {'label': 'teardown',
               'arm': 'terraconstructs',
@@ -90,6 +93,7 @@ CONFIG = {'spec_id': 'ecr-repo-destroy-force-delete',
               'default': {'outcome': 'destroy_failed',
                           'reason': 'the destroy command exited $down_rc -- the '
                                     "agent's teardown does not leave the account "
-                                    'clean. See teardown.log'}}}
+                                    'clean. See teardown.log'}},
+ 'normalise_plan': True}
 
 raise SystemExit(tiers.main(CONFIG, sys.argv[1:]))

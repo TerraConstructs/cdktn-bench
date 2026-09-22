@@ -2463,13 +2463,21 @@ def build_verify_config(spec: Spec, arm: Arm, step: Step | None = None) -> dict:
     # and one identity domain (logical ids) is what makes cross-arm
     # equal-strictness grading structural rather than a review promise.
     hcl = hcl_input_mode(spec, arm)
+    # The plan normaliser (docs/design/tf-modules-arm.md, "do the oracle tiers
+    # survive modules?") hoists module resources into the shape every assert
+    # and policy addresses. Terraform shapes only: the awscdk arm grades a
+    # CloudFormation template, where a nested stack is DENIED by its own rule
+    # rather than normalised.
+    normalise = arm in ("hcl_raw", "terraconstructs")
     # ENGINE_ERROR -- "the oracle did not run" -- must never be scored as a
-    # pass; it is run-invalidating exactly as TOOL_MISSING is. It is only a
-    # reachable status where the hardened eval path is emitted, which is the
-    # hcl_traversal arms.
-    bad_statuses = ["FAIL", "TOOL_MISSING", "SKIPPED_STUB"]
-    if hcl is not None:
-        bad_statuses.append("ENGINE_ERROR")
+    # pass; it is run-invalidating exactly as TOOL_MISSING is. Listed on EVERY
+    # arm rather than only where it is reachable (the hardened eval path of an
+    # hcl_traversal arm, and the plan normaliser), because this list is the
+    # equal-strictness contract between the arms (DECISIONS.md Amendment 29 --
+    # a catch may not cost the reward on one arm and not on another): a status
+    # an arm cannot report costs it nothing, and an arm that LATER gains the
+    # mechanism must not gain a silent pass with it.
+    bad_statuses = ["FAIL", "TOOL_MISSING", "SKIPPED_STUB", "ENGINE_ERROR"]
     tier1: dict = {
         "engine": "opa",
         "header": "OPA/Rego",
@@ -2497,7 +2505,7 @@ def build_verify_config(spec: Spec, arm: Arm, step: Step | None = None) -> dict:
     # scenario and as no result on another biases every cross-arm comparison the
     # scenario exists to make.
     live_here = spec.verifier.live_check if step is None else step_live_check(spec, step)
-    return {
+    config = {
         "spec_id": spec.id,
         "arm": arm,
         "step": None if step is None else step.name,
@@ -2509,6 +2517,11 @@ def build_verify_config(spec: Spec, arm: Arm, step: Step | None = None) -> dict:
         "idempotence": build_idempotence_config(spec, arm),
         "teardown": build_teardown_config(spec, arm),
     }
+    # Present only where it is true, so an arm that never normalises declares
+    # nothing about a mechanism it does not run.
+    if normalise:
+        config["normalise_plan"] = True
+    return config
 
 
 def build_verify_py_file(spec: Spec, arm: Arm, step: Step | None = None) -> str:

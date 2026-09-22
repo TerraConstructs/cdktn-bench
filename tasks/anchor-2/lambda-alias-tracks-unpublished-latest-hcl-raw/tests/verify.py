@@ -40,7 +40,10 @@ CONFIG = {'spec_id': 'lambda-alias-tracks-unpublished-latest',
            'not_verifiable_query': 'data.cdktn_bench.lambda_alias_tracks_unpublished_latest.not_verifiable',
            'hcl': None,
            'hardened': False,
-           'bad_statuses': ['FAIL', 'TOOL_MISSING', 'SKIPPED_STUB']},
+           'bad_statuses': ['FAIL',
+                            'TOOL_MISSING',
+                            'SKIPPED_STUB',
+                            'ENGINE_ERROR']},
  'idempotence': {'label': 'idempotence',
                  'arm': 'hcl_raw',
                  'enabled_env': 'SPEC_IDEMPOTENCE_ENABLED',
@@ -112,6 +115,7 @@ CONFIG = {'spec_id': 'lambda-alias-tracks-unpublished-latest',
                              'reason': 'idempotence command exited $idem_rc (tool '
                                        'missing, credentials, or a broken working '
                                        'tree) -- see idempotence.log'}},
- 'teardown': None}
+ 'teardown': None,
+ 'normalise_plan': True}
 
 raise SystemExit(tiers.main(CONFIG, sys.argv[1:]))

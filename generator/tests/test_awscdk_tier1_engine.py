@@ -102,8 +102,12 @@ class TestOneEngineOnEveryArm:
         assert "cfn_guard" not in gen.TIERS_PY
 
     def test_hard_failure_reward_gate_is_untouched(self, spec):
+        """ENGINE_ERROR -- "the oracle did not run" -- is listed on every arm,
+        including the arms that cannot report it: the list is the
+        equal-strictness contract, so an arm that later gains an engine able to
+        abort must not gain a silent pass with it."""
         assert _tier1(spec, "awscdk")["bad_statuses"] == [
-            "FAIL", "TOOL_MISSING", "SKIPPED_STUB",
+            "FAIL", "TOOL_MISSING", "SKIPPED_STUB", "ENGINE_ERROR",
         ]
 
     def test_task_toml_explanation_names_the_rego_cfn_bundle(self, spec):

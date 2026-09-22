@@ -54,6 +54,7 @@ CONFIG = {'spec_id': 's3-notification-authoritative-singleton',
                             'SKIPPED_STUB',
                             'ENGINE_ERROR']},
  'idempotence': None,
- 'teardown': None}
+ 'teardown': None,
+ 'normalise_plan': True}
 
 raise SystemExit(tiers.main(CONFIG, sys.argv[1:]))
