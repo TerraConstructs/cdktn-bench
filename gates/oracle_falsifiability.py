@@ -273,7 +273,7 @@ class RunResult:
     ok: bool
     detail: str
     # Populated whenever this run produced an artifact on a terraform-shaped
-    # arm (hcl_raw/terraconstructs) -- False means this artifact requires a
+    # arm (every arm but awscdk) -- False means this artifact requires a
     # provider genuinely absent from that arm image's own offline mirror
     # (see _check_mirror_coverage). None means the check didn't apply/run.
     mirror_ok: bool | None = None
@@ -418,7 +418,7 @@ def _run_solve(
         # trusting a host-side 1.0. See _check_mirror_coverage.
         mirror_ok: bool | None = None
         mirror_detail = ""
-        if arm in ("hcl_raw", "terraconstructs") and document is not None:
+        if arm != "awscdk" and document is not None:
             mirror_ok, mirror_detail = _check_mirror_coverage(document, arm)
 
         # Full stdout (not truncated) -- observed_tier() must see the
