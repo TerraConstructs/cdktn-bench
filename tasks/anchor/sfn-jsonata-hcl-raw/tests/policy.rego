@@ -47,11 +47,25 @@ state_machines := [pv |
 	pv.type == "aws_sfn_state_machine"
 ]
 
+# A `definition` whose jsonencode() embeds another resource's computed output
+# (a Lambda or role ARN) is OMITTED from planned_values, so no rule below can
+# read the ASL. `x_after_unknown` is the only signal separating that from an
+# unset attribute, and tests/tiers.py stamps it only on a resource hoisted out
+# of a module -- for a root-module one the absent key is the only signal.
+unknown_definition(sm) if object.get(sm, ["x_after_unknown", "definition"], false)
+
+unknown_definition(sm) if object.get(sm.values, "definition", null) == null
+
+known_definition_machines := [sm |
+	some sm in state_machines
+	not unknown_definition(sm)
+]
+
 # `values.definition` is a jsonencode()'d STRING (same |fromjson case the
 # tier-0 asserts document) -- decode it once per state machine resource
 # into the full ASL object.
 definitions := [doc |
-	some sm in state_machines
+	some sm in known_definition_machines
 	doc := json.unmarshal(sm.values.definition)
 ]
 
@@ -62,9 +76,22 @@ definitions := [doc |
 # generator/check_reference_paths.py against arbitrary fixtures, so it must
 # not silently pass on a malformed/empty definition either).
 deny contains msg if {
-	count(state_machines) > 0
+	count(known_definition_machines) > 0
 	count(definitions) == 0
 	msg := "an aws_sfn_state_machine exists, but its definition did not decode into a usable ASL document"
+}
+
+# Fail-closed with the accurate reason: every fact below is UNESTABLISHED,
+# not established-and-violated. This is the verdict such a plan already gets
+# from the tier-0 query-language-is-jsonata assert, whose `|fromjson` over an
+# omitted attribute is unresolvable -- it denies nothing that scored 1.0.
+deny contains msg if {
+	some sm in state_machines
+	unknown_definition(sm)
+	msg := sprintf(
+		"%s: `definition` is plan-time-unknown (it embeds another resource's provider-computed output), so this plan cannot establish that the ASL is JSONata-mode and free of JSONPath artifacts",
+		[sm.address],
+	)
 }
 
 # --- QueryLanguage: belt-and-suspenders alongside the tier-0
@@ -121,6 +148,20 @@ deny contains msg if {
 	# prose instead.
 	msg := sprintf(
 		"%s: JSONata-mode definition contains a raw (un-evaluated) \"$.\"-prefixed JSONPath string literal instead of a proper JSONata expression wrapped in percent-sign-brace delimiters",
+		[sm.address],
+	)
+}
+
+# --- not_verifiable ---------------------------------------------------------
+# Informational: the generated tests/tiers.py tees it to
+# /logs/verifier/tier1-not-verifiable and leaves tier1_status and the reward
+# alone. It names the facts a plan-time-unknown `definition` left unchecked,
+# so a row distinguishes "checked and clean" from "never checkable".
+not_verifiable contains msg if {
+	some sm in state_machines
+	unknown_definition(sm)
+	msg := sprintf(
+		"%s: `definition` is plan-time-unknown, so the six banned-JSONPath-key facts, the raw \"$.\"-literal fact and the QueryLanguage fact were all unresolvable against this plan -- recorded, not guessed either way (the fail-closed deny above carries the verdict)",
 		[sm.address],
 	)
 }
