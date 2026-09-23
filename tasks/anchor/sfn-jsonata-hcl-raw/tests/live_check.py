@@ -215,19 +215,25 @@ def _state_machine_definition_strings(document: dict, family: str) -> list[Any]:
             if isinstance(r, dict)
             and r.get("Type") == "AWS::StepFunctions::StateMachine"
         ]
-    resources = (
-        ((document.get("planned_values") or {}).get("root_module") or {}).get(
-            "resources"
-        )
-        or []
-    )
-    if not isinstance(resources, list):
-        return []
+    root = (document.get("planned_values") or {}).get("root_module") or {}
     return [
         (r.get("values") or {}).get("definition")
-        for r in resources
+        for r in _tf_resources(root)
         if isinstance(r, dict) and r.get("type") == "aws_sfn_state_machine"
     ]
+
+
+def _tf_resources(module: Any) -> list[Any]:
+    """Every resource at every module depth. A state machine composed from a
+    registry module is declared in that module's body, so `terraform show -json`
+    files it under `root_module.child_modules[*]` and a root-only read finds
+    nothing and reports the artifact as carrying no state machine."""
+    if not isinstance(module, dict):
+        return []
+    out = list(module.get("resources") or [])
+    for child in module.get("child_modules") or []:
+        out.extend(_tf_resources(child))
+    return out
 
 
 def _flatten_join(value: Any) -> Any:

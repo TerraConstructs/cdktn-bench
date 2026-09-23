@@ -94,6 +94,7 @@ ARM_SPEC_IDS = frozenset({
     "lambda-log-group-ownership-and-retention",
     "s3-lambda-log-retention",
     "s3-notification-custom-resource-tax",
+    "sfn-jsonata",
 })
 
 

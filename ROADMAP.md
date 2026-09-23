@@ -353,7 +353,7 @@ Phases, each landing on its own:
    until those run.
 6. **Corpus roll-out**, in three slices because the three have different
    blockers.
-   * **Slice A — done, offline. Nine read-only greenfield specs decided, eight
+   * **Slice A — done, offline. Ten read-only greenfield specs decided, nine
      of them enabled**, each with a module-composed reference, a negative
      fixture per catch that applies, and the red-green verdict recorded beside
      every catch a module default moves: `s3-lambda-log-retention`,
@@ -361,11 +361,15 @@ Phases, each landing on its own:
      `caller-identity-arn-as-principal`,
      `lambda-log-group-ownership-and-retention`,
      `asg-launch-template-tag-propagation`,
-     `apigwv2-route-settings-zero-vs-unset`, `apigw-openapi`. The ninth,
+     `apigwv2-route-settings-zero-vs-unset`, `apigw-openapi`, `sfn-jsonata`.
+     The tenth,
      `ecs-swappiness`, is REFUSED in writing: full module fit, but its trap is
      property semantics inside one resource, which this rung cannot measure.
      `falsifiability`, `grading-proof` and `tier1-coverage` are green on every
-     enabled arm of all eight, plus the three pilots as regression; three
+     enabled arm of all nine, plus the three pilots as regression -- with
+     `sfn-jsonata`'s new arm inheriting that spec's own pre-existing tracked
+     tier-1 coverage gap (the non-gating SKIP its other two arms already
+     carried) rather than a new one; three
      policies needed a configuration-side module walk and one needed the
      module-output-edge reading the pilots' acm lesson names. Two rules are new
      and now enforced: an enabled arm with no catch in any `applies_to` is
@@ -379,8 +383,7 @@ Phases, each landing on its own:
      declared inside an installed module body that merge never reads. Either the
      merge learns to read `.terraform/modules/` (a new capability, and the
      agent's own file is no longer the unit graded) or the spec stays off the
-     arm with that stated as the reason. `sfn-jsonata` is the one further
-     read-only spec with no slice and no decision yet.
+     arm with that stated as the reason.
    * **Slice C — the six mutating/brownfield specs, blocked on two things.**
      `apigw-redeploy`, `ecr-repo-destroy-force-delete`,
      `lambda-alias-tracks-unpublished-latest`, `named-resource-replacement`,

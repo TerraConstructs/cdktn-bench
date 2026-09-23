@@ -32,7 +32,7 @@ from `registry.terraform.io/v1/modules/terraform-aws-modules/<name>/aws`.
 | s3-lambda-log-retention | cloudwatch_log_group, iam_role, lambda_function/permission, s3_bucket_notification, s3_bucket | `lambda` + `s3-bucket//modules/notification` | full |
 | s3-notification-authoritative-singleton | s3_bucket, lambda_function/permission, sns_topic(_policy), iam_role_policy, s3_bucket_notification | `s3-bucket//modules/notification` + `lambda` + `sns` | full |
 | s3-notification-custom-resource-tax | s3_bucket, lambda_function/permission, iam_role, s3_bucket_notification | `s3-bucket//modules/notification` + `lambda` | full |
-| sfn-jsonata | sfn_state_machine, iam_role | `step-functions` (not in current 16-set) | full, needs vendoring |
+| sfn-jsonata | sfn_state_machine, iam_role | `step-functions` 5.1.1 (vendored) | full; arm ENABLED |
 | singleton-child-resource-clobber | s3_bucket, s3_bucket_lifecycle_configuration | `s3-bucket` root (`lifecycle_rule`) | full |
 
 No module exists on the registry for API Gateway REST v1 (`aws_api_gateway_rest_api`
@@ -172,6 +172,14 @@ map onto `policies` (map(string), default `{}`) and `trust_policy_permissions`
 **sfn-jsonata**: `step-functions@5.1.1` root takes `definition` as a single
 string var with no schema over its contents — the JSONata-vs-JSONPath mistake
 lives entirely inside that string on every arm; module changes nothing.
+The measurement that had to precede enabling: `main.tf:25` assigns
+`definition = var.definition` with no `jsonencode`/`templatefile` wrapper and no
+value the module computes interpolated in, so the document stays plan-time-known
+and the tier-0 `|fromjson` asserts resolve — had the module built the ASL around
+the role ARN it creates, a correct solution would have scored 0.0. `create_role`
+defaults true, so one call composes the state machine, the execution role and
+the `states.<region>.amazonaws.com` trust policy and nothing stays raw. Both
+catches measured unchanged in tier and mistake; no `hcl_modules_override`.
 
 ## 3. Provider requirements per module@version
 

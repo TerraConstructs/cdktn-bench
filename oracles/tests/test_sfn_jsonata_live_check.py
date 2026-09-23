@@ -24,7 +24,7 @@ LIVE_CHECK_COPIES = sorted(REPO_ROOT.glob("tasks/*/sfn-jsonata-*/tests/live_chec
 
 # specs/sfn-jsonata.yaml enables exactly these arms, and each enabled arm's
 # task dir carries the same hand-authored oracle.
-ENABLED_ARMS = ("awscdk", "hcl-raw")
+ENABLED_ARMS = ("awscdk", "hcl-modules", "hcl-raw")
 
 
 def _load():
@@ -283,6 +283,32 @@ def test_a_plan_time_unknown_definition_has_its_own_kind() -> None:
         lc.extract_definition(document, "tf")
     assert exc.value.kind == "plan-unknown-definition"
     assert "known after apply" in str(exc.value)
+
+
+def test_a_state_machine_inside_a_module_body_is_found() -> None:
+    """A state machine composed from a registry module is declared in that
+    module's body, so `terraform show -json` files it under
+    `root_module.child_modules[*]`. A root-only read would report the artifact
+    as carrying no state machine and score the whole arm not_verifiable."""
+    document = {
+        "planned_values": {
+            "root_module": {
+                "child_modules": [
+                    {
+                        "address": "module.order_batch",
+                        "resources": [
+                            {"type": "aws_iam_role", "values": {"name": "sfn-exec"}},
+                            {
+                                "type": "aws_sfn_state_machine",
+                                "values": {"definition": json.dumps(DEFINITION)},
+                            },
+                        ],
+                    }
+                ]
+            }
+        }
+    }
+    assert lc.extract_definition(document, "tf") == DEFINITION
 
 
 def test_unparseable_definition_json_is_not_verifiable() -> None:

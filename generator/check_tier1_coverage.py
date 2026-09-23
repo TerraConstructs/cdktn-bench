@@ -119,6 +119,10 @@ _KNOWN_UNCOVERED_GAP: dict[tuple[str, str], int] = {
     ("ecs-swappiness", "terraconstructs"): 1,
     ("sfn-jsonata", "awscdk"): 7,
     ("sfn-jsonata", "hcl_raw"): 6,
+    # Same tracked gap as hcl_raw, and the same one: this arm grades the
+    # identical seven tier-1 asserts through the identical Rego bundle, and
+    # the one catch that predicts tier 1 covers one of them.
+    ("sfn-jsonata", "hcl_modules"): 6,
     ("toy-ssm-parameter", "awscdk"): 1,
     ("toy-ssm-parameter", "hcl_raw"): 1,
     ("toy-ssm-parameter", "terraconstructs"): 1,

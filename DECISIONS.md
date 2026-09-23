@@ -8683,8 +8683,8 @@ the `deny` set discarded, which is why a tier-1 FAIL now prints one `DENY:` line
 per message and a non-zero `opa eval` reports ENGINE_ERROR with its stderr.
 
 **Phase 6 slice A, offline** (this amendment stays DRAFT: it promotes on the live
-trials, which need the operator's own environment). Nine read-only greenfield
-specs decided, eight enabled; `ecs-swappiness` is refused in writing — full
+trials, which need the operator's own environment). Ten read-only greenfield
+specs decided, nine enabled; `ecs-swappiness` is refused in writing — full
 module fit, but its trap is property semantics inside one resource, and
 `ecs//modules/container-definition` `jsonencode()`s the trapped fields into the
 same `container_definitions` string the raw resource stores, so both tiers would
@@ -8764,6 +8764,25 @@ through the loopback registry BEFORE the decision was taken:
   The route→integration→function walk needed the configuration-side module walk
   plus the module-output-edge reading, and the `GET /orders` route is anchored on
   `planned_values` because inside a module body its `route_key` is `each.key`.
+- `sfn-jsonata` — left out of the first pass by omission, decided here: no catch
+  removed, no tier moved, no Rego change, and no `hcl_modules_override`. The
+  measurement that gated the decision is whether the module makes `definition`
+  plan-time-unknown, because a module that built the ASL around the execution-role
+  ARN it creates would score a CORRECT solution 0.0 at tier 0 on the `|fromjson`
+  path. It does not: `step-functions@5.1.1` declares `definition` as a plain
+  string variable and assigns it straight to the resource attribute with no
+  wrapper and nothing module-computed interpolated in, so the document reaches
+  `planned_values` verbatim and the normaliser hoists the resource out of the
+  module body. `create_role` defaults true, so one call composes the state
+  machine, its execution role and the trust policy and no raw resource is left.
+  Both catches are reachable unchanged: the ResultPath fixture is denied at tier 1
+  with the same message hcl_raw gets, and the live-only JSONata catch keeps its
+  static-indistinguishability proof, which needed one new elision — with a module
+  in the plan Terraform emits `relevant_attributes` in map-iteration order, so
+  that list is sorted before the two plans are compared. The arm inherits
+  hcl_raw's own tracked tier-1 coverage gap (seven tier-1 asserts, one catch
+  predicting tier 1) rather than a new one, recorded in
+  `generator/check_tier1_coverage.py`.
 - `apigw-openapi` — PARTIAL FIT and that is the point: the registry publishes no
   API Gateway REST v1 module, so every resource the catches live on stays raw HCL
   and only the Lambda side is composed. No Rego change and no catch moved. A rung

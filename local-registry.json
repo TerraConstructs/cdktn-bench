@@ -291,6 +291,10 @@
         "path": "tasks/anchor/sfn-jsonata-awscdk"
       },
       {
+        "name": "sfn-jsonata-hcl-modules",
+        "path": "tasks/anchor/sfn-jsonata-hcl-modules"
+      },
+      {
         "name": "sfn-jsonata-hcl-raw",
         "path": "tasks/anchor/sfn-jsonata-hcl-raw"
       },
