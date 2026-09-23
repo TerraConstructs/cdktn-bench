@@ -17,6 +17,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import gen
 from gen import LIVE_LIB_PY, write_tests_dir
 from spec_model import load_spec
 
@@ -26,7 +27,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # call count every composite bound below is asserted against.
 FATTEST_ORACLE_CALLS = 6
 SPEC = REPO_ROOT / "specs" / "named-resource-replacement.yaml"
-LIVE_CHECK = REPO_ROOT / "tasks/anchor-1/named-resource-replacement-awscdk/tests/live_check.py"
+# Resolved through the generator, never spelled out: a task's shard is
+# `generator/shards.toml` arithmetic, so a literal path here goes stale the next
+# time a shard is added and the failure reads as a missing file.
+LIVE_CHECK = gen.task_dir(load_spec(SPEC), "awscdk") / "tests" / "live_check.py"
 
 
 def _load(name: str, path: Path):

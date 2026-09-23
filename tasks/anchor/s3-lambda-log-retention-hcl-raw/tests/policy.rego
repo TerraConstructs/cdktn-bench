@@ -1,146 +1,240 @@
-# Hand-authored (Slice D, 2026-08-06) -- NOT a generator stub. emit_oracles()
-# never overwrites this file once it exists (specs/SCHEMA.md §8.2 rule 7).
+# Hand-authored -- NOT a generator stub; emit_oracles() never overwrites it
+# (specs/SCHEMA.md §8.2 rule 7).
 #
 # Scenario:   s3-lambda-log-retention (specs/s3-lambda-log-retention.yaml)
 # Intent doc: oracles/s3-lambda-log-retention/intent.md
-# Graded against `terraform show -json` plan JSON for BOTH TF-shaped arms
-# (hcl_raw and, when enabled, terraconstructs) -- specs/SCHEMA.md §4.2/§8.
-# `input` at policy-evaluation time is that plan JSON document. A generated
-# tests/static_tiers.sh runs:
-#   opa eval -f raw -I -d policy.rego 'data.cdktn_bench.s3_lambda_log_retention.deny' < plan.json
-# and fails tier-1 iff that result set is non-empty.
+# Graded against `terraform show -json` plan JSON for every TF-shaped arm.
+# Encodes the lambda-permission-scoped-to-bucket-tf assert: the Lambda
+# permission's source_arn must REFERENCE the bucket this scenario creates.
 #
-# Encodes s3-lambda-invoke-permission-scoped's tf_jsonpath spec
-# (lambda-permission-scoped-to-bucket-tf, specs/s3-lambda-log-retention.yaml):
-# the Lambda permission's source_arn must genuinely REFERENCE the S3 bucket
-# this scenario creates -- checked via the plan-time-known graph-edge path
-# (`.configuration...expressions.source_arn.references`), never the
-# plan-time-unknown value path (`.planned_values...values.source_arn`,
-# absent whenever the reference is to another resource's provider-computed
-# `.arn` -- specs/SCHEMA.md §4.2.1, re-verified directly against this
-# scenario's own hcl_raw and terraconstructs reference fixtures at
-# authoring time: `values.source_arn` is entirely absent from a correct,
-# `.arn`-referencing plan's `.planned_values`).
+# Read the graph edge from `.configuration`, never the value: `source_arn` is
+# absent from `.planned_values` whenever it names another resource's
+# provider-computed `.arn` (SCHEMA.md §4.2.1), so a value check would be
+# unfalsifiable in both directions.
 #
-# Two rules, mirroring oracles/rego/toy-ssm-parameter/policy.rego's own
-# graph-edge + fail-closed pair:
-#   1. deny if a permission exists whose principal is s3.amazonaws.com but
-#      whose source_arn expression has no reference to an aws_s3_bucket
-#      resource at all (covers both "hardcoded/wildcard ARN" and "omitted
-#      source_arn" -- both leave `.expressions.source_arn.references` empty
-#      or entirely absent).
-#   2. fail-closed: deny if an aws_s3_bucket resource exists in the plan but
-#      NO aws_lambda_permission resource with principal "s3.amazonaws.com"
-#      exists anywhere -- guards against rule 1's comprehension being
-#      vacuously silent when the permission is omitted entirely rather than
-#      merely mis-scoped (rule 1 only ever inspects EXISTING permission
-#      resources; an empty collection produces zero violations from a
-#      comprehension no matter how badly the plan is missing the resource).
+# Read `principal` from `.planned_values`, never
+# `.expressions.principal.constant_value`: that slot is populated only for a
+# literal written in the resource block, so a principal indirected through a
+# `local`/`var`/`for_each` selected nothing and the fail-closed rule below
+# denied a correct solution.
 #
-# CORRECTION (2026-08-06, benchmark-integrity review finding
-# "s3-lambda-log-retention / policy.rego false-positive on a correct TF
-# solution"): `s3_invoke_permissions` used to select permissions by
-# `r.expressions.principal.constant_value == "s3.amazonaws.com"` --
-# `.expressions.<attr>.constant_value` is ONLY populated when the HCL
-# author wrote a literal string directly in the resource block. Any
-# equally-correct solution that indirects the principal through a `local`,
-# a `var`, or a `for_each` value (an entirely ordinary Terraform idiom) has
-# `.expressions.principal.references` instead, never `.constant_value` --
-# so the old comprehension silently selected NOTHING for such a solution,
-# and rule 2's fail-closed check then (wrongly) denied it as if the
-# permission didn't exist at all. Verified directly: a plan with
-# `values.principal == "s3.amazonaws.com"` in `.planned_values` (always
-# plan-time-known -- SCHEMA.md §4.2's default case, principal is never
-# provider-computed) but supplied via `local.s3_principal` in HCL produced
-# a false deny under the old rule. Fixed by mirroring
-# oracles/rego/apigw-openapi/policy.rego's own pattern exactly: read
-# `principal` from `.planned_values` (join by `.address` to the
-# `.configuration` resource for the source_arn graph-edge check), never
-# from `.expressions...constant_value`.
-#
-# Verified against real `terraform show -json` plan output: this
-# scenario's own reference solution/solve.sh (source_arn references
-# aws_s3_bucket.*.arn -- PASS, deny empty), the s3-lambda-invoke-permission-
-# scoped broken fixture (source_arn omitted entirely -- FAIL, deny
-# non-empty), and a hand-built principal-via-local fixture (FAIL under the
-# OLD rule, PASS -- correctly -- under this one), plus the
-# log-retention-not-a-valid-enum-value broken fixtures (never reach this
-# policy at all -- terraform validate itself rejects them before plan.json
-# exists, see that catch's own description).
+# On hcl_modules both facts sit one scope away from a root-level plan, forced
+# by the module bodies: `s3-bucket//modules/notification` scopes its permission
+# from a `local` (main.tf:73), which plan JSON cannot represent, and `lambda`'s
+# `allowed_triggers` permissions are `for_each`-expanded (main.tf:336,359),
+# which the configuration representation does not expand. `resolved_refs` reads
+# both from the module call's own arguments; at the root it is the identity.
 
 package cdktn_bench.s3_lambda_log_retention
 
 import rego.v1
 
-configured_resources := input.configuration.root_module.resources
+# --------------------------------------------------------------------------
+# The configuration-side module walk (oracles/rego/README.md, "How a policy
+# addresses a module resource")
+#
+# The normalised plan hoists every module resource into
+# `planned_values.root_module.resources`, so the VALUES side needs no
+# module-aware path. The CONFIGURATION side is not hoisted: a module's own
+# resource blocks stay under `configuration.root_module.module_calls.<call>.
+# module.resources`, and the graph-edge fact below is read from there
+# (SCHEMA.md §4.2.1 -- a source_arn VALUE is plan-time-unknown for a correct
+# solution). A rule reading `configuration.root_module.resources` alone sees
+# nothing at all on the hcl_modules arm and grades an empty set.
+#
+# `config_modules` is the root module node plus every module-call body, paired
+# with the path that reached it. A module node path alternates
+# "module_calls" / <call name> / "module", so its length is a multiple of 3 and
+# every third segment is a literal -- that shape is the filter, because `walk`
+# yields every sub-object in the document. For a plan with no module in it the
+# set is exactly `[[], root_module]` and every rule below reduces to what it
+# was before this walk existed.
+# --------------------------------------------------------------------------
+
+segment_ok(p, i) if {
+	i % 3 == 0
+	p[i] == "module_calls"
+}
+
+segment_ok(p, i) if i % 3 == 1
+
+segment_ok(p, i) if {
+	i % 3 == 2
+	p[i] == "module"
+}
+
+is_module_node_path(p) if {
+	count(p) % 3 == 0
+	every i, _ in p {
+		segment_ok(p, i)
+	}
+}
+
+config_modules contains [p, m] if {
+	walk(input.configuration.root_module, [p, m])
+	is_module_node_path(p)
+	is_object(m)
+}
+
+config_resources contains [p, r] if {
+	some [p, m] in config_modules
+	some r in m.resources
+	is_object(r)
+}
+
+# The address prefix a resource configured at module node path `p` carries in
+# `planned_values` after hoisting: "" at the root, "module.<call>." per level.
+# Instance keys are NOT reconstructed: a module call with count/for_each plans
+# as `module.<call>[k].…`, which no prefix built from the configuration can
+# name; such a resource fails to match its planned twin and is not selected,
+# which is the fail-closed direction.
+module_prefix(p) := concat("", [sprintf("module.%s.", [n]) |
+	some i, n in p
+	i % 3 == 1
+])
+
+# The `module_calls.<call>` node that instantiated module node path `p`: the
+# same path with its trailing "module" segment dropped.
+calling_node(p) := object.get(input.configuration.root_module, array.slice(p, 0, count(p) - 1), {})
+
+# The prefix the CALLER of module node path `p` carries.
+parent_prefix(p) := module_prefix(array.slice(p, 0, count(p) - 3))
+
+references(r, attribute) := object.get(object.get(r, "expressions", {}), attribute, {}).references
+
+# Every reference in every argument of a module call, in one set. This is the
+# only resolution available for the two things a module body cannot express
+# (oracles/rego/README.md): a `local`, which plan JSON has no representation of
+# at all, and an `each.value` on a resource whose `for_each` collection the
+# document does not expand. It resolves the fact to the CALL rather than to one
+# of its arguments, so a reference sitting in a different argument of the same
+# call also satisfies it -- the bounded strictness loss of reading one scope up.
+call_references(p) := {ref |
+	some _, expression in object.get(calling_node(p), "expressions", {})
+	some ref in object.get(expression, "references", [])
+}
+
+# The module inputs a `for_each`-expanded resource iterates: `each.value.x`
+# names one element of that collection, so the argument the caller passed for
+# it is what decides the fact.
+for_each_inputs(r) := {name |
+	some ref in object.get(object.get(r, "for_each_expression", {}), "references", [])
+	startswith(ref, "var.")
+	name := split(trim_prefix(ref, "var."), ".")[0]
+}
+
+# `attribute`'s references spelled in the caller's address domain.
+#
+# At the root (`module_prefix` empty, no `var.`/`each.`/`local.` hop possible
+# against a caller that does not exist) this is the reference list verbatim --
+# the hcl_raw and terraconstructs reading, unchanged. Inside a module the
+# resource names the module's own input or iteration variable, and the
+# reference that decides the fact is what the caller passed.
+resolved_refs(p, r, attribute) := direct | through_var | through_each | through_local if {
+	direct := {ref |
+		some ref in references(r, attribute)
+		not startswith(ref, "var.")
+		not startswith(ref, "each.")
+		not startswith(ref, "local.")
+	}
+	through_var := {qualified |
+		some ref in references(r, attribute)
+		startswith(ref, "var.")
+		name := split(trim_prefix(ref, "var."), ".")[0]
+		some arg in references(calling_node(p), name)
+		qualified := concat("", [parent_prefix(p), arg])
+	}
+	through_each := {qualified |
+		some ref in references(r, attribute)
+		startswith(ref, "each.")
+		some name in for_each_inputs(r)
+		some arg in references(calling_node(p), name)
+		qualified := concat("", [parent_prefix(p), arg])
+	}
+	through_local := {qualified |
+		some ref in references(r, attribute)
+		startswith(ref, "local.")
+		some arg in call_references(p)
+		qualified := concat("", [parent_prefix(p), arg])
+	}
+}
+
+# The `[prefix, type, name]` key that joins a configuration resource to its
+# planned instances across both sides of the hoist. Not `.address`: a
+# `count`/`for_each` meta-argument makes the planned address
+# `<address>[key]` while the configuration address stays `<address>`, and an
+# `.address` join silently selects NOTHING for such a resource -- a correct
+# solution scored 0.0 that way on a sibling scenario.
+planned_prefix(r) := concat("", [sprintf("%s.", [segment]) |
+	some segment in object.get(r, "x_module_path", [])
+])
 
 planned_resources := input.planned_values.root_module.resources
 
-s3_buckets := [r |
-	some r in configured_resources
+created_buckets := [r |
+	some r in planned_resources
 	r.type == "aws_s3_bucket"
 ]
 
-# principal is always plan-time-known (a static agent-authored literal,
-# never provider-computed -- same rationale as apigw-openapi's own
-# `permitted_principals`), so read it from `.planned_values` and join back
-# to the `.configuration` resource below for the source_arn graph-edge
-# check. See the ROUND 15 note under this comment for why that join is on
-# `[type, name]` and not on `.address`.
-# ROUND 15 (2026-08-24) -- THE JOIN IS ON `[type, name]`, NOT ON `.address`.
+# A bucket created INSIDE a module call is named by the caller through that
+# call's output (`module.<call>.s3_bucket_arn`), never by the bucket's own
+# hoisted address. With no module-created bucket the set is empty, this second
+# reading never holds, and the bare-address match below is the whole rule.
+created_bucket_call_prefixes := {prefix |
+	some r in created_buckets
+	startswith(r.address, "module.")
+	prefix := concat("", ["module.", split(trim_prefix(r.address, "module."), ".")[0], "."])
+}
+
+references_a_created_bucket(refs) if {
+	some ref in refs
+	regex.match(`^aws_s3_bucket\.`, ref)
+}
+
+references_a_created_bucket(refs) if {
+	some ref in refs
+	some prefix in created_bucket_call_prefixes
+	startswith(ref, prefix)
+}
+
+# principal is always plan-time-known (a static literal, never
+# provider-computed), so read it from `.planned_values` and join back to the
+# `.configuration` resource for the source_arn graph-edge check. A comprehension
+# over `.expressions.principal.constant_value` instead selects NOTHING whenever
+# the principal is indirected through a `local`, a `var` or a `for_each` value,
+# and the fail-closed rule then denies a correct solution.
 #
-# The `.address` join above was latent-broken in exactly the way
-# oracles/rego/s3-notification-authoritative-singleton/policy.rego's was,
-# and it is fixed here at the same time so the pattern does not survive by
-# being copied: a `count`/`for_each` meta-argument on the permission makes
-# the PLANNED address `aws_lambda_permission.<name>[0]` while the
-# CONFIGURATION address stays `aws_lambda_permission.<name>`. The lookup
-# never matches, `s3_invoke_permissions` comes back EMPTY, the source_arn
-# scoping rule is silently disabled, and the fail-closed fallback fires with
-# a message the plan flatly contradicts. A fully correct solution with
-# `count = 1` added scored REWARD 0.0 on the sibling scenario, executed.
-#
-# A SET of `[type, name]` pairs, not an object keyed by them: a
-# `for_each`-expanded permission has N planned instances sharing one key,
-# and an object rule binding one key to two different principals raises
-# `eval_conflict_error`, which ABORTS evaluation and scores a correct
-# solution 0.0 with no deny message at all. A set cannot conflict.
-s3_invoke_principal_keys := {[r.type, r.name] |
+# A SET of keys, not an object keyed by them: a `for_each`-expanded permission
+# has N planned instances sharing one key, and an object rule binding one key to
+# two different principals raises `eval_conflict_error`, which aborts evaluation
+# and scores a correct solution 0.0 with no deny message at all.
+s3_invoke_principal_keys := {[planned_prefix(r), r.type, r.name] |
 	some r in planned_resources
 	r.type == "aws_lambda_permission"
 	object.get(r, ["values", "principal"], null) == "s3.amazonaws.com"
 }
 
-permission_configs := [r |
-	some r in configured_resources
+s3_invoke_permissions := [[p, r] |
+	some [p, r] in config_resources
 	r.type == "aws_lambda_permission"
+	[module_prefix(p), r.type, r.name] in s3_invoke_principal_keys
 ]
-
-s3_invoke_permissions := [r |
-	some r in permission_configs
-	[r.type, r.name] in s3_invoke_principal_keys
-]
-
-source_arn_references(rp) := object.get(rp.expressions.source_arn, "references", [])
-
-references_bucket(rp) if {
-	some ref in source_arn_references(rp)
-	regex.match(`^aws_s3_bucket\.`, ref)
-}
 
 deny contains msg if {
-	some rp in s3_invoke_permissions
-	not references_bucket(rp)
+	some [p, rp] in s3_invoke_permissions
+	not references_a_created_bucket(resolved_refs(p, rp, "source_arn"))
 	msg := sprintf(
 		"%s: principal is s3.amazonaws.com but source_arn does not reference the created aws_s3_bucket (no wildcard/hardcoded/omitted SourceArn permitted)",
-		[rp.address],
+		[concat("", [module_prefix(p), rp.address])],
 	)
 }
 
 # Fail-closed: a bucket exists but no s3.amazonaws.com-principal'd Lambda
-# permission exists anywhere in the plan at all.
+# permission exists anywhere in the plan at all. Counted over PLANNED
+# resources, so a permission declared inside an installed module body counts
+# exactly as the root module's own does.
 deny contains msg if {
-	count(s3_buckets) > 0
-	count(s3_invoke_permissions) == 0
+	count(created_buckets) > 0
+	count(s3_invoke_principal_keys) == 0
 	msg := "an aws_s3_bucket exists, but no aws_lambda_permission resource granting principal s3.amazonaws.com exists anywhere in the plan -- S3 cannot invoke the Lambda function without one"
 }

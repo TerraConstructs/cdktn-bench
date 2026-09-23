@@ -351,7 +351,48 @@ Phases, each landing on its own:
    operator's own environment (shards re-provisioned, `make build-arms`, the
    compose sidecar reachable inside a real trial). Amendment 46 stays DRAFT
    until those run.
-6. **Corpus roll-out.**
+6. **Corpus roll-out**, in three slices because the three have different
+   blockers.
+   * **Slice A — done, offline. Nine read-only greenfield specs decided, eight
+     of them enabled**, each with a module-composed reference, a negative
+     fixture per catch that applies, and the red-green verdict recorded beside
+     every catch a module default moves: `s3-lambda-log-retention`,
+     `s3-notification-custom-resource-tax`, `ddb-gsi-attribute-definitions`,
+     `caller-identity-arn-as-principal`,
+     `lambda-log-group-ownership-and-retention`,
+     `asg-launch-template-tag-propagation`,
+     `apigwv2-route-settings-zero-vs-unset`, `apigw-openapi`. The ninth,
+     `ecs-swappiness`, is REFUSED in writing: full module fit, but its trap is
+     property semantics inside one resource, which this rung cannot measure.
+     `falsifiability`, `grading-proof` and `tier1-coverage` are green on every
+     enabled arm of all eight, plus the three pilots as regression; three
+     policies needed a configuration-side module walk and one needed the
+     module-output-edge reading the pilots' acm lesson names. Two rules are new
+     and now enforced: an enabled arm with no catch in any `applies_to` is
+     refused at spec load, and an arm's shared `environment/**` is prompt
+     surface for every scenario on that arm
+     (`generator/tests/test_scenario_identity.py`).
+   * **Slice B — one spec, owner decision owed.**
+     `s3-notification-authoritative-singleton` is refused by
+     `Spec._hcl_traversal_excludes_hcl_modules`: its oracle resolves symbols out
+     of the `.tf` the AGENT wrote, and on this arm the graded resource is
+     declared inside an installed module body that merge never reads. Either the
+     merge learns to read `.terraform/modules/` (a new capability, and the
+     agent's own file is no longer the unit graded) or the spec stays off the
+     arm with that stated as the reason. `sfn-jsonata` is the one further
+     read-only spec with no slice and no decision yet.
+   * **Slice C — the six mutating/brownfield specs, blocked on two things.**
+     `apigw-redeploy`, `ecr-repo-destroy-force-delete`,
+     `lambda-alias-tracks-unpublished-latest`, `named-resource-replacement`,
+     `s3-acl-vs-object-ownership-log-delivery`,
+     `singleton-child-resource-clobber`. A brownfield spec cannot enable the arm
+     at all until `workspace_seed.entry_file` gains a per-arm `hcl_modules`
+     field with a hand-authored, plan-green module-based seed — the refusal
+     `test_a_brownfield_spec_cannot_enable_it_yet` pins. And each of these runs
+     live, so the fourth arm's tasks have to be promoted on the five shards
+     (`generator/shards.toml`) with the compose sidecar reachable inside a real
+     trial, which is the same operator environment Amendment 46's promotion
+     needs.
 
 ### M3 sharpening — modules and L2s capture *different* knowledge
 Community modules encode **composition** knowledge ("how to wire N resources

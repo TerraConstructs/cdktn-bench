@@ -39,7 +39,7 @@ ASSERTS = [
     # $.Resources[?(@.Type=='AWS::Lambda::Permission')].Properties.Principal
     ('lambda-permission-principal-is-s3',
      '.Resources | .[] | select(.Type=="AWS::Lambda::Permission") | .Properties.Principal',
-     'eq', 's3.amazonaws.com'),
+     'set_eq', ['s3.amazonaws.com']),
 ]
 
 if len(sys.argv) != 2:

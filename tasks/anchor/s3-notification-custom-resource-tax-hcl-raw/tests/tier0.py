@@ -35,7 +35,7 @@ ASSERTS = [
     # $.planned_values.root_module.resources[?(@.type=='aws_lambda_permission')].values.principal
     ('lambda-permission-principal-is-s3',
      '.planned_values.root_module.resources | .[] | select(.type=="aws_lambda_permission") | .values.principal',
-     'eq', 's3.amazonaws.com'),
+     'set_eq', ['s3.amazonaws.com']),
 ]
 
 if len(sys.argv) != 2:

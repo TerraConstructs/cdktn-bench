@@ -567,12 +567,40 @@ the matrix marks hidden or removed:
      shape as `solution/<name>/solve.sh`, a second reference the gate requires
      to score 1.0.
 
+**Three things the arm needs that no other arm does.**
+
+* **A catch, or the arm grades nothing.** `Catch.applies_to` defaults to the
+  three original arms, so enabling a fourth and stopping there leaves it with no
+  negative fixture at all — `gates/oracle_falsifiability.py` reports every catch
+  `N/A` and still exits 0. Refused at spec load now
+  (`Spec._every_enabled_arm_has_a_catch`), so the reminder is a test rather than
+  a habit.
+* **A tier-1 assert that NAMES the arm, or the whole policy is skipped.** With
+  no tier-1 assert listing `hcl_modules`, the generated verifier reports
+  `SKIPPED_NO_ASSERTS` and the composition edge — the one fact this rung exists
+  to grade — is never evaluated. A tier-0-only arm is a legitimate end state
+  only if the spec says so beside the catches.
+* **The arm's own `environment/**` is prompt surface for EVERY scenario on it.**
+  `arms/hcl-modules/environment/` is COPY'd into all of them, so one sentence of
+  arm prose naming a resource type leaks the mechanism to whichever scenario's
+  trap is that type — and to nobody else, which is why it can sit unnoticed
+  until a spec joins the arm. Reword the arm prose and leave the type in
+  `docs/`; never add it to
+  `generator/tests/test_scenario_identity.py::ARM_BOILERPLATE`.
+
 **What goes wrong silently.** A fixture that scores 0.0 because `init` failed
-is not a catch — check the tier and the deny message, not just the reward. A
-reference that scores 1.0 because the module made an assert unresolvable, or
+is not a catch — check the tier and the deny message, not just the reward. The
+arm's whole toolchain is ONE labelled step (`terraform init && validate && plan
+&& show`), so a `PLAN FAILED` row does not say which half refused: read the
+error lines the falsifiability gate quotes under it
+(`toolchain_failure_context`), and require them to name the agent's own value.
+A reference that scores 1.0 because the module made an assert unresolvable, or
 because a tier-1 rule keyed on `configuration.root_module.resources` graded an
 empty set, is an oracle defect and not a pass; `oracles/rego/README.md` has the
-configuration-side walk every policy on this arm needs.
+configuration-side walk every policy on this arm needs. So is a rule keyed on a
+resource's own address when the module hands the caller that resource as an
+OUTPUT instead (`module.<call>.arn`) — fix it at equal strictness on every arm,
+and check the other arms' falsifiability rows have not moved.
 
 ---
 

@@ -373,6 +373,29 @@ arms:
       terraconstructs miss to the tag-propagation trap without checking
       which failure actually occurred.
 
+  hcl_modules:
+    enabled: true
+    reason: >
+      docs/design/hcl-modules-spec-matrix.md §1 gives this scenario a full
+      module fit: `terraform-aws-modules/autoscaling/aws` 9.3.2 authors BOTH
+      resources the trap lives across -- the launch template and the Auto
+      Scaling group -- and `terraform-aws-modules/vpc/aws` 6.7.3 authors the
+      VPC and its two private subnets, so the four-resource wiring the hcl_raw
+      agent assembles by hand becomes two module calls plus the subnet-id
+      output that joins them. The composition this rung measures is the
+      two-mechanism tag split itself, and the module keeps it whole: the
+      `tags` input (autoscaling 9.3.2 variables.tf:13-17) fans out to the
+      ASG's own `tag` blocks with `propagate_at_launch = true`
+      (main.tf:300-307) AND into every launch-template `tag_specifications`
+      entry the call declares (main.tf:1066-1073) -- but it declares none on
+      its own, `tag_specifications` defaulting `null` (variables.tf:750-757),
+      so the volume half still has to be asked for by name. One catch changes
+      character and the change is recorded on the catch itself:
+      `tags-only-on-the-asg-resource` is a `terraform init` rejection on
+      hcl_raw and is ACCEPTED here, turning a loud toolchain failure into a
+      silently half-tagged fleet. Verified against real plans through the
+      loopback registry, not read off the module source.
+
 instruction:
   shared_body: |
     Stand up an Auto Scaling group of worker instances for the batch
@@ -399,6 +422,15 @@ instruction:
         json_fields: []
     hcl_raw:
       language_line: "Author this as hand-written Terraform HCL (no modules)."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields: []
+    hcl_modules:
+      language_line: "Author this as Terraform HCL composed from `terraform-aws-modules` registry modules: they are the real `terraform-aws-modules` sources, served at an allowlisted set of versions you can discover at this environment's registry endpoint."
       output_contract:
         entry_file: main.tf
         artifact_path: plan.json
@@ -441,6 +473,20 @@ catches:
       fails (matching the s3-lambda-log-retention scenario's own
       log-retention-not-a-valid-enum-value precedent for this exact
       "toolchain failure IS the catch" shape).
+      ON hcl_modules THE CATCH CHANGES CHARACTER: the flat map is the
+      module's OWN interface. `tags` (autoscaling 9.3.2 variables.tf:13-17)
+      is accepted, merged into `local.autoscaling_group_tags` and emitted as
+      ASG `tag` blocks with `propagate_at_launch = true` (main.tf:10-14,
+      300-307), so a call that passes only `tags` plans cleanly and tags
+      every launched instance -- and leaves every EBS volume untagged,
+      because the same input reaches a `tag_specifications` entry only if the
+      call declares one (main.tf:1066-1073) and `tag_specifications` defaults
+      `null` (variables.tf:750-757). The loud toolchain rejection becomes a
+      silent half-tagged fleet. Measured on a real plan through the loopback
+      registry: tier 0, `volume-tag-costcenter-present` and
+      `volume-tag-environment-present` -- the tier the `.hcl` column already
+      predicts, reached by a different route.
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       awscdk: "0"
       hcl: "0"
@@ -462,6 +508,12 @@ catches:
       directly at tier 0 (volume-tag-costcenter-present /
       volume-tag-environment-present resolve to zero nodes when the
       `volume` tag_specifications entry is absent).
+      ON hcl_modules the mistake is reachable unchanged: `tag_specifications`
+      is a plain list-of-object passthrough (autoscaling 9.3.2
+      variables.tf:750-757) with no default entry of either resource type, so
+      a call that declares the `instance` entry and stops is exactly this
+      mistake. Measured: tier 0, the same two volume asserts.
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       awscdk: "0"
       hcl: "0"
@@ -489,6 +541,13 @@ catches:
       specifically to prove that tier-1 rule has real, independent bite --
       not merely to document a rule nothing ever falls through to (the
       grading-proof gate's own purpose).
+      ON hcl_modules the two mechanisms stay independent and the catch stays
+      at tier 1: tags written inside a `volume` tag_specifications entry go
+      nowhere near `local.autoscaling_group_tags` (autoscaling 9.3.2
+      main.tf:10-14), so the ASG's own `tag` blocks carry only the module's
+      `Name` tag and no instance-reaching mechanism exists for either
+      required key. Measured: tier 1, both keys denied.
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       awscdk: "1"
       hcl: "1"
@@ -519,6 +578,11 @@ catches:
       the anti-L2 taxonomy's own point, that reaching for a provider-level
       shortcut here misses the resource-specific mechanism the ticket
       actually needs.
+      NOT A MODULE-ARM CATCH: hcl_modules has a working "apply these tags
+      everywhere" input of its own (`tags`, which does reach launched
+      instances), so the provider-level shortcut this catch is about is not
+      the mistake an agent makes there; the half the module input does get
+      wrong is `tags-only-on-the-asg-resource`, which covers it.
     predicted_tier_caught:
       awscdk: "0"
       hcl: "0"
@@ -552,7 +616,7 @@ oracle:
     - name: asg-exists
       description: "An Auto Scaling group exists."
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::AutoScaling::AutoScalingGroup')]"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_autoscaling_group')]"
       op: exists
@@ -560,7 +624,7 @@ oracle:
     - name: launch-template-exists
       description: "A launch template exists (the only reachable path to volume tag_specifications, and on awscdk/terraconstructs the ASG's own construction path for anything other than the legacy LaunchConfiguration shape)."
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::EC2::LaunchTemplate')]"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_launch_template')]"
       op: exists
@@ -591,7 +655,7 @@ oracle:
     - name: asg-min-size-tf
       description: "(hcl_raw + terraconstructs only -- see asg-min-size-cfn for awscdk.) min_size is the number 2."
       tier: "0"
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_autoscaling_group')].values.min_size"
       op: eq
       expected: 2
@@ -607,7 +671,7 @@ oracle:
     - name: asg-max-size-tf
       description: "(hcl_raw + terraconstructs only -- see asg-max-size-cfn for awscdk.) max_size is the number 6."
       tier: "0"
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_autoscaling_group')].values.max_size"
       op: eq
       expected: 6
@@ -615,7 +679,7 @@ oracle:
     - name: launch-template-instance-type
       description: "The launch template's instance type is t3.small -- always a plan-time-known agent-authored literal on every arm, never provider-computed."
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::EC2::LaunchTemplate')].Properties.LaunchTemplateData.InstanceType"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_launch_template')].values.instance_type"
       op: eq
@@ -653,7 +717,7 @@ oracle:
     - name: launch-template-image-id-tf
       description: "(hcl_raw + terraconstructs only -- see launch-template-image-id-present-cfn for awscdk.) The launch template's image_id is the literal WORKER_AMI_ID placeholder."
       tier: "0"
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_launch_template')].values.image_id"
       op: eq
       expected: "ami-0c55b159cbfafe1f0"
@@ -677,7 +741,7 @@ oracle:
         cfn/tf pair in this file; both were resolved directly against a
         hand-built fixture of each shape before being written here.
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::EC2::LaunchTemplate')].Properties.LaunchTemplateData.TagSpecifications[?(@.ResourceType=='volume')].Tags[?(@.Key=='CostCenter')].Value"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_launch_template')].values.tag_specifications[?(@.resource_type=='volume')].tags.CostCenter"
       op: eq
@@ -686,7 +750,7 @@ oracle:
     - name: volume-tag-environment-present
       description: "Same mechanism and shape as volume-tag-costcenter-present, for the Environment=prod tag."
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::EC2::LaunchTemplate')].Properties.LaunchTemplateData.TagSpecifications[?(@.ResourceType=='volume')].Tags[?(@.Key=='Environment')].Value"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_launch_template')].values.tag_specifications[?(@.resource_type=='volume')].tags.Environment"
       op: eq
@@ -730,7 +794,7 @@ oracle:
         files (see rego_hints/cfn_guard_hints below and this file's own
         header comment for why).
       tier: "1"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::AutoScaling::AutoScalingGroup')].Properties.Tags[?(@.Key=='CostCenter')].PropagateAtLaunch"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_autoscaling_group')].values.tag[?(@.key=='CostCenter')].propagate_at_launch"
       op: eq

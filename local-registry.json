@@ -51,6 +51,10 @@
         "path": "tasks/anchor/apigw-openapi-awscdk"
       },
       {
+        "name": "apigw-openapi-hcl-modules",
+        "path": "tasks/anchor/apigw-openapi-hcl-modules"
+      },
+      {
         "name": "apigw-openapi-hcl-raw",
         "path": "tasks/anchor/apigw-openapi-hcl-raw"
       },
@@ -75,12 +79,20 @@
         "path": "tasks/anchor/apigwv2-route-settings-zero-vs-unset-awscdk"
       },
       {
+        "name": "apigwv2-route-settings-zero-vs-unset-hcl-modules",
+        "path": "tasks/anchor/apigwv2-route-settings-zero-vs-unset-hcl-modules"
+      },
+      {
         "name": "apigwv2-route-settings-zero-vs-unset-hcl-raw",
         "path": "tasks/anchor/apigwv2-route-settings-zero-vs-unset-hcl-raw"
       },
       {
         "name": "asg-launch-template-tag-propagation-awscdk",
         "path": "tasks/anchor/asg-launch-template-tag-propagation-awscdk"
+      },
+      {
+        "name": "asg-launch-template-tag-propagation-hcl-modules",
+        "path": "tasks/anchor/asg-launch-template-tag-propagation-hcl-modules"
       },
       {
         "name": "asg-launch-template-tag-propagation-hcl-raw",
@@ -95,6 +107,10 @@
         "path": "tasks/anchor/caller-identity-arn-as-principal-awscdk"
       },
       {
+        "name": "caller-identity-arn-as-principal-hcl-modules",
+        "path": "tasks/anchor/caller-identity-arn-as-principal-hcl-modules"
+      },
+      {
         "name": "caller-identity-arn-as-principal-hcl-raw",
         "path": "tasks/anchor/caller-identity-arn-as-principal-hcl-raw"
       },
@@ -105,6 +121,10 @@
       {
         "name": "ddb-gsi-attribute-definitions-awscdk",
         "path": "tasks/anchor/ddb-gsi-attribute-definitions-awscdk"
+      },
+      {
+        "name": "ddb-gsi-attribute-definitions-hcl-modules",
+        "path": "tasks/anchor/ddb-gsi-attribute-definitions-hcl-modules"
       },
       {
         "name": "ddb-gsi-attribute-definitions-hcl-raw",
@@ -171,6 +191,10 @@
         "path": "tasks/anchor/lambda-log-group-ownership-and-retention-awscdk"
       },
       {
+        "name": "lambda-log-group-ownership-and-retention-hcl-modules",
+        "path": "tasks/anchor/lambda-log-group-ownership-and-retention-hcl-modules"
+      },
+      {
         "name": "lambda-log-group-ownership-and-retention-hcl-raw",
         "path": "tasks/anchor/lambda-log-group-ownership-and-retention-hcl-raw"
       },
@@ -223,6 +247,10 @@
         "path": "tasks/anchor/s3-lambda-log-retention-awscdk"
       },
       {
+        "name": "s3-lambda-log-retention-hcl-modules",
+        "path": "tasks/anchor/s3-lambda-log-retention-hcl-modules"
+      },
+      {
         "name": "s3-lambda-log-retention-hcl-raw",
         "path": "tasks/anchor/s3-lambda-log-retention-hcl-raw"
       },
@@ -245,6 +273,10 @@
       {
         "name": "s3-notification-custom-resource-tax-awscdk",
         "path": "tasks/anchor/s3-notification-custom-resource-tax-awscdk"
+      },
+      {
+        "name": "s3-notification-custom-resource-tax-hcl-modules",
+        "path": "tasks/anchor/s3-notification-custom-resource-tax-hcl-modules"
       },
       {
         "name": "s3-notification-custom-resource-tax-hcl-raw",

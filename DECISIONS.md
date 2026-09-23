@@ -8682,6 +8682,128 @@ reference. The same trial showed the verifier printing a bare tier-1 `FAIL` with
 the `deny` set discarded, which is why a tier-1 FAIL now prints one `DENY:` line
 per message and a non-zero `opa eval` reports ENGINE_ERROR with its stderr.
 
+**Phase 6 slice A, offline** (this amendment stays DRAFT: it promotes on the live
+trials, which need the operator's own environment). Nine read-only greenfield
+specs decided, eight enabled; `ecs-swappiness` is refused in writing — full
+module fit, but its trap is property semantics inside one resource, and
+`ecs//modules/container-definition` `jsonencode()`s the trapped fields into the
+same `container_definitions` string the raw resource stores, so both tiers would
+read a byte-identical artifact. Enabling the arm is now an enumerated decision
+(`generator/tests/test_hcl_modules_arm.py::ARM_SPEC_IDS`) rather than a
+three-pilot exception, and a spec may refuse it in writing rather than only by
+silence.
+
+What the module defaults did to each catch, every verdict measured on a real plan
+through the loopback registry BEFORE the decision was taken:
+
+- `s3-lambda-log-retention` and `s3-notification-custom-resource-tax` — no catch
+  removed, and the matrix was wrong in the same direction on both. The
+  permission-scoping catch is removed only through
+  `s3-bucket//modules/notification`'s own `create_lambda_permission` path;
+  `lambda@8.8.2`'s `allowed_triggers[*].source_arn` reaches it through a
+  published input, so the catch stays with its own fixture and the
+  submodule-authored shape ships as a second reference at 1.0. One
+  `allowed_triggers` entry plans TWO correct permissions (current-version and
+  unqualified-alias), so the tier-0 assert on their principal moved from `eq`
+  (which also demands exactly one resolved node, and therefore scored a CORRECT
+  solution 0.0) to `set_eq` — 0 nodes still fails, an extra wrong principal still
+  fails. The notification submodule writes its target as a `dynamic` block, which
+  Terraform's configuration representation omits, so that rule gained a second
+  reading gated on the `x_unresolved` annotation and resolves the target from the
+  call's own arguments.
+- `ddb-gsi-attribute-definitions` — no catch removed, no tier moved, no Rego
+  change: the policy is entirely values-side and the normaliser hoists module
+  resources. `gsi-missing-entirely` IS the module-default shape
+  (`global_secondary_indexes` defaults `[]`) and the default hides nothing — it
+  is denied at tier 1 by the existence rule. Two catches are decided by the
+  provider's own cross-input checks and land as toolchain-tier failures.
+- `caller-identity-arn-as-principal` — no catch removed, and the arm exposed two
+  oracle defects, both fixed at equal strictness on every arm. The reference
+  scored 0.0 with an empty reference list, because the module authors the bucket
+  policy and its configuration lives in the module body where the `policy`
+  expression is `var.policy`: the fix resolves that one value from the CALL's own
+  `policy` argument and nothing else. Separately, a fully literal policy document
+  is read DURING the plan and lands in `prior_state`, not `planned_values`, so
+  the "and nothing broader" rule was silently unevaluated and `not_verifiable`
+  could not see it either — a pre-existing blind spot the module shape exposed.
+  The tier-0 configuration-side path stays off this arm: one jsonpath cannot
+  union module scopes, and the reason is recorded on the assert.
+- `lambda-log-group-ownership-and-retention` — two catches EXCLUDED, one of them
+  for a reason that is not about the module.
+  `log-group-name-diverges-from-function` is removed through `logging_log_group`,
+  which feeds both the group's `name` and the function's `logging_config.log_group`
+  from one value, and the shape that would have been its fixture scores 1.0 — a
+  correct solution, kept as a second reference. What that does NOT establish is
+  that no module input reaches the divergence at all — one does, measured:
+  `lambda_at_edge = true` names the created group `/aws/lambda/us-east-1.<fn>`
+  (main.tf:279) while `logging_config.log_group` stays the raw, still-null
+  `logging_log_group` (main.tf:142), and that plan scores 0.0 at tier 1. Flipping
+  an edge flag is not the mistake an author of this ticket makes, so it ships as
+  a non-catch negative rather than as the catch's fixture — and it is what makes
+  the arm's tier-1 rule falsifiable here, closing the tier-1 SKIP this row would
+  otherwise have carried. `log-group-left-implicit` is
+  removed by the module creating the group unconditionally, and the one input
+  that reaches it needs a `logs:DescribeLogGroups` `gates/aws_stub.py` does not
+  answer: its fixture would be a failed toolchain step, which is not a catch. The
+  arm's grading-proof row is therefore a tier-1 SKIP — both remaining catches are
+  decided at tier 0.
+- `asg-launch-template-tag-propagation` — no catch removed, and one changes
+  CHARACTER: `tags-only-on-the-asg-resource` is a `terraform` refusal on hcl_raw
+  and is ACCEPTED here, turning a loud toolchain failure into a silently
+  half-tagged fleet. The module's `tags` input fans out to the ASG's own `tag`
+  blocks with `propagate_at_launch = true` but reaches no launch-template
+  `tag_specifications` entry the call does not declare, so the volume half still
+  has to be asked for by name. `provider-default-tags-instead` is excluded: the
+  module has a working tags-everywhere input, so the provider shortcut is not the
+  mistake an author makes there.
+- `apigwv2-route-settings-zero-vs-unset` — no catch removed, and one catch's
+  CONSEQUENCE is removed while its verdict stands. `throttling_burst_limit` is
+  `optional(number, 500)` inside a variable defaulting `{}`, so an unstated burst
+  plans as an explicit 500 rather than the `null` the service applies as 0: still
+  wrong against the ticket's 200, still tier 0, but no longer 429s every request.
+  The route→integration→function walk needed the configuration-side module walk
+  plus the module-output-edge reading, and the `GET /orders` route is anchored on
+  `planned_values` because inside a module body its `route_key` is `each.key`.
+- `apigw-openapi` — PARTIAL FIT and that is the point: the registry publishes no
+  API Gateway REST v1 module, so every resource the catches live on stays raw HCL
+  and only the Lambda side is composed. No Rego change and no catch moved. A rung
+  claiming modules win on composition traps has to be measured on one the modules
+  do not cover.
+
+No catch in slice A needed an `hcl_modules_override`: every measured tier equals
+the `hcl` column the spec already carried.
+
+Three rules are new, each with its enforcement point, and each came from a defect
+this slice hit rather than from review:
+
+- **An enabled arm with no catch naming it is refused at spec load**
+  (`Spec._every_enabled_arm_has_a_catch`). `Catch.applies_to` defaults to the
+  three original arms, so enabling a fourth and stopping there left the arm with
+  no negative fixture — and `gates/oracle_falsifiability.py` reported every catch
+  `N/A` and still exited 0, shipping an arm graded by nothing but its own
+  reference.
+- **An arm's shared `environment/**` is prompt surface for every scenario on that
+  arm.** The hcl-modules preflight explained itself by naming the resource type
+  `caller-identity-arn-as-principal`'s whole trap is about, and it is COPY'd into
+  every image on the arm. Reworded, with the type left in
+  `docs/design/hcl-modules-spec-matrix.md`; scanned at the arm-source layer now,
+  not only in generated bytes
+  (`generator/tests/test_scenario_identity.py::test_shared_arm_image_sources_leak_no_scenario_vocabulary`).
+- **A module-path-tolerant regex is not a module-aware one.** Loosening a
+  reference anchor from `^aws_iam_role\.` to `(^|\.)aws_iam_role\.` also admits
+  `data.aws_iam_role.…` — a role the plan does NOT declare — which is the wrong
+  answer the rule exists to refuse, on all four arms. Anchored to a leading
+  module call path and nothing else, with a negative fixture on hcl_raw and on
+  hcl_modules naming a role looked up by name.
+
+One bounded imprecision is accepted and recorded rather than closed: plan JSON
+represents neither a `local` nor a `dynamic` block, so those two hops resolve an
+edge to the module CALL rather than to one argument of it — a reference to the
+created resource sitting in a DIFFERENT argument of the same call would satisfy
+the rule. And a module call with `count`/`for_each` plans as `module.<call>[k].…`,
+which no configuration-built prefix names; such a resource is not selected, which
+is the fail-closed direction.
+
 ---
 
 ## Amendment 47 — equipping hash scheme 2: Harbor's own equipping channels are in the hash — ACCEPTED

@@ -57,15 +57,30 @@ the module cannot emit a duplicate/ambiguous record for two SANs sharing a name.
 (var:25-28) defaults `true`, so `aws_acm_certificate_validation` is created
 unless the agent explicitly flips it to `false`.
 
-**lambda@8.8.2** (`variables.tf:449-489,837-853`): `log-group-left-implicit`/
+**lambda@8.8.2** (`variables.tf:449-489,837-853`):
 `retention-left-at-the-construct-default`: `cloudwatch_logs_retention_in_days`
-(var:455, default `null`) — unchanged, never-expire by default same as raw.
+(var:455, default `null`) — unchanged, never-expire by default same as raw, and
+the module-default shape is denied at tier 0 with a resolved `0`.
 `log-group-retained-on-delete`: `cloudwatch_logs_skip_destroy` (var:467, default
 `false`) — exposed, safe default, still representable by flipping it.
-`log-group-name-diverges-from-function`: **REMOVED** — `use_existing_cloudwatch_log_group`
-(var:449, default `false`) plus `logging_log_group` (var:849, default `null`)
-mean the module always derives `/aws/lambda/<function_name>` unless the agent
-deliberately overrides it; the drift can't happen by omission.
+`log-group-left-implicit`: **REMOVED**, correcting this file's earlier reading of
+it as unchanged — the module creates `aws_cloudwatch_log_group.lambda`
+unconditionally, so the omission shape cannot produce an implicit group at all.
+The one input that reaches it, `use_existing_cloudwatch_log_group = true`
+(var:449), needs a `logs:DescribeLogGroups` the host stub does not answer
+(`gates/aws_stub.py`), so the fixture would be a failed toolchain step rather
+than a catch; the catch is excluded on this arm until the stub grows that call.
+`log-group-name-diverges-from-function`: **REMOVED VIA `logging_log_group`**
+(var:849), and through a different input than this file first claimed — set, it
+feeds BOTH the created group's `name` and the function's `logging_config.log_group`
+(main.tf:142, 279), and that explicitly wired shape is a CORRECT solution shipping
+as a second reference rather than a fixture. NOT removed from the module as a
+whole: `lambda_at_edge = true` names the group `/aws/lambda/us-east-1.<fn>` at
+main.tf:279 while `logging_config.log_group` stays the raw, unset
+`logging_log_group` at main.tf:142 — the divergence itself, through a published
+input, measured at 0.0 on tier 1. It ships as a non-catch negative (flipping an
+edge flag is not this ticket's plausible mistake) and is what makes the arm's
+tier-1 rule falsifiable.
 
 **lambda//modules/alias@8.8.2** (`variables.tf:1-63`): `alias-still-serves-the-previous-version`/
 `alias-removed-instead-of-repointed`: `function_version` is a required
@@ -94,13 +109,17 @@ alternate-shape risk instead.
 `lambda_notifications`/`sns_notifications`/`sqs_notifications` object types
 have **no `source_arn` override field** — `create_lambda_permission`/`create_sns_policy`
 default `true` and the module computes `source_arn`/policy scope from the
-bucket internally. **REMOVED**: `lambda-permission-not-scoped-to-bucket`
-(s3-lambda-log-retention, s3-notification-custom-resource-tax) and the
-lambda/SNS scoping catches in s3-notification-authoritative-singleton — none
-of them can be produced through the submodule's public interface; only
-reachable by hand-authoring the raw `aws_lambda_permission`/`aws_sns_topic_policy`
-alongside the module, which is the "raw resource stays raw" escape hatch, not
-a module mistake.
+bucket internally. **REMOVED THROUGH THIS SUBMODULE ONLY**: the permission- and
+policy-scoping catches cannot be produced through its public interface, and the
+submodule-authored permission is a correct solution kept as a second reference
+on both s3 specs. It is NOT removed from the arm, which is what this file first
+claimed: `lambda@8.8.2` exposes `allowed_triggers[*].source_arn` (var:429 →
+main.tf:347,369), a published input that reaches the mistake with no raw
+resource anywhere, so `lambda-permission-not-scoped-to-bucket`
+(s3-lambda-log-retention, s3-notification-custom-resource-tax) stays on the arm
+with its own fixture. One `allowed_triggers` entry plans TWO permissions (the
+current-version and unqualified-alias triggers), which is why the tier-0 assert
+on their principal is a `set_eq` rather than an `eq`.
 
 **dynamodb-table@5.5.2** (`variables.tf:13-29,73-77`): `attributes` (list(map),
 default `[]`) and `global_secondary_indexes` (type `any`, default `[]`) are an

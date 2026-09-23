@@ -120,16 +120,16 @@ assert_root_calls_are_registry_sources
 echo "== fixture 1/4: terraform validate (offline) =="
 terraform validate
 
-# NO `terraform plan` HERE, unlike arms/hcl-raw/environment/preflight.sh.
-# Every candidate module in this arm reads `data "aws_caller_identity"` to build
-# an ARN or a policy (docs/design/hcl-modules-spec-matrix.md §5), and no
-# provider `skip_*` flag suppresses an EXPLICIT data source the way
-# skip_requesting_account_id suppresses the provider's own account lookup. Under
-# `--network none` that read does not fail fast, it retries: measured at over
-# four minutes of "Still reading..." before this was removed. The STS stub
-# gates/aws_stub.py answers it in the real gates; a single `docker run` has no
-# stub, so plan here would be a slow way of testing the stub's absence. The
-# toolchain claim this script makes is init + validate, and it makes it fully.
+# NO `terraform plan` HERE, unlike arms/hcl-raw/environment/preflight.sh: this
+# arm's candidate modules read the account-identity data source, no provider
+# `skip_*` flag suppresses an EXPLICIT data source, and under `--network none`
+# that read retries for minutes instead of failing fast. gates/aws_stub.py
+# answers it wherever a plan is actually graded. The claim this script makes is
+# init + validate, and it makes it fully.
+# The resource type stays in docs/design/hcl-modules-spec-matrix.md §5 and out
+# of this file: every scenario's image on this arm COPYs it, so a scenario built
+# on that data source would find its own mechanism spelled out in the agent's
+# image (generator/tests/test_scenario_identity.py).
 
 echo
 echo "== fixture 2/4: module route53 6.5.1, which calls kms 4.0.0 — init =="

@@ -231,6 +231,25 @@ arms:
       `fn.addPermission()` call either, since that call also lives inside
       the loop via `FunctionDestination.bind()`) -- worked around the same
       way, passing one all-optional-fields filter object `{}`.
+  hcl_modules:
+    enabled: true
+    reason: >
+      The trap is composition: a bucket, one function, an invoke permission
+      and a notification, with both graded tier-1 facts being edges between
+      them. docs/design/hcl-modules-spec-matrix.md §1 gives a full fit --
+      `terraform-aws-modules/lambda/aws` 8.8.2 authors the function, its role
+      and (through `allowed_triggers`, variables.tf:429) the permission;
+      `terraform-aws-modules/s3-bucket/aws` 5.16.1 the bucket and its
+      `//modules/notification` submodule the notification. Neither edge closes
+      itself: `lambda_notifications[*].function_arn` and
+      `allowed_triggers[*].source_arn` are both arguments the agent writes, so
+      both catches stay representable and at the same tier. The awscdk-only
+      custom-resource catch is unaffected -- Terraform's provider has a
+      first-class notification resource on every TF-shaped arm, which is what
+      makes this scenario's escape-hatch differential a CFN fact rather than a
+      language fact. The module shape that authors the permission inside the
+      notification submodule is equally correct and is graded as the second
+      reference under solution/reference-alt-module-default-permission/.
 
 instruction:
   shared_body: |
@@ -253,6 +272,15 @@ instruction:
         json_fields: []
     hcl_raw:
       language_line: "Author this as hand-written Terraform HCL (no modules)."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields: []
+    hcl_modules:
+      language_line: "Author this as Terraform HCL composed from `terraform-aws-modules` registry modules: they are the real `terraform-aws-modules` sources, served at an allowlisted set of versions you can discover at this environment's registry endpoint."
       output_contract:
         entry_file: main.tf
         artifact_path: plan.json
@@ -329,6 +357,7 @@ catches:
       literal has only a `.constant_value`, never a `.references` entry
       (SCHEMA.md §4.2.1's graph-edge pattern, identical mechanism to
       s3-lambda-log-retention's own lambda-permission-scoped-to-bucket-tf).
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       awscdk: "1"
       hcl: "1"
@@ -368,10 +397,21 @@ catches:
       (0 resolved nodes on `Properties.SourceArn`); on the TF-shaped arms,
       `source_arn` is a hardcoded/wildcard literal with no `.references`
       entry matching `^aws_s3_bucket\.`.
+      ON hcl_modules THE CATCH SURVIVES THROUGH A DIFFERENT INPUT THAN THE
+      MATRIX PREDICTS, at the same tier, exactly as in the sibling scenario:
+      s3-bucket//modules/notification computes `source_arn` from its own
+      `local.bucket_arn` (modules/notification/main.tf:73) and exposes no
+      override, but lambda@8.8.2's `allowed_triggers` (variables.tf:429)
+      lands `source_arn` on the permission verbatim (main.tf:347,369), so
+      omitting that key is the hcl_raw mistake expressed as a module input.
+      The submodule-authored permission is a CORRECT solution and is graded
+      as such under solution/reference-alt-module-default-permission/.
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       awscdk: "1"
       hcl: "1"
       terraconstructs_override: null
+      hcl_modules_override: null
 
 oracle:
   intent: >
@@ -416,7 +456,7 @@ oracle:
     - name: s3-bucket-exists
       description: "An S3 bucket exists."
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')]"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket')]"
       op: exists
@@ -465,7 +505,7 @@ oracle:
         for awscdk.) Exactly one aws_lambda_function resource exists in the
         planned artifact -- the claims processor, and nothing else.
       tier: "0"
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_function')].type"
       op: eq
       expected: "aws_lambda_function"
@@ -559,7 +599,7 @@ oracle:
         Function/lambda_function_arn field is plan-time-unknown wherever
         it references the created function's provider-computed ARN.
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.NotificationConfiguration.LambdaConfigurations[*].Event"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_notification')].values.lambda_function[*].events[*]"
       op: regex
@@ -572,15 +612,23 @@ oracle:
     # computed output).
     - name: lambda-permission-principal-is-s3
       description: >
-        A Lambda resource-based permission exists whose Principal/principal
-        is exactly s3.amazonaws.com. WHETHER it is scoped to the right
-        bucket is the tier-1 concern below.
+        Every Lambda resource-based permission in the artifact has
+        Principal/principal exactly s3.amazonaws.com, and at least one
+        exists. WHETHER it is scoped to the right bucket is the tier-1
+        concern below.
+        `set_eq` rather than `eq` because `eq` additionally requires exactly
+        ONE resolved node, and on hcl_modules a single `allowed_triggers`
+        entry plans TWO correct permissions -- lambda@8.8.2 creates one for
+        the current version and one for the unqualified alias (main.tf:335,
+        358), both with this principal. `set_eq` keeps every other reading:
+        zero permissions still fails, and a second permission carrying a
+        different principal still fails.
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Lambda::Permission')].Properties.Principal"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_permission')].values.principal"
-      op: eq
-      expected: "s3.amazonaws.com"
+      op: set_eq
+      expected: ["s3.amazonaws.com"]
 
     # --- TIER 1 (Rego + cfn-guard, hand-authored) ---------------------------
 
@@ -616,7 +664,7 @@ oracle:
         ARN, or an omitted source_arn) has no such reference and resolves
         this path to zero nodes.
       tier: "1"
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_lambda_permission')].expressions.source_arn.references[*]"
       op: regex
       expected: "^aws_s3_bucket\\."
@@ -656,7 +704,7 @@ oracle:
         candidate exists, "references some aws_lambda_function" and
         "references THE created one" coincide.
       tier: "1"
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_s3_bucket_notification')].expressions.lambda_function[*].lambda_function_arn.references[*]"
       op: regex
       expected: "^aws_lambda_function\\."

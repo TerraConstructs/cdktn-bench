@@ -39,6 +39,28 @@ arms:
       on this arm. README §4 also confirms `compute.Code.fromInline()` exists
       (used by the reference solution below), so no S3/asset build step is
       needed here either.
+  hcl_modules:
+    enabled: true
+    reason: >
+      PARTIAL FIT, and the partiality is the point.
+      docs/design/hcl-modules-spec-matrix.md §1 records that the registry
+      publishes NO module for API Gateway REST v1 at all --
+      `terraform-aws-modules` ships only `apigateway-v2` (HTTP/WebSocket) --
+      so every resource this scenario's catches live on (the rest API, the
+      three resources/methods/integrations, the deployment and its dependency
+      edge, the stage) stays raw HCL on this arm, exactly as acm's hosted zone
+      does on the ACM pilot. What the arm does buy is the Lambda side:
+      `terraform-aws-modules/lambda/aws` 8.8.2 authors each route's function,
+      its execution role and its API-Gateway invoke permission
+      (`allowed_triggers`) from one call, which is where the module rung's
+      claimed advantage -- fewer resources to wire by hand -- is measurable
+      here. `iam//modules/iam-role` is NOT called: the lambda module's own
+      `create_role` already builds the execution role, and a second module
+      making the same role would be composition theatre rather than
+      composition. Enabled anyway: this is one of only two specs whose trapped
+      surface has no module counterpart, and a rung that claims modules win on
+      composition traps has to be measured on a composition trap the modules
+      do not cover, not only on ones they do.
 
 instruction:
   shared_body: |
@@ -72,6 +94,15 @@ instruction:
         json_fields: []
     hcl_raw:
       language_line: "Author this as hand-written Terraform HCL (no modules)."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields: []
+    hcl_modules:
+      language_line: "Author this as Terraform HCL composed from `terraform-aws-modules` registry modules: they are the real `terraform-aws-modules` sources, served at an allowlisted set of versions you can discover at this environment's registry endpoint."
       output_contract:
         entry_file: main.tf
         artifact_path: plan.json
@@ -184,6 +215,13 @@ catches:
       changes -- needs two `apply`-connected revisions to observe and is
       out of v1's synth/plan-only scope; deferred to the Phase 2 mutation
       track (see provenance below).
+      ON hcl_modules the catch is untouched, because no module reaches it:
+      the deployment and every method and integration it must depend on are
+      raw resources on this arm too (see arms.hcl_modules.reason -- the
+      registry publishes no REST v1 module), so the mistake, its shape and
+      the tier that decides it are all the hcl_raw ones. Measured on a real
+      plan through the loopback registry: tier 1.
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       awscdk: "1"
       hcl: "1"
@@ -215,6 +253,9 @@ catches:
       (own Lambda integration, own permission, covered by the deployment's
       dependency edge) so every OTHER tier-0/tier-1 fact still holds --
       isolating this fixture to ONLY the route-count-correct catch.
+      ON hcl_modules the method count is likewise a count of raw resources
+      the agent wrote, unchanged by any module. Measured: tier 1.
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       awscdk: "1"
       hcl: "1"
@@ -289,7 +330,7 @@ oracle:
     - name: rest-api-exists
       description: "An API Gateway REST API resource exists."
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGateway::RestApi')]"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_api_gateway_rest_api')]"
       op: exists
@@ -297,7 +338,7 @@ oracle:
     - name: deployment-exists
       description: "An API Gateway deployment resource exists."
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGateway::Deployment')]"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_api_gateway_deployment')]"
       op: exists
@@ -305,7 +346,7 @@ oracle:
     - name: lambda-function-exists
       description: "At least one Lambda function exists to back a route."
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Lambda::Function')]"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_function')]"
       op: exists
@@ -320,7 +361,7 @@ oracle:
         independently identity-checkable at tier 0 (see oracle.intent's
         documented v1 scope limitation) and is not this assert's job.
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGateway::Method')].Properties.Integration.Type"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_api_gateway_integration')].values.type"
       op: contains
@@ -334,7 +375,7 @@ oracle:
         documented v1 scope limitation for why this cannot be a per-function
         identity check on awscdk.
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Lambda::Permission')].Properties.Principal"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_permission')].values.principal"
       op: contains
@@ -354,7 +395,7 @@ oracle:
         oracle-equivalence CI, same convention as every other tier-1 entry
         in this spec -- it is not executed directly).
       tier: "1"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGateway::Method')]"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_api_gateway_method')]"
       op: exists
@@ -385,7 +426,7 @@ oracle:
         references` mechanism, which is plan-time-known regardless of
         whether the referenced attribute's VALUE is.
       tier: "1"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGateway::Deployment')].DependsOn"
       tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_api_gateway_deployment')].depends_on"
       op: exists

@@ -30,6 +30,24 @@ arms:
       catches[].predicted_tier_caught.terraconstructs_override for the one
       place this identical-construct fact actually changes a predicted tier
       (relative to hcl_raw, not relative to awscdk).
+  hcl_modules:
+    enabled: false
+    reason: >
+      The trap is property semantics inside one resource, not composition.
+      docs/adding-scenarios.md §6.3 admits this arm only for a scenario whose
+      trap is about how N resources are wired into a working system, and
+      docs/design/hcl-modules-spec-matrix.md §2 measured the module side of
+      both catches as "Unchanged": `ecs//modules/container-definition` 7.6.1
+      types `linuxParameters.swappiness`/`.maxSwap` as `optional(number)`
+      fields (modules/container-definition/variables.tf:186-206) and then
+      `jsonencode()`s the whole object into the same `container_definitions`
+      string the raw resource stores, so both the tier-0 `|fromjson` assert
+      and the tier-1 Rego rule would read a byte-identical artifact to
+      hcl_raw. A module call here restates the hcl_raw arm rather than
+      measuring a new authoring substrate. Nothing about the module fit
+      blocks it -- §1 rates it full, via `ecs//modules/service` with
+      `create_service = false` plus `ecs//modules/container-definition` --
+      it is the trap that does not belong on this rung.
 
 instruction:
   shared_body: |

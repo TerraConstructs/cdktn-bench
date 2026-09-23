@@ -1979,6 +1979,25 @@ class Spec(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _every_enabled_arm_has_a_catch(self) -> "Spec":
+        """`Catch.applies_to` defaults to the three original arms, so enabling a
+        FOURTH arm without revisiting every catch leaves that arm with no
+        negative fixture at all -- and `gates/oracle_falsifiability.py` reports
+        each one `N/A` and still exits 0, so the arm ships graded by nothing but
+        its own reference. Refused here rather than noticed later: a catch that
+        genuinely cannot happen on an arm is a per-catch exclusion with a
+        reason, never a whole arm's worth of silence."""
+        for arm in self.arms.enabled_arms():
+            if not any(arm in c.applies_to for c in self.catches):
+                raise ValueError(
+                    f"arms.{arm} is enabled but no catch lists it in "
+                    "applies_to, so the arm has no negative fixture and "
+                    "nothing proves its oracle rejects a wrong solution -- add "
+                    f"{arm!r} to the catches it can happen on"
+                )
+        return self
+
+    @model_validator(mode="after")
     def _every_declared_placeholder_is_used(self) -> "Spec":
         """SCHEMA.md §2.2's "no unused placeholder" half.
 

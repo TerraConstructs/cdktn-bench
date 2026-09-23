@@ -29,11 +29,17 @@ from pathlib import Path
 
 import pytest
 
+import gen
+from spec_model import load_spec
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
+# Resolved through the generator, never spelled out: a task's shard is
+# `generator/shards.toml` arithmetic, so literal paths here go stale the next
+# time a shard is added and the failure reads as a missing file.
+_SPEC = load_spec(REPO_ROOT / "specs" / "ecr-repo-destroy-force-delete.yaml")
 ARM_CHECKS = [
-    REPO_ROOT / "tasks/anchor-2/ecr-repo-destroy-force-delete-awscdk/tests/live_check.py",
-    REPO_ROOT / "tasks/anchor-3/ecr-repo-destroy-force-delete-hcl-raw/tests/live_check.py",
-    REPO_ROOT / "tasks/anchor-1/ecr-repo-destroy-force-delete-terraconstructs/tests/live_check.py",
+    gen.task_dir(_SPEC, arm) / "tests" / "live_check.py"
+    for arm in _SPEC.arms.enabled_arms()
 ]
 
 

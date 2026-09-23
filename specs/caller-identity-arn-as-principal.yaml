@@ -75,6 +75,26 @@ arms:
       (`AwsStack` emits `data "aws_caller_identity"` for ARN formatting),
       so the data source is already in this arm's plan for every scenario —
       this one adds no new offline hazard there.
+  hcl_modules:
+    enabled: true
+    reason: >
+      docs/design/hcl-modules-spec-matrix.md §1 gives this scenario a full
+      module fit, and the trap is the COMPOSITION the ticket names: which
+      principal the bucket's own policy grants to.
+      `terraform-aws-modules/s3-bucket/aws` 5.16.1 authors both graded
+      resources -- the bucket and the `aws_s3_bucket_policy` attached to it
+      (`attach_policy`, main.tf:713) -- while the two things that tie the
+      grant to the deploying identity, the caller-identity and
+      session-context data sources, have no module counterpart and stay raw.
+      So the composition the agent assembles here is a document written in
+      the root module and handed to a call whose body it never sees, which
+      is a different join from hcl_raw's and the reason this arm needed an
+      oracle fix rather than an applies_to edit: the policy resource's own
+      configuration lives inside the module body, where its `policy`
+      expression is `var.policy` and names no role at all. Every catch is
+      still reachable and every one is still decided at tier 1 -- measured
+      against real plans through the loopback registry, and the module
+      moves no tier.
 
 instruction:
   shared_body: |
@@ -96,6 +116,15 @@ instruction:
         json_fields: []
     hcl_raw:
       language_line: "Author this as hand-written Terraform HCL (no modules)."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields: []
+    hcl_modules:
+      language_line: "Author this as Terraform HCL composed from `terraform-aws-modules` registry modules: they are the real `terraform-aws-modules` sources, served at an allowlisted set of versions you can discover at this environment's registry endpoint."
       output_contract:
         entry_file: main.tf
         artifact_path: plan.json
@@ -188,7 +217,16 @@ catches:
       Not reachable on awscdk — CloudFormation has no caller-identity data
       source, so there is no session ARN for that arm to reach for; hence
       `applies_to` below.
-    applies_to: [hcl_raw, terraconstructs]
+
+      ON hcl_modules the mistake is unchanged and so is its tier. The
+      module has no input that names a principal -- it takes the whole
+      document as `policy` (s3-bucket@5.16.1 variables.tf, folded into
+      `combined` at main.tf:745) -- so the session ARN is reached
+      exactly as on hcl_raw, in a document the root module writes.
+      MEASURED: tier1 FAIL, with the resolved identifier printed as
+      `arn:aws:sts::123456789012:assumed-role/cdktn-bench-gate/gate-session`
+      -- tier "1".
+    applies_to: [hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       # `.awscdk` is required by the schema but this mistake cannot be made
       # on that arm (`applies_to` excludes it). "0", not "1", deliberately:
@@ -217,10 +255,16 @@ catches:
       a `:root` ARN, never an `Fn::GetAtt` on an `AWS::IAM::Role`; TF: the
       policy's principal references only an account id, never an
       `aws_iam_role` or an `aws_iam_session_context` issuer).
+
+      ON hcl_modules nothing moves: same document, same input, and the
+      module makes no principal decision of its own. MEASURED: tier1
+      FAIL from both the graph-edge rule and the resolved-principal rule
+      (`arn:aws:iam::123456789012:root`) -- tier "1".
     predicted_tier_caught:
       awscdk: "1"
       hcl: "1"
       terraconstructs_override: null
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
 
   - name: principal-hardcoded-to-a-foreign-arn
     taxonomy: anti-L2
@@ -238,10 +282,18 @@ catches:
       the policy's principal expression carries a `constant_value` and no
       reference to any role source. Verified directly at authoring time
       against the real synthesized template and real plan output for both.
+
+      ON hcl_modules nothing moves, and this catch is what proves the
+      module-aware fix did not widen the oracle: the hand-typed ARN is a
+      valid role ARN, so only the graph edge separates it from the
+      reference, and the reference set the rule prints for it is EMPTY
+      even though the policy resource now resolves through a module
+      call. MEASURED: tier1 FAIL -- tier "1".
     predicted_tier_caught:
       awscdk: "1"
       hcl: "1"
       terraconstructs_override: null
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
 
 oracle:
   intent: >
@@ -267,6 +319,11 @@ oracle:
     hand-written `jsonencode(...)` policy embedding the created bucket's
     computed ARN the rendered value is plan-time-unknown, and that
     sub-fact is recorded as not-verifiable rather than assumed satisfied.
+    Which blocks the agent typed is never part of this: a registry module
+    that authors the bucket and its policy from one call satisfies these
+    facts exactly as hand-written resource blocks do, and the principal the
+    policy grants to is the one the document handed to that call names.
+
     Two further limits of the same kind: the bucket COUNT is not graded, only
     that a release-artifact bucket exists, and the object read/write action
     asserts are graded on awscdk alone, because a hand-written
@@ -287,7 +344,7 @@ oracle:
     - name: artifact-bucket-exists
       description: "One S3 bucket for the release artifacts is created."
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')]"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket')]"
       op: exists
@@ -299,7 +356,7 @@ oracle:
         rather than something the tier-1 principal rules have to infer from
         an empty input.
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::BucketPolicy')]"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_policy')]"
       op: exists
@@ -328,6 +385,15 @@ oracle:
       description: >
         The bucket policy is attached to a bucket this configuration
         creates, not to a literal bucket name or to an unrelated bucket.
+        NOT hcl_modules, and this is a limit of tier 0 rather than of the
+        arm: the path reads the CONFIGURATION side, which the plan
+        normaliser leaves in module bodies (oracles/rego/README.md, "On the
+        CONFIGURATION side it does"), so on a module plan
+        `configuration.root_module.resources` is empty and one jsonpath
+        cannot union the scopes the way the tier-1 policy does. Nothing is
+        lost on that arm: the module attaches its own bucket policy to its
+        own bucket (s3-bucket@5.16.1 main.tf:713-718), so the edge is not a
+        thing a module call can state wrongly.
       tier: "0"
       applies_to: [hcl_raw, terraconstructs]
       tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_s3_bucket_policy')].expressions.bucket.references[*]"
@@ -385,7 +451,16 @@ oracle:
         session-context half has no CloudFormation equivalent, so that arm's
         accepted shape is the declared role alone.
       tier: "1"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
+      # The `tf_jsonpath` below names the artifact location the RULE reasons
+      # over, and on hcl_modules that location is one the jsonpath grammar
+      # cannot reach: the policy resource's configuration sits in the called
+      # module's body. The policy walks every configuration scope and resolves
+      # the document from the module CALL's own `policy` argument (see
+      # oracles/rego/caller-identity-arn-as-principal/policy.rego's header);
+      # the path here stays the root-module spelling, which is what the two
+      # arms with a root-module policy resource resolve, and what
+      # `make check-paths` resolves for them.
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::BucketPolicy')].Properties.PolicyDocument.Statement[*].Principal.AWS"
       tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_s3_bucket_policy')].expressions.policy.references[*]"
       op: exists
@@ -400,7 +475,7 @@ oracle:
         identity. TF-shaped arms only: `applies_to` matches the
         `sts-session-arn-as-principal` catch, which awscdk cannot commit.
       tier: "1"
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_s3_bucket_policy')].expressions.policy.references[*]"
       op: exists
 

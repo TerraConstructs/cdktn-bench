@@ -61,10 +61,16 @@ services: [apigatewayv2, lambda, iam]
 # built from ("unset", "zero") are deliberately NOT reserved, because the
 # arm images' own boilerplate uses both in unrelated senses ("zero network
 # access", `unset AWS_ACCESS_KEY_ID`) and reserving them would fire the
-# sweep on text no scenario author wrote.
+# sweep on text no scenario author wrote. The rejected status code is reserved
+# in the three spellings a leak would actually use rather than as the bare
+# three digits, for the same reason: `agent_deny_vocab` entries are literal
+# case-insensitive substrings, and "429" occurs inside the sha256 and commit
+# hashes in the hcl_modules arm's own vendored-module manifest.
 agent_deny_vocab:
   - "not configured"
-  - "429"
+  - "429s"
+  - "HTTP 429"
+  - "Too Many Requests"
   - "route_settings"
   - "default_route_settings"
   - "throttling_burst_limit"
@@ -93,6 +99,30 @@ arms:
       arms/terraconstructs/README.md §4 already recommends against, and
       which s3-lambda-log-retention's own history says is not the
       comparison this benchmark wants.
+  hcl_modules:
+    enabled: true
+    reason: >
+      docs/design/hcl-modules-spec-matrix.md §1 gives this scenario a full
+      module fit once `terraform-aws-modules/apigateway-v2/aws` 6.1.1 is
+      vendored (it is -- arms/hcl-modules/environment/modules/manifest.json):
+      that module authors the API, the route, the integration and the stage
+      from one `routes` map plus one `stage_name`, and
+      `terraform-aws-modules/lambda/aws` 8.8.2 authors the function and its
+      execution role. The composition being measured survives intact, because
+      the trapped attribute is a plain passthrough: `stage_default_route_settings`
+      (apigateway-v2 6.1.1 variables.tf) is an object whose
+      `throttling_burst_limit`/`throttling_rate_limit` are `optional(number)`
+      fields the stage's `default_route_settings` block copies straight
+      through (main.tf:357-365). What DOES move is the consequence of leaving
+      a half out: those two fields carry second-argument defaults of 500 and
+      1000, and the variable itself defaults to `{}`, so an unstated burst
+      limit plans as an explicit 500 rather than as the `null` the service
+      applies as 0. The mistake is still wrong and still caught at tier 0 --
+      the ticket asks for 200 -- but it no longer 429s every request, and that
+      is recorded on both throttling catches. One raw resource stays raw and
+      the reference says why: an `aws_lambda_permission` wired through the
+      lambda module's own `allowed_triggers` would make the two module calls
+      reference each other.
 
 instruction:
   shared_body: |
@@ -115,6 +145,15 @@ instruction:
         json_fields: []
     hcl_raw:
       language_line: "Author this as hand-written Terraform HCL (no modules)."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields: []
+    hcl_modules:
+      language_line: "Author this as Terraform HCL composed from `terraform-aws-modules` registry modules: they are the real `terraform-aws-modules` sources, served at an allowlisted set of versions you can discover at this environment's registry endpoint."
       output_contract:
         entry_file: main.tf
         artifact_path: plan.json
@@ -198,6 +237,22 @@ catches:
       header records the shapes) and on awscdk the key is absent from the
       synthesized template, so both resolve to the empty set under the
       union path, which `set_eq [200]` contradicts.
+      ON hcl_modules THE CONSEQUENCE MOVES AND THE TIER DOES NOT. The mistake
+      is the same omission -- `stage_default_route_settings` states the rate
+      and stops -- but the module's object type gives that field a
+      second-argument default of 500 (apigateway-v2 6.1.1 variables.tf,
+      `throttling_burst_limit = optional(number, 500)`), so Terraform's
+      `optional()` conversion plans an explicit 500 where the raw provider
+      plans a `null`. The deployed API therefore does NOT 429 every request:
+      the module removes the production bug this catch is named for, and what
+      is left is a stage that does not carry the burst the ticket asked for.
+      Measured on a real plan through the loopback registry: still reward 0.0
+      at tier 0, `throttling-burst-is-200` resolving {500} against
+      `set_eq [200]`. Kept on this arm rather than excluded, because the
+      omission is still the mistake an agent makes and it is still caught
+      where the spec predicts; the change in what it COSTS in production is
+      the arm difference this rung exists to measure.
+    applies_to: [awscdk, hcl_raw, hcl_modules]
     predicted_tier_caught:
       awscdk: "0"
       hcl: "0"
@@ -214,6 +269,14 @@ catches:
       is not honoured either. Distinct from the catch above in the
       artifact (`0` is present and known where the omitted one is null)
       and in the fix, which is why it is a separate fixture.
+      ON hcl_modules the mistake is reachable unchanged and is the ONLY route
+      to the 429-everything state on this arm: an explicit `0` inside
+      `stage_default_route_settings` is a stated key, so the module's
+      `optional(number, 500)` default never applies and the 0 reaches both the
+      stage default and the per-route entry the module derives from it
+      (main.tf:373-383, `coalesce(route, default)`). Measured: tier 0, both
+      throttling asserts.
+    applies_to: [awscdk, hcl_raw, hcl_modules]
     predicted_tier_caught:
       awscdk: "0"
       hcl: "0"
@@ -234,6 +297,13 @@ catches:
       (aws-apigatewayv2/lib/http/stage.d.ts's own `@default` tag), so a
       stage construct whose id reads `Prod` but whose `stageName` was never
       set throttles `$default` while `prod` is created elsewhere.
+      ON hcl_modules the same shape is reachable through the module's own
+      default: `stage_name` defaults to `$default` (apigateway-v2 6.1.1
+      variables.tf), so a call that throttles correctly and never names the
+      stage throttles `$default`, and a `prod` stage added alongside it
+      carries nothing. Measured: tier 1, the prod stage denied for carrying
+      no settings that govern the route.
+    applies_to: [awscdk, hcl_raw, hcl_modules]
     predicted_tier_caught:
       awscdk: "1"
       hcl: "1"
@@ -253,6 +323,19 @@ catches:
       graph edge separates it from a correct answer, so it is the tier-1
       falsifier for `route-reaches-a-function-in-this-plan` — without it
       that rule would ship with no fixture proving it can fire.
+      ON hcl_modules the mistake is reachable unchanged -- the integration's
+      `uri` is a plain passthrough field of the module's `routes` object -- and
+      the catch is what exposed the oracle defect this arm brings with it:
+      the route, the integration and the API are declared inside the
+      apigateway-v2 module's own body, so the tier-1 walk's original
+      `configuration.root_module.resources` read found nothing and graded the
+      CORRECT module-composed solution 0.0. The rule now unions every
+      configuration scope and resolves the integration's `each.value.uri`
+      passthrough one hop up, against the `routes` argument the call passed;
+      a created function reached through its module call's own output counts,
+      and a hand-typed ARN carries a constant and no reference. Measured:
+      tier 1.
+    applies_to: [awscdk, hcl_raw, hcl_modules]
     predicted_tier_caught:
       awscdk: "1"
       hcl: "1"
@@ -280,7 +363,12 @@ oracle:
     The route and the integration must be first-class resources: the API
     Gateway v2 quick-create shape (route key and target declared on the API
     itself) is rejected because it puts neither in the artifact and cannot
-    carry per-route settings.
+    carry per-route settings. Which blocks the author typed does not matter:
+    a registry module that composes the API, the route, the integration and
+    the stage from one call satisfies every fact here exactly as hand-written
+    resource blocks do, and the function the integration must reach is the one
+    this configuration creates whether the URI names the resource directly or
+    the output of the module call that created it.
 
     Nothing else is graded. The handler's own response body is not read by
     any assert (this oracle is synth/plan-only), the number of stages and
@@ -301,7 +389,7 @@ oracle:
     - name: http-api-exists
       description: "An API Gateway v2 HTTP API is created."
       tier: "0"
-      applies_to: [awscdk, hcl_raw]
+      applies_to: [awscdk, hcl_raw, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGatewayV2::Api')].Properties.ProtocolType"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_apigatewayv2_api')].values.protocol_type"
       op: contains
@@ -316,7 +404,7 @@ oracle:
         solution also keeps the API's `$default` stage, which the ticket
         neither asks for nor forbids.
       tier: "0"
-      applies_to: [awscdk, hcl_raw]
+      applies_to: [awscdk, hcl_raw, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGatewayV2::Stage')].Properties.StageName"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_apigatewayv2_stage')].values.name"
       op: regex
@@ -325,7 +413,7 @@ oracle:
     - name: route-get-orders-exists
       description: "A route whose route key is exactly `GET /orders` exists."
       tier: "0"
-      applies_to: [awscdk, hcl_raw]
+      applies_to: [awscdk, hcl_raw, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGatewayV2::Route')].Properties.RouteKey"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_apigatewayv2_route')].values.route_key"
       op: regex
@@ -337,7 +425,7 @@ oracle:
         integration or no integration at all. Existence-and-type only here;
         WHICH function it reaches is the tier-1 graph fact below.
       tier: "0"
-      applies_to: [awscdk, hcl_raw]
+      applies_to: [awscdk, hcl_raw, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGatewayV2::Integration')].Properties.IntegrationType"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_apigatewayv2_integration')].values.integration_type"
       op: contains
@@ -355,7 +443,7 @@ oracle:
         Every throttling rate limit the prod-carrying artifact states is
         100, and at least one is stated.
       tier: "0"
-      applies_to: [awscdk, hcl_raw]
+      applies_to: [awscdk, hcl_raw, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGatewayV2::Stage')]..ThrottlingRateLimit"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_apigatewayv2_stage')]..throttling_rate_limit"
       op: set_eq
@@ -370,7 +458,7 @@ oracle:
         contradicts this `set_eq`; a `0` resolves to {0}, which contradicts
         it too.
       tier: "0"
-      applies_to: [awscdk, hcl_raw]
+      applies_to: [awscdk, hcl_raw, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGatewayV2::Stage')]..ThrottlingBurstLimit"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_apigatewayv2_stage')]..throttling_burst_limit"
       op: set_eq
@@ -398,7 +486,7 @@ oracle:
         value must be joined to the stage's own name, and one of the two
         source locations is a map keyed by a route key containing a space.
       tier: "1"
-      applies_to: [awscdk, hcl_raw]
+      applies_to: [awscdk, hcl_raw, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGatewayV2::Stage')].Properties"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_apigatewayv2_stage')].values"
       op: exists
@@ -415,7 +503,7 @@ oracle:
         `constant_value` and no reference, and an imported function
         renders a plain string where a created one renders an intrinsic.
       tier: "1"
-      applies_to: [awscdk, hcl_raw]
+      applies_to: [awscdk, hcl_raw, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGatewayV2::Integration')].Properties.IntegrationUri"
       tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_apigatewayv2_integration')].expressions.integration_uri.references[*]"
       op: exists

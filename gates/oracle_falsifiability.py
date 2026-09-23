@@ -212,6 +212,28 @@ _SUMMARY_RE = re.compile(
 _TOOLCHAIN_FAILED_RE = re.compile(r"^[A-Z][A-Z0-9_ ]* FAILED$", re.MULTILINE)
 
 
+def toolchain_failure_context(stdout: str, keep: int = 6) -> list[str]:
+    """The lines that say WHY a toolchain step failed, for a run whose only
+    verdict line is `<LABEL> FAILED`.
+
+    An arm's toolchain is one shell command per label -- `terraform init &&
+    terraform validate && terraform plan && terraform show` is a single step
+    called `plan` -- so the label alone cannot tell a provider refusing the
+    agent's value (a real tier-0 catch) from `init` failing to resolve a module
+    (a broken run that proves nothing). These lines are what makes the two
+    distinguishable in a gate transcript, and reading them is required when a
+    fixture's only evidence of being caught is a toolchain failure.
+    """
+    if not _TOOLCHAIN_FAILED_RE.search(stdout):
+        return []
+    lines = [ln.rstrip() for ln in stdout.splitlines() if ln.strip()]
+    marked = [
+        ln for ln in lines
+        if "Error" in ln or "error" in ln or ln.lstrip().startswith("│")
+    ]
+    return (marked or lines)[-keep:]
+
+
 def observed_tier(stdout: str) -> str | None:
     """Recover, from a run's stdout, the tier its `tests/static_tiers.sh`
     actually caught a violation at -- the mechanical backstop for
@@ -698,6 +720,8 @@ def main(argv: list[str]) -> int:
                 print(f"[{status}] {r.label}: reward={r.reward} -- {last_line}")
                 if not r.ok and "tier-attribution mismatch" in r.detail:
                     print(f"    {r.detail.splitlines()[0]}")
+                for line in toolchain_failure_context(r.detail):
+                    print(f"    | {line}")
                 if r.mirror_ok is False:
                     print(f"    mirror_detail: {r.mirror_detail}")
                 if not r.ok:

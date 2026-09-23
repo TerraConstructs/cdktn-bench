@@ -25,7 +25,12 @@ import pytest
 # task_dir is re-exported from the gate rather than imported from
 # generator/gen.py directly: gates/tests has no sys.path shim for generator/,
 # and the gate already imports it.
-from gates.oracle_falsifiability import _is_stub, check_arm, task_dir
+from gates.oracle_falsifiability import (
+    _is_stub,
+    check_arm,
+    task_dir,
+    toolchain_failure_context,
+)
 from oracles.tests.toolcheck import find_tool
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -139,3 +144,41 @@ def test_the_two_unrunnable_tiers_are_the_declared_family() -> None:
     from gates.oracle_falsifiability import LIVE_FAMILY_TIERS  # noqa: PLC0415
 
     assert LIVE_FAMILY_TIERS == ("live", "teardown")
+
+
+class TestToolchainFailureContext:
+    """A `<LABEL> FAILED` row's own explanation. One shell command carries
+    `terraform init && validate && plan`, so the label cannot say whether the
+    provider refused the agent's value (a real tier-0 catch) or `init` could not
+    resolve a module (a run that proves nothing) -- these lines can."""
+
+    PROVIDER_REFUSAL = (
+        "== plan: terraform init && terraform validate && terraform plan ==\n"
+        "Initializing modules...\n"
+        "Error: expected retention_in_days to be one of [1 3 5], got 10\n"
+        "  with module.processor.aws_cloudwatch_log_group.lambda[0],\n"
+        "PLAN FAILED\n"
+    )
+    UNRESOLVED_MODULE = (
+        "== plan: terraform init && terraform validate && terraform plan ==\n"
+        "Error: Failed to query available provider packages\n"
+        "PLAN FAILED\n"
+    )
+
+    def test_a_graded_run_gets_no_context(self) -> None:
+        assert toolchain_failure_context(
+            "== summary: tier0_pass=0 tier1_status=PASS ==\n"
+        ) == []
+
+    def test_the_provider_refusal_is_quoted(self) -> None:
+        lines = toolchain_failure_context(self.PROVIDER_REFUSAL)
+        assert any("retention_in_days" in ln for ln in lines)
+
+    def test_an_init_failure_is_distinguishable_from_it(self) -> None:
+        lines = toolchain_failure_context(self.UNRESOLVED_MODULE)
+        assert any("provider packages" in ln for ln in lines)
+        assert not any("retention_in_days" in ln for ln in lines)
+
+    def test_it_never_returns_more_than_asked(self) -> None:
+        noisy = "\n".join(["Error: %d" % i for i in range(50)]) + "\nPLAN FAILED\n"
+        assert len(toolchain_failure_context(noisy, keep=3)) == 3

@@ -4,11 +4,12 @@ gated per spec, closing ROADMAP open decision 4).
 
 1. THE DEFAULT — a spec that says nothing about the arm has it disabled, and
    its default `reason` states the gap, so no spec edit is what keeps the rest
-   of the corpus generating byte-identically. The pilot specs
-   (docs/design/tf-modules-arm.md §3) are the enumerated exception.
-2. ENABLING — takes the same shape terraconstructs takes (per-arm instruction
-   entry required in both directions), and now generates a task; a BROWNFIELD
-   spec still cannot, because no arm-specific seed body exists for it.
+   of the corpus generating byte-identically. `ARM_SPEC_IDS` below is the
+   enumerated exception; a spec may also refuse the arm in writing.
+2. ENABLING — the same shape terraconstructs takes (per-arm instruction entry
+   required in both directions) PLUS a catch that applies there, since the
+   default `applies_to` would leave the arm with no negative fixture; generates
+   a task. A BROWNFIELD spec still cannot: no arm-specific seed body exists.
 3. THE CLOSED ENUMS — one arm added to `Arm` and forgotten in one of the five
    places that key off it (`docs/design/tf-modules-arm.md` §3) is a KeyError deep
    in a generation run, so the coverage is asserted here instead.
@@ -32,10 +33,11 @@ from shards import ARM_ORDER
 from spec_model import HCL_MODULES_DEFAULT_REASON, Arm, Spec, load_spec
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-# A GREENFIELD spec: `workspace_seed.entry_file` has no `hcl_modules` field, so a
-# brownfield spec cannot enable the arm until its per-arm seeds are authored
-# (phase 5). `test_a_brownfield_spec_cannot_enable_it_yet` pins that refusal.
-PILOT_SPEC = REPO_ROOT / "specs" / "ecs-swappiness.yaml"
+# The GREENFIELD spec every mutation test below starts from: `workspace_seed.
+# entry_file` has no `hcl_modules` field, so a brownfield spec cannot enable the
+# arm until its per-arm seeds are authored (phase 5) --
+# `test_a_brownfield_spec_cannot_enable_it_yet` pins that refusal.
+GREENFIELD_SPEC = REPO_ROOT / "specs" / "ecs-swappiness.yaml"
 BROWNFIELD_SPEC = REPO_ROOT / "specs" / "named-resource-replacement.yaml"
 ALL_SPEC_PATHS = sorted(
     [p for p in (REPO_ROOT / "specs").glob("*.yaml") if p.name != "split.yaml"]
@@ -44,8 +46,8 @@ ALL_SPEC_PATHS = sorted(
 
 
 @pytest.fixture(scope="module")
-def pilot_raw() -> dict:
-    return yaml.safe_load(PILOT_SPEC.read_text())
+def greenfield_raw() -> dict:
+    return yaml.safe_load(GREENFIELD_SPEC.read_text())
 
 
 def _mutated(raw: dict, mutate) -> Spec:
@@ -60,51 +62,84 @@ def _per_arm_block(raw: dict) -> dict:
     return copy.deepcopy(raw["instruction"]["per_arm"]["hcl_raw"])
 
 
+def _enable(d: dict, *, with_a_catch: bool = True) -> None:
+    """The three edits enabling the arm takes -- the arm block, the per-arm
+    instruction entry, and at least one catch that can happen there. Omitting
+    the third is `test_an_arm_with_no_catch_is_refused`'s subject."""
+    d["arms"]["hcl_modules"] = {"enabled": True, "reason": "a composition trap"}
+    d["instruction"]["per_arm"]["hcl_modules"] = _per_arm_block(d)
+    if with_a_catch:
+        d["catches"][0]["applies_to"] = ["hcl_raw", "hcl_modules"]
+
+
 # ---------------------------------------------------------------------------
 # 1. the default
 # ---------------------------------------------------------------------------
 
 
-# The three composition-trap scenarios the arm was reintroduced for. Enumerated
-# rather than discovered: enabling the arm on a fourth scenario is a decision
-# (Amendment 46 promotes from DRAFT on the phase-5 live run), and a spec that
-# gained it by a copy-paste edit must turn this list red rather than pass.
-PILOT_SPEC_IDS = frozenset({
+# Every scenario admitted to the arm, enumerated rather than discovered: the
+# admission is a decision per scenario (docs/adding-scenarios.md §6.3 -- a
+# composition trap, a measured module fit, and a per-catch red-green verdict),
+# so a spec that gained the arm by a copy-paste edit must turn this list red.
+# The three phase-5 pilots first, then phase 6 slice A.
+ARM_SPEC_IDS = frozenset({
     "acm-dns-validation-record-wiring",
     "iam-managed-policy-exclusive-vs-attachment",
     "s3-bucket-hardening-decomposition",
+    "apigw-openapi",
+    "apigwv2-route-settings-zero-vs-unset",
+    "asg-launch-template-tag-propagation",
+    "caller-identity-arn-as-principal",
+    "ddb-gsi-attribute-definitions",
+    "lambda-log-group-ownership-and-retention",
+    "s3-lambda-log-retention",
+    "s3-notification-custom-resource-tax",
 })
 
 
 @pytest.mark.parametrize("path", ALL_SPEC_PATHS, ids=lambda p: p.stem)
-def test_only_the_pilot_specs_enable_the_arm(path: Path) -> None:
+def test_only_the_admitted_specs_enable_the_arm(path: Path) -> None:
     spec = load_spec(path)
-    expected = spec.id in PILOT_SPEC_IDS
+    expected = spec.id in ARM_SPEC_IDS
     assert spec.arms.hcl_modules.enabled is expected
     assert ("hcl_modules" in spec.arms.enabled_arms()) is expected
 
 
 @pytest.mark.parametrize("path", ALL_SPEC_PATHS, ids=lambda p: p.stem)
-def test_a_spec_that_never_mentions_the_arm_still_carries_a_reason(path: Path) -> None:
-    """The omitted block carries `HCL_MODULES_DEFAULT_REASON`, so the §1 rule
-    "a reason in both directions" holds for a spec that never mentions the arm.
-    A pilot spec writes the block and states its own reason instead."""
+def test_the_reason_holds_in_both_directions(path: Path) -> None:
+    """SCHEMA.md §1's rule is a reason either way, so the assertion keys off
+    PRESENCE of the block, not off admission: a spec that WRITES
+    `enabled: false` states why the arm was considered and refused (the trap is
+    not a composition trap), which is a different and more useful fact than the
+    silence `HCL_MODULES_DEFAULT_REASON` stands in for."""
     raw = yaml.safe_load(path.read_text())
     spec = load_spec(path)
-    if spec.id in PILOT_SPEC_IDS:
+    if "hcl_modules" in raw["arms"]:
         assert raw["arms"]["hcl_modules"]["reason"].strip()
+        assert spec.arms.hcl_modules.reason != HCL_MODULES_DEFAULT_REASON
         return
-    assert "hcl_modules" not in raw["arms"]
+    assert spec.id not in ARM_SPEC_IDS
     assert spec.arms.hcl_modules.reason == HCL_MODULES_DEFAULT_REASON
+
+
+def test_a_refusal_states_its_own_reason() -> None:
+    """The one shape the presence-keyed rule above admits that the old
+    membership-keyed one refused: `enabled: false` WITH a reason. ecs-swappiness
+    is that spec -- full module fit, trap in the wrong family -- and keeping it
+    named here is what stops the rule from being vacuous."""
+    raw = yaml.safe_load((REPO_ROOT / "specs" / "ecs-swappiness.yaml").read_text())
+    block = raw["arms"]["hcl_modules"]
+    assert block["enabled"] is False
+    assert "docs/adding-scenarios.md" in block["reason"]
 
 
 def test_default_reason_names_the_gap() -> None:
     assert "docs/design/tf-modules-arm.md" in HCL_MODULES_DEFAULT_REASON
 
 
-def test_an_empty_reason_is_refused(pilot_raw: dict) -> None:
+def test_an_empty_reason_is_refused(greenfield_raw: dict) -> None:
     with pytest.raises(ValidationError, match="reason is required in both directions"):
-        _mutated(pilot_raw, lambda d: d["arms"].update(
+        _mutated(greenfield_raw, lambda d: d["arms"].update(
             {"hcl_modules": {"enabled": False, "reason": "  "}}
         ))
 
@@ -115,26 +150,30 @@ def test_an_empty_reason_is_refused(pilot_raw: dict) -> None:
 
 
 class TestEnabling:
-    def test_enabled_requires_a_per_arm_entry(self, pilot_raw: dict) -> None:
+    def test_enabled_requires_a_per_arm_entry(self, greenfield_raw: dict) -> None:
         with pytest.raises(ValidationError, match="instruction.per_arm.hcl_modules is missing"):
-            _mutated(pilot_raw, lambda d: d["arms"].update(
+            _mutated(greenfield_raw, lambda d: d["arms"].update(
                 {"hcl_modules": {"enabled": True, "reason": "pilot composition trap"}}
             ))
 
-    def test_a_per_arm_entry_without_the_arm_is_refused(self, pilot_raw: dict) -> None:
+    def test_a_per_arm_entry_without_the_arm_is_refused(self, greenfield_raw: dict) -> None:
         def mutate(d: dict) -> None:
             d["instruction"]["per_arm"]["hcl_modules"] = _per_arm_block(d)
 
         with pytest.raises(ValidationError, match="arms.hcl_modules.enabled is false"):
-            _mutated(pilot_raw, mutate)
+            _mutated(greenfield_raw, mutate)
 
-    def test_the_full_shape_validates_and_enables(self, pilot_raw: dict) -> None:
-        def mutate(d: dict) -> None:
-            d["arms"]["hcl_modules"] = {"enabled": True, "reason": "pilot composition trap"}
-            d["instruction"]["per_arm"]["hcl_modules"] = _per_arm_block(d)
-
-        spec = _mutated(pilot_raw, mutate)
+    def test_the_full_shape_validates_and_enables(self, greenfield_raw: dict) -> None:
+        spec = _mutated(greenfield_raw, _enable)
         assert spec.arms.enabled_arms()[-1] == "hcl_modules"
+
+    def test_an_arm_with_no_catch_is_refused(self, greenfield_raw: dict) -> None:
+        """`Catch.applies_to` defaults to the three ORIGINAL arms, so enabling a
+        fourth and stopping there produces a task whose only graded fixture is
+        its own reference: `gates/oracle_falsifiability.py` reports every catch
+        `N/A` for that arm and exits 0. Refused at spec load instead."""
+        with pytest.raises(ValidationError, match="no catch lists it in applies_to"):
+            _mutated(greenfield_raw, lambda d: _enable(d, with_a_catch=False))
 
     def test_a_brownfield_spec_cannot_enable_it_yet(self) -> None:
         """A seed body per enabled arm is mandatory (SCHEMA.md §2.7), and the arm
@@ -143,23 +182,15 @@ class TestEnabling:
         siblings start from working config."""
         raw = yaml.safe_load(BROWNFIELD_SPEC.read_text())
 
-        def mutate(d: dict) -> None:
-            d["arms"]["hcl_modules"] = {"enabled": True, "reason": "pilot composition trap"}
-            d["instruction"]["per_arm"]["hcl_modules"] = _per_arm_block(d)
-
         with pytest.raises(ValidationError, match=r"missing \['hcl_modules'\]"):
-            _mutated(raw, mutate)
+            _mutated(raw, _enable)
 
-    def test_a_pending_arm_refuses_with_a_sentence(self, pilot_raw: dict) -> None:
+    def test_a_pending_arm_refuses_with_a_sentence(self, greenfield_raw: dict) -> None:
         """`ARMS_PENDING_IMAGE` is empty now that every arm has its writers, but
         it stays the shape a FIFTH arm is introduced through: listed there, it
         refuses with a sentence instead of failing as a KeyError halfway through
         a generation run that has already written half a task dir."""
-        def mutate(d: dict) -> None:
-            d["arms"]["hcl_modules"] = {"enabled": True, "reason": "pilot composition trap"}
-            d["instruction"]["per_arm"]["hcl_modules"] = _per_arm_block(d)
-
-        spec = _mutated(pilot_raw, mutate)
+        spec = _mutated(greenfield_raw, _enable)
         monkeypatched = frozenset({"hcl_modules"})
         original, gen.ARMS_PENDING_IMAGE = gen.ARMS_PENDING_IMAGE, monkeypatched
         try:
@@ -240,20 +271,20 @@ class TestTierOverride:
             for catch in spec.catches:
                 assert catch.predicted_tier_caught.hcl_modules_override is None
 
-    def test_the_column_accepts_every_catch_tier(self, pilot_raw: dict) -> None:
+    def test_the_column_accepts_every_catch_tier(self, greenfield_raw: dict) -> None:
         for tier in ("0", "1", "live"):
             spec = _mutated(
-                pilot_raw,
+                greenfield_raw,
                 lambda d, tier=tier: d["catches"][0]["predicted_tier_caught"].update(
                     {"hcl_modules_override": tier}
                 ),
             )
             assert spec.catches[0].predicted_tier_caught.hcl_modules_override == tier
 
-    def test_an_unknown_tier_is_refused(self, pilot_raw: dict) -> None:
+    def test_an_unknown_tier_is_refused(self, greenfield_raw: dict) -> None:
         with pytest.raises(ValidationError):
             _mutated(
-                pilot_raw,
+                greenfield_raw,
                 lambda d: d["catches"][0]["predicted_tier_caught"].update(
                     {"hcl_modules_override": "2"}
                 ),

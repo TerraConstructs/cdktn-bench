@@ -88,15 +88,17 @@ tier0-parity-all:
 	uv run python gates/tier0_parity.py --all $(if $(OUT),--out $(OUT),)
 
 # Zero-drift gate on the plan normaliser: grade every reference and broken
-# fixture of both Terraform-shaped arms with the RAW plan and with the
+# fixture of every Terraform-shaped arm with the RAW plan and with the
 # NORMALISED one, and require identical per-assert tier-0 outcomes, identical
-# tier-1 deny/not_verifiable sets, and -- for a plan with no module in it,
-# which is every fixture in the corpus today -- canonical byte identity of the
-# two documents. On demand and not in `make ci`, exactly like tier0-parity and
-# for the same reason: it runs every fixture for real and needs the host
-# toolchain. Run it when the normaliser, the tier-0 compiler or a policy
-# changes. `OUT=<dir>` keeps the collected artifacts so `--regrade <dir>`
-# re-checks a normaliser change in seconds. Exit 3 = NOT_AUTHORED.
+# tier-1 deny/not_verifiable sets, and -- for a plan with no module in it --
+# canonical byte identity of the two documents. A MODULE-shaped fixture is held
+# to the other contract instead: an assert may move OFF `unresolvable` (the
+# resource becoming visible is the hoist working) and never onto it.
+# On demand and not in `make ci`, exactly like tier0-parity and for the same
+# reason: it runs every fixture for real and needs the host toolchain. Run it
+# when the normaliser, the tier-0 compiler or a policy changes. `OUT=<dir>`
+# keeps the collected artifacts so `--regrade <dir>` re-checks a normaliser
+# change in seconds. Exit 3 = NOT_AUTHORED.
 normaliser-parity:
 	@if [ -z "$(SPEC)" ]; then echo "usage: make normaliser-parity SPEC=specs/foo.yaml [OUT=dir]" >&2; exit 2; fi
 	uv run python gates/plan_normaliser_parity.py $(SPEC) $(if $(OUT),--out $(OUT),)

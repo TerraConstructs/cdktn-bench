@@ -392,6 +392,38 @@ def test_boilerplate_allowlist_is_really_arm_text() -> None:
 
 
 @pytest.mark.parametrize("spec", ALL_SPECS, ids=_spec_id)
+def test_shared_arm_image_sources_leak_no_scenario_vocabulary(spec: Spec) -> None:
+    """The same scan, one layer earlier: against `arms/<arm>/environment/**`
+    rather than against a task dir the generator has already stamped.
+
+    An arm's image sources are COPY'd into EVERY scenario on that arm, so one
+    sentence of arm prose naming a resource type is a leak for whichever
+    scenario's trap is that type -- and for nobody else, which is why it can sit
+    unnoticed until a spec joins the arm. The generated-bytes scan above does
+    catch it, but only after a regeneration; here it is red at the moment the
+    arm file is edited. The fix is to reword the arm prose (the resource type
+    belongs in `docs/`), never to grow `ARM_BOILERPLATE`.
+    """
+    for arm in spec.arms.enabled_arms():
+        env_dir = ARMS_DIR / gen.ARM_DIRNAME[arm] / "environment"
+        for path in sorted(env_dir.rglob("*")):
+            if not path.is_file() or path.name in SCAN_EXCLUDE:
+                continue
+            rel = path.relative_to(env_dir).parts
+            if len(rel) > 2 and rel[0] == VENDORED_MODULES_DIR:
+                continue
+            leaks = spec.identity_leaks(
+                _scrub(path.read_text(errors="ignore"), spec, arm),
+                foreshadowing=True,
+            )
+            assert not leaks, (
+                f"{path.relative_to(REPO_ROOT)} names {sorted(leaks)}, which is "
+                f"{spec.id}'s own trap vocabulary, and this file is COPY'd into "
+                f"every {arm} scenario's image"
+            )
+
+
+@pytest.mark.parametrize("spec", ALL_SPECS, ids=_spec_id)
 def test_prompt_literal_scrub_only_ever_removes_prompt_content(spec: Spec) -> None:
     """Keeps the derived prompt-literal allowlist honest.
 

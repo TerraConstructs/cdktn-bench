@@ -17,6 +17,22 @@
 # graph, which is always present, plus the resolved
 # `statement[*].principals[*].identifiers` of a
 # `data "aws_iam_policy_document"` when the policy is built that way.
+#
+# MODULE-AWARE CONFIGURATION WALK. The plan normaliser hoists `planned_values`
+# but leaves `configuration` in module bodies (oracles/rego/README.md), so on
+# the hcl_modules arm the bucket policy's own configuration lives inside the
+# called module and `configuration.root_module.resources` is empty. Read
+# through `config_of` alone, this rule denied a CORRECT solution with an empty
+# reference list -- MEASURED, reward 0.0 -- because the policy resource the
+# s3-bucket module writes references `var.policy` and no role. The fix is the
+# one the README prescribes and the three pilot policies carry: union every
+# configuration scope, qualify each body's addresses and references with its
+# call path so both sides share one address domain, and resolve what a module
+# body cannot know -- the value of `var.policy` -- from one scope UP, the
+# module CALL's own `policy` argument. Strictness is unchanged: the argument
+# read is `policy` and nothing else, so a role reference passed as some other
+# input cannot satisfy the graph edge, and on a module-free plan the prefix is
+# empty and the whole walk is exactly `configuration.root_module.resources`.
 
 package cdktn_bench.caller_identity_arn_as_principal
 
@@ -24,17 +40,24 @@ import rego.v1
 
 role_arn_re := `^arn:aws:iam::[0-9]{12}:role/`
 
+# A reference qualified with a call path names the same source as the bare one,
+# so every pattern below tolerates a leading module path -- and NOTHING else.
+# `(^|\.)` would have done it too and was wrong: it also matches
+# `data.aws_iam_role.existing.arn`, a role this plan does NOT declare, which is
+# exactly the wrong answer `names_a_role` exists to refuse.
+call_path := `^(module\.[^.\[]+\.)*`
+
 # The two ways a principal can name a role the plan ties to itself: a role
 # this configuration declares, and the issuer role of the deploying session.
-role_source_res := `^aws_iam_role\.`
+role_source_res := concat("", [call_path, `aws_iam_role\.`])
 
-role_source_session := `^data\.aws_iam_session_context\..+\.issuer_arn$`
+role_source_session := concat("", [call_path, `data\.aws_iam_session_context\..+\.issuer_arn$`])
 
 # `.arn` specifically. The bare `data.aws_caller_identity.<name>` address
 # accompanies every attribute reference including the innocuous
 # `.account_id`, and terraconstructs' own AwsStack emits a caller-identity
 # data source for ARN formatting on every scenario.
-session_arn_ref := `^data\.aws_caller_identity\..+\.arn$`
+session_arn_ref := concat("", [call_path, `data\.aws_caller_identity\..+\.arn$`])
 
 session_arn_value := `(:sts::)|(assumed-role)`
 
@@ -43,29 +66,146 @@ bucket_policies := [r |
 	r.type == "aws_s3_bucket_policy"
 ]
 
+# A configuration scope is the document root or the value of a
+# `module_calls.<name>.module` key; its call path is every name that follows a
+# `module_calls` step. `walk` rather than recursion, which Rego forbids.
+config_scope_path(path) if count(path) == 0
+
+config_scope_path(path) if path[count(path) - 1] == "module"
+
+module_prefix(path) := concat(".", [sprintf("module.%s", [path[i]]) |
+	some i
+	path[i - 1] == "module_calls"
+])
+
+qualify(prefix, name) := name if prefix == ""
+
+qualify(prefix, name) := concat(".", [prefix, name]) if prefix != ""
+
+config_scopes contains scope if {
+	walk(input.configuration.root_module, [path, body])
+	is_object(body)
+	config_scope_path(path)
+	scope := {"prefix": module_prefix(path), "resources": object.get(body, "resources", [])}
+}
+
+# Address and references qualified together, every reference kind included:
+# enumerating which kinds name a resource is the list that goes stale when a
+# new kind appears.
+qualified_resource(prefix, r) := object.union(r, {
+	"address": qualify(prefix, r.address),
+	"expressions": {attr: qualified_expression(prefix, expr) |
+		some attr, expr in object.get(r, "expressions", {})
+	},
+})
+
+qualified_expression(prefix, expr) := out if {
+	is_object(expr)
+	refs := object.get(expr, "references", null)
+	is_array(refs)
+	out := object.union(expr, {"references": [qualify(prefix, ref) | some ref in refs]})
+}
+
+# A nested BLOCK's expression is a list of blocks, and a constant carries no
+# references at all. Both pass through: an undefined expression would make the
+# whole enclosing resource undefined and drop it from the configuration
+# silently, which is the wrong-answer-no-error failure this join exists to
+# avoid. `principals` inside a policy-document data source is read as a block
+# below, and the module bodies this oracle grades declare none.
+qualified_expression(_, expr) := expr if not is_object(expr)
+
+qualified_expression(_, expr) := expr if {
+	is_object(expr)
+	not is_array(object.get(expr, "references", null))
+}
+
+configured_resources := [r |
+	some scope in config_scopes
+	some res in scope.resources
+	r := qualified_resource(scope.prefix, res)
+]
+
+# A planned address carries instance keys a configuration address never does
+# (`module.a.aws_s3_bucket_policy.this[0]`), so the two sides join on the
+# address with every `[...]` removed.
+base_addr(addr) := regex.replace(addr, `\[[^\]]*\]`, "")
+
 config_of(addr) := c if {
-	some c in input.configuration.root_module.resources
-	c.address == addr
+	some c in configured_resources
+	base_addr(c.address) == base_addr(addr)
+}
+
+# A data source Terraform could read DURING the plan is reported in
+# `prior_state`, not in `planned_values` -- and a policy document whose every
+# argument is a literal is exactly that. MEASURED on the hcl_modules
+# reference, whose bucket name is a literal because the module authors the
+# bucket and its policy together: `data.aws_iam_policy_document.artifacts`
+# was in `prior_state` alone, so reading `planned_values` only left the
+# "and nothing broader" rule below silently unevaluated on a solution the
+# `not_verifiable` rule also could not see. Both sections are read here, on
+# every arm: this can only ADD resolved principals, never remove one.
+# `prior_state` is NOT normalised, so its module resources stay nested in
+# `child_modules` -- hence the walk -- while their addresses are already
+# fully qualified.
+prior_resources contains r if {
+	walk(object.get(input, ["prior_state", "values", "root_module"], {}), [_, body])
+	is_object(body)
+	some r in object.get(body, "resources", [])
 }
 
 planned_of(addr) := p if {
 	some p in input.planned_values.root_module.resources
-	p.address == addr
+	base_addr(p.address) == base_addr(addr)
+} else := p if {
+	some p in prior_resources
+	base_addr(p.address) == base_addr(addr)
+}
+
+# The call path a hoisted resource was declared under, as one prefix.
+resource_prefix(r) := concat(".", object.get(r, "x_module_path", []))
+
+# Every `module` block, with the prefix its body's resources carry and the
+# scope its own arguments are written in.
+module_call_sites contains site if {
+	walk(input.configuration.root_module, [path, body])
+	is_object(body)
+	path[count(path) - 1] == "module_calls"
+	some name, call in body
+	parent := module_prefix(array.slice(path, 0, count(path) - 1))
+	site := {"parent": parent, "prefix": qualify(parent, sprintf("module.%s", [name])), "call": call}
+}
+
+# What the CALL's own `policy` argument references, qualified to the caller's
+# scope. A module body names that value `var.policy` and the plan carries no
+# link back, so this is the only place a module-authored bucket policy's
+# document is visible. Only `policy` is read: any other argument naming a role
+# says nothing about who the policy grants to.
+call_policy_refs(bp) := {ref |
+	some site in module_call_sites
+	site.prefix == resource_prefix(bp)
+	some raw in object.get(site.call, ["expressions", "policy", "references"], [])
+	ref := qualify(site.parent, raw)
 }
 
 # Every reference the policy argument itself carries -- for a
 # `jsonencode(...)` document this is the only view of the principal there is.
-policy_refs(bp) := {ref |
-	some ref in object.get(config_of(bp.address), ["expressions", "policy", "references"], [])
+policy_refs(bp) := refs if {
+	own := {ref | some ref in object.get(config_of(bp.address), ["expressions", "policy", "references"], [])}
+	refs := own | call_policy_refs(bp)
 }
 
 # Addresses of the `data "aws_iam_policy_document"` resources the policy is
 # built from, if any.
 policy_document_addrs(bp) := {addr |
 	some ref in policy_refs(bp)
-	startswith(ref, "data.aws_iam_policy_document.")
-	parts := split(ref, ".")
-	addr := concat(".", [parts[0], parts[1], parts[2]])
+	addr := _document_addr(ref)
+}
+
+# The document's own address, keeping whatever call path prefix qualified it,
+# so it joins the same address domain everything else here uses.
+_document_addr(ref) := addr if {
+	found := regex.find_n(`^(?:.*\.)?data\.aws_iam_policy_document\.[^.\[]+`, ref, 1)
+	addr := found[0]
 }
 
 # References carried by a policy document's principal identifiers alone --

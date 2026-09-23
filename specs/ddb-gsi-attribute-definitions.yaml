@@ -579,6 +579,26 @@ arms:
       reachable alongside `storage.Table` in the same workspace. See this
       file's header comment, "TERRACONSTRUCTS TOLERANCE FIX", for how the
       oracle now tolerates that shape too.
+  hcl_modules:
+    enabled: true
+    reason: >
+      docs/design/hcl-modules-spec-matrix.md §1 gives this scenario a full
+      module fit: `terraform-aws-modules/dynamodb-table/aws` 5.5.2 authors
+      the one `aws_dynamodb_table` the whole scenario grades, and it takes
+      the two things this scenario is built on as two SEPARATE structural
+      passthroughs -- `attributes` (list(map(string)), variables.tf:13) and
+      `global_secondary_indexes` (type `any`, variables.tf:73), both
+      rendered through `dynamic` blocks (main.tf:34-41, 54-83) with no
+      module-side validation of either. That separation is the composition
+      this rung measures here: the attribute-definition set and the key
+      schemas are two independent inputs the agent must keep consistent
+      with each other, and the module offers no help -- the provider's own
+      "all attributes must be indexed" / "all indexes must match a defined
+      attribute" checks are still the only thing joining them. Matrix §2
+      records the consequence measured, not read off the source: no module
+      default touches either input, so every catch in this spec is exactly
+      as representable as on hcl_raw and no catch moves tier
+      (`hcl_modules_override` is null on all six).
 
 instruction:
   shared_body: |
@@ -603,6 +623,15 @@ instruction:
         json_fields: []
     hcl_raw:
       language_line: "Author this as hand-written Terraform HCL (no modules)."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields: []
+    hcl_modules:
+      language_line: "Author this as Terraform HCL composed from `terraform-aws-modules` registry modules: they are the real `terraform-aws-modules` sources, served at an allowlisted set of versions you can discover at this environment's registry endpoint."
       output_contract:
         entry_file: main.tf
         artifact_path: plan.json
@@ -672,11 +701,20 @@ catches:
       fixture is authored there and this round's scope is the awscdk
       tier-1 engine; hcl_raw's tier-"0" toolchain rejection above is
       likewise unchanged.
+
+      ON hcl_modules the mistake is unchanged and so is its tier. The
+      module's `attributes` input (dynamodb-table@5.5.2 variables.tf:13,
+      default `[]`) renders straight into `dynamic "attribute"` with no
+      module-side validation, so an over-declared list reaches the same
+      provider check: MEASURED, `terraform plan` fails with "all
+      attributes must be indexed" and the run stops before any
+      structural_assert -- tier "0", the same bucket hcl_raw is in.
     predicted_tier_caught:
       awscdk: "1"
       hcl: "0"
       terraconstructs_override: null
-    applies_to: [hcl_raw, awscdk]
+      hcl_modules_override: null
+    applies_to: [hcl_raw, awscdk, hcl_modules]
 
   - name: include-projection-without-non-key-attributes
     taxonomy: typed-value-trap
@@ -724,10 +762,16 @@ catches:
       so narrowing `gsi-projects-exactly-status-and-total`'s `applies_to`
       changes nothing here -- `terraconstructs_override: "0"` denotes the
       SAME toolchain-failure bucket it always did, still accurate.
+
+      ON hcl_modules nothing moves: the module reads the field with
+      `lookup(..., "non_key_attributes", null)` (main.tf:64) and adds no
+      check the provider does not already make. MEASURED: plan succeeds,
+      tier1 FAIL on the empty projected set -- tier "1".
     predicted_tier_caught:
       awscdk: "0"
       hcl: "1"
       terraconstructs_override: "0"
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
 
   - name: gsi-key-attribute-not-declared
     taxonomy: graph-dependency
@@ -776,11 +820,19 @@ catches:
       tier0_pass=1, tier1_status=FAIL, reward 0.0. terraconstructs stays
       excluded from `applies_to`, unchanged, for the same reason given on
       the catch above.
+
+      ON hcl_modules the mistake is unchanged and so is its tier -- and
+      this is the catch the module's own shape makes MOST natural, since
+      the attribute-definition set and the index key schemas arrive as
+      two separate inputs (`attributes`, `global_secondary_indexes`)
+      that nothing cross-checks. MEASURED: `terraform plan` fails with
+      "all indexes must match a defined attribute", tier "0".
     predicted_tier_caught:
       awscdk: "1"
       hcl: "0"
       terraconstructs_override: null
-    applies_to: [hcl_raw, awscdk]
+      hcl_modules_override: null
+    applies_to: [hcl_raw, awscdk, hcl_modules]
 
   - name: attribute-definitions-include-an-unrequested-key
     taxonomy: typed-value-trap
@@ -813,10 +865,17 @@ catches:
       attribute-definitions-are-exactly-the-key-attributes (tier 1, see
       its own description) exists to catch, and the only catch in this
       scenario that fact actually catches.
+
+      ON hcl_modules nothing moves: `range_key` is a plain exposed input
+      (variables.tf:25, default `null`) and the extra attribute lands in
+      `values.attribute` exactly as on hcl_raw. MEASURED: tier0_pass=1,
+      tier1 FAIL naming `status`, at the hoisted address
+      `module.orders.aws_dynamodb_table.this[0]` -- tier "1".
     predicted_tier_caught:
       awscdk: "1"
       hcl: "1"
       terraconstructs_override: null
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
 
   - name: gsi-projection-type-is-keys-only-not-include
     taxonomy: typed-value-trap
@@ -854,10 +913,17 @@ catches:
       `policy.rego`, hence `terraconstructs_override: "1"` below, now
       matching `hcl`'s "1" per specs/SCHEMA.md §3's `.hcl` collapsing
       convention.
+
+      ON hcl_modules nothing moves: `global_secondary_indexes` is typed
+      `any` (variables.tf:73) and its contents are passed through
+      untouched. MEASURED: tier0_pass=1, tier1 FAIL on both the
+      projection_type and the empty projected set -- tier "1", the same
+      as hcl_raw.
     predicted_tier_caught:
       awscdk: "0"
       hcl: "1"
       terraconstructs_override: "1"
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
 
   - name: gsi-missing-entirely
     taxonomy: graph-dependency
@@ -900,10 +966,22 @@ catches:
       terraconstructs task dir has its header comment corrected to
       describe this tier-1 mechanism rather than the superseded tier-0
       one.
+
+      ON hcl_modules this IS the module-default shape -- leaving
+      `global_secondary_indexes` unset is the module's own `[]` default
+      (variables.tf:73) -- which is why it was graded first against the
+      oracle as it stands rather than assumed: MEASURED tier1 FAIL from
+      the existence deny rule, tier "1", so the default hides nothing
+      and no `hcl_modules_override` is needed. The fixture keeps the
+      orphan standalone index the hcl_raw one carries, which on this arm
+      also holds the TABLE-ASSOCIATION FIX across the module boundary:
+      the table is hoisted out of `module.orders` and the orphan is the
+      root module's own.
     predicted_tier_caught:
       awscdk: "0"
       hcl: "1"
       terraconstructs_override: "1"
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
 
 oracle:
   # REPAIR ROUND 4 (2026-08-23), specs/SCHEMA.md section 4.5: tier 1 on the
@@ -952,7 +1030,7 @@ oracle:
     - name: table-hash-key-is-orderId
       description: "The table's own (non-index) primary key is orderId."
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::DynamoDB::Table' || @.Type=='AWS::DynamoDB::GlobalTable')].Properties.KeySchema[?(@.KeyType=='HASH')].AttributeName"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_dynamodb_table')].values.hash_key"
       op: eq
@@ -1164,7 +1242,7 @@ oracle:
         now additionally carries an orphan standalone GSI resource to
         exercise this fix end to end.
       tier: "1"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::DynamoDB::Table' || @.Type=='AWS::DynamoDB::GlobalTable')].Properties.AttributeDefinitions[*].AttributeName"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_dynamodb_table')].values.attribute[*].name"
       op: set_eq
