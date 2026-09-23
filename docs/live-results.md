@@ -368,3 +368,33 @@ earlier run of the same shape (`jobs/amend43-promotion`, `amend41-promotion`,
 `amend37-promotion`, and the multi-step battery). The ecs-swappiness 0.0 is the
 scenario's tier-1 catch firing on an agent that set `swappiness` without
 `maxSwap`, not a verifier difference.
+
+## Amendment 46/48 promotion run — 2026-09-23 (first `hcl_modules` trials)
+
+`jobs/amend46-promotion/2026-09-23__18-08-45`; claude-sonnet-5, k=1, four
+concurrent read-only trials on shard 0, the colima VM at 16 GiB, task images
+prebuilt from the asset mirror. The three `hcl_modules` trials ran with the
+`tf-registry` compose sidecar; the CLI config's forced `host` override has no
+fallback, so a successful `init` of a `registry.terraform.io` module source is
+the sidecar serving it. All four rows emit through `gates/emit_result.py`
+with no void and scheme-2 equipping hashes.
+
+| scenario | arm | reward | output tok | LLM calls | tier0 | tier1 | modules pulled |
+|---|---|---:|---:|---:|:---:|:---:|---|
+| s3-bucket-hardening-decomposition | hcl_modules | 1.0 | 4,548 | 18 | pass | PASS | s3-bucket 5.16.1, kms 4.2.2 |
+| iam-managed-policy-exclusive-vs-attachment | hcl_modules | 1.0 | 6,296 | 16 | pass | PASS | iam submodules |
+| acm-dns-validation-record-wiring | hcl_modules | 0.0 | 3,962 | 16 | pass | FAIL (graded wrong) | route53 6.5.1, acm 6.3.1 |
+| s3-bucket-hardening-decomposition | hcl_raw | 1.0 | 5,513 | 9 | pass | PASS | — (aws 6.66.0) |
+
+The `hcl_raw` row promotes Amendment 48. The acm 0.0 is an oracle defect,
+not the agent's: the zone was created through the route53 module and passed
+to the acm module as that call's output, a shape the policy's created-zone
+rule could not match, so it denied a plan with exactly two validation
+records. Fixed in `d1bccdf` at equal strictness (a created zone under
+`module.<call>.` makes that call prefix a valid reference; non-modular plans
+unchanged; a `count`/`for_each` call stays denied) with a second reference
+in the live shape gated to 1.0. The same trial exposed that the generated
+verifier printed no reason for any tier-1 FAIL and charged an opa crash as
+FAIL; it now prints one `DENY:` line per message and returns ENGINE_ERROR.
+Amendment 46 stays DRAFT until the acm `hcl_modules` trial is re-run on the
+fixed policy; the two clean `hcl_modules` rows stand as its evidence so far.
