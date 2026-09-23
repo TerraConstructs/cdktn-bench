@@ -1019,30 +1019,44 @@ def tier_1(cfg, artifact, norm_status="OK"):
     return status
 
 
+def deny_lines(text):
+    """One `DENY: <message>` line per `deny` entry. Whitespace inside an entry
+    is folded to single spaces so no message -- which a policy author writes and
+    a plan's own addresses feed -- can occupy a line of its own and imitate the
+    `PASS [name]` / `== summary: ... ==` lines gates/emit_result.py and
+    gates/oracle_falsifiability.py parse out of this same transcript."""
+    try:
+        entries = json.loads(text or "[]")
+    except ValueError:
+        entries = [text]
+    return [
+        "DENY: " + " ".join(str(entry).split())
+        for entry in entries
+        if str(entry).strip()
+    ]
+
+
 def _opa_deny(cfg, policy, artifact):
-    """`deny` empty means PASS. An `opa eval` that ABORTS is captured as its own
-    status: piping an aborted evaluation straight into jq reports FAIL, i.e. a
-    Rego runtime error charged to the solution as reward 0.0."""
+    """`deny` empty means PASS. A non-empty one is FAIL and every message in it
+    is PRINTED: a tier-1 FAIL whose reason is not in the transcript is a 0.0
+    nobody can attribute to a fact. An `opa eval` that ABORTS is neither -- it is
+    ENGINE_ERROR carrying opa's own stderr, because a Rego runtime error charged
+    to the solution reads as a wrong answer."""
     argv = _opa_argv(cfg, policy, cfg["query"])
     sys.stdout.flush()
-    if cfg["hardened"]:
-        with open(artifact, "rb") as src, open(
-            LOGS / "tier1-opa-stderr.log", "wb"
-        ) as log:
-            p = subprocess.run(argv, stdin=src, stdout=subprocess.PIPE, stderr=log)
-        if p.returncode:
-            tee(
-                "tier1-engine-error",
-                list(OPA_ABORT_LINES) + read_lines("tier1-opa-stderr.log"),
-            )
-            return "ENGINE_ERROR"
-        text = p.stdout.decode(errors="replace").rstrip("\n")
-        return "PASS" if jq_test(text, "length == 0") else "FAIL"
-    with open(artifact, "rb") as src:
-        p = subprocess.run(argv, stdin=src, stdout=subprocess.PIPE)
-    text = p.stdout.decode(errors="replace")
-    ok = p.returncode == 0 and jq_test(text, "length == 0")
-    return "PASS" if ok else "FAIL"
+    with open(artifact, "rb") as src, open(LOGS / "tier1-opa-stderr.log", "wb") as log:
+        p = subprocess.run(argv, stdin=src, stdout=subprocess.PIPE, stderr=log)
+    if p.returncode:
+        tee(
+            "tier1-engine-error",
+            list(OPA_ABORT_LINES) + read_lines("tier1-opa-stderr.log"),
+        )
+        return "ENGINE_ERROR"
+    text = p.stdout.decode(errors="replace").rstrip("\n")
+    if jq_test(text, "length == 0"):
+        return "PASS"
+    out(*deny_lines(text))
+    return "FAIL"
 
 
 def _not_verifiable_probe(cfg, policy, artifact):

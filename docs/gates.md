@@ -679,7 +679,11 @@ Amendment 44, the Python verifier), and it costs a full fixture collection.
 The verifier's output is a CONTRACT, not a log. `gates/emit_result.py` reads the
 per-assert `PASS [name]` lines, the summary line's `tier1_status=` and the
 `/logs/verifier/*` markers; `gates/oracle_falsifiability.py` reads the summary
-line and the `<LABEL> FAILED` lines; harbor reads `reward.txt`. So the gate runs
+line and the `<LABEL> FAILED` lines; harbor reads `reward.txt`. A tier-1 FAIL
+also prints one `DENY: <message>` line per `deny` entry — an explanation, not a
+parsed surface, which is why both summary patterns match a WHOLE line and every
+deny message is folded onto one (docs/generator.md, "What a tier-1 verdict
+prints"). So the gate runs
 every fixture of every arm through `oracle_falsifiability._run_solve` and
 records exactly those three surfaces — the reward bytes, the set of files under
 the run's logs dir with each one's digest, and the stdout lines the gates parse

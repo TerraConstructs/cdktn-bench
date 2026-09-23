@@ -2520,8 +2520,8 @@ def build_verify_config(spec: Spec, arm: Arm, step: Step | None = None) -> dict:
     normalise = arm in ("hcl_raw", "terraconstructs", "hcl_modules")
     # ENGINE_ERROR -- "the oracle did not run" -- must never be scored as a
     # pass; it is run-invalidating exactly as TOOL_MISSING is. Listed on EVERY
-    # arm rather than only where it is reachable (the hardened eval path of an
-    # hcl_traversal arm, and the plan normaliser), because this list is the
+    # arm rather than only where it is reachable (an aborted `opa eval`, a failed
+    # HCL pre-parse, the plan normaliser), because this list is the
     # equal-strictness contract between the arms (DECISIONS.md Amendment 29 --
     # a catch may not cost the reward on one arm and not on another): a status
     # an arm cannot report costs it nothing, and an arm that LATER gains the
@@ -2538,10 +2538,6 @@ def build_verify_config(spec: Spec, arm: Arm, step: Step | None = None) -> dict:
         "query": f"data.cdktn_bench.{pkg}.deny",
         "not_verifiable_query": f"data.cdktn_bench.{pkg}.not_verifiable",
         "hcl": hcl,
-        # Capture `opa eval`'s exit code instead of piping it into jq, so an
-        # aborted evaluation is ENGINE_ERROR rather than an unexplained FAIL
-        # charged to the solution as 0.0.
-        "hardened": hcl is not None,
         "bad_statuses": bad_statuses,
     }
 

@@ -143,6 +143,19 @@ contract between arms (DECISIONS.md Amendment 29 — a catch may not cost the
 reward on one arm and not on another), so an arm that later gains such an
 engine cannot gain a silent pass with it.
 
+### What a tier-1 verdict prints
+
+A tier-1 FAIL prints the `deny` set that produced it: one `DENY: <message>` line
+per entry, in the tier-1 section ahead of the `== summary: ... ==` line, so a
+transcript alone says WHICH fact denied the plan rather than only that the
+reward was 0.0. Each message is folded onto a single line, because a message
+carries the artifact's own resource addresses and an embedded newline would let
+one open a line the result gates parse (`PASS [name]`, `== summary: ... ==`,
+`<LABEL> FAILED`); those gate patterns are anchored to whole lines for the same
+reason. An `opa eval` that exits non-zero is never a FAIL: it is `ENGINE_ERROR`
+with opa's stderr in the transcript and a `tier1-engine-error` marker, because a
+Rego runtime error is a defect in the oracle, not a wrong answer.
+
 ### Live verifier tiers in `tests/verify.py`
 
 Two optional live tiers are declared in `tests/verify.py`, both

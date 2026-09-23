@@ -196,10 +196,14 @@ def _check_mirror_coverage(document: dict, arm: Arm) -> tuple[bool, str]:
     return True, ""
 
 
-# `== summary: tier0_pass=N tier1_status=X ==` -- generator/gen.py's
-# build_static_tiers_sh's own literal format, matched to recover an OBSERVED
-# tier from a run's stdout (see observed_tier() below).
-_SUMMARY_RE = re.compile(r"== summary: tier0_pass=(\d) tier1_status=(\S+) ==")
+# `== summary: tier0_pass=N tier1_status=X ==` -- the generated verifier's own
+# literal format, matched to recover an OBSERVED tier from a run's stdout (see
+# observed_tier() below). Anchored to a WHOLE line, because the same stdout
+# carries tier-0 log lines and tier-1 `DENY:` messages quoting the artifact's
+# own addresses, and an unanchored match would read a forged verdict out of one.
+_SUMMARY_RE = re.compile(
+    r"^== summary: tier0_pass=(\d) tier1_status=(\S+) ==\r?$", re.MULTILINE
+)
 # A toolchain step (build/synth/plan/validate/init) that fails before tier-0
 # asserts run prints "<LABEL> FAILED" and writes reward 0.0 immediately
 # (generator/gen.py's toolchain_block). That is tier-"0"-equivalent: caught by

@@ -8673,6 +8673,15 @@ rows where they were. Two things a module body still does not carry — a
 `local`, which plan JSON never represents — are resolved from the module CALL's
 own arguments or denied with the reason they have.
 
+The first live trial on this arm scored a correct composition 0.0 and moved two
+things: the acm reference covered only a RAW `aws_route53_zone` threaded into
+the module, while the agent took the zone from a module too, so the record's
+`zone_id` named a module OUTPUT and the created-zone check matched nothing —
+that zone's call prefix counts now, and the agent's shape ships as a second
+reference. The same trial showed the verifier printing a bare tier-1 `FAIL` with
+the `deny` set discarded, which is why a tier-1 FAIL now prints one `DENY:` line
+per message and a non-zero `opa eval` reports ENGINE_ERROR with its stderr.
+
 ---
 
 ## Amendment 47 — equipping hash scheme 2: Harbor's own equipping channels are in the hash — ACCEPTED

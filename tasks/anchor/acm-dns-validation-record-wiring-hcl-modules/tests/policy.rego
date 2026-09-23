@@ -143,6 +143,25 @@ references_a_created_zone(refs) if {
 	startswith(ref, z)
 }
 
+# A zone created INSIDE a module call is named by the caller through that
+# call's output (`module.<call>.id`), never by the zone's own hoisted address,
+# so every created zone's call prefix is a valid reference prefix too. A call
+# with count/for_each hoists as `module.<call>[k].…`, which no plain
+# `module.<call>.…` reference matches -- still denied, the fail-closed
+# direction. With no module-created zone the set is empty and this second
+# definition never holds: hcl_raw/terraconstructs strictness is unchanged.
+created_zone_call_prefixes := {prefix |
+	some addr in created_zone_addresses
+	startswith(addr, "module.")
+	prefix := concat("", ["module.", split(trim_prefix(addr, "module."), ".")[0], "."])
+}
+
+references_a_created_zone(refs) if {
+	some ref in refs
+	some prefix in created_zone_call_prefixes
+	startswith(ref, prefix)
+}
+
 # A record's `zone_id` references, spelled as absolute plan addresses.
 #
 # At the root (`module_prefix` empty) this is the reference list verbatim --

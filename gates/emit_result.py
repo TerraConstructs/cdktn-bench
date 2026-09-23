@@ -290,8 +290,13 @@ _TIER0_ASSERT_LINE_RE = re.compile(r"^\s*(PASS|FAIL)\s*\[([^\]]+)\]", re.MULTILI
 # `== summary: tier0_pass=N tier1_status=X ==` -- the last line the generated
 # verifier (`tests/tiers.py`) prints before writing the reward. A toolchain step
 # that failed first returns before this line runs, in which case tier1_status is
-# reported absent below rather than guessed.
-_TIER1_SUMMARY_RE = re.compile(r"tier1_status=(\S+)")
+# reported absent below rather than guessed. Anchored to a WHOLE line: the same
+# transcript carries tier-0 log lines and tier-1 `DENY:` messages that quote the
+# artifact's own addresses, and an unanchored match would read a forged verdict
+# out of one of those ahead of the real line.
+_TIER1_SUMMARY_RE = re.compile(
+    r"^== summary: tier0_pass=\d tier1_status=(\S+) ==\r?$", re.MULTILINE
+)
 
 
 def read_tier_evidence(trial_dir: str | Path) -> dict[str, Any] | None:
