@@ -40,6 +40,7 @@ def moved_task(tmp_path, monkeypatch):
         "steps/01-first/solution/solve.sh": "#!/usr/bin/env bash\nstep fixture\n",
         "tests/live_check.py": "# hand-authored live check\n",
         "tests/static_tiers.sh": "# generated\n",
+        "task.toml": '[metadata]\nid = "11111111-2222-4333-8444-555555555555"\n',
     }.items():
         path = stale / rel
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -78,3 +79,13 @@ def test_the_emptied_shard_directory_is_removed(moved_task):
     spec, _stale, tasks = moved_task
     gen.sweep_stale_task_dirs(spec)
     assert not (tasks / "anchor").exists()
+
+
+def test_the_task_identity_travels_with_the_move(moved_task):
+    """generate_arm reuses [metadata].id only from a task.toml at the new
+    path, so the sweep carries the old one across; a shard move must not
+    re-mint the identity of a task whose content did not change."""
+    spec, _stale, _tasks = moved_task
+    gen.sweep_stale_task_dirs(spec)
+    new = gen.task_dir(spec, "awscdk")
+    assert gen.existing_task_uuid(new / "task.toml") == "11111111-2222-4333-8444-555555555555"

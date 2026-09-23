@@ -19,6 +19,10 @@
       {
         "name": "anchor-3",
         "path": "scenarios/anchor-3"
+      },
+      {
+        "name": "anchor-4",
+        "path": "scenarios/anchor-4"
       }
     ],
     "tasks": [
@@ -56,15 +60,15 @@
       },
       {
         "name": "apigw-redeploy-awscdk",
-        "path": "tasks/anchor-3/apigw-redeploy-awscdk"
+        "path": "tasks/anchor-1/apigw-redeploy-awscdk"
       },
       {
         "name": "apigw-redeploy-hcl-raw",
-        "path": "tasks/anchor-1/apigw-redeploy-hcl-raw"
+        "path": "tasks/anchor-2/apigw-redeploy-hcl-raw"
       },
       {
         "name": "apigw-redeploy-terraconstructs",
-        "path": "tasks/anchor-2/apigw-redeploy-terraconstructs"
+        "path": "tasks/anchor-3/apigw-redeploy-terraconstructs"
       },
       {
         "name": "apigwv2-route-settings-zero-vs-unset-awscdk",
@@ -120,7 +124,7 @@
       },
       {
         "name": "ecr-repo-destroy-force-delete-terraconstructs",
-        "path": "tasks/anchor-1/ecr-repo-destroy-force-delete-terraconstructs"
+        "path": "tasks/anchor-4/ecr-repo-destroy-force-delete-terraconstructs"
       },
       {
         "name": "ecs-swappiness-awscdk",
@@ -152,15 +156,15 @@
       },
       {
         "name": "lambda-alias-tracks-unpublished-latest-awscdk",
-        "path": "tasks/anchor-1/lambda-alias-tracks-unpublished-latest-awscdk"
+        "path": "tasks/anchor-4/lambda-alias-tracks-unpublished-latest-awscdk"
       },
       {
         "name": "lambda-alias-tracks-unpublished-latest-hcl-raw",
-        "path": "tasks/anchor-2/lambda-alias-tracks-unpublished-latest-hcl-raw"
+        "path": "tasks/anchor-1/lambda-alias-tracks-unpublished-latest-hcl-raw"
       },
       {
         "name": "lambda-alias-tracks-unpublished-latest-terraconstructs",
-        "path": "tasks/anchor-3/lambda-alias-tracks-unpublished-latest-terraconstructs"
+        "path": "tasks/anchor-2/lambda-alias-tracks-unpublished-latest-terraconstructs"
       },
       {
         "name": "lambda-log-group-ownership-and-retention-awscdk",
@@ -176,27 +180,27 @@
       },
       {
         "name": "named-resource-replacement-awscdk",
-        "path": "tasks/anchor-1/named-resource-replacement-awscdk"
+        "path": "tasks/anchor-3/named-resource-replacement-awscdk"
       },
       {
         "name": "named-resource-replacement-hcl-raw",
-        "path": "tasks/anchor-2/named-resource-replacement-hcl-raw"
+        "path": "tasks/anchor-4/named-resource-replacement-hcl-raw"
       },
       {
         "name": "named-resource-replacement-terraconstructs",
-        "path": "tasks/anchor-3/named-resource-replacement-terraconstructs"
+        "path": "tasks/anchor-1/named-resource-replacement-terraconstructs"
       },
       {
         "name": "s3-acl-vs-object-ownership-log-delivery-awscdk",
-        "path": "tasks/anchor-3/s3-acl-vs-object-ownership-log-delivery-awscdk"
+        "path": "tasks/anchor-1/s3-acl-vs-object-ownership-log-delivery-awscdk"
       },
       {
         "name": "s3-acl-vs-object-ownership-log-delivery-hcl-raw",
-        "path": "tasks/anchor-1/s3-acl-vs-object-ownership-log-delivery-hcl-raw"
+        "path": "tasks/anchor-2/s3-acl-vs-object-ownership-log-delivery-hcl-raw"
       },
       {
         "name": "s3-acl-vs-object-ownership-log-delivery-terraconstructs",
-        "path": "tasks/anchor-2/s3-acl-vs-object-ownership-log-delivery-terraconstructs"
+        "path": "tasks/anchor-3/s3-acl-vs-object-ownership-log-delivery-terraconstructs"
       },
       {
         "name": "s3-bucket-hardening-decomposition-awscdk",
@@ -260,11 +264,11 @@
       },
       {
         "name": "singleton-child-resource-clobber-awscdk",
-        "path": "tasks/anchor-2/singleton-child-resource-clobber-awscdk"
+        "path": "tasks/anchor-3/singleton-child-resource-clobber-awscdk"
       },
       {
         "name": "singleton-child-resource-clobber-hcl-raw",
-        "path": "tasks/anchor-3/singleton-child-resource-clobber-hcl-raw"
+        "path": "tasks/anchor-4/singleton-child-resource-clobber-hcl-raw"
       },
       {
         "name": "singleton-child-resource-clobber-terraconstructs",

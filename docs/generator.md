@@ -213,7 +213,7 @@ AWS consequences, in this order:
 1. edit `shard_count`
 2. `make shards` — materializes `scenarios/anchor-1..N-1` + the registry
 3. `make gen-all` — rewrites every task's `scenario_id` and task path
-4. `aws-bench env init --n-concurrent N --wait-for-quotas`, then `env setup`
+4. `cdktn-bench env init --env-name <env> --registry-path local-registry.json -d <dataset> --n-concurrent N --wait-for-quotas`, then `env setup` with the same dataset flags (both need the scenario source; `env init` reuses existing accounts by tag and creates only the new shard's)
 
 Steps 1-3 are repo-local; step 4 creates real member accounts and is the only
 step this repo cannot perform.

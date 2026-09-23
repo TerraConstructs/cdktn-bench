@@ -4327,6 +4327,14 @@ def relocate_hand_authored(spec: Spec, arm: Arm, stale_dir: Path) -> None:
             )
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(path), str(dest))
+    # Identity travels too: generate_arm reuses [metadata].id only from a
+    # task.toml at the NEW path, so without this every shard move re-mints
+    # the uuid of a task whose content did not change.
+    stale_toml = stale_dir / "task.toml"
+    dest_toml = dest_root / "task.toml"
+    if stale_toml.is_file() and not dest_toml.exists():
+        dest_root.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(stale_toml, dest_toml)
 
 
 def write_multi_step_layout(spec: Spec, arm: Arm, arm_dir: Path) -> None:
