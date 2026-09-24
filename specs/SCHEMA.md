@@ -330,9 +330,10 @@ arms:
     — the modules come from a sidecar on the compose network), and
     `oracle.hcl_traversal: true` (§4.6 — the merge reads the agent's own `.tf`
     files, and on this arm the graded resource is declared inside an installed
-    module body it never sees). A **brownfield** spec cannot enable it at all
-    until `workspace_seed.entry_file` gains a module-based seed body (§2.7);
-    none of the pilot scenarios is brownfield, so that entry is still unwritten.
+    module body it never sees). A **brownfield** spec owes one thing more:
+    `workspace_seed.entry_file.hcl_modules` and its `extra_files` sibling, the
+    arm's own seed body, required iff the arm is enabled exactly like the other
+    arms' (§2.7).
   - `enabled: false` → `reason` states the gap (a missing module-based reference,
     a trap the available modules cannot express, or a catch no module exposes).
 
@@ -774,7 +775,9 @@ workspace_seed:
       …
     hcl_raw: |
       …
-    terraconstructs: |
+    terraconstructs: |           # required iff arms.terraconstructs.enabled
+      …
+    hcl_modules: |               # required iff arms.hcl_modules.enabled
       …
   extra_files:                   # OPTIONAL, per arm, WRITABLE (0o644)
     hcl_raw:
@@ -786,21 +789,32 @@ workspace_seed:
       description: …             # vocabulary as oracle.structural_asserts (§4.2).
       pins_catch: <catch-name>    # optional per entry; >=1 entry MUST set it
       applies_to: [awscdk, hcl_raw, terraconstructs]
-      cfn_jsonpath: …
-      tf_jsonpath: …
+      cfn_jsonpath: …            # required iff 'awscdk' in applies_to
+      tf_jsonpath: …             # required iff ANY TF-shaped arm is in applies_to
       op: exists | not_exists | eq | in | contains | regex | set_eq | absent_or_eq | not_regex
       expected: …
 ```
 
 **`entry_file` is a per-arm map, and each body is the WHOLE file.** There is no
-derivation path between the three (`docs/scenario-candidates.md:169-176`: no
-public CDK→TF synthesizer exists), so the three seeds are hand-authored under
+derivation path between the arms (`docs/scenario-candidates.md:169-176`: no
+public CDK→TF synthesizer exists), so every arm's seed is hand-authored under
 the same discipline as `solution/solve.sh` (§8.2 point 8). The generator writes
 each body verbatim — **no header of any kind** — so the spec author owns the
 imports and the class/blocks. `gen.py::seed_entry_body` checks the per-arm
 structural contract at generation time instead (`export class ScenarioStack` on
-the TS arms; no `provider "aws"`/`terraform {}` block on hcl_raw, which
-`provider.tf` owns — finding G1).
+the TS arms; no `provider "aws"`/`terraform {}` block on either Terraform arm,
+which `provider.tf` owns — finding G1).
+
+**The `hcl_modules` body is module-composed where a module fits.** Where
+`docs/design/hcl-modules-spec-matrix.md` shows a full module fit for the seeded
+resources, the seed is written as day-2 configuration on a codebase already
+built from `terraform-aws-modules` at the pinned versions, plan-green under the
+vendored registry; where the seeded resources have no module, it IS the `hcl_raw`
+body. Either way it must set up the same deployed shape and the same latent trap
+as its siblings — the `seed_asserts` below are what hold that — and
+`solution/broken/seed-unchanged` must still score 0.0 on this arm for the reason
+it scores 0.0 on the others (owner's decision, `DECISIONS.md` Amendment 46;
+authoring procedure in `docs/adding-scenarios.md` §6.3).
 
 **The seed is AGENT-WRITABLE (`0o644`).** This is the exact opposite of
 `seeded_files` (§2.5), which are `0o444` read-only reference inputs. The two
@@ -852,7 +866,7 @@ arm-agnostic, and the generator inserts it *before* the per-arm language line �
 i.e. inside the parity-checked shared prefix (`gen.py::shared_prefix`,
 `check_parity.py`). It cannot break prompt parity even in principle.
 
-**`seed_asserts` — what "the three seeds are equivalent" means.** **Not**
+**`seed_asserts` — what "every arm's seed is equivalent" means.** **Not**
 resource-count or resource-type parity: the whole thesis of this benchmark is
 that one L2 construct decomposes into N Terraform resources, so a census check
 would fail every honest seed. Equivalence is defined **behaviourally**:
@@ -913,7 +927,7 @@ steps live in `steps/`. The seed is written once, never per step. The
 no-foreshadowing rules apply to the seed exactly as to a step-1 prompt.
 
 **Equipping.** `task.toml [metadata] workspace_seed_sha256` carries a sha256
-over every arm's seed body + extra files (spec-wide: the three seeds are one
+over every arm's seed body + extra files (spec-wide: the seeds are one
 equivalence claim, so editing any one invalidates every arm's rows).
 `gates/equipping.py::compute_equipping_hash` reads it back and folds it into the
 existing `extra_cfg` manifest slot — no `HASH_SCHEME_VERSION` bump, and no
@@ -1022,7 +1036,7 @@ unreachable from the agent phase.
    the same `generator/jsonpath_jq.py` compiler and the same
    `tests/ops.py` tier-0 uses. Arm-agnostic by construction: the
    account does not know which arm produced it, the same principle that makes
-   `tests/live_check.py` byte-identical across all three arms.
+   `tests/live_check.py` byte-identical across every enabled arm.
 
    **Two load-time rules narrow the ways a live assert can pass on an empty
    account.** `min_length: 1` counts asserts; it does not make them capable of
@@ -1184,10 +1198,10 @@ the slowest runner you will use.
 **Not a replacement for `seed_asserts`.** They are different instruments
 answering different questions and both stay mandatory: `seed_asserts` run at
 **generation** time, offline, un-overlaid, never in a container
-(`make seed-parity`), and answer *"do the three seeds declare the same
+(`make seed-parity`), and answer *"do the seeds declare the same
 system?"*. `live_asserts` run at **trial** time, pre-agent, against a real
 account, and answer *"does the account actually hold it?"*. A green
-`make seed-parity` is evidence about three YAML bodies; it never was evidence
+`make seed-parity` is evidence about the YAML bodies; it never was evidence
 about an account.
 
 **Measurement integrity.** Seed-deploy time and tokens are never attributed to
@@ -1308,8 +1322,12 @@ spec is exempt (its header says so) and does not need taxonomy diversity.
   removal policy `Retain` makes `cdk destroy --force` exit 0 having deleted
   nothing, which a teardown tier would report `clean`), so it is graded
   statically there.
-- `applies_to` (optional, default: all three enabled arms — 100% backward
-  compatible with every pre-Slice-G spec): restricts which arms
+- `applies_to` (optional, default: the three ORIGINAL arms `[awscdk, hcl_raw,
+  terraconstructs]` — 100% backward compatible with every pre-Slice-G spec, and
+  deliberately not "every enabled arm": a fourth arm must be admitted per catch
+  with a measured verdict, and a spec that enables one and names it in no
+  `applies_to` is refused at load rather than shipped with an arm nothing
+  falsifies): restricts which arms
   `gates/oracle_falsifiability.py` requires a
   `solution/broken/<name>/solve.sh` fixture for. Exists because a catch's
   mistake can be structurally IMPOSSIBLE on some arm without a contrived
@@ -1331,9 +1349,9 @@ oracle:
     - name: <kebab-case, unique within the spec>
       description: <string>
       tier: "0" | "1"
-      applies_to: [awscdk, hcl_raw, terraconstructs]   # subset of enabled arms; default = all enabled arms
+      applies_to: [awscdk, hcl_raw, terraconstructs]   # subset of enabled arms; default = the three ORIGINAL arms
       cfn_jsonpath: <string>     # required iff 'awscdk' in applies_to
-      tf_jsonpath: <string>      # required iff 'hcl_raw' or 'terraconstructs' in applies_to
+      tf_jsonpath: <string>      # required iff ANY TF-shaped arm is in applies_to
       op: exists | not_exists | eq | in | contains | regex
       expected: <any>            # shape depends on op; omitted for exists/not_exists
   rego_hints: [<string>, ...]        # optional, default []

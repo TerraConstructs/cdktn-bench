@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 import sys
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, get_args
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -52,6 +52,13 @@ CatchTierStr = Literal["0", "1", "live", "teardown"]
 # generator-side writers have not, so `gen.ARMS_PENDING_IMAGE` still refuses to emit
 # it until the phase-5 pilot.
 Arm = Literal["awscdk", "hcl_raw", "terraconstructs", "hcl_modules"]
+
+# Every arm whose artifact is a `terraform show -json` plan, i.e. every arm an
+# assert's `tf_jsonpath` is resolved against. Derived rather than listed, so an
+# arm added to `Arm` cannot be required to carry a cfn path and forgotten by the
+# rule that demands a tf one -- which is how `hcl_modules` reached a seed_assert
+# that declared only this arm and was asked for no path at all.
+TF_SHAPED_ARMS: tuple[str, ...] = tuple(a for a in get_args(Arm) if a != "awscdk")
 
 ID_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 PLACEHOLDER_TOKEN_RE = re.compile(r"\{\{([A-Za-z0-9_.\-]+)\}\}")
@@ -540,9 +547,7 @@ class SeedAssert(BaseModel):
                 f"seed_assert {self.name!r}: cfn_jsonpath required because "
                 "'awscdk' is in applies_to"
             )
-        if (
-            "hcl_raw" in self.applies_to or "terraconstructs" in self.applies_to
-        ) and not self.tf_jsonpath:
+        if any(arm in self.applies_to for arm in TF_SHAPED_ARMS) and not self.tf_jsonpath:
             raise ValueError(
                 f"seed_assert {self.name!r}: tf_jsonpath required because a "
                 "TF-shaped arm is in applies_to"
@@ -610,7 +615,7 @@ class SeedExtraFile(BaseModel):
 class PerArmSeedBodies(BaseModel):
     """`workspace_seed.entry_file` -- one hand-authored body per ENABLED arm.
 
-    A per-arm map, not one document: no derivation path exists between the three
+    A per-arm map, not one document: no derivation path exists between the arms
     (no public CDK->TF synthesizer; docs/scenario-candidates.md). Hand-authoring
     per arm is the same discipline `solution/solve.sh` (§8.2 point 8) and
     `generator/tests/fixtures/<id>/<arm>/<entry_file>` already use.
@@ -618,12 +623,19 @@ class PerArmSeedBodies(BaseModel):
     Each body is written VERBATIM as that arm's `output_contract.entry_file`,
     with no generator header or wrapper, so gen.py::seed_entry_body checks it
     still satisfies its arm's structural contract (`export class ScenarioStack`
-    on the TS arms, no second `provider "aws"` block on hcl_raw).
+    on the TS arms, no second `provider "aws"` block on the Terraform arms).
+
+    Every body is optional HERE and REQUIRED iff its arm is enabled, checked in
+    `Spec._workspace_seed_wellformed` where the enabled set is known. The
+    hcl_modules body is module-composed where a module fits the seeded resources
+    and is the hcl_raw body where none does; either way it sets up the same
+    deployed shape, and so the same trap (docs/adding-scenarios.md §6.3).
     """
 
     awscdk: str | None = None
     hcl_raw: str | None = None
     terraconstructs: str | None = None
+    hcl_modules: str | None = None
 
 
 @_strict
@@ -631,6 +643,7 @@ class PerArmSeedExtraFiles(BaseModel):
     awscdk: list[SeedExtraFile] = Field(default_factory=list)
     hcl_raw: list[SeedExtraFile] = Field(default_factory=list)
     terraconstructs: list[SeedExtraFile] = Field(default_factory=list)
+    hcl_modules: list[SeedExtraFile] = Field(default_factory=list)
 
 
 # The ops from SCHEMA.md §4.2's nine-op table whose compiled jq filter is TRUE
@@ -654,7 +667,7 @@ class SeedLiveAssert(BaseModel):
 
     The anti-vacuity gate, and a different instrument from `SeedAssert`, which
     never enters a container: a `seed_assert` is a GENERATION-time parity gate
-    (`make seed-parity`) against the offline workspace, answering "do the three
+    (`make seed-parity`) against the offline workspace, answering "do the arms'
     seeds declare the same system?", while this is resolved at TRIAL time inside
     the agent container against a real `aws` CLI response, answering "does the
     account actually hold it?".
@@ -894,10 +907,10 @@ class WorkspaceSeed(BaseModel):
         if not self.premise.strip():
             raise ValueError(
                 "workspace_seed.premise must be non-empty -- it is the "
-                "arm-agnostic, human-readable equivalence claim for the three "
-                "seeds AND the sentence the agent reads (SCHEMA.md §2.7)"
+                "arm-agnostic, human-readable equivalence claim for every arm's "
+                "seed AND the sentence the agent reads (SCHEMA.md §2.7)"
             )
-        for arm in ("awscdk", "hcl_raw", "terraconstructs"):
+        for arm in ("awscdk", "hcl_raw", "terraconstructs", "hcl_modules"):
             body = getattr(self.entry_file, arm)
             if body is None:
                 continue
@@ -1000,10 +1013,7 @@ class StructuralAssert(BaseModel):
                 f"structural_assert {self.name!r}: cfn_jsonpath required "
                 "because 'awscdk' is in applies_to"
             )
-        if any(
-            arm in self.applies_to
-            for arm in ("hcl_raw", "terraconstructs", "hcl_modules")
-        ) and not self.tf_jsonpath:
+        if any(arm in self.applies_to for arm in TF_SHAPED_ARMS) and not self.tf_jsonpath:
             raise ValueError(
                 f"structural_assert {self.name!r}: tf_jsonpath required "
                 "because a TF-shaped arm is in applies_to"
@@ -1338,6 +1348,7 @@ class StepPerArmMap(BaseModel):
     awscdk: StepPerArm | None = None
     hcl_raw: StepPerArm | None = None
     terraconstructs: StepPerArm | None = None
+    hcl_modules: StepPerArm | None = None
 
 
 @_strict
@@ -1363,7 +1374,7 @@ class StepInstruction(BaseModel):
                     f"the generator-injected trailer text ({phrase!r} found) — "
                     "see SCHEMA.md §2.1/§2.6"
                 )
-            for arm_name in ("awscdk", "hcl_raw", "terraconstructs"):
+            for arm_name in ("awscdk", "hcl_raw", "terraconstructs", "hcl_modules"):
                 per_arm = getattr(self.per_arm, arm_name, None) if self.per_arm else None
                 if per_arm is not None and phrase in per_arm.language_line:
                     raise ValueError(
@@ -1375,7 +1386,7 @@ class StepInstruction(BaseModel):
 
     def tokens_used(self) -> set[str]:
         used: set[str] = set(PLACEHOLDER_TOKEN_RE.findall(self.shared_body))
-        for arm_name in ("awscdk", "hcl_raw", "terraconstructs"):
+        for arm_name in ("awscdk", "hcl_raw", "terraconstructs", "hcl_modules"):
             per_arm = getattr(self.per_arm, arm_name, None) if self.per_arm else None
             if per_arm is not None:
                 used |= set(PLACEHOLDER_TOKEN_RE.findall(per_arm.language_line))
@@ -1762,7 +1773,7 @@ class Spec(BaseModel):
         enabled = set(self.arms.enabled_arms())
         declared_bodies = {
             arm
-            for arm in ("awscdk", "hcl_raw", "terraconstructs")
+            for arm in ("awscdk", "hcl_raw", "terraconstructs", "hcl_modules")
             if getattr(seed.entry_file, arm) is not None
         }
         if declared_bodies != enabled:
@@ -1799,7 +1810,7 @@ class Spec(BaseModel):
                         "reference input), so a collision is a silent permission "
                         "fight (SCHEMA.md §2.7)"
                     )
-        for arm in ("awscdk", "hcl_raw", "terraconstructs"):
+        for arm in ("awscdk", "hcl_raw", "terraconstructs", "hcl_modules"):
             if arm not in enabled and seed.extras_for(arm):
                 raise ValueError(
                     f"workspace_seed.extra_files.{arm} is set but that arm is not enabled"
@@ -2105,7 +2116,7 @@ class Spec(BaseModel):
                 )
 
             if step.instruction.per_arm is not None:
-                for arm_name in ("awscdk", "hcl_raw", "terraconstructs"):
+                for arm_name in ("awscdk", "hcl_raw", "terraconstructs", "hcl_modules"):
                     if (
                         getattr(step.instruction.per_arm, arm_name) is not None
                         and arm_name not in enabled

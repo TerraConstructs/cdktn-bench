@@ -60,10 +60,14 @@ def live_check(tmp_path_factory):
     return module
 
 
-def test_the_three_arms_ship_the_same_bytes() -> None:
+def test_every_enabled_arm_ships_the_same_bytes() -> None:
     """A live oracle that could tell which arm produced the account state it is
     grading would be measuring the arms differently, which is the one thing
-    this benchmark's headline number may never do."""
+    this benchmark's headline number may never do.
+
+    Scoped by `enabled_arms()`, so an arm joining the spec joins this check; the
+    name once said "three" and would have read as a passing three-arm check on a
+    four-arm scenario."""
     bodies = {p: p.read_bytes() for p in ARM_CHECKS}
     assert len(set(bodies.values())) == 1, sorted(str(p) for p in bodies)
 

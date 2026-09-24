@@ -182,12 +182,23 @@ LIVE_UNCAUGHT = (
 LIVE_UNGRADED = f"{LIVE_ONLY_CONFIRMED_MARKER}: claimed, but the toolchain never produced an artifact"
 
 
-def _catch(name="live-catch", *, awscdk="live", hcl="0", override=None, applies_to=None):
+def _catch(
+    name="live-catch",
+    *,
+    awscdk="live",
+    hcl="0",
+    override=None,
+    modules_override=None,
+    applies_to=None,
+):
     return SimpleNamespace(
         name=name,
         applies_to=list(applies_to or ("awscdk", "hcl_raw", "terraconstructs")),
         predicted_tier_caught=SimpleNamespace(
-            awscdk=awscdk, hcl=hcl, terraconstructs_override=override
+            awscdk=awscdk,
+            hcl=hcl,
+            terraconstructs_override=override,
+            hcl_modules_override=modules_override,
         ),
     )
 
@@ -236,6 +247,26 @@ class TestLiveTierProofAccepted:
         # The same catch is tier-0 on the hcl-shaped arms (predicted_tier's
         # `.hcl`), so only awscdk can offer the live proof.
         spec = _spec([_catch()], arms=("awscdk", "hcl_raw"))
+        assert live_tier_proof(_live_results(arm="hcl_raw"), spec, "hcl_raw") is None
+
+    @pytest.mark.parametrize(
+        "arm,kwargs",
+        [
+            ("terraconstructs", {"override": "live"}),
+            ("hcl_modules", {"modules_override": "live"}),
+        ],
+    )
+    def test_a_per_arm_override_moves_the_tier_on_that_arm_only(self, arm, kwargs):
+        """Both Terraform overrides are read, and each is read for its own arm.
+
+        The catch is tier-0 on `.hcl`, so without the override hcl_raw offers no
+        live proof and neither does the overridden arm; with it, the overridden
+        arm does and hcl_raw still does not. An override that the gate ignored
+        would grade a mistake at a tier the spec said it is not caught at.
+        """
+        arms = ("awscdk", "hcl_raw", arm)
+        spec = _spec([_catch(applies_to=arms, **kwargs)], arms=arms)
+        assert live_tier_proof(_live_results(arm=arm), spec, arm) is not None
         assert live_tier_proof(_live_results(arm="hcl_raw"), spec, "hcl_raw") is None
 
 

@@ -18,21 +18,12 @@
 # `statement[*].principals[*].identifiers` of a
 # `data "aws_iam_policy_document"` when the policy is built that way.
 #
-# MODULE-AWARE CONFIGURATION WALK. The plan normaliser hoists `planned_values`
-# but leaves `configuration` in module bodies (oracles/rego/README.md), so on
-# the hcl_modules arm the bucket policy's own configuration lives inside the
-# called module and `configuration.root_module.resources` is empty. Read
-# through `config_of` alone, this rule denied a CORRECT solution with an empty
-# reference list -- MEASURED, reward 0.0 -- because the policy resource the
-# s3-bucket module writes references `var.policy` and no role. The fix is the
-# one the README prescribes and the three pilot policies carry: union every
-# configuration scope, qualify each body's addresses and references with its
-# call path so both sides share one address domain, and resolve what a module
-# body cannot know -- the value of `var.policy` -- from one scope UP, the
-# module CALL's own `policy` argument. Strictness is unchanged: the argument
-# read is `policy` and nothing else, so a role reference passed as some other
-# input cannot satisfy the graph edge, and on a module-free plan the prefix is
-# empty and the whole walk is exactly `configuration.root_module.resources`.
+# `configuration` is NOT hoisted by the plan normaliser, so on the hcl_modules
+# arm the module writes the bucket policy and `configuration.root_module.
+# resources` is empty: the walk below unions every scope and resolves the one
+# thing a module body cannot know, `var.policy`, from the CALL's own `policy`
+# argument and no other (oracles/rego/README.md). On a module-free plan the
+# prefix is empty and the walk is `configuration.root_module.resources`.
 
 package cdktn_bench.caller_identity_arn_as_principal
 

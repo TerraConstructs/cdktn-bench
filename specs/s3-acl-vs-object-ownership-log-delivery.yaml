@@ -68,7 +68,7 @@
 #     `BucketPolicy`) available for the FIX but nothing linking the two.
 #   * hcl_raw: four independent resources, no interaction modelled anywhere.
 #
-# THE MAIN CATCH LANDS AT A DIFFERENT TIER ON EVERY ARM, and all three were
+# THE MAIN CATCH LANDS AT A DIFFERENT TIER ON EVERY ARM, and each one was
 # MEASURED (2026-08-26) by planning a correct and an incorrect grant on each arm
 # and diffing the graded artifact -- never predicted. Each arm's own broken/
 # fixture re-runs its half of that measurement on every `make falsifiability`,
@@ -187,6 +187,37 @@ arms:
       replacement grant for you. That is a genuine, measurable difference in
       what a typed construct library buys on this ticket, which is what the
       benchmark is for.
+  hcl_modules:
+    enabled: true
+    reason: >
+      docs/design/hcl-modules-spec-matrix.md §1 gives this scenario a full
+      module fit -- `terraform-aws-modules/s3-bucket/aws` 5.16.1 takes the
+      bucket, the ownership control, the ACL and the logging configuration as
+      root inputs -- and the composition it forces is exactly this ticket's:
+      the module also ships `attach_access_log_delivery_policy`, which authors
+      the replacement grant (`logging.s3.amazonaws.com`, `s3:PutObject` on
+      `${bucket.arn}/*`, plus the `GetBucketAcl` statement) itself. So this arm
+      measures whether an agent made to compose a module FINDS the input that
+      does the hard half, and the two shapes that get there -- that flag, or
+      `attach_policy` with a document the caller writes -- are both accepted
+      (`solution/policy-written-by-the-caller/` is the second reference).
+      ONE INPUT IS UNUSABLE HERE AND THE REASON IS A HOST-GATE FACT, MEASURED
+      rather than predicted: the module's `acl` input turns on
+      `data "aws_canonical_user_id"` (main.tf:6, gated on `var.owner["id"]`
+      being unset), which issues `s3:ListBuckets` -- an operation
+      gates/aws_stub.py does not answer, so every plan at the host gates dies
+      with `listing S3 Buckets: ... BadRequest`. A failed plan is a toolchain
+      row and not a catch, so the seed keeps `aws_s3_bucket_acl` as the one raw
+      resource in the workspace and composes everything else; the trapped
+      input, `object_ownership`, is inside the module call where the arm's
+      measurement wants it.
+      The module's own `object_ownership` default is `BucketOwnerEnforced` --
+      the OPPOSITE of the seed's `ObjectWriter` -- so the seed states the
+      poisoned value explicitly and `control_object_ownership = true` is what
+      makes the resource exist at all. `attach_public_policy = false` keeps the
+      seed's deployed shape the same five objects the hcl_raw seed deploys --
+      two buckets, an ownership control, an ACL and a logging configuration --
+      rather than adding a public-access block the premise never mentions.
 
 # ---------------------------------------------------------------------------
 # §2.7 workspace_seed -- THE BROWNFIELD STARTING STATE
@@ -194,12 +225,12 @@ arms:
 #
 # Each body below is written VERBATIM as that arm's
 # `output_contract.entry_file`, writable, with NO generator header of any kind
-# (SCHEMA.md §2.7). There are no comments anywhere in any of the three: a
+# (SCHEMA.md §2.7). There are no comments anywhere in any of them: a
 # comment near the poisoned property is the single most common way a seed
 # leaks its own answer, and `spec_model._seed_comment_violations` only catches
 # the editorial markers someone already thought of.
 #
-# Hostile read, per arm, of the three bodies below: they declare two buckets,
+# Hostile read, per arm, of the bodies below: they declare two buckets,
 # an ownership control, an ACL and a logging configuration. Nothing names a
 # bucket policy, a service principal, `BucketOwnerEnforced`, or any ordering
 # consequence. The ACL grant is visible because it MUST be -- the whole task is
@@ -254,6 +285,52 @@ workspace_seed:
 
         target_bucket = aws_s3_bucket.access_logs.id
         target_prefix = "app-data/"
+      }
+
+    hcl_modules: |
+      module "access_logs" {
+        source  = "terraform-aws-modules/s3-bucket/aws"
+        version = "5.16.1"
+
+        bucket        = "cdktn-bench-application-storage-access-logs"
+        force_destroy = true
+
+        attach_public_policy = false
+
+        control_object_ownership = true
+        object_ownership         = "ObjectWriter"
+
+        tags = {
+          Name = "application-storage-access-logs"
+        }
+      }
+
+      resource "aws_s3_bucket_acl" "access_logs" {
+        depends_on = [module.access_logs]
+
+        bucket = module.access_logs.s3_bucket_id
+        acl    = "log-delivery-write"
+      }
+
+      module "app_data" {
+        source  = "terraform-aws-modules/s3-bucket/aws"
+        version = "5.16.1"
+
+        depends_on = [aws_s3_bucket_acl.access_logs]
+
+        bucket        = "cdktn-bench-application-storage-app-data"
+        force_destroy = true
+
+        attach_public_policy = false
+
+        logging = {
+          target_bucket = module.access_logs.s3_bucket_id
+          target_prefix = "app-data/"
+        }
+
+        tags = {
+          Name = "application-storage-app-data"
+        }
       }
 
     awscdk: |
@@ -355,7 +432,7 @@ workspace_seed:
         vs CloudFormation's `LogDeliveryWrite`) and a SeedAssert carries one
         `expected` for both paths.
       pins_catch: log-delivery-grant-not-migrated
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_acl')].values.acl"
       op: eq
       expected: "log-delivery-write"
@@ -383,7 +460,7 @@ workspace_seed:
         what stops a future edit adding a second one somewhere else and
         satisfying this by accident.
       pins_catch: acls-left-enabled-on-the-destination-bucket
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       # RECURSIVE DESCENT, and not the obvious
       # `$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.OwnershipControls.Rules[*].ObjectOwnership`
       # -- MEASURED, 2026-08-26, by running `make seed-parity` against the real
@@ -407,13 +484,13 @@ workspace_seed:
         The system the premise describes really is wired: the application
         bucket's server access logs go to the destination bucket under
         `app-data/`. Pinned on the PREFIX because that is the one literal the
-        artifact carries on all three arms -- the destination bucket is a
+        artifact carries on every arm -- the destination bucket is a
         reference (`aws_s3_bucket.access_logs.id` / a CFN `Ref`), so its value
         is plan-time-unknown and unreadable from `.planned_values` (SCHEMA.md
         §4.2.1); the graph-edge form of the same fact is graded at tier 0 in
         `oracle.structural_asserts` below.
       pins_catch: access-logging-turned-off-instead-of-migrated
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.LoggingConfiguration.LogFilePrefix"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_logging')].values.target_prefix"
       op: eq
@@ -430,7 +507,7 @@ workspace_seed:
         `named-resource-replacement`'s `seed-ingress-is-already-scoped-to-the-vpc`
         provides for its tier-1 catch, from the other side.
       pins_catch: log-delivery-grant-not-migrated
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::BucketPolicy')]"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_policy')]"
       op: not_exists
@@ -636,6 +713,26 @@ instruction:
         deploy_command: >-
           terraform init -input=false &&
           terraform apply -input=false -auto-approve
+    hcl_modules:
+      language_line: "Author this as Terraform HCL composed from `terraform-aws-modules` registry modules: they are the real `terraform-aws-modules` sources, served at an allowlisted set of versions you can discover at this environment's registry endpoint."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        # `-refresh=false` for the reason hcl_raw's copy of this command states,
+        # and for one more that is this arm's alone: the seeded state holds
+        # module-authored resources, so a refresh would ask the stub for every
+        # one of them rather than only for the five a hand-written configuration
+        # declares.
+        plan_command: >-
+          terraform init && terraform validate &&
+          terraform plan -input=false -refresh=false -out=plan.tfplan &&
+          terraform show -json plan.tfplan > plan.json
+        # Identical to hcl_raw's: the modules come from the offline registry the
+        # arm image serves, so `init` needs no network. State lands at
+        # /app/project/terraform.tfstate.
+        deploy_command: >-
+          terraform init -input=false &&
+          terraform apply -input=false -auto-approve
     terraconstructs:
       language_line: "This workspace is a terraconstructs (TypeScript) app using its AWS L2 constructs."
       output_contract:
@@ -671,7 +768,7 @@ catches:
       always did; the plan and the apply both succeed. The log objects simply
       stop arriving, hours later, into a bucket nobody is watching.
 
-      THE TIER IS DIFFERENT ON ALL THREE ARMS, and every one of the three was
+      THE TIER IS DIFFERENT ON EVERY ARM, and every one of them was
       MEASURED rather than predicted (2026-08-26, by planning a correct and an
       incorrect grant on each arm and diffing the graded artifact):
 
@@ -706,7 +803,22 @@ catches:
       therefore conditional -- "if the document is readable at all, it must
       name the logging service principal" -- and a conditional is a policy
       engine's job, not a jq path's.
-    applies_to: [awscdk, hcl_raw, terraconstructs]
+
+      hcl_modules -- tier "live", the same as hcl_raw, and REACHABLE only
+      because the module exposes two ways in. `s3-bucket` 5.16.1's
+      `attach_access_log_delivery_policy` writes a correct grant itself, so the
+      mistake cannot be made THROUGH that input at all; what keeps the catch on
+      the arm is `attach_policy = true` with a `policy` string the caller
+      writes, a raw passthrough that reaches the wrong grant with no raw
+      resource anywhere. The tier was measured, not inherited: the module's
+      `aws_s3_bucket_policy.this` takes `policy = local.policy`, a module-local
+      built by `replace()`-ing the created bucket's ARN into
+      `data.aws_iam_policy_document.combined[0].json`, so the rendered document
+      is plan-time-unknown AND the configuration side keeps only the reference
+      `local.policy` -- less readable than hcl_raw's `jsonencode(...)`, not
+      more. The tier-1 rule stays silent on an unreadable document by design,
+      and `tests/live_check.py` is what grades the grant.
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       awscdk: "0"
       hcl: "live"
@@ -722,7 +834,19 @@ catches:
       protects. Caught at tier 0 on every arm: the graded artifact must still
       declare a logging configuration, targeting a bucket this configuration
       creates, under the `app-data/` prefix.
-    applies_to: [awscdk, hcl_raw, terraconstructs]
+      On hcl_modules only the PREFIX half of that is a tier-0 fact, which is
+      enough for this catch and is recorded because it is a real narrowing: the
+      `logging` input is an object on the bucket module's call, so the
+      `aws_s3_bucket_logging` resource's own configuration lives in the module
+      body where `target_bucket` reads `var.logging.target_bucket` and names no
+      bucket. Dropping the input removes the resource and fails the prefix
+      assert (whose `eq` pins the node count); REPOINTING it at a foreign bucket
+      while keeping the prefix passes tier 0 on this arm and is caught by
+      `tests/live_check.py`, which reads the deployed logging configuration and
+      requires this destination bucket by name. See
+      `access-logs-still-target-a-bucket-this-workspace-creates` for the assert
+      that is excluded here and why.
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       awscdk: "0"
       hcl: "0"
@@ -736,11 +860,18 @@ catches:
       which sounds like it satisfies "the bucket owner owns everything written
       to it" and does not (it only changes ownership of objects uploaded with
       the bucket-owner-full-control canned ACL, and leaves ACLs on). The ticket
-      is not done and the baseline is still violated. Caught at tier 0 (the
-      value assert) and again at tier 1 (the same claim quantified over EVERY
-      ownership control in the workspace, which is what a policy engine is
-      for).
-    applies_to: [awscdk, hcl_raw, terraconstructs]
+      is not done and the baseline is still violated. Caught at tier 1: the
+      same claim quantified over EVERY ownership control in the workspace,
+      which is what a policy engine is for.
+      Unchanged on hcl_modules and measured there: the `object_ownership`
+      input is a plain exposed string, the plan normaliser hoists the
+      module-authored `aws_s3_bucket_ownership_controls` into
+      `root_module.resources` where the Rego already looks, and the rule denies
+      `BucketOwnerPreferred` from inside a module call exactly as from the root.
+      The module's own DEFAULT for that input is `BucketOwnerEnforced`, so the
+      half-measure has to be typed out here rather than omitted -- the shape of
+      the mistake moves, the mistake does not.
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       # TIER 1 ON EVERY ARM, and the tier-0 twin this scenario's first draft
       # also declared for the same property was REMOVED to make that honest.
@@ -780,7 +911,13 @@ catches:
       path -- and unlike the CONTENT of that policy (see the other catch), the
       DECLARATION survives into `.configuration` on every arm and every shape,
       so this half needs no live tier.
-    applies_to: [awscdk, hcl_raw, terraconstructs]
+      hcl_modules is tier "1" for the same reason and through a different
+      artifact location: with no `attach_*` input set the module creates no
+      `aws_s3_bucket_policy` at all, so the claim is still "no bucket policy is
+      declared anywhere" -- and "anywhere" now has to mean every module scope,
+      which is the oracle fix this arm required (see
+      oracles/rego/s3-acl-vs-object-ownership-log-delivery/policy.rego).
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       awscdk: "0"
       hcl: "1"
@@ -850,6 +987,29 @@ oracle:
        ownership control deleted outright rather than corrected, which no
        remaining static assert covers.
 
+    TWO THINGS THE hcl_modules ARM CHANGED IN THE ORACLE RATHER THAN IN ITS OWN
+    applies_to, both at equal strictness on every arm, and they failed in
+    opposite directions. (1) A correct module-composed solution was scored 0.0 by
+    the oracle as it stood: the bucket policy the `s3-bucket` module authors is
+    declared inside the called module's body, so tier 1's unconditional half --
+    "a bucket policy must be declared" -- read an empty root-module resource list
+    and denied. The rule now reads every configuration scope, which is the same
+    claim evaluated over the whole document instead of over one frame of it, and
+    is no weaker on any arm: a module-free plan has exactly one scope, the root.
+    (2) The more serious one, and the direction that lets a WRONG solution
+    through: that same unconditional half asked `configuration`, which lists a
+    declared resource whatever its `count` resolves to, so the module's
+    `aws_s3_bucket_policy.this` with `count = local.create_bucket &&
+    local.attach_policy` read as "a policy is declared" for a workspace that
+    plans none -- `log-delivery-grant-missing-entirely` scored 1.0. The half now
+    counts the resource in `planned_values`, which carries it only if it is really
+    being created. A resource written without a `count` appears on both sides, so
+    the arms without modules are unchanged.
+    The narrowing that came with the arm is tier-0's graph-edge assert
+    `access-logs-still-target-a-bucket-this-workspace-creates`, which the
+    jsonpath grammar cannot express for a module-authored resource and which
+    `tests/live_check.py` answers against the account instead.
+
     What is deliberately NOT graded: how many resources each arm's expansion
     produced; whether the bucket policy is written as `jsonencode`, a
     `data "aws_iam_policy_document"`, an L2 `addToResourcePolicy` call or a
@@ -869,7 +1029,7 @@ oracle:
         on the prefix literal, which every arm's artifact carries; the
         destination-bucket half is the graph-edge assert below.
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.LoggingConfiguration.LogFilePrefix"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_logging')].values.target_prefix"
       op: eq
@@ -884,6 +1044,17 @@ oracle:
         would resolve to nothing against a correct solution. TF-shaped arms
         only; the awscdk twin below is a separate, deliberately weaker assert
         for the same artifact-shape reason its seed twin is.
+        NOT hcl_modules, and this is a limit of tier 0 rather than of the arm.
+        There the logging configuration is an object on the bucket module's own
+        call, so the resource this path names is in the module body and its
+        `target_bucket` expression reads `var.logging.target_bucket` -- a
+        reference to the call's argument, not to a bucket. The jsonpath grammar
+        cannot address a module scope, and rewriting the claim as the graph walk
+        that could would put a tier-1 rule where this scenario already has two;
+        `tests/live_check.py` grades the destination against the account
+        instead. Recorded on
+        `access-logging-turned-off-instead-of-migrated` as well, because it is
+        that catch's coverage that narrows.
       tier: "0"
       applies_to: [hcl_raw, terraconstructs]
       tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_s3_bucket_logging')].expressions.target_bucket.references[*]"
@@ -945,13 +1116,21 @@ oracle:
         TIER 1, TF-shaped arms only. Two claims, and only the first is
         expressible as a path:
 
-        (a) the destination bucket declares a bucket policy at all. With ACLs
+        (a) the destination bucket PLANS a bucket policy at all. With ACLs
         disabled that policy is the ONLY thing that can authorize log delivery,
-        so a solution with none has silently switched delivery off. `exists` on
-        `.configuration ... expressions.policy` rather than on
-        `.planned_values ... values.policy`, because the rendered document is
-        plan-time-unknown for any policy that references the bucket's own ARN
-        (SCHEMA.md §4.2.1) -- the declaration survives, the value does not.
+        so a solution with none has silently switched delivery off. The rule
+        counts `aws_s3_bucket_policy` RESOURCES in `.planned_values`, never the
+        rendered `values.policy`, which is plan-time-unknown for any policy that
+        references the bucket's own ARN (SCHEMA.md §4.2.1) -- the resource
+        survives, the value does not.
+        MEASURED on the hcl_modules arm, which is why it reads planned_values and
+        not the configuration side it first read: `s3-bucket` 5.16.1 declares
+        `aws_s3_bucket_policy.this` with a `count` that is zero unless one of its
+        `attach_*` inputs is set, and Terraform's configuration representation
+        lists a declared resource whatever its count resolves to -- so the
+        configuration side reported a policy for a workspace that plans none, and
+        `log-delivery-grant-missing-entirely`'s fixture scored 1.0. No arm loses
+        strictness: a resource written without a `count` appears on both sides.
 
         (b) IF that document is readable from the graded artifact, it must name
         `logging.s3.amazonaws.com`. That half is conditional on readability,
@@ -969,8 +1148,19 @@ oracle:
         awscdk is excluded because it is not conditional there: the CFN
         template always carries the literal, and the two tier-0 asserts above
         check it directly.
+
+        The `tf_jsonpath` below names the artifact location the RULE reasons
+        over, and on hcl_modules that location is one the jsonpath grammar
+        cannot reach: the module authors the policy resource, so its
+        configuration node sits in the called module's body. The Rego walks
+        every configuration scope and finds it there; the path here stays the
+        root-module spelling, which is what the two arms with a root-module
+        policy resource resolve and what `make check-paths` resolves for them.
+        Half (b) is silent on this arm in practice, and measured to be: the
+        module hands the resource `policy = local.policy`, and a module-local
+        value is not readable from any plan document.
       tier: "1"
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_s3_bucket_policy')].expressions.policy"
       op: exists
 
@@ -986,7 +1176,7 @@ oracle:
         between tier 0 and tier 1 in this repo; the tier-0 `set_eq` twin checks
         the same claim through a different evaluator, on purpose.
       tier: "1"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       # RECURSIVE DESCENT, and not the obvious
       # `$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.OwnershipControls.Rules[*].ObjectOwnership`
       # -- MEASURED, 2026-08-26, by running `make seed-parity` against the real
@@ -1008,7 +1198,16 @@ oracle:
   rego_hints:
     - "deny when any aws_s3_bucket_ownership_controls rule sets object_ownership to ObjectWriter or BucketOwnerPreferred"
     - "fail closed on shape drift: a resource with no rule/object_ownership at all is a deny, not a silent pass"
-    - "deny when no aws_s3_bucket_policy is declared at all -- with ACLs disabled that is the only possible log-delivery grant"
+    - >-
+      deny when no aws_s3_bucket_policy is PLANNED -- with ACLs disabled that is
+      the only possible log-delivery grant. Count resources in planned_values,
+      not in configuration: a module declares its policy resource whatever its
+      count resolves to
+    - >-
+      read the bucket policy out of EVERY configuration scope, not
+      configuration.root_module.resources alone: a module-authored policy is
+      declared in the called module's body, and reading the root scope only
+      would deny a correct hcl_modules solution for having no policy
     - >-
       deny when a bucket policy document IS readable from the artifact (a
       constant_value string, or a one-hop data.aws_iam_policy_document) and does

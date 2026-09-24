@@ -8505,7 +8505,9 @@ amendment is ACCEPTED on landing rather than on a live run.
 graded 0.0 by an oracle that could not see a module-created zone, scored 1.0
 on the fixed policy when re-run (`docs/live-results.md`). The mutating and
 brownfield arm forms are promoted by phase 6 slice C's own trials; until then
-rows on those forms are not published.
+rows on those forms are not published. Slice C's offline half has landed and
+names those trials by task, one per arm form -- see "Phase 6 slice C, offline"
+below.
 
 **`hcl_modules` is an ARM, not a scenario treatment attribute** (this closes
 ROADMAP open decision 4). Composing from `terraform-aws-modules` changes the
@@ -8855,6 +8857,208 @@ created resource sitting in a DIFFERENT argument of the same call would satisfy
 the rule. And a module call with `count`/`for_each` plans as `module.<call>[k].…`,
 which no configuration-built prefix names; such a resource is not selected, which
 is the fail-closed direction.
+
+**Phase 6 slice C, offline.** The amendment is ACCEPTED on the read-only arm form
+(see Status above); the three arm forms this slice introduces are NOT promoted,
+and rows on them are not published, until the live trials listed at the end of
+this section run. The six mutating and brownfield specs decided, all six enabled:
+`apigw-redeploy`, `ecr-repo-destroy-force-delete`,
+`lambda-alias-tracks-unpublished-latest`, `named-resource-replacement`,
+`s3-acl-vs-object-ownership-log-delivery`, `singleton-child-resource-clobber`.
+
+**The seed decision, and why it is not "module-composed" flat.** A brownfield
+spec's `workspace_seed.entry_file` gained a per-arm `hcl_modules` body, required
+iff the arm is enabled (`specs/SCHEMA.md` §2.7) — without it the arm would start
+from the empty greenfield skeleton while its siblings start from working,
+already-deployed config, which measures a different task. The rule the owner set
+is: module-composed where `docs/design/hcl-modules-spec-matrix.md` shows a full
+module fit **for the seeded resources** at the pinned versions and the seed plans
+green under the vendored registry; the `hcl_raw` body where none fits; the same
+deployed shape and the same trap either way, and `solution/broken/seed-unchanged`
+still 0.0 for the right reason. What slice C establishes is that "a module fits
+this resource" and "a module fits this SEED" are different questions, and two of
+the four seeds are hybrids for reasons that were measured, not read:
+
+- `named-resource-replacement` — VPC and the SSM interface endpoint are
+  `vpc@6.7.3` and `vpc//modules/vpc-endpoints@6.7.3`; the security group stays a
+  root `aws_security_group`. The submodule hard-codes
+  `lifecycle { create_before_destroy = true }` on the group it creates
+  (`main.tf:88-105`) and no `module` block accepts a `lifecycle`
+  meta-argument, so a module-composed group would have handed the seed a
+  **disarmed trap** — the matrix's "unchanged" row was wrong about the module's
+  own group. Two more measured facts shaped the call: the submodule instantiates
+  `data "aws_vpc_endpoint_service"` per endpoint whenever `region == null`
+  (`main.tf:13-25`), and a data read is not skipped by `-refresh=false`, so it
+  dies under `gates/aws_stub.py` unless `region` + `service_endpoint` are passed;
+  and it expresses rules as standalone `aws_security_group_rule`, which the
+  existing Rego already reads.
+- `s3-acl-vs-object-ownership-log-delivery` — two `s3-bucket@5.16.1` calls carry
+  the buckets, the ownership controls and the logging object; the canned
+  `aws_s3_bucket_acl` stays raw. The module's `acl` input turns on
+  `data "aws_canonical_user_id"` (`main.tf:6`), which issues `s3:ListBuckets`,
+  which `gates/aws_stub.py` answers `400` — the full-module seed's plan dies with
+  a toolchain error, which is not a scenario. The trapped input,
+  `object_ownership`, is inside the module call where the arm's measurement wants
+  it.
+- `singleton-child-resource-clobber` — fully module-composed, `s3-bucket@5.16.1`
+  with one `lifecycle_rule` element. The correct answer is a second list element,
+  which makes the singleton-clobber trap CHEAPER here (a root resource plus
+  `module.<call>.s3_bucket_id`, with no reading of module inputs) without
+  removing it.
+- `lambda-alias-tracks-unpublished-latest` — fully module-composed, no raw
+  resource in seed or reference: `lambda@8.8.2` (+ `//modules/alias@8.8.2`) and
+  `s3-bucket@5.16.1` (+ `//modules/object@5.16.1`).
+
+`make seed-parity` is green on all four arms of all four brownfield specs: every
+arm's seed plans green offline and every `seed_assert` it declares holds on the
+document a tier would grade.
+
+**Per-catch verdicts, each measured on a real plan through the loopback registry
+before the decision.** No catch in slice C needed an `hcl_modules_override`
+either; every measured tier equals the `hcl` column the spec already carried.
+
+- `singleton-child-resource-clobber` — all three catches kept, no tier moved, no
+  Rego rule change (the policy is values-side and the normaliser hoists the
+  module's document). `exports-rule-added-but-not-enabled` survives because the
+  module maps `lifecycle_rule[].enabled = false` to `status "Disabled"`
+  (`main.tf:366`), i.e. the arm spells the mistake differently and reaches it.
+- `lambda-alias-tracks-unpublished-latest` — both catches kept at tier 0, no Rego
+  and no tier-1 family on this spec, stated on the arm rather than left as a
+  silent SKIP. `function_version` is a required passthrough on
+  `//modules/alias`, so nothing is smoothed; the submodule adds a SECOND spelling
+  of `alias-removed-instead-of-repointed` (`use_existing_alias = true` turns the
+  alias into a data source). Recorded because it nearly went the other way:
+  `refresh_alias` defaults **true**, and the `no_refresh` twin carries
+  `lifecycle { ignore_changes = [function_version] }`, which would have frozen
+  the alias — flipping that flag changes the resource address, so it is a replace
+  the live tier owns, not a freeze tier 0 would miss.
+- `ecr-repo-destroy-force-delete` — full fit, one `ecr@3.2.0` call and no raw
+  resource. Two catches kept (`repository_force_delete` defaults `null` and is
+  absent from the plan on omission, exactly as the raw attribute is;
+  `repository_lifecycle_policy` is one unvalidated opaque string), and
+  `auto-delete-images-custom-resource` stays `awscdk`-only because the module
+  creates no custom resource and exposes no input that would — a note, not a 1.0
+  fixture. One arm-specific fact changed a fixture rather than a verdict:
+  `relevant_attributes` element order is nondeterministic across two identical
+  plans once a module is in them, so the teardown fixture's whole-plan comparison
+  folds that array into sorted `resource#attribute` pairs.
+- `apigw-redeploy` — PARTIAL FIT, the same shape `apigw-openapi` has: the
+  registry publishes no API Gateway REST v1 module, so every resource the three
+  catches live on stays raw and only the two Lambda functions are composed
+  (`lambda@8.8.2`). The measurement that gated enabling is the redeployment
+  hash: both revisions planned through the loopback registry resolve
+  `triggers.redeployment` to the same two digests hcl_raw records, because the
+  module calls reach none of the hashed fields. No Rego change; both steps get a
+  per-step `per_arm.hcl_modules` language line.
+- `named-resource-replacement` — both catches kept with `applies_to` extended,
+  and the module-owned-security-group variant recorded beside the live catch as a
+  NON-catch: it removes the trap (the submodule's own
+  `create_before_destroy`), two applicable tier-0 asserts hold and the tier-1
+  deny list is empty, so it scores 1.0 — a correct shape, and therefore never a
+  broken fixture. No Rego rule change: `standalone_rules` already covers the
+  submodule's rule shape. One tier-0 assert (and its seed twin) EXCLUDES the arm
+  with the measured reason on it — it reads
+  `configuration.root_module.resources`, which the normaliser leaves in module
+  bodies, so it resolves to zero nodes, and the one path that would reach it is
+  keyed on the agent-chosen call name. Nothing goes ungraded: the gating
+  `live_check.py` reads the endpoint's real attached group ids from EC2.
+- `s3-acl-vs-object-ownership-log-delivery` — all four catches kept, and this is
+  the spec the arm paid for. `log-delivery-grant-not-migrated` is removed through
+  `attach_access_log_delivery_policy` (which writes the correct grant) and kept
+  through a caller-written policy, so the caller-written shape ships as a second
+  reference at 1.0 and the broken fixture is a one-word mutation of it; the
+  module's own `policy` input cannot author that document, because it is read BY
+  the call and a value derived from the call's output is a cycle.
+  `acls-left-enabled-on-the-destination-bucket` keeps its tier and changes shape:
+  the module default is `BucketOwnerEnforced`, so the wrong value has to be typed
+  out. One tier-0 graph-edge assert excludes the arm with its reason recorded on
+  the assert and on the catch it narrows.
+
+**The oracle defect the arm found, fixed at equal strictness on every arm.**
+`log-delivery-grant-missing-entirely` scored **1.0** on hcl_modules: the
+unconditional half of the bucket-policy rule counted the resource in
+`configuration`, and Terraform's configuration representation lists a declared
+resource whatever its `count` resolves to — so the s3-bucket module's
+`aws_s3_bucket_policy.this`, with `count = local.create_bucket && local.attach_policy`,
+read as "a policy is declared" for a workspace that plans none. The half now
+counts in `planned_values`. A resource written without a `count` appears on both
+sides, so hcl_raw and terraconstructs are provably unchanged, and `make
+falsifiability` re-proves it: it pins a reward per fixture per arm, so a changed
+verdict on any arm is a red row. The same policy's lookup also had to walk every
+configuration scope (root plus each `module_calls.<name>.module` body) because
+the module authors the policy — before that walk, the rule denied a CORRECT
+module-composed solution. A module-free plan has one scope with an empty prefix,
+i.e. the list it read before.
+
+**Four host-gate defects this slice closed**, each of which would have made a
+green gate mean less than it says:
+
+- **`make seed-parity` and `make check-paths` graded the UN-normalised plan.**
+  `generator/check_reference_paths.py` ran the task's own `tests/ops.py` straight
+  at `plan.json`, while a trial goes through `tiers.py`'s normaliser first. Every
+  module-composed seed reported `Cannot iterate over null` for paths every trial
+  resolves — the gate contradicting the thing it gates, and unfalsifiable in the
+  only direction it could fail. The gate now resolves the graded document the way
+  a trial does, through the task's own emitted `tiers.py`, with the
+  `normalise_plan` flag read out of the task's own `verify.py`.
+- **The same gate never started the loopback registry**, so its `hcl_modules`
+  `terraform init` resolved modules from the PUBLIC registry. `arm_env` moved from
+  `gates/oracle_falsifiability.py` to `gates/tf_registry.py`, beside
+  `running_registry`, and all four callers are asserted to be the same object.
+- **`gates/oracle_falsifiability.py::predicted_tier` never read
+  `hcl_modules_override`**, so a spec that set one would have been graded against
+  the tier it explicitly said the mistake is NOT caught at, silently. Both
+  Terraform overrides now resolve from one table.
+- **CI's `gen_sync_check` enumerated three arm dirnames**, so no `hcl_modules`
+  task's generated bytes were ever drift-checked.
+
+**One rule about prompt surface, from the vendored tree.** `environment/modules/`
+is COPY'd into the agent image, so the brownfield mechanism sweep
+(`test_workspace_seed.py`) met 591 files of `terraform-aws-modules` source per
+task and reported `lifecycle`, `create_before_destroy`, `replaced` and
+`perpetual` as arm-asymmetric hints on every brownfield spec. The exemption is
+not new policy — `test_vendored_modules.py` has stated the argument since phase 4
+(upstream source is not bench-authored text, and what makes that safe is that
+every file's sha256 is in `manifest.json` at the pinned tag's commit, so no byte
+under a `<name>-<version>/` directory is ours) — but it was written once per
+sweep, and two sweeps of three did not have it. The predicate is now one function
+(`generator/tests/vendored_tree.py`) that every agent-visible sweep calls.
+`manifest.json` sits at the tree's root, outside any version directory, and stays
+swept in full. **Still an owner call, recorded not decided:** two of the twenty
+vendored files that mention `create_before_destroy` put it on an
+`aws_security_group`, which is `named-resource-replacement`'s own fix, so the
+agent can read the answer out of the library on that arm and only on that arm.
+No scenario-specific vocabulary leaks, and the same is true of any library an
+agent could `terraform init` on the other arms; what is arm-asymmetric here is
+that the bench ships it in the image.
+
+**Live promotion owed, by arm form.** Slice A's four trials covered read-only
+greenfield only. The three forms slice C introduces each need at least one
+`hcl_modules` trial in the operator's own environment, with the compose sidecar
+reachable inside the trial:
+
+1. **Brownfield mutating, seed deploy plus a gating live check** —
+   `named-resource-replacement-hcl-modules` (the strongest of the four: its
+   gating live check is what grades the excluded tier-0 assert, and its seed
+   deploys a VPC, a submodule-composed interface endpoint and a root security
+   group). Then `s3-acl-vs-object-ownership-log-delivery-hcl-modules`, whose live
+   path is a two-apply ACL rollout, and
+   `lambda-alias-tracks-unpublished-latest-hcl-modules`, whose seed must deploy a
+   module-built function AND publish version 1 before the alias submodule can
+   pin it. `singleton-child-resource-clobber-hcl-modules` is the cheapest of the
+   four and worth running first as a smoke.
+2. **Greenfield mutating with a gating teardown tier** —
+   `ecr-repo-destroy-force-delete-hcl-modules`. The offline gate proves only that
+   no static tier tells the omission apart; that `terraform destroy` of a
+   module-composed, non-empty repository actually fails is still inferred from the
+   provider's behaviour.
+3. **Multi-step** — `apigw-redeploy-hcl-modules`, both steps, which is also the
+   only trial that exercises the per-step `per_arm.hcl_modules` language line.
+
+`workspace_seed_sha256` covers every arm's seed body, so adding a fourth body
+moved it on all four arms of all four brownfield specs: previously published rows
+for those scenarios no longer pool with new ones. That is by design and is the
+same consequence any seed edit has.
 
 ---
 

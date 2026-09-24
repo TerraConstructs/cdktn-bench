@@ -199,6 +199,31 @@ arms:
       headline mistake without abandoning its own L2 for a hand-rolled L1.
       `bucketName` and `forceDestroy` are both real props on the same
       interface (bucket.d.ts).
+  hcl_modules:
+    enabled: true
+    reason: >
+      SUPPORTED, and the arm where this scenario's headline mistake is MORE
+      available than on hcl_raw rather than less.
+      docs/design/hcl-modules-spec-matrix.md §1 gives the two seeded resources a
+      full module fit: `terraform-aws-modules/s3-bucket/aws` 5.16.1 authors the
+      bucket AND the one storage-rule document, from a single `lifecycle_rule`
+      list input rendered through a `dynamic "rule"` block (main.tf:352-366,
+      variables.tf:247-287), so the seed is module-composed and the correct
+      answer is one more element in that list. What this arm adds is that the
+      document is now inside a module body the agent did not write: the new
+      requirement can be authored as its own ROOT
+      `aws_s3_bucket_lifecycle_configuration` pointed at
+      `module.<call>.s3_bucket_id`, which is the same authoritative-singleton
+      clobber and needs no more knowledge of the module than its bucket-id
+      output. MEASURED, not predicted: that shape plans green through the
+      loopback registry and the tier-0 cardinality assert resolves TWO nodes
+      and fails, exactly as on hcl_raw, because the plan normaliser hoists
+      module resources into `planned_values.root_module.resources`
+      (oracles/rego/README.md). Every value-level path in this oracle resolves
+      unchanged on the module plan, including the `status` the tier-1 policy
+      quantifies over: the module maps its own `enabled` boolean to the same
+      `"Enabled"`/`"Disabled"` literal (main.tf:366) that terraconstructs' L2
+      maps its `enabled` to, so no path and no tier moves.
 
 # ---------------------------------------------------------------------------
 # §2.7 workspace_seed — THE BROWNFIELD STARTING STATE
@@ -242,6 +267,34 @@ workspace_seed:
             days = 30
           }
         }
+      }
+
+    hcl_modules: |
+      module "reports" {
+        source  = "terraform-aws-modules/s3-bucket/aws"
+        version = "5.16.1"
+
+        bucket        = "cdktn-bench-reports-archive"
+        force_destroy = true
+
+        tags = {
+          Name = "reports-archive"
+        }
+
+        lifecycle_rule = [
+          {
+            id      = "expire-raw-logs"
+            enabled = true
+
+            filter = {
+              prefix = "logs/"
+            }
+
+            expiration = {
+              days = 30
+            }
+          },
+        ]
       }
 
     awscdk: |
@@ -308,7 +361,7 @@ workspace_seed:
         and report `seed_absent` — a whole-trial abort whose cause would be two
         files away. Pinned here so `make seed-parity` fails at generation time
         instead.
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.BucketName"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket')].values.bucket"
       op: eq
@@ -328,8 +381,10 @@ workspace_seed:
         it, and pins the precondition that makes the removal legitimate.
         Split from its CFN twin below only because `eq` needs a literal
         `expected` and the two artifact families spell the resource type
-        differently; the claim is identical.
-      applies_to: [hcl_raw, terraconstructs]
+        differently; the claim is identical. On hcl_modules the one bucket is
+        the module's own `aws_s3_bucket.this[0]`, hoisted into the root by the
+        plan normaliser, so the path and the count are unchanged.
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket')].type"
       op: eq
       expected: "aws_s3_bucket"
@@ -355,7 +410,7 @@ workspace_seed:
         them" — which is what makes the post-change claim ("the document holds
         BOTH rules") a real claim rather than a superset restatement.
       pins_catch: existing-log-expiry-rule-dropped
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.LifecycleConfiguration.Rules[*].Id"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_lifecycle_configuration')].values.rule[*].id"
       op: eq
@@ -368,7 +423,7 @@ workspace_seed:
         A solution that keeps a rule called `expire-raw-logs` but empties it
         satisfies the assert above and fails this one.
       pins_catch: existing-log-expiry-rule-dropped
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.LifecycleConfiguration.Rules[*].ExpirationInDays"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_lifecycle_configuration')].values.rule[*].expiration[*].days"
       op: eq
@@ -388,8 +443,13 @@ workspace_seed:
         why `exports-rule-added-as-a-second-child-resource` is `applies_to:
         [hcl_raw]`, and the awscdk-side statement of "there is one document" is
         already made by `there-is-exactly-one-bucket-in-this-workspace` above.
+        hcl_modules is included: the seed's one document is the module's own
+        `aws_s3_bucket_lifecycle_configuration.this[0]`, which the plan
+        normaliser hoists, so this counts it exactly as it counts a root one --
+        and that is what lets the same cardinality claim catch a SECOND document
+        the agent adds at the root beside the module call.
       pins_catch: exports-rule-added-as-a-second-child-resource
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_lifecycle_configuration')].type"
       op: eq
       expected: "aws_s3_bucket_lifecycle_configuration"
@@ -405,7 +465,7 @@ workspace_seed:
         `seed-ingress-is-already-scoped-to-the-vpc` in
         specs/named-resource-replacement.yaml.
       pins_catch: exports-rule-added-but-not-enabled
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.LifecycleConfiguration.Rules[*].Status"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_lifecycle_configuration')].values.rule[*].status"
       op: eq
@@ -585,6 +645,28 @@ instruction:
           terraform init -input=false &&
           terraform apply -input=false -auto-approve
         json_fields: []
+    hcl_modules:
+      language_line: "This workspace is Terraform HCL composed from `terraform-aws-modules` registry modules: they are the real `terraform-aws-modules` sources, served at an allowlisted set of versions you can discover at this environment's registry endpoint."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        # `-refresh=false` is MANDATORY on a workspace_seed spec for the same
+        # reason it is on hcl_raw above (§2.7.1 hard error 7): the seed deploy
+        # leaves state in /app/project, and a refreshing plan would reach S3
+        # while the host gates run against gates/aws_stub.py.
+        plan_command: >-
+          terraform init && terraform validate &&
+          terraform plan -input=false -refresh=false -out=plan.tfplan &&
+          terraform show -json plan.tfplan > plan.json
+        # §2.7.1, and byte-identical to hcl_raw's: the two Terraform arms differ
+        # only in whether the agent composes registry modules, so a difference in
+        # how the seed is applied would be a confound in every comparison between
+        # them. State lands at /app/project/terraform.tfstate (this arm's
+        # provider.tf declares no `backend` sub-block either).
+        deploy_command: >-
+          terraform init -input=false &&
+          terraform apply -input=false -auto-approve
+        json_fields: []
     terraconstructs:
       language_line: "This workspace is a terraconstructs (TypeScript) app using its AWS L2 constructs."
       output_contract:
@@ -629,10 +711,22 @@ catches:
       child resource to duplicate), and terraconstructs' `storage.Bucket`
       creates its single `S3BucketLifecycleConfiguration` from a constructor
       prop with no `addLifecycleRule()` escape route — so `applies_to` names
-      only `hcl_raw`, and gates/oracle_falsifiability.py reports the other two
-      N/A rather than MISSING. That asymmetry is the measurement, not a gap to
-      engineer away.
-    applies_to: [hcl_raw]
+      only the two HCL arms, and gates/oracle_falsifiability.py reports the
+      typed two N/A rather than MISSING. That asymmetry is the measurement, not
+      a gap to engineer away.
+      REACHABLE ON hcl_modules, and MORE available there than on hcl_raw rather
+      than less: the seed's document lives inside the `s3-bucket` call, so the
+      second resource is a ROOT
+      `aws_s3_bucket_lifecycle_configuration` whose `bucket` is
+      `module.<call>.s3_bucket_id` — an edit that needs one module OUTPUT and no
+      reading of the module's own inputs at all, where the correct answer needs
+      the agent to find `lifecycle_rule` in a body it did not write. MEASURED
+      through the loopback registry: the shape plans green, every other assert in
+      this oracle passes on it, and the tier-0 cardinality assert resolves two
+      nodes and fails — the module hides nothing and moves no tier, because the
+      plan normaliser hoists its document into the same resource set the assert
+      counts.
+    applies_to: [hcl_raw, hcl_modules]
     predicted_tier_caught:
       # Honest tier, and deliberately NOT downgraded to "live" to manufacture
       # live-tier drama: the shape IS visible in the graded artifact, as a
@@ -657,8 +751,12 @@ catches:
       HCL block), which is why this catch, unlike the headline one, is where
       the typed arms have no structural advantage at all. Caught at tier 0 by
       `the-other-teams-rule-still-deletes-logs-after-thirty-days` and by the
-      prefix-coverage assert, and independently by the live document.
-    applies_to: [awscdk, hcl_raw, terraconstructs]
+      prefix-coverage assert, and independently by the live document. Unchanged
+      on hcl_modules, where the motion is to overwrite the module call's
+      `lifecycle_rule` list with a one-element list — if anything easier than on
+      the arms where the existing rule is spelled out as a block, since a list
+      argument invites wholesale replacement.
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       awscdk: "0"
       hcl: "0"
@@ -680,7 +778,12 @@ catches:
       value cannot soundly express; hence tier 1 on every arm, graded by
       oracles/rego/singleton-child-resource-clobber/policy.rego (TF arms) and
       oracles/cfn-guard/singleton-child-resource-clobber/policy.guard (awscdk).
-    applies_to: [awscdk, hcl_raw, terraconstructs]
+      Unchanged on hcl_modules: `s3-bucket@5.16.1` main.tf:366 maps the
+      `lifecycle_rule` element's own `enabled` boolean to the same `status`
+      string the two other TF-shaped arms plan, with no module-side default that
+      would force it true, so `enabled = false` on one element reproduces the
+      mistake exactly and the policy reads it from the same path.
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       awscdk: "1"
       hcl: "1"
@@ -699,7 +802,9 @@ oracle:
        prefix, storage class and day count; the existing rule is still there,
        still deleting `logs/` after 30 days; the workspace still has exactly
        one bucket; and — on the Terraform-shaped arms — exactly one
-       `aws_s3_bucket_lifecycle_configuration` resource. The last of those is
+       `aws_s3_bucket_lifecycle_configuration` resource, counted after module
+       resources are hoisted so a module's own document and a root one are the
+       same one document. The last of those is
        the ONLY static check that distinguishes the headline mistake from a
        correct answer, because both rules are present in the artifact either
        way. The first of them is what makes the DO-NOTHING answer fail: the
@@ -748,7 +853,7 @@ oracle:
         across rules is ambiguous about which one implements the request and
         fails too.
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       # RECURSIVE DESCENT ON THE CFN SIDE, and it is not stylistic (MEASURED,
       # 2026-08-26). CloudFormation OMITS the `Transitions` key entirely from a
       # rule that has none, where the Terraform provider emits an empty list —
@@ -776,7 +881,7 @@ oracle:
         to tell "wrong storage class" from "wrong day count" without opening
         the artifact.
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       # Recursive descent for the same measured reason as the assert above —
       # see its comment; `Transitions` is absent, not empty, on a rule that has
       # none, and `[*]` over an absent key is an UNRESOLVABLE jq error, not a
@@ -796,7 +901,7 @@ oracle:
         request asks for a transition, and an extra deletion rule the ticket
         never asked for is a change to another team's retention policy.
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.LifecycleConfiguration.Rules[*].ExpirationInDays"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_lifecycle_configuration')].values.rule[*].expiration[*].days"
       op: eq
@@ -814,9 +919,12 @@ oracle:
         to `{"logs/"}` and fails. `set_eq` is safe from its own `unique`
         collapse here in a way it is not on a region-wide live query: the two
         expected values are DIFFERENT, so no duplicate can masquerade as the
-        pair.
+        pair. Resolves unchanged on hcl_modules: `s3-bucket@5.16.1`'s
+        `dynamic "filter"` blocks (main.tf:422-460) emit `filter { prefix = ... }`
+        for a rule whose filter names exactly one key, which is the shape this
+        path reads.
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.LifecycleConfiguration.Rules[*].Prefix"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_lifecycle_configuration')].values.rule[*].filter[*].prefix"
       op: set_eq
@@ -832,7 +940,7 @@ oracle:
         new bucket. Split from its CFN twin only because `eq` needs a literal
         `expected` and the two artifact families spell the type differently.
       tier: "0"
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket')].type"
       op: eq
       expected: "aws_s3_bucket"
@@ -863,8 +971,14 @@ oracle:
         deliberately (the blueprint says the two scenarios share this pattern)
         rather than reinvented — and reused WITHOUT its parent-join, which
         `there-is-still-exactly-one-bucket` above makes unnecessary here.
+        It is also the assert that carries the catch on hcl_modules, where the
+        second document is a ROOT resource beside the module call rather than a
+        second sibling: the plan normaliser hoists the module's own document into
+        this same resource set, so the count is two either way. MEASURED on a
+        real module plan, not inferred — the arm needed no new path and no new
+        tier.
       tier: "0"
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_lifecycle_configuration')].type"
       op: eq
       expected: "aws_s3_bucket_lifecycle_configuration"
@@ -883,8 +997,12 @@ oracle:
         which rule carried which status. A `tf_jsonpath` is declared anyway, as
         §4.2 requires, and `make check-paths` resolves it — it documents the
         node set the policy quantifies over; the policy is the thing that runs.
+        On hcl_modules that node set is the module's own hoisted document and the
+        path is the same: `s3-bucket@5.16.1` main.tf:366 turns the
+        `lifecycle_rule` element's `enabled` boolean into this exact `status`
+        string, so the policy reads a plan-time-known literal there too.
       tier: "1"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')].Properties.LifecycleConfiguration.Rules[*].Status"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_lifecycle_configuration')].values.rule[*].status"
       op: set_eq

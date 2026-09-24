@@ -323,13 +323,23 @@ class TestHostWiring:
         """Arm-gated: three green arms must not depend on a fourth arm's
         subprocess, so `arm_env` is identity for everything but hcl_modules.
 
-        `arm_env` lives in `oracle_falsifiability`, which every gate that runs
-        a fixture imports -- `artifact_collector` re-exports it, so the two
-        cannot start their fixtures in different environments."""
+        `arm_env` lives beside `running_registry` in this module, and every gate
+        that runs a toolchain reaches it from here -- including the generator-side
+        reference-path gate, which resolved modules from the PUBLIC registry until
+        it did. Asserted as object identity so a gate that grew its own copy is
+        red here rather than quietly offline-in-name-only."""
         import artifact_collector
+        import check_reference_paths
+        import grading_proof
         import oracle_falsifiability
 
-        assert artifact_collector.arm_env is oracle_falsifiability.arm_env
+        for module in (
+            artifact_collector,
+            grading_proof,
+            oracle_falsifiability,
+            check_reference_paths,
+        ):
+            assert module.arm_env is tf_registry.arm_env, module.__name__
 
         def fail(*a, **k):
             raise AssertionError("running_registry started for a non-modules arm")

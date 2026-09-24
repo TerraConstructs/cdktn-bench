@@ -1,9 +1,14 @@
 # oracles/rego/named-resource-replacement/policy.rego -- HAND-AUTHORED
 # (SCHEMA.md §8.2 rule 7). Encodes specs/named-resource-replacement.yaml's one
 # tier-"1" structural_assert (security-group-ingress-stays-scoped-to-the-vpc) +
-# oracle.rego_hints. Graded against `terraform show -json` plan JSON for both
-# TF-shaped arms (hcl_raw, terraconstructs) -- specs/SCHEMA.md §4.2/§8. `input`
-# at policy-evaluation time is that plan JSON document.
+# oracle.rego_hints. Graded against `terraform show -json` plan JSON for every
+# TF-shaped arm (hcl_raw, terraconstructs, hcl_modules) -- specs/SCHEMA.md
+# §4.2/§8. `input` at policy-evaluation time is that plan JSON document, after
+# the plan normaliser, which hoists module resources into
+# planned_values.root_module.resources -- so every rule below reads the same
+# path on all three and none of them needs `child_modules`
+# (oracles/rego/README.md, "On the VALUES side a policy needs no module-aware
+# path").
 #
 # Intent doc: oracles/named-resource-replacement/intent.md
 #
@@ -86,7 +91,12 @@ deny contains msg if {
 # `aws_security_group_rule` / `aws_vpc_security_group_ingress_rule` resource
 # rather than an inline `ingress` block is legal Terraform and equally correct,
 # but its cidr lives on a different resource type -- checked here too, so this
-# is NOT a hole; the marker exists for the one shape that genuinely cannot be
+# is NOT a hole. That branch is what decides the hcl_modules arm when the agent
+# moves the group into `vpc//modules/vpc-endpoints`, which expresses rules as
+# `aws_security_group_rule` resources and leaves the group's own `ingress`
+# plan-time-unknown: the tier-0 approximation of this claim resolves to nothing
+# on that shape, and this rule still reads the cidrs.
+# The marker below exists for the one shape that genuinely cannot be
 # read from plan JSON: a cidr supplied by a plan-time-unknown expression (e.g.
 # `cidr_blocks = [aws_vpc.x.cidr_block]` on a VPC created in the same plan).
 # --------------------------------------------------------------------------

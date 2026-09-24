@@ -61,7 +61,11 @@ from verifier_harness import read_config, stage  # noqa: E402
 
 SPEC_PATH = REPO_ROOT / "specs" / "named-resource-replacement.yaml"
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "seed-deploy"
-ARMS = ("awscdk", "hcl_raw", "terraconstructs")
+# Read off the spec, not written out: the emission reads below must cover every
+# arm whose task dir is shipped, and the mutations that drop `deploy_command`
+# must drop it from every arm the spec declares one on, or the spec's own
+# dangling-command validator answers before the rule under test does.
+ARMS = tuple(load_spec(SPEC_PATH).arms.enabled_arms())
 
 
 def _seed_deploying_specs() -> list:
@@ -1402,12 +1406,18 @@ def _seed_sandbox(tmp_path: Path, arm: str) -> dict:
     shutil.copy(FIXTURES / "describe-security-groups.json", stub / "sg.json")
     shutil.copy(FIXTURES / "describe-vpc-endpoints.json", stub / "vpce.json")
 
-    state_path = {
-        "hcl_raw": project / "terraform.tfstate",
-        "terraconstructs": project
-        / f"terraform.{load_spec(SPEC_PATH).workspace_identity()}.tfstate",
-        "awscdk": root / "unused.tfstate",
-    }[arm]
+    # Derived from the generator's own map rather than restated, so an arm whose
+    # state file is named differently cannot be sandboxed against the wrong
+    # path: the script under test reads exactly this file. awscdk's source is a
+    # CloudFormation describe, not a state file, so it lands outside the project.
+    source = gen.SEED_STATE_IDENTITY_SOURCE[arm].replace(
+        "__WORKSPACE_ID__", load_spec(SPEC_PATH).workspace_identity()
+    )
+    state_path = (
+        project / Path(source).name
+        if source.startswith("/app/project/")
+        else root / "unused.tfstate"
+    )
     return {
         "root": root,
         "script": script,

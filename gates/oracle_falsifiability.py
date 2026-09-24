@@ -22,14 +22,12 @@ docs/gates.md#oracle-falsifiability
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,32 +47,11 @@ from aws_stub import running_stub  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# The only arm whose toolchain needs more than the AWS stub: its modules resolve
-# from the loopback registry, never from registry.terraform.io.
-REGISTRY_ARM: Arm = "hcl_modules"
-
-
-@contextlib.contextmanager
-def arm_env(arm: Arm, env: dict[str, str]) -> Iterator[dict[str, str]]:
-    """`env` for one arm's fixture runs; unchanged for every arm but this one.
-
-    `hcl_modules` additionally runs under gates/tf_registry.py::running_registry,
-    which adds the `TF_CLI_CONFIG_FILE` whose `host` override points
-    `registry.terraform.io`'s modules service at the loopback responder. Without
-    it this arm's `terraform init` resolves its modules from the PUBLIC
-    registry, so the gate would grade a solution the arm's own offline image
-    cannot build. Other arms declare no modules, so handing them that config
-    would only couple three green arms to a fourth arm's subprocess.
-
-    Lives here rather than in gates/artifact_collector.py, which imports this
-    module: both gates need it, and one definition is what keeps them running
-    their fixtures in the same environment.
-    """
-    if arm != REGISTRY_ARM:
-        yield env
-        return
-    with tf_registry.running_registry(env=env) as registry_env:
-        yield registry_env
+# Re-exported, not redefined: gates/tf_registry.py owns the arm-gated registry
+# environment, and importing it here keeps `oracle_falsifiability.arm_env` --
+# the name the other gates already reach for -- the same object.
+REGISTRY_ARM: Arm = tf_registry.REGISTRY_ARM
+arm_env = tf_registry.arm_env
 
 # The fixed marker string a `predicted_tier_caught: "live"` broken/ fixture's
 # gate run must print, after mechanically confirming the static-
@@ -281,14 +258,23 @@ def apply_live_family_verdict(bad: RunResult, tier: str) -> RunResult:
 
 def predicted_tier(catch: Catch, arm: Arm) -> str:
     """`catches[].predicted_tier_caught` for one arm (specs/SCHEMA.md §3,
-    catches): `.awscdk` for awscdk; `.hcl` for hcl_raw AND terraconstructs UNLESS
-    `.terraconstructs_override` is set, in which case that wins for
-    terraconstructs specifically (the "terraconstructs' own typed surface
-    diverges" escape hatch)."""
+    catches): `.awscdk` for awscdk; `.hcl` for every Terraform arm UNLESS that
+    arm's own override is set, in which case it wins for that arm specifically
+    (the "this arm's typed surface diverges" escape hatch -- on hcl_modules the
+    divergence is a module input that moves a mistake to another tier).
+
+    An override read here but not there would grade a catch against the tier the
+    spec explicitly said it is NOT caught at, silently, so the two overrides are
+    resolved from one table.
+    """
     if arm == "awscdk":
         return catch.predicted_tier_caught.awscdk
-    if arm == "terraconstructs" and catch.predicted_tier_caught.terraconstructs_override is not None:
-        return catch.predicted_tier_caught.terraconstructs_override
+    override = {
+        "terraconstructs": catch.predicted_tier_caught.terraconstructs_override,
+        "hcl_modules": catch.predicted_tier_caught.hcl_modules_override,
+    }.get(arm)
+    if override is not None:
+        return override
     return catch.predicted_tier_caught.hcl
 
 

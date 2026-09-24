@@ -1,0 +1,17 @@
+This workspace holds a small internal quote service: one AWS Lambda
+function, the IAM role it runs as, and the alias that callers use to reach
+it. It is already deployed in this account.
+
+Our quote service must report prices in US dollars from now on. Its
+`QUOTE_CURRENCY` environment variable is still set to `EUR` — set it to
+`USD` and roll the change out to this account with your toolchain's real
+deploy command.
+
+Every caller reaches this function through its alias, so that alias must be
+serving `QUOTE_CURRENCY=USD` when you are done.
+
+Author this as Terraform HCL composed from `terraform-aws-modules` registry modules: they are the real `terraform-aws-modules` sources, served at an allowlisted set of versions you can discover at this environment's registry endpoint.
+
+`main.tf` in this workspace holds this project's existing configuration -- change it as needed. Do not create, modify, or delete `provider.tf`: it is a pre-wired bootstrap file (app entrypoint / provider config) that synth/plan depends on and is not part of what you are being asked to change.
+
+IMPORTANT: Write your final answer to `/logs/agent/agent-output.txt`.

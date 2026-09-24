@@ -10,9 +10,11 @@ overwrite this file: gen.py's write_tests_dir() is destructive-safe for
 tests/live_check.py whenever spec.verifier.live_check.hand_authored is true
 (SCHEMA.md §8.2 point 8).
 
-ARM-AGNOSTIC BY CONSTRUCTION. This file is byte-identical in all three arms'
-task directories. It asks S3 what the bucket actually has; it never looks at
-the workspace, the toolchain, or any synth/plan artifact. That is the point:
+ARM-AGNOSTIC BY CONSTRUCTION. This file is byte-identical in every enabled
+arm's task directory, hcl_modules included. It asks S3 what the bucket actually
+has; it never looks at the workspace, the toolchain, or any synth/plan artifact
+-- so it needs no module-aware read: nothing here touches planned values, where
+a module's own document would sit under `child_modules`. That is the point:
 the whole scenario turns on the fact that a wrong artifact and a right one can
 describe the same two rules while the ACCOUNT holds only one of them, so the
 live oracle must not be able to tell which arm produced the state it reads.

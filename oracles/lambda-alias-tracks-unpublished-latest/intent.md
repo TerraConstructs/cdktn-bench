@@ -60,4 +60,11 @@ fixtures invented to justify it, and it would score 0.0 the
 account-inspecting answer `oracle.intent` above explicitly accepts. A tier
 that cannot fail for a reason this scenario is about is decoration, and the
 generated `tests/static_tiers.sh` says `SKIPPED_NO_ASSERTS` rather than
-pretending otherwise.
+pretending otherwise. That holds on hcl_modules too, and is stated here
+because `docs/adding-scenarios.md` §6.3 requires a tier-0-only arm to say so
+beside the catches: module composition moves nothing this scenario grades
+into a quantified claim. The plan normaliser hoists the module-authored
+alias and function into `root_module.resources`, so the three tier-0
+asserts read the same two values at the same paths as on hcl_raw, and the
+one fact no static tier can reach on any arm -- what the alias actually
+serves -- is the live check's, not a policy's.

@@ -129,6 +129,37 @@ arms:
       explicitly, which the credential-free host gates cannot resolve —
       `gates/aws_stub.py` answers only `sts:GetCallerIdentity` and
       `states:ValidateStateMachineDefinition` — hence the pinned AZ in the seed.
+  hcl_modules:
+    enabled: true
+    reason: >
+      SUPPORTED, and it is the one arm where a MODULE DEFAULT decides this
+      scenario's headline catch rather than a language surface.
+      docs/design/hcl-modules-spec-matrix.md §1 gives the seeded resources a
+      full module fit — `terraform-aws-modules/vpc/aws` 6.7.3 for the VPC and
+      its private subnet, that module's `//modules/vpc-endpoints` submodule for
+      the interface endpoint — and the seed composes both. The security group
+      stays a ROOT resource on this arm, and that is a measurement, not a
+      convenience: `vpc//modules/vpc-endpoints@6.7.3` main.tf:88-105 writes
+      `lifecycle { create_before_destroy = true }` into its own
+      `aws_security_group.this`, so a group this module owns is renamed
+      create-before-destroy WHATEVER the caller does, and a module-composed
+      security group would hand the seed a disarmed trap. The matrix's §2 row
+      for this scenario says the catch is "Unchanged" on the module path; that
+      is wrong about the module's own group, and the note beside the catch
+      below records what was measured instead.
+      Two further facts were established against real plans through the
+      loopback registry rather than read off the source, and both shaped the
+      seed: the submodule's `data "aws_vpc_endpoint_service"` is created for
+      every endpoint whenever `region` is null (main.tf:13-25's `for_each`
+      predicate), and a data-source read is not something `-refresh=false`
+      skips — under the credential-free host gates, whose
+      `gates/aws_stub.py` answers two operations, that read is a `PLAN FAILED`
+      — so the seed passes `region` and `service_endpoint` and the data source
+      is never instantiated; and the submodule expresses the group's rules as
+      standalone `aws_security_group_rule` resources rather than inline
+      `ingress` blocks, which this scenario's tier-1 policy already reads
+      (oracles/rego/named-resource-replacement/policy.rego's
+      `standalone_rules`) and its tier-0 approximation does not.
 
 # ---------------------------------------------------------------------------
 # §2.7 workspace_seed — THE BROWNFIELD STARTING STATE
@@ -208,6 +239,68 @@ workspace_seed:
 
         tags = {
           Name = "internal-services-ssm"
+        }
+      }
+
+    hcl_modules: |
+      module "internal_services" {
+        source  = "terraform-aws-modules/vpc/aws"
+        version = "6.7.3"
+
+        name = "internal-services"
+        cidr = "10.20.0.0/16"
+
+        azs                  = ["us-east-1a"]
+        private_subnets      = ["10.20.1.0/24"]
+        private_subnet_names = ["internal-services-a"]
+
+        enable_dns_support   = true
+        enable_dns_hostnames = true
+      }
+
+      resource "aws_security_group" "ssm_endpoint" {
+        name        = "internal-services-ssm-endpoint"
+        description = "HTTPS from the internal services subnet to the SSM interface endpoint"
+        vpc_id      = module.internal_services.vpc_id
+
+        ingress {
+          description = "HTTPS from the internal services VPC"
+          from_port   = 443
+          to_port     = 443
+          protocol    = "tcp"
+          cidr_blocks = ["10.20.0.0/16"]
+        }
+
+        egress {
+          from_port   = 0
+          to_port     = 0
+          protocol    = "-1"
+          cidr_blocks = ["0.0.0.0/0"]
+        }
+
+        tags = {
+          Name = "internal-services-ssm-endpoint"
+        }
+      }
+
+      module "ssm_endpoint" {
+        source  = "terraform-aws-modules/vpc/aws//modules/vpc-endpoints"
+        version = "6.7.3"
+
+        region = "us-east-1"
+
+        vpc_id             = module.internal_services.vpc_id
+        subnet_ids         = module.internal_services.private_subnets
+        security_group_ids = [aws_security_group.ssm_endpoint.id]
+
+        endpoints = {
+          ssm = {
+            service_endpoint    = "com.amazonaws.us-east-1.ssm"
+            private_dns_enabled = true
+            tags = {
+              Name = "internal-services-ssm"
+            }
+          }
         }
       }
 
@@ -325,7 +418,7 @@ workspace_seed:
         replacement, and (on the TF arms) a replacement into a destroy of a
         group that something else is holding.
       pins_catch: rename-replaces-an-in-use-security-group
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::EC2::SecurityGroup')].Properties.GroupName"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_security_group')].values.name"
       op: eq
@@ -338,9 +431,13 @@ workspace_seed:
         states (it must be discoverable from the configuration, not announced).
         Graph-edge shaped, so it reads `.configuration ... references`, never
         `.planned_values ... values` (SCHEMA.md §4.2.1's plan-time-unknown rule:
-        the group id does not exist at plan time). TF-shaped arms only — see the
-        awscdk twin below for why the CFN form of this fact is a separate,
-        deliberately weaker assert rather than one `applies_to: [all]` entry.
+        the group id does not exist at plan time). TF-shaped arms only, and NOT
+        hcl_modules — see the awscdk twin below for why the CFN form of this
+        fact is a separate, deliberately weaker assert rather than one
+        `applies_to: [all]` entry, and the tier-0 twin
+        `interface-endpoint-still-uses-the-security-group` in
+        `oracle.structural_asserts` for the measured reason a
+        configuration-side path resolves to nothing on a module plan.
       pins_catch: rename-replaces-an-in-use-security-group
       applies_to: [hcl_raw, terraconstructs]
       tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_vpc_endpoint')].expressions.security_group_ids.references[*]"
@@ -369,8 +466,12 @@ workspace_seed:
     - name: interface-endpoint-present
       description: >
         There is exactly the interface VPC endpoint the premise describes — the
-        thing whose ENI holds the group.
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+        thing whose ENI holds the group. On hcl_modules the endpoint is the
+        `vpc-endpoints` submodule's own `aws_vpc_endpoint.this["ssm"]`, hoisted
+        into `planned_values.root_module.resources` by the plan normaliser
+        (oracles/rego/README.md, "On the VALUES side a policy needs no
+        module-aware path"), so this path needs no per-arm spelling.
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::EC2::VPCEndpoint')]"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_vpc_endpoint')]"
       op: exists
@@ -381,9 +482,12 @@ workspace_seed:
         policy family. Pinned so a future edit to the seed cannot quietly hand
         the `ingress-widened-to-the-internet` catch a starting state that
         already violates it — which would make that catch unfalsifiable (its
-        negative fixture and its seed would be indistinguishable).
+        negative fixture and its seed would be indistinguishable). Reads the
+        inline `ingress` blocks of the root-module security group, which is the
+        shape all four seeds carry — including hcl_modules, whose security group
+        is a root resource for the reason its `arms` entry records.
       pins_catch: ingress-widened-to-the-internet
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::EC2::SecurityGroup')].Properties.SecurityGroupIngress[*].CidrIp"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_security_group')].values.ingress[*].cidr_blocks[*]"
       op: set_eq
@@ -585,6 +689,27 @@ instruction:
         deploy_command: >-
           terraform init -input=false &&
           terraform apply -input=false -auto-approve
+    hcl_modules:
+      language_line: "This workspace is Terraform HCL composed from `terraform-aws-modules` registry modules: they are the real `terraform-aws-modules` sources, served at an allowlisted set of versions you can discover at this environment's registry endpoint."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        # `-refresh=false` for the same MEASURED reason as hcl_raw's above, and
+        # one more that is this arm's own: the seed's `vpc-endpoints` call would
+        # otherwise re-read its endpoint's remote object through EC2 while the
+        # verifier runs offline against `gates/aws_stub.py`.
+        plan_command: >-
+          terraform init && terraform validate &&
+          terraform plan -input=false -refresh=false -out=plan.tfplan &&
+          terraform show -json plan.tfplan > plan.json
+        # §2.7.1, and identical to hcl_raw's: the two Terraform arms differ only
+        # in whether the agent composes registry modules, so a difference in how
+        # the seed is applied would be a confound. State lands at
+        # /app/project/terraform.tfstate — the implicit local backend, since
+        # this arm's provider.tf declares no `backend` sub-block either.
+        deploy_command: >-
+          terraform init -input=false &&
+          terraform apply -input=false -auto-approve
     terraconstructs:
       language_line: "This workspace is a terraconstructs (TypeScript) app using its AWS L2 constructs."
       output_contract:
@@ -630,7 +755,32 @@ catches:
       IMPOSSIBLE on awscdk: CloudFormation's Update-requires-Replacement path is
       already create-new-then-delete-old, so the naive edit converges there.
       That asymmetry is the measurement, not a gap to engineer away.
-    applies_to: [hcl_raw, terraconstructs]
+      REACHABLE UNCHANGED ON hcl_modules, and the module default that could
+      have removed it is the reason the seed's security group is a root
+      resource there (see this spec's `arms.hcl_modules.reason`):
+      `vpc//modules/vpc-endpoints@6.7.3` main.tf:88-105 hard-codes
+      `create_before_destroy = true` on the group IT creates, so an agent who
+      moves the group into that call is renamed create-before-destroy for
+      free — a second correct answer this arm has and no other does. MEASURED
+      on a real plan through the loopback registry, not inferred: that shape's
+      two applicable tier-0 asserts hold, and the tier-1 policy returns an
+      empty `deny` through its `standalone_rules` branch (the submodule's rules
+      are `aws_security_group_rule` resources), so it scores 1.0 — which is why
+      it is recorded here and not shipped as a broken fixture. The seed hands
+      the agent a ROOT `aws_security_group`, so the naive rename of it is the
+      same mistake, at the same tier, for the same reason.
+      ONE RESIDUAL ASYMMETRY, MEASURED AND NOT CLOSED HERE, because it belongs to
+      the arm and not to this spec: `arms/hcl-modules/environment/modules/` is
+      COPY'd into this arm's image, so the agent can read 20 vendored files
+      containing a literal `create_before_destroy` — two of them,
+      `vpc-6.7.3/modules/vpc-endpoints/main.tf` and
+      `security-group-6.0.0/main.tf`, on an `aws_security_group`. That is the fix
+      to this catch, in third-party source, inside the image, on this arm alone.
+      It is symmetric across every scenario on the arm and invisible to the other
+      three, which is the surface docs/adding-scenarios.md §6.3 warns about;
+      whether it makes this catch cheaper here is an open measurement and an
+      owner call, not something a spec can edit away.
+    applies_to: [hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       # INVISIBLE TO EVERY STATIC TIER BY CONSTRUCTION, measured not assumed:
       # `terraform show -json` emits no `lifecycle` key at all, so the graded
@@ -651,8 +801,11 @@ catches:
       widened from the VPC CIDR to 0.0.0.0/0 satisfies the rename and exposes
       the endpoint to the internet. Caught by this scenario's tier-1
       Rego/cfn-guard policy family, on every arm, in each engine's own artifact
-      shape.
-    applies_to: [awscdk, hcl_raw, terraconstructs]
+      shape. Unchanged on hcl_modules: the seed's security group is a root
+      resource there, so the widening is the same edit to the same inline
+      `ingress` block, and the tier-1 Rego reads it from the same
+      `planned_values` path.
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       awscdk: "1"
       hcl: "1"
@@ -666,10 +819,14 @@ oracle:
     Three things are graded, in three different places, and the split is
     deliberate:
 
-    1. TIER 0 (static, every arm). The group carries the new name; the interface
-       endpoint still exists and is still wired to that group. This is what
-       makes the DO-NOTHING answer fail: the seed already deploys green, so
-       without a name assert an agent that changes nothing would score 1.0. See
+    1. TIER 0 (static, every arm). The group carries the new name and the
+       interface endpoint still exists; on hcl_raw, terraconstructs and awscdk
+       the endpoint is additionally checked to be still wired to that group,
+       which on hcl_modules is read from the account by the gating live check
+       instead — the endpoint's configuration node lives inside a module body
+       there, where no tier-0 path reaches it. This is the tier that makes the
+       DO-NOTHING answer fail: the seed already deploys green, so without a name
+       assert an agent that changes nothing would score 1.0. See
        `solution/broken/seed-unchanged/`, which exists precisely to keep proving
        that.
 
@@ -702,7 +859,7 @@ oracle:
         The requested change actually happened. This is the assert the
         do-nothing answer fails.
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::EC2::SecurityGroup')].Properties.GroupName"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_security_group')].values.name"
       op: eq
@@ -713,7 +870,7 @@ oracle:
         The endpoint the group protects was not deleted on the way past. A
         rename that "works" by dropping the consumer is not a rename.
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::EC2::VPCEndpoint')]"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_vpc_endpoint')]"
       op: exists
@@ -726,6 +883,19 @@ oracle:
         TF-shaped arms only; the awscdk twin below is a separate, deliberately
         weaker assert for the same reason its seed_assert twin is — see
         `interface-endpoint-declares-security-groups` in workspace_seed.
+        NOT hcl_modules, and that is a limit of tier 0 rather than of the arm.
+        MEASURED against a real module plan: the plan normaliser hoists
+        `planned_values` but leaves `configuration` in module bodies
+        (oracles/rego/README.md), so on this arm the endpoint's own
+        configuration node lives in the `vpc-endpoints` call's body and
+        `configuration.root_module.resources` resolves to ZERO nodes — the
+        assert is UNRESOLVABLE, not contradicted. The one path that would reach
+        it, the module CALL's `expressions.security_group_ids`, is keyed on the
+        call NAME, which the agent chooses, so no fixed jsonpath can address it.
+        Nothing about the fact goes ungraded there: `tests/live_check.py` is
+        GATING on this scenario and its third assertion reads the endpoint's
+        real attached group ids from EC2, which is a stronger statement than the
+        graph edge this assert makes.
       tier: "0"
       applies_to: [hcl_raw, terraconstructs]
       tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_vpc_endpoint')].expressions.security_group_ids.references[*]"
@@ -752,9 +922,17 @@ oracle:
         Graded by oracles/rego/named-resource-replacement/policy.rego (TF arms)
         and oracles/cfn-guard/named-resource-replacement/policy.guard (awscdk).
         Egress is deliberately out of scope — the seed allows all outbound, as
-        an L2 default and as ordinary practice.
+        an L2 default and as ordinary practice. On hcl_modules the policy is the
+        same file and this the same `planned_values` path: the seed's security
+        group is a root resource there. The policy ALSO reads standalone
+        `aws_security_group_rule` / `aws_vpc_security_group_ingress_rule`
+        resources, which is what keeps it non-vacuous for an agent who moves the
+        group into `vpc//modules/vpc-endpoints` — that submodule expresses rules
+        as standalone resources, so the `values.ingress[*]` path below (tier 0's
+        approximation of the same claim) would resolve to nothing on that shape
+        while the policy still decides.
       tier: "1"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::EC2::SecurityGroup')].Properties.SecurityGroupIngress[*].CidrIp"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_security_group')].values.ingress[*].cidr_blocks[*]"
       op: not_regex

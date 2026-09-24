@@ -392,10 +392,9 @@ def seed_entry_body(spec: Spec, arm: Arm) -> str | None:
     Because there is no wrapper, the seed author owns the whole file -- so the
     per-arm structural contract each arm's bootstrap file depends on is checked
     HERE, at generation time, instead of failing later as an opaque `tsc` or
-    `terraform validate` error inside a gate. The provider-block rule for
-    The hcl_raw rule restates the ownership invariant: `provider.tf` owns the
-    provider bootstrap, and a second `provider "aws"` block in `main.tf` is a
-    duplicate the plan rejects.
+    `terraform validate` error inside a gate. The Terraform arms' rule restates
+    the ownership invariant: `provider.tf` owns the provider bootstrap, and a
+    second `provider "aws"` block in `main.tf` is a duplicate the plan rejects.
     """
     if spec.workspace_seed is None:
         return None
@@ -413,17 +412,20 @@ def seed_entry_body(spec: Spec, arm: Arm) -> str | None:
                 "`export class ScenarioStack` -- the non-agent-owned bootstrap "
                 f"({ARM_BOOTSTRAP_FILE[arm]}) imports it by that exact name"
             )
-    elif arm == "hcl_raw":
+    # Both Terraform arms: same main.tf, same non-agent-owned provider.tf
+    # bootstrap beside it, so the same two ownership rules hold. A module-composed
+    # seed adds `module` blocks and still declares neither block.
+    elif arm in ("hcl_raw", "hcl_modules"):
         if re.search(r'^\s*provider\s+"aws"\s*\{', body, re.MULTILINE):
             raise SeedContractError(
-                "workspace_seed.entry_file.hcl_raw: the seed body IS this arm's "
+                f"workspace_seed.entry_file.{arm}: the seed body IS this arm's "
                 "main.tf and must not declare a second `provider \"aws\"` block "
                 "-- the provider bootstrap lives in the separate, "
                 "non-agent-owned provider.tf (finding G1)"
             )
         if re.search(r"^\s*terraform\s*\{", body, re.MULTILINE):
             raise SeedContractError(
-                "workspace_seed.entry_file.hcl_raw: the seed body must not "
+                f"workspace_seed.entry_file.{arm}: the seed body must not "
                 "declare a `terraform {}` block -- provider.tf owns "
                 "required_version/required_providers (finding G1)"
             )
@@ -1253,8 +1255,8 @@ def workspace_seed_sha256(spec: Spec) -> str | None:
     needed and no already-published hash moves (a greenfield task simply has no
     such key).
 
-    SPEC-WIDE, not per-arm: the three seeds are ONE equivalence claim (§2.7), so
-    editing any arm's seed must invalidate every arm's rows, not just its own.
+    SPEC-WIDE, not per-arm: every arm's seed is ONE equivalence claim (§2.7), so
+    editing any one of them must invalidate every arm's rows, not just its own.
     """
     seed = spec.workspace_seed
     if seed is None:

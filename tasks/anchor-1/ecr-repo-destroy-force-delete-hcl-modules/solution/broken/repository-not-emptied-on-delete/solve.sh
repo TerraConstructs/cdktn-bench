@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# NEGATIVE FIXTURE for catch `repository-not-emptied-on-delete`, predicted tier
+# "teardown" on this arm (specs/SCHEMA.md §3, §5.2): the module reference with
+# `repository_force_delete` dropped. The module's default for it is `null`, so
+# the attribute is simply absent from the plan -- the same shape hcl_raw's
+# omission produces. It plans, it applies, the repository is exactly what the
+# ticket asked for, and the nightly `terraform destroy` fails on a repository
+# that still holds images.
+#
+# IT IS EXPECTED TO SCORE REWARD 1.0. No host gate can run a destroy, so no
+# static tier may claim to have caught it; the gate requires the
+# CDKTN_BENCH_LIVE_ONLY_CONFIRMED marker instead, and this run EARNS it by
+# proving that (1) the plan it delivers differs from the reference's only in the
+# `force_delete` attribute and the module input that feeds it, so no other
+# assert could tell them apart, and (2) no compiled tier-0 filter and no tier-1
+# policy in this task's tests/ reads that attribute. A provider or module
+# release that emits the omission elsewhere, or a later assert on it, fails one
+# of those checks and withholds the marker -- turning `make falsifiability` red
+# instead of letting the claim rot.
+set -euo pipefail
+
+write_reference() {
+  cat > main.tf <<'TF'
+module "registry" {
+  source  = "terraform-aws-modules/ecr/aws"
+  version = "3.2.0"
+
+  repository_name               = "service-image-registry"
+  repository_image_scan_on_push = true
+  repository_force_delete       = true
+
+  repository_lifecycle_policy = jsonencode({
+    rules = [
+      {
+        rulePriority = 1
+        description  = "Keep the 10 most recent images"
+        selection = {
+          tagStatus   = "any"
+          countType   = "imageCountMoreThan"
+          countNumber = 10
+        }
+        action = {
+          type = "expire"
+        }
+      }
+    ]
+  })
+}
+TF
+}
+
+write_broken() {
+  cat > main.tf <<'TF'
+module "registry" {
+  source  = "terraform-aws-modules/ecr/aws"
+  version = "3.2.0"
+
+  repository_name               = "service-image-registry"
+  repository_image_scan_on_push = true
+
+  repository_lifecycle_policy = jsonencode({
+    rules = [
+      {
+        rulePriority = 1
+        description  = "Keep the 10 most recent images"
+        selection = {
+          tagStatus   = "any"
+          countType   = "imageCountMoreThan"
+          countNumber = 10
+        }
+        action = {
+          type = "expire"
+        }
+      }
+    ]
+  })
+}
+TF
+}
+
+# Every scalar in the plan as `path=value`, minus the run timestamp, sorted --
+# a whole-document comparison rather than a spot check on the attribute this
+# fixture already knows about.
+#
+# `relevant_attributes` is folded into sorted `resource#attribute` pairs with no
+# array index first, because on this arm its ELEMENT ORDER differs between two
+# plans of the very same configuration (measured: the module's outputs reach it
+# in an unstable order). Indexed paths over that array would report a
+# permutation as a difference and refuse the marker for a fixture that
+# reproduces exactly one thing. The content is still compared in full; only the
+# order it arrives in is discarded.
+flatten_plan() {
+  jq -r '
+    (.relevant_attributes // []
+      | map(.resource + "#" + (.attribute | map(tostring) | join(".")))
+      | sort | .[] | "relevant_attributes=" + .),
+    (del(.relevant_attributes)
+      | paths(scalars) as $p
+      | ($p | map(tostring) | join("/")) + "=" + (getpath($p) | tostring))
+  ' "$1" | grep -v '^timestamp=' | sort
+}
+
+# The reference runs FIRST so the artifact and reward this fixture delivers are
+# the BROKEN ones -- the gate reads both from what is left behind.
+write_reference
+bash tests/static_tiers.sh
+cp plan.json plan-reference.json
+
+write_broken
+bash tests/static_tiers.sh
+cp plan.json plan-broken.json
+
+flatten_plan plan-reference.json > flat-reference.txt
+flatten_plan plan-broken.json > flat-broken.txt
+differing="$(comm -3 flat-reference.txt flat-broken.txt | sed '/^[[:space:]]*$/d')"
+
+if [ -z "$differing" ]; then
+  echo "MARKER REFUSED: the two plans are identical, so this fixture reproduces nothing" >&2
+  exit 1
+fi
+# `repository_force_delete` (the module input) and `force_delete` (the provider
+# attribute it feeds) are the same fact stated at the call and at the resource;
+# the substring covers both.
+unrelated="$(printf '%s\n' "$differing" | grep -v 'force_delete' || true)"
+if [ -n "$unrelated" ]; then
+  echo "MARKER REFUSED: the plans differ outside the omitted attribute, so a static assert could tell them apart:" >&2
+  printf '%s\n' "$unrelated" >&2
+  exit 1
+fi
+
+# Every file under tests/ that can carry an assert: the tier-0 filters, the
+# tier-1 policy, this task's verifier config and the mechanism it calls.
+# static_tiers.sh only runs them, so grepping it would prove nothing.
+# `ecr_repo_destroy_force_delete` (the Rego package) and
+# `ecr-repo-destroy-force-delete` (the scenario id) both contain the attribute
+# name as a substring and read nothing; only a real field access counts.
+reading_asserts="$(grep -F force_delete tests/tier0.py tests/policy.rego tests/verify.py tests/tiers.py 2>/dev/null \
+  | grep -v 'ecr_repo_destroy_force_delete' \
+  | grep -v 'ecr-repo-destroy-force-delete' || true)"
+if [ -n "$reading_asserts" ]; then
+  echo "MARKER REFUSED: this task's own static tiers read the attribute:" >&2
+  printf '%s\n' "$reading_asserts" >&2
+  exit 1
+fi
+
+echo "the delivered plan differs from the reference only in force_delete, and no tier-0 filter or tier-1 policy in tests/ reads it:"
+printf '%s\n' "$differing"
+echo "CDKTN_BENCH_LIVE_ONLY_CONFIRMED"

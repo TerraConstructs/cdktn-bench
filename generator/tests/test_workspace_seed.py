@@ -35,7 +35,8 @@ import yaml
 from pydantic import ValidationError
 
 import gen
-from spec_model import Spec, load_spec
+from spec_model import TF_SHAPED_ARMS, Spec, load_spec
+from vendored_tree import is_vendored_module_file
 from verifier_harness import read_config
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -162,6 +163,22 @@ class TestSchemaValidators:
             a = d["workspace_seed"]["seed_asserts"][0]
             a.pop("cfn_jsonpath")
         with pytest.raises(ValidationError, match="cfn_jsonpath required"):
+            _mutated(pilot_raw, mutate)
+
+    @pytest.mark.parametrize("arm", TF_SHAPED_ARMS)
+    def test_a_tf_path_is_required_for_each_tf_arm_on_its_own(
+        self, pilot_raw: dict, arm: str
+    ) -> None:
+        """Parametrised over every TF-shaped arm, not just the pair the rule was
+        written for: an arm-shaped `applies_to` naming ONE arm is legal and
+        common, and the rule read `hcl_raw or terraconstructs`, so a seed_assert
+        scoped to `hcl_modules` alone was asked for no path at all and then went
+        unresolvable at gate time with no name on it."""
+        def mutate(d: dict) -> None:
+            a = d["workspace_seed"]["seed_asserts"][0]
+            a["applies_to"] = [arm]
+            a.pop("tf_jsonpath", None)
+        with pytest.raises(ValidationError, match="tf_jsonpath required"):
             _mutated(pilot_raw, mutate)
 
     def test_extra_file_may_not_collide_with_entry_file(self, pilot_raw: dict) -> None:
@@ -707,7 +724,19 @@ MECHANISM_PATTERNS = (
 # MECHANISM_PATTERNS: an entry earns its place only by appearing in a
 # greenfield control's own environment/, and one that no longer does is a
 # scenario-specific scrub in disguise, so it is deleted rather than kept.
-BROWNFIELD_BOILERPLATE: tuple[str, ...] = ()
+BROWNFIELD_BOILERPLATE: tuple[str, ...] = (
+    # Two LANGUAGE builtins the hcl-modules arm's offline registry tooling
+    # calls, in arms/hcl-modules/environment/{preflight.sh,tf-registry/
+    # responder.py}: a bash trap handler that kills the responder, and
+    # str/Path.replace in the version-sort and atomic-write helpers. Prose is
+    # reworded when it trips MECHANISM_PATTERNS; a builtin's name cannot be, and
+    # neither says anything about any scenario. Scrubbed as the CALL SITE rather
+    # than the bare word, so a sentence using either word still trips --
+    # `test_scenario_identity.ARM_BOILERPLATE` carries the same two for the same
+    # reason.
+    "trap '",
+    ".replace(",
+)
 
 # Machine-generated; package names/versions are not authored text.
 BROWNFIELD_SCAN_EXCLUDE = {"package-lock.json"}
@@ -758,9 +787,16 @@ def _agent_readable_files(spec: Spec, arm: str):
     """Every file the agent can read on turn one: the whole `environment/` tree
     (the arm Dockerfile COPYs it into the image) plus the prompt."""
     root = gen.task_dir(spec, arm)
-    for path in sorted((root / "environment").rglob("*")):
-        if path.is_file() and path.name not in BROWNFIELD_SCAN_EXCLUDE:
-            yield path
+    env_dir = root / "environment"
+    for path in sorted(env_dir.rglob("*")):
+        if not path.is_file() or path.name in BROWNFIELD_SCAN_EXCLUDE:
+            continue
+        # Upstream `terraform-aws-modules` source, not authored prompt text;
+        # `vendored_tree` states the argument and names the proof that no byte
+        # under it is ours.
+        if is_vendored_module_file(path, env_dir):
+            continue
+        yield path
     for name in ("instruction.md",):
         if (root / name).is_file():
             yield root / name
@@ -856,14 +892,18 @@ class TestBrownfieldPromptSurface:
         task's `environment/`, which proves it is shared arm-image text rather
         than this scenario's own words smuggled onto the allowlist to silence
         the scan above.
+
+        Read through `_agent_readable_files`, i.e. with the vendored module tree
+        excluded, so the proof rests on bench-authored arm text: a phrase found
+        only inside `terraform-aws-modules` source would otherwise license a
+        scrub of that phrase everywhere.
         """
         control = load_spec(CONTROL_SPEC)
         assert not control.is_brownfield(), "control spec must be greenfield"
         corpus = "\n".join(
             p.read_text(errors="ignore")
             for arm in control.arms.enabled_arms()
-            for p in (gen.task_dir(control, arm) / "environment").rglob("*")
-            if p.is_file() and p.name not in BROWNFIELD_SCAN_EXCLUDE
+            for p in _agent_readable_files(control, arm)
         ).lower()
         for phrase in BROWNFIELD_BOILERPLATE:
             assert phrase in corpus, (

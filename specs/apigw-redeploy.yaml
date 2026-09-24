@@ -121,6 +121,34 @@ arms:
       node_modules/terraconstructs/lib/aws/compute/integrations/mock.js),
       so the day-2 modification (add a MOCK /status route) is expressible
       the same way as on awscdk.
+  hcl_modules:
+    enabled: true
+    reason: >
+      PARTIAL FIT, the same partiality apigw-openapi's own
+      arms.hcl_modules.reason records and for the same reason:
+      docs/design/hcl-modules-spec-matrix.md §1 finds NO registry module for
+      API Gateway REST v1 at all (`terraform-aws-modules` ships only
+      `apigateway-v2`, HTTP/WebSocket), so every resource this scenario's
+      catches live on — the rest API, the routes, the deployment with its
+      dependency edge and its `triggers` hash, the stage — stays raw HCL here.
+      `terraform-aws-modules/lambda/aws` 8.8.2 authors each route's function,
+      its execution role (`role_path = "/cdktn-bench-task/"`, which the
+      standing constraint requires and the module exposes at variables.tf:507),
+      its log group and its API-Gateway invoke permission from one call, which
+      is the only place composition replaces hand-wiring in this scenario.
+      Enabled anyway, and the measurement that gated it is the one this
+      scenario is about: both revisions were planned through the loopback
+      registry and the deployment's `triggers.redeployment` resolved to a
+      concrete hex value in each — 0afc8ac589182f2e874b63d4221074863f34e9d2 at
+      revision 1 and 885365e13ea6e4274af5b066e97a8369778d7065 at revision 2,
+      byte-for-byte the pair hcl_raw's reference records. That is what the
+      module composition had to not break: the hash's inputs are the API
+      Gateway resources' own plan-time-static fields, so introducing module
+      calls neither made the hash unknown nor changed it, and the redeploy
+      trigger this scenario measures is the same fact on both Terraform arms.
+      `iam//modules/iam-role` is NOT called: the lambda module's `create_role`
+      already builds the execution role, and a second module making the same
+      role would be composition theatre rather than composition.
 
 instruction:
   # SHARED across every step (SCHEMA.md §2.6): the parts of the prompt that
@@ -208,6 +236,21 @@ instruction:
         json_fields:
           - name: api_url
             description: "the deployed stage's real invoke URL, e.g. https://abc123.execute-api.us-east-1.amazonaws.com/prod/ (trailing slash)"
+    hcl_modules:
+      language_line: "Author this as Terraform HCL composed from `terraform-aws-modules` registry modules: they are the real `terraform-aws-modules` sources, served at an allowlisted set of versions you can discover at this environment's registry endpoint. Deploy for real with `terraform apply`."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        # `-refresh=false` for the reason hcl_raw's own plan_command comments
+        # at length: this scenario's working tree can legitimately already
+        # carry real state by the time a static tier runs against it, and a
+        # refreshing plan would 403 at the credential-free host gates.
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -refresh=false -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields:
+          - name: api_url
+            description: "the deployed stage's real invoke URL, e.g. https://abc123.execute-api.us-east-1.amazonaws.com/prod/ (trailing slash)"
     terraconstructs:
       language_line: "Author this using terraconstructs (TypeScript) L2 constructs, synthesized via cdktn. Deploy for real with `terraform apply` against the synthesized stack."
       output_contract:
@@ -239,10 +282,18 @@ catches:
       wiring) on awscdk/terraconstructs, and by a hand-omitted `depends_on`
       entry on hcl_raw. Caught STRUCTURALLY (the dependency edge itself),
       never a live invoke/behavioral check.
+      ON hcl_modules the catch is untouched, because no module reaches it: the
+      registry publishes none for REST v1, so the deployment, its `depends_on`
+      and every integration are the same raw root-module resources hcl_raw
+      carries (see arms.hcl_modules.reason), the tier-1 Rego rule walks the same
+      `configuration.root_module.resources`, and the fixture is the same
+      hand-omitted entry.
     predicted_tier_caught:
       awscdk: "1"
       hcl: "1"
       terraconstructs_override: null
+      hcl_modules_override: null
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
 
   - name: stale-deployment-no-triggers
     taxonomy: graph-dependency
@@ -267,11 +318,16 @@ catches:
       real second `terraform apply` shows "0 to change" for the deployment
       and the stage keeps serving the OLD deployment -- `GET /status`
       404s/403s live despite `terraform apply` exiting 0.
+      hcl_modules is in scope for the same reason hcl_raw is and no module
+      changes it: the `aws_api_gateway_deployment` is a raw resource on that arm
+      too, so omitting its `triggers` block is available, plans clean, and is
+      read by the same tier-0 existence check. The two L2 arms stay excluded.
     predicted_tier_caught:
       awscdk: "0"
       hcl: "0"
       terraconstructs_override: null
-    applies_to: [hcl_raw]
+      hcl_modules_override: null
+    applies_to: [hcl_raw, hcl_modules]
 
   - name: triggers-incomplete-hash
     taxonomy: graph-dependency
@@ -298,11 +354,18 @@ catches:
       `terraform plan`s, no apply/AWS credentials needed) that the hash is
       identical across revisions, printing the shared
       LIVE_ONLY_CONFIRMED_MARKER, rather than merely asserting it.
+      hcl_modules carries this catch too, unchanged, and the module composition
+      is what had to be measured before saying so: the hash's inputs are the API
+      Gateway resources' own plan-time-static fields, none of which a module
+      supplies, so both revisions' hashes resolve to the same concrete values
+      hcl_raw's reference records and the frozen-hash fixture is still
+      discriminated only by a live apply. The two L2 arms stay excluded.
     predicted_tier_caught:
       awscdk: "live"
       hcl: "live"
       terraconstructs_override: null
-    applies_to: [hcl_raw]
+      hcl_modules_override: null
+    applies_to: [hcl_raw, hcl_modules]
 
 oracle:
   intent: >
@@ -314,7 +377,7 @@ oracle:
     3}`. The API's deployment resource depends on every route's method
     (CFN DependsOn / TF depends_on+triggers) -- it must not be constructed
     in a way that could provision before, or without ever picking up, any
-    route. On hcl_raw and terraconstructs, the deployment resource also
+    route. On every Terraform-shaped arm, the deployment resource also
     carries a non-null `triggers.redeployment` value -- TF's own
     redeploy-on-change mechanism (docs/apigw-redeploy-mechanics.md §1) --
     without which a second, real `terraform apply` is not guaranteed to
@@ -346,7 +409,7 @@ oracle:
     - name: rest-api-exists
       description: "An API Gateway REST API resource exists."
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGateway::RestApi')]"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_api_gateway_rest_api')]"
       op: exists
@@ -354,7 +417,7 @@ oracle:
     - name: deployment-exists
       description: "An API Gateway deployment resource exists."
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGateway::Deployment')]"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_api_gateway_deployment')]"
       op: exists
@@ -362,7 +425,7 @@ oracle:
     - name: lambda-function-exists
       description: "At least one Lambda function exists to back /hello or /version."
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Lambda::Function')]"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_function')]"
       op: exists
@@ -372,7 +435,7 @@ oracle:
         At least one API Gateway method has an AWS_PROXY-type integration
         (backing /hello or /version).
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGateway::Method')].Properties.Integration.Type"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_api_gateway_integration')].values.type"
       op: contains
@@ -384,7 +447,7 @@ oracle:
         (backing the day-2 /status route) -- proves the prescribed
         modification is present in the FINAL delivered file.
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGateway::Method')].Properties.Integration.Type"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_api_gateway_integration')].values.type"
       op: contains
@@ -401,7 +464,7 @@ oracle:
         salting (the equivalent mechanism) is unconditional in idiomatic
         L2 usage -- see this assert's own applies_to.
       tier: "0"
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_api_gateway_deployment')].values.triggers.redeployment"
       op: exists
 
@@ -413,7 +476,7 @@ oracle:
         count), full per-resource SET identity on the TF-shaped arms
         (Rego).
       tier: "1"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ApiGateway::Deployment')].DependsOn"
       tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_api_gateway_deployment')].depends_on"
       op: exists
@@ -503,6 +566,8 @@ steps:
           language_line: "Author this as an AWS CDK (TypeScript) app using aws-cdk-lib L2 constructs (apigateway.RestApi, LambdaIntegration). Deploy for real with `npx cdk deploy`."
         hcl_raw:
           language_line: "Author this as hand-written Terraform HCL (no modules). Deploy for real with `terraform apply`."
+        hcl_modules:
+          language_line: "Author this as Terraform HCL composed from `terraform-aws-modules` registry modules: they are the real `terraform-aws-modules` sources, served at an allowlisted set of versions you can discover at this environment's registry endpoint. Deploy for real with `terraform apply`."
         terraconstructs:
           language_line: "Author this using terraconstructs (TypeScript) L2 constructs, synthesized via cdktn. Deploy for real with `terraform apply` against the synthesized stack."
     oracle:
@@ -552,6 +617,8 @@ steps:
           language_line: "Author this as an AWS CDK (TypeScript) app using aws-cdk-lib L2 constructs (apigateway.RestApi, LambdaIntegration, MockIntegration). Deploy for real with `npx cdk deploy`."
         hcl_raw:
           language_line: "Author this as hand-written Terraform HCL (no modules). Deploy for real with `terraform apply`."
+        hcl_modules:
+          language_line: "Author this as Terraform HCL composed from `terraform-aws-modules` registry modules: they are the real `terraform-aws-modules` sources, served at an allowlisted set of versions you can discover at this environment's registry endpoint. Deploy for real with `terraform apply`."
         terraconstructs:
           language_line: "Author this using terraconstructs (TypeScript) L2 constructs, synthesized via cdktn. Deploy for real with `terraform apply` against the synthesized stack."
     # FINAL step: `oracle.structural_asserts` is OMITTED, which SCHEMA.md

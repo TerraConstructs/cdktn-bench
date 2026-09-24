@@ -13,9 +13,10 @@ replacement is the point: the two blocks are independent, and dropping the
 provider block to gain the module override would send provider installation
 back to the network — the coupling this arm exists to avoid.
 
-`hcl_modules` is the only arm that gets it (gates/artifact_collector.py::
-arm_env); every other arm's environment is handed back unchanged. See
-docs/gates.md#tf-registry.
+`hcl_modules` is the only arm that gets it: `arm_env()` below is the one place
+that decides so, and every host gate that runs a fixture goes through it, so two
+gates cannot start the same fixture in different environments. Every other arm's
+environment is handed back unchanged. See docs/gates.md#tf-registry.
 """
 
 from __future__ import annotations
@@ -140,6 +141,36 @@ def running_registry(
             proc.stdout.close()
         log.close()
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+# The only arm whose toolchain needs more than the AWS stub: its modules resolve
+# from the loopback registry, never from registry.terraform.io.
+REGISTRY_ARM = "hcl_modules"
+
+
+@contextlib.contextmanager
+def arm_env(arm: str, env: dict[str, str]) -> Iterator[dict[str, str]]:
+    """`env` for one arm's toolchain runs; unchanged for every arm but this one.
+
+    `hcl_modules` additionally runs under `running_registry`, which adds the
+    `TF_CLI_CONFIG_FILE` whose `host` override points `registry.terraform.io`'s
+    modules service at the loopback responder. Without it this arm's `terraform
+    init` resolves its modules from the PUBLIC registry, so a gate would grade a
+    solution the arm's own offline image cannot build -- or pass one the network
+    happened to supply. Other arms declare no modules, so handing them that
+    config would only couple green arms to a fourth arm's subprocess.
+
+    Lives beside `running_registry` rather than in any one gate, because four
+    callers now need it -- gates/oracle_falsifiability.py, gates/grading_proof.py,
+    gates/artifact_collector.py and generator/check_reference_paths.py -- and a
+    gate that half-knew about the registry would resolve modules from the network
+    and call the result offline.
+    """
+    if arm != REGISTRY_ARM:
+        yield env
+        return
+    with running_registry(env=env) as registry_env:
+        yield registry_env
 
 
 def _pump(proc: subprocess.Popen, log) -> threading.Thread:

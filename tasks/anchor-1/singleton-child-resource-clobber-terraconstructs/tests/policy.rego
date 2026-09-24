@@ -1,9 +1,13 @@
 # oracles/rego/singleton-child-resource-clobber/policy.rego -- HAND-AUTHORED
 # (SCHEMA.md §8.2 rule 7). Encodes specs/singleton-child-resource-clobber.yaml's
 # one tier-"1" structural_assert (no-storage-rule-is-left-un-enabled) +
-# oracle.rego_hints. Graded against `terraform show -json` plan JSON for BOTH
-# TF-shaped arms (hcl_raw, terraconstructs) -- specs/SCHEMA.md §4.2/§8. `input`
-# at policy-evaluation time is that plan JSON document.
+# oracle.rego_hints. Graded against `terraform show -json` plan JSON for every
+# TF-shaped arm (hcl_raw, terraconstructs, hcl_modules) -- specs/SCHEMA.md
+# §4.2/§8. `input` at policy-evaluation time is that plan JSON document, after
+# the plan normaliser, which hoists a module's own document into
+# planned_values.root_module.resources -- so the rule below addresses it exactly
+# as a root one and needs no `child_modules` walk (oracles/rego/README.md, "On
+# the VALUES side a policy needs no module-aware path").
 #
 # Intent doc: oracles/singleton-child-resource-clobber/intent.md
 #
@@ -18,10 +22,11 @@
 # runs.
 #
 # READ FROM .planned_values, NOT .configuration (SCHEMA.md §4.2.1). `status` is
-# an agent-authored literal on both TF arms -- on terraconstructs it is what
+# an agent-authored literal on every TF arm -- on terraconstructs it is what
 # `LifecycleConfigurationRule.enabled: boolean` is mapped to by
-# `lib/aws/storage/bucket.js` -- so it is plan-time-KNOWN. Nothing in this
-# scenario is laundered through `jsonencode(...)` or a
+# `lib/aws/storage/bucket.js`, and on hcl_modules what `lifecycle_rule[].enabled`
+# is mapped to by s3-bucket@5.16.1 main.tf:366 -- so it is plan-time-KNOWN.
+# Nothing in this scenario is laundered through `jsonencode(...)` or a
 # `data "aws_iam_policy_document"` hop, so §4.2.1's contagious-unknown case and
 # s3-bucket-hardening-decomposition's one-hop-indirection helper are both
 # genuinely inapplicable here rather than merely omitted.

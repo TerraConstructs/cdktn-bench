@@ -157,7 +157,12 @@ trial.
 ### Per-tier fixture handling
 
 Which verdict a `solution/broken/<catch>/` fixture must produce depends on the
-catch's `predicted_tier_caught` for the arm:
+catch's `predicted_tier_caught` for the arm. `.hcl` speaks for every Terraform
+arm unless that arm's own override is set — `terraconstructs_override`,
+`hcl_modules_override` — and both are resolved from one table in
+`predicted_tier`, because an override read for one arm and not the other grades a
+mistake at the tier the spec explicitly said it is NOT caught at, and does so
+silently.
 
 * **"0" / "1"** — reward 0.0, AND `observed_tier()` (parsed from the run's own
   verifier stdout) must equal the predicted tier. Reward 0.0 alone only
@@ -435,6 +440,37 @@ generated `tests/ops.py` — not a second, host-side evaluator.
 `oracles/lib/structural.py` uses `jsonpath_ng`, which cannot parse the `||`-OR'd
 filter syntax several tier-1 CFN paths use at all.
 
+It grades **the document a tier grades, not the one the toolchain wrote.** Every
+TF-shaped arm's verifier normalises the plan before any tier reads it (an arm
+sets `normalise_plan`; see `docs/design/tf-modules-arm.md`), because the asserts
+address `planned_values.root_module.resources` while a module-shaped plan keeps
+its resources under `child_modules`. `configuration` is deliberately left in the
+module bodies, which is why a configuration-side assert excludes this arm instead
+of being rewritten. This gate therefore runs the task's own
+emitted `tests/tiers.py` normaliser over the artifact first, with the flag read
+out of the task's own `tests/verify.py`. Without that step every path on the
+`hcl_modules` arm reported `Cannot iterate over null` while every real trial
+resolved it — the gate contradicting the thing it gates, and failing in the one
+direction that cannot be caught by a green run. A plan the normaliser cannot
+produce a document from is a hard failure here, because it is a plan no tier
+could grade either.
+
+It runs each arm's toolchain under **`gates/tf_registry.py::arm_env`**, the same
+object `make falsifiability` and `make grading-proof` use: on `hcl_modules` that
+is the loopback module registry, on every other arm it is identity. Without it
+this gate's `terraform init` resolved modules from the PUBLIC registry, so a pass
+said nothing about what the arm's own offline image ships.
+
+**Provider downloads are the gate's wall clock.** The host runs `terraform init`
+per fixture with no provider mirror (the `filesystem_mirror` in
+`arms/*/environment/terraformrc` exists inside the image, not on the host), so
+each fixture re-downloads the pinned `hashicorp/aws` build. Export
+`TF_PLUGIN_CACHE_DIR` (e.g. `~/.terraform.d/plugin-cache`) before a gate run to
+reuse one copy — `gates/aws_stub.py` hands the whole environment through, so no
+flag is needed. It is deliberately NOT set by the gate: the cache is shared
+mutable state, and two gate runs sharing one machine is exactly the contention
+that produces `PLAN FAILED` rows with no error text.
+
 This gate is **engine-independent by design**: it grades every assert through
 the jq compiler whatever a spec's `oracle.tier0_engine` says, because the
 question it answers is "does this declared path resolve against a real
@@ -483,7 +519,7 @@ run under bookworm's 1.6 would be proving a different grader than a trial runs.
 
 ### --seed mode: brownfield seed parity
 
-What "the three seeds are equivalent" must and must not mean (specs/SCHEMA.md
+What "the arms' seeds are equivalent" must and must not mean (specs/SCHEMA.md
 §2.7 `workspace_seed`). NOT resource-count or resource-type parity: the whole
 thesis of the benchmark is that one L2 construct decomposes into N Terraform
 resources, so a census check would fail every honest seed. Equivalence is
@@ -493,7 +529,14 @@ defined behaviourally, by declared facts:
    not is not "existing infrastructure", it is a generation failure.
 2. Every `seed_assert` holds on every arm its `applies_to` names, resolved
    through the same jq compiler and the same `tests/ops.py` a real trial's
-   tier 0 runs.
+   tier 0 runs, against the same NORMALISED document — a module-composed seed's
+   resources are hoisted out of `child_modules` before any path is asked, exactly
+   as in a trial.
+
+A brownfield seed is module-composed where a module fits the SEEDED resources and
+`hcl_raw`-shaped where none does (SCHEMA.md §2.7), so on `hcl_modules` this gate
+is also the proof that the seed resolves from the offline registry rather than
+from the network.
 
 The residual, human half is `workspace_seed.premise`: a mechanical gate can
 prove "these three configurations satisfy the same declared facts", never
@@ -572,8 +615,9 @@ The plan normaliser (docs/generator.md#the-plan-normaliser-in-teststierspy)
 hoists module resources into `planned_values.root_module.resources`, the shape
 every assert and policy already addresses. It runs on all three
 Terraform-shaped arms for **every** spec, not only the module ones — so the
-whole corpus's grading flows through it, and everything but the `hcl_modules`
-pilot is module-free. This gate is the proof that nothing moved there. For each collected artifact it grades the RAW
+whole corpus's grading flows through it, and every artifact from an arm other
+than `hcl_modules` is module-free. This gate is the proof that nothing moved
+there. For each collected artifact it grades the RAW
 document and the NORMALISED one and requires:
 
 | compared | requirement |

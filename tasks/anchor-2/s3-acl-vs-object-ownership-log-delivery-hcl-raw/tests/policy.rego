@@ -2,9 +2,9 @@
 # HAND-AUTHORED (SCHEMA.md §8.2 rule 7). Encodes
 # specs/s3-acl-vs-object-ownership-log-delivery.yaml's one tier-"1"
 # structural_assert (no-ownership-control-leaves-acls-enabled) +
-# oracle.rego_hints. Graded against `terraform show -json` plan JSON for both
-# TF-shaped arms (hcl_raw, terraconstructs). `input` at policy-evaluation time
-# is that plan JSON document.
+# oracle.rego_hints. Graded against `terraform show -json` plan JSON for all
+# three TF-shaped arms (hcl_raw, terraconstructs, hcl_modules). `input` at
+# policy-evaluation time is that plan JSON document.
 #
 # Intent doc: oracles/s3-acl-vs-object-ownership-log-delivery/intent.md
 #
@@ -17,13 +17,17 @@
 # objects uploaded with the `bucket-owner-full-control` canned ACL, and ACLs
 # stay on. `BucketOwnerEnforced` is the only compliant value.
 #
-# WHY THIS IS TIER 1 AND NOT (only) TIER 0. The claim is universally quantified
-# over a collection -- "NO ownership control, ANYWHERE" -- and a jq path can pin
-# one value, not the absence of a shape across all of them. The tier-0
-# `destination-bucket-ownership-is-bucket-owner-enforced` assert is the
-# single-collection `set_eq` approximation of the same fact; both are declared
-# on purpose so two independent evaluators check one claim against one
-# artifact, which is this repo's oracle-equivalence discipline.
+# WHY THIS IS TIER 1 AND NOT TIER 0. The claim is universally quantified over a
+# collection -- "NO ownership control, ANYWHERE" -- and a jq path can pin one
+# value, not the absence of a shape across all of them. This scenario declares
+# no tier-0 twin of it, deliberately: a tier-1 assert whose only negative
+# fixture trips a tier-0 assert first is a tier-1 assert nothing falsifies, and
+# `make tier1-coverage` refused the pair.
+#
+# `planned_values` is read for the ownership controls and every CONFIGURATION
+# SCOPE for the bucket policy. The plan normaliser hoists module-authored
+# resources into `planned_values.root_module.resources`; it does not touch
+# `configuration`, so the second half walks the module bodies itself.
 #
 # WHY IT FAILS CLOSED ON SHAPE DRIFT (rego_hints, second entry). An
 # `aws_s3_bucket_ownership_controls` resource whose `rule` list is missing or
@@ -31,18 +35,21 @@
 # inside `rule[*]` would report "compliant" for a resource that declares no
 # ownership at all, which is precisely the vacuous-satisfaction shape this
 # repo's oracles are audited for. Note this rule deliberately does NOT deny the
-# ABSENCE of the resource type altogether -- that is tier 0's job (`set_eq`
-# against a non-empty expected fails on zero resolved nodes), and duplicating
-# it here would make the awscdk twin, which cannot see a Terraform resource
-# type at all, asymmetrically weaker.
+# ABSENCE of the resource type altogether: a workspace that stops managing
+# ownership controls has not changed the deployed bucket, which is a fact about
+# the ACCOUNT, and `tests/live_check.py` reads the deployed setting directly.
+# Denying it here would also make the awscdk twin, which cannot see a Terraform
+# resource type at all, asymmetrically weaker.
 #
 # THE SECOND TIER-1 ASSERT
 # (`destination-bucket-policy-carries-the-log-delivery-grant`) IS CONDITIONAL,
 # and the conditionality is the whole reason it is here rather than in a jq
 # path. Two halves:
 #
-#   (a) UNCONDITIONAL: a bucket policy must be declared. With ACLs disabled it
-#       is the only thing that can authorize log delivery, so a solution with
+#   (a) UNCONDITIONAL: a bucket policy must be PLANNED -- read from
+#       planned_values, not from configuration, because a module body declares
+#       its policy resource whatever its `count` resolves to. With ACLs disabled
+#       it is the only thing that can authorize log delivery, so a solution with
 #       none has silently switched delivery off.
 #   (b) CONDITIONAL: if the policy DOCUMENT is readable from the graded
 #       artifact, it must name `logging.s3.amazonaws.com`. Whether it is
@@ -148,41 +155,103 @@ not_verifiable contains msg if {
 
 logging_service_principal := "logging.s3.amazonaws.com"
 
-configuration_resources := object.get(
-	object.get(object.get(input, "configuration", {}), "root_module", {}),
+# A CONFIGURATION SCOPE is the document root or the value of a
+# `module_calls.<name>.module` key, carried with the call path its resources'
+# addresses need. `configuration` is NOT hoisted by the plan normaliser, so on
+# the hcl_modules arm the bucket policy the s3-bucket module authors is
+# invisible from `configuration.root_module.resources` and rule (a) below would
+# report "no bucket policy is declared" for a CORRECT solution. Reading every
+# scope fixes that at equal strictness on every arm: a module-free plan has one
+# scope with an empty prefix, which is the root resource list this rule used to
+# read and nothing else. `walk` rather than recursion, which Rego forbids
+# (oracles/rego/README.md).
+config_scope_path(path) if count(path) == 0
+
+config_scope_path(path) if path[count(path) - 1] == "module"
+
+module_prefix(path) := concat(".", [sprintf("module.%s", [path[i]]) |
+	some i
+	path[i - 1] == "module_calls"
+])
+
+qualify(prefix, name) := name if prefix == ""
+
+qualify(prefix, name) := concat(".", [prefix, name]) if prefix != ""
+
+config_scopes contains scope if {
+	walk(object.get(object.get(input, "configuration", {}), "root_module", {}), [path, body])
+	is_object(body)
+	config_scope_path(path)
+	scope := {"prefix": module_prefix(path), "resources": object.get(body, "resources", [])}
+}
+
+# The configuration side, keyed by the address a PLANNED resource carries: the
+# scope's call path prefixed on, and the instance key a configuration address
+# never has removed from the planned one.
+configured_bucket_policies[addr] := entry if {
+	some scope in config_scopes
+	some r in scope.resources
+	r.type == "aws_s3_bucket_policy"
+	addr := qualify(scope.prefix, object.get(r, "address", "aws_s3_bucket_policy.?"))
+	entry := {"resource": r, "scope": scope}
+}
+
+base_addr(addr) := regex.replace(addr, `\[[^\]]*\]`, "")
+
+# WHICH SIDE OF THE PLAN ANSWERS "IS THERE A BUCKET POLICY": planned_values, not
+# configuration. A module body DECLARES `aws_s3_bucket_policy.this` with a
+# `count` that is zero unless one of its `attach_*` inputs is set, and the
+# configuration representation lists a resource whatever its count resolves to
+# -- so reading the configuration reports a policy for a workspace that plans
+# none, which is this scenario's `log-delivery-grant-missing-entirely` scoring
+# 1.0. planned_values carries the resource only if it is really being created,
+# and the plan normaliser has already hoisted module-authored resources into
+# `root_module.resources`. No arm loses strictness: a resource written without a
+# `count` appears on both sides, so hcl_raw and terraconstructs are unchanged.
+planned_resources := object.get(
+	object.get(object.get(input, "planned_values", {}), "root_module", {}),
 	"resources",
 	[],
 )
 
-bucket_policies := [r |
-	some r in configuration_resources
-	r.type == "aws_s3_bucket_policy"
-]
+# An unjoinable configuration node yields the empty scope rather than dropping
+# the planned policy: losing it would take rule (a) with it.
+config_entry(addr) := e if {
+	e := configured_bucket_policies[base_addr(addr)]
+} else := {"resource": {}, "scope": {"prefix": "", "resources": []}}
+
+bucket_policies contains bp if {
+	some p in planned_resources
+	p.type == "aws_s3_bucket_policy"
+	addr := object.get(p, "address", "aws_s3_bucket_policy.?")
+	entry := config_entry(addr)
+	bp := {"address": addr, "resource": entry.resource, "scope": entry.scope}
+}
 
 # (a) There must be one at all.
 deny contains msg if {
 	count(bucket_policies) == 0
 	msg := sprintf(
-		"this configuration declares no aws_s3_bucket_policy. With access control lists disabled on the log destination bucket, a bucket policy granting %q is the only thing that can authorize server access log delivery",
+		"this configuration plans no aws_s3_bucket_policy. With access control lists disabled on the log destination bucket, a bucket policy granting %q is the only thing that can authorize server access log delivery",
 		[logging_service_principal],
 	)
 }
 
-policy_expression(r) := object.get(object.get(r, "expressions", {}), "policy", {})
+policy_expression(bp) := object.get(object.get(bp.resource, "expressions", {}), "policy", {})
 
 # The document as a literal string, which is what Terraform's JSON syntax
 # (cdktn's cdk.tf.json) produces.
-policy_constant(r) := v if {
-	v := object.get(policy_expression(r), "constant_value", null)
+policy_constant(bp) := v if {
+	v := object.get(policy_expression(bp), "constant_value", null)
 	is_string(v)
 }
 
 # One hop: `policy = data.aws_iam_policy_document.X.json`. The referenced data
 # source's own configuration node keeps its statement literals.
-referenced_policy_documents(r) := [d |
-	some ref in object.get(policy_expression(r), "references", [])
+referenced_policy_documents(bp) := [d |
+	some ref in object.get(policy_expression(bp), "references", [])
 	startswith(ref, "data.aws_iam_policy_document.")
-	some d in configuration_resources
+	some d in bp.scope.resources
 	d.type == "aws_iam_policy_document"
 	startswith(ref, sprintf("data.aws_iam_policy_document.%s", [object.get(d, "name", "")]))
 ]
@@ -198,21 +267,24 @@ mentions_logging_principal(node) if {
 	contains(value, logging_service_principal)
 }
 
-readable_document(r) := doc if {
-	doc := policy_constant(r)
+readable_document(bp) := doc if {
+	doc := policy_constant(bp)
 } else := doc if {
-	docs := referenced_policy_documents(r)
+	docs := referenced_policy_documents(bp)
 	count(docs) > 0
 	doc := docs
 }
 
-# (b) If it is readable, it must name the logging service principal.
+# (b) If it is readable, it must name the logging service principal. A module
+# that hands its own policy resource a module-local value (s3-bucket 5.16.1's
+# `policy = local.policy`) carries nothing readable in any plan document, so
+# this rule stays silent there and `tests/live_check.py` grades the grant.
 deny contains msg if {
-	some r in bucket_policies
-	doc := readable_document(r)
+	some bp in bucket_policies
+	doc := readable_document(bp)
 	not mentions_logging_principal(doc)
 	msg := sprintf(
 		"%s declares a bucket policy whose document IS readable from the graded artifact and never mentions %q -- with access control lists disabled, nothing in it can authorize S3 server access log delivery",
-		[object.get(r, "address", "aws_s3_bucket_policy.?"), logging_service_principal],
+		[bp.address, logging_service_principal],
 	)
 }

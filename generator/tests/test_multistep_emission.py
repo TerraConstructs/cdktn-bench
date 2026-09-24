@@ -42,9 +42,13 @@ from gen import (  # noqa: E402
     write_tests_dir,
 )
 from spec_model import Spec, load_spec  # noqa: E402
+from vendored_tree import is_vendored_module_file  # noqa: E402
 
 SPEC_PATH = REPO_ROOT / "specs" / "apigw-redeploy.yaml"
-ARMS = ("awscdk", "hcl_raw", "terraconstructs")
+# Read off the spec, not written out: the hostile reads below must cover every
+# arm whose task dir is actually shipped, and the pure-function mutations must
+# set `deploy_command` on every arm the spec's own validator will ask for.
+ARMS = tuple(load_spec(SPEC_PATH).arms.enabled_arms())
 
 
 @pytest.fixture(scope="module")
@@ -174,8 +178,14 @@ def _leaks_env(text: str) -> list[str]:
 def _environment_files(spec: Spec, arm: str):
     root = task_dir(spec, arm) / "environment"
     for path in sorted(root.rglob("*")):
-        if path.is_file() and path.name not in ENVIRONMENT_SCAN_EXCLUDE:
-            yield path
+        if not path.is_file() or path.name in ENVIRONMENT_SCAN_EXCLUDE:
+            continue
+        # Upstream `terraform-aws-modules` source, not authored prompt text;
+        # `vendored_tree` states the argument and names the proof that no byte
+        # under it is ours.
+        if is_vendored_module_file(path, root):
+            continue
+        yield path
 
 
 def _leaks(text: str, tokens: tuple[str, ...]) -> list[str]:

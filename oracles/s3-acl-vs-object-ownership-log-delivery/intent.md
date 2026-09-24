@@ -69,6 +69,29 @@ Four things are graded, in four places, and the split is deliberate.
    ownership control deleted outright rather than corrected, which no
    remaining static assert covers.
 
+TWO THINGS THE hcl_modules ARM CHANGED IN THE ORACLE RATHER THAN IN ITS OWN
+applies_to, both at equal strictness on every arm, and they failed in
+opposite directions. (1) A correct module-composed solution was scored 0.0 by
+the oracle as it stood: the bucket policy the `s3-bucket` module authors is
+declared inside the called module's body, so tier 1's unconditional half --
+"a bucket policy must be declared" -- read an empty root-module resource list
+and denied. The rule now reads every configuration scope, which is the same
+claim evaluated over the whole document instead of over one frame of it, and
+is no weaker on any arm: a module-free plan has exactly one scope, the root.
+(2) The more serious one, and the direction that lets a WRONG solution
+through: that same unconditional half asked `configuration`, which lists a
+declared resource whatever its `count` resolves to, so the module's
+`aws_s3_bucket_policy.this` with `count = local.create_bucket &&
+local.attach_policy` read as "a policy is declared" for a workspace that
+plans none -- `log-delivery-grant-missing-entirely` scored 1.0. The half now
+counts the resource in `planned_values`, which carries it only if it is really
+being created. A resource written without a `count` appears on both sides, so
+the arms without modules are unchanged.
+The narrowing that came with the arm is tier-0's graph-edge assert
+`access-logs-still-target-a-bucket-this-workspace-creates`, which the
+jsonpath grammar cannot express for a module-authored resource and which
+`tests/live_check.py` answers against the account instead.
+
 What is deliberately NOT graded: how many resources each arm's expansion
 produced; whether the bucket policy is written as `jsonencode`, a
 `data "aws_iam_policy_document"`, an L2 `addToResourcePolicy` call or a

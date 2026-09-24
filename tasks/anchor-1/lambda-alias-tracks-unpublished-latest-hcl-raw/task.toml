@@ -51,7 +51,7 @@ workspace_id = "quote-service"
 # extra_cfg manifest slot, so two trials whose starting workspace
 # differs can never be pooled -- even when the image digest falls
 # back to a bare tag string (docker offline/not built locally).
-workspace_seed_sha256 = "4dba739ae54fbf93586f787545e9d3fe2620ee500ae0f12459053bdf819ea9d0"
+workspace_seed_sha256 = "8811e051089e8989ce560b27a163083be13d31c007a877353a70a4445117b558"
 category = "iac-abstraction"
 request_type = "mutation"
 aws_services = ["lambda", "iam", "s3"]

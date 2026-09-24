@@ -67,6 +67,10 @@
         "path": "tasks/anchor-1/apigw-redeploy-awscdk"
       },
       {
+        "name": "apigw-redeploy-hcl-modules",
+        "path": "tasks/anchor-4/apigw-redeploy-hcl-modules"
+      },
+      {
         "name": "apigw-redeploy-hcl-raw",
         "path": "tasks/anchor-2/apigw-redeploy-hcl-raw"
       },
@@ -139,6 +143,10 @@
         "path": "tasks/anchor-2/ecr-repo-destroy-force-delete-awscdk"
       },
       {
+        "name": "ecr-repo-destroy-force-delete-hcl-modules",
+        "path": "tasks/anchor-1/ecr-repo-destroy-force-delete-hcl-modules"
+      },
+      {
         "name": "ecr-repo-destroy-force-delete-hcl-raw",
         "path": "tasks/anchor-3/ecr-repo-destroy-force-delete-hcl-raw"
       },
@@ -183,6 +191,10 @@
         "path": "tasks/anchor-4/lambda-alias-tracks-unpublished-latest-awscdk"
       },
       {
+        "name": "lambda-alias-tracks-unpublished-latest-hcl-modules",
+        "path": "tasks/anchor-3/lambda-alias-tracks-unpublished-latest-hcl-modules"
+      },
+      {
         "name": "lambda-alias-tracks-unpublished-latest-hcl-raw",
         "path": "tasks/anchor-1/lambda-alias-tracks-unpublished-latest-hcl-raw"
       },
@@ -211,6 +223,10 @@
         "path": "tasks/anchor-3/named-resource-replacement-awscdk"
       },
       {
+        "name": "named-resource-replacement-hcl-modules",
+        "path": "tasks/anchor-2/named-resource-replacement-hcl-modules"
+      },
+      {
         "name": "named-resource-replacement-hcl-raw",
         "path": "tasks/anchor-4/named-resource-replacement-hcl-raw"
       },
@@ -221,6 +237,10 @@
       {
         "name": "s3-acl-vs-object-ownership-log-delivery-awscdk",
         "path": "tasks/anchor-1/s3-acl-vs-object-ownership-log-delivery-awscdk"
+      },
+      {
+        "name": "s3-acl-vs-object-ownership-log-delivery-hcl-modules",
+        "path": "tasks/anchor-4/s3-acl-vs-object-ownership-log-delivery-hcl-modules"
       },
       {
         "name": "s3-acl-vs-object-ownership-log-delivery-hcl-raw",
@@ -305,6 +325,10 @@
       {
         "name": "singleton-child-resource-clobber-awscdk",
         "path": "tasks/anchor-3/singleton-child-resource-clobber-awscdk"
+      },
+      {
+        "name": "singleton-child-resource-clobber-hcl-modules",
+        "path": "tasks/anchor-2/singleton-child-resource-clobber-hcl-modules"
       },
       {
         "name": "singleton-child-resource-clobber-hcl-raw",

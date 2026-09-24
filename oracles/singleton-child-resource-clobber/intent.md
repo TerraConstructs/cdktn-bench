@@ -17,7 +17,9 @@ Four things are graded, in four places, and the split is deliberate:
    prefix, storage class and day count; the existing rule is still there,
    still deleting `logs/` after 30 days; the workspace still has exactly
    one bucket; and — on the Terraform-shaped arms — exactly one
-   `aws_s3_bucket_lifecycle_configuration` resource. The last of those is
+   `aws_s3_bucket_lifecycle_configuration` resource, counted after module
+   resources are hoisted so a module's own document and a root one are the
+   same one document. The last of those is
    the ONLY static check that distinguishes the headline mistake from a
    correct answer, because both rules are present in the artifact either
    way. The first of them is what makes the DO-NOTHING answer fail: the

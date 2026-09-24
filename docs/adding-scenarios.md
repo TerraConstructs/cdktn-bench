@@ -571,6 +571,45 @@ the matrix marks hidden or removed:
      shape as `solution/<name>/solve.sh`, a second reference the gate requires
      to score 1.0.
 
+**A brownfield spec seeds this arm too.** `workspace_seed.entry_file` takes an
+`hcl_modules` body (and `extra_files` sibling), required iff the arm is enabled
+(`SCHEMA.md` §2.7), and the owner's rule for what goes in it is the same fit
+question the reference answers: where `docs/design/hcl-modules-spec-matrix.md`
+shows a full module fit for the SEEDED resources, write the seed **module-composed**
+— day-2 configuration on a codebase already built from `terraform-aws-modules` at
+the pinned versions, plan-green under the vendored registry; where the seeded
+resources have no module, the seed IS the `hcl_raw` body. What the seed owes
+either way is the premise: the same deployed shape and the same latent trap the
+other arms' seeds set up, which the `seed_asserts` are what hold. Then check the
+one fixture only brownfield has — `solution/broken/seed-unchanged` must still
+score 0.0 on this arm, and for the SAME reason it scores 0.0 elsewhere (the
+change request is still unmade), not because a module default happens to satisfy
+an assert or because `init` failed.
+
+**The seed's fit question is per RESOURCE, and two of its answers are only
+visible by measuring.** Slice C's four brownfield seeds split two module-composed
+and two hybrid, both hybrids for reasons a reading of the matrix would have
+missed (Amendment 46's slice C section has the measurements):
+
+* **A module can DISARM the trap.** `vpc//modules/vpc-endpoints` hard-codes
+  `lifecycle { create_before_destroy = true }` on the security group it creates,
+  and no `module` block accepts a `lifecycle` meta-argument — so a module-composed
+  group would have seeded a workspace where the mistake cannot happen. The seed
+  keeps that one resource raw; the module-composed variant is recorded beside the
+  catch as a correct shape, never as a fixture.
+* **A module input can be unreachable under the host gates.** `s3-bucket`'s `acl`
+  turns on `data "aws_canonical_user_id"`, i.e. `s3:ListBuckets`, which
+  `gates/aws_stub.py` answers `400`; a data read is not skipped by
+  `-refresh=false`, so the seed's plan dies with a toolchain error rather than
+  seeding anything. Same treatment: that resource stays raw, with the measurement
+  recorded. `terraform plan` under the AWS stub is therefore part of the fit
+  question, not a check performed after it.
+
+So a hybrid seed is a normal answer, and `make seed-parity` — which plans every
+arm's seed offline through the loopback registry and resolves every `seed_assert`
+against the NORMALISED plan — is the gate that decides whether the body you wrote
+is one.
+
 **Three things the arm needs that no other arm does.**
 
 * **A catch, or the arm grades nothing.** `Catch.applies_to` defaults to the
@@ -591,6 +630,16 @@ the matrix marks hidden or removed:
   until a spec joins the arm. Reword the arm prose and leave the type in
   `docs/`; never add it to
   `generator/tests/test_scenario_identity.py::ARM_BOILERPLATE`.
+  The arm's `environment/modules/` tree is prompt surface by the same rule and is
+  NOT swept for scenario vocabulary, because upstream Terraform source is not
+  bench-authored text and `lifecycle` / `create_before_destroy` are the library's
+  public surface — the exemption is one predicate
+  (`generator/tests/vendored_tree.py`) and what makes it safe is proved in
+  `test_vendored_modules.py`. Two consequences for an author: the tree is not a
+  place to hide anything (every byte's sha256 is the pinned tag's), and on a
+  scenario whose fix IS a construct the library uses, the agent can read that fix
+  out of the vendored source on this arm and only on this arm. Record it beside
+  the catch; whether it cheapens the catch is an owner call.
 
 **What goes wrong silently.** A fixture that scores 0.0 because `init` failed
 is not a catch — check the tier and the deny message, not just the reward. The
@@ -730,7 +779,9 @@ Everything in §§1–6 still applies. These are the **additional** obligations:
    through the same jq compilation a real trial's tier-0 uses. Wire it per spec
    into `make ci`. A seed that does not build/synth/plan is a generation
    failure, not a hard scenario — it would score every trial on that arm 0.0
-   before the agent typed anything.
+   before the agent typed anything. On `hcl_modules` the body is module-composed
+   where a module fits the seeded resources and is the `hcl_raw` body where none
+   does (§6.3).
 
    **"Equivalent" is behavioural, never a census.** Declared facts + green, not
    resource counts or types — a count check would fail every honest seed, since

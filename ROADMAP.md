@@ -388,18 +388,32 @@ Phases, each landing on its own:
      merge learns to read `.terraform/modules/` (a new capability, and the
      agent's own file is no longer the unit graded) or the spec stays off the
      arm with that stated as the reason.
-   * **Slice C — the six mutating/brownfield specs, blocked on two things.**
-     `apigw-redeploy`, `ecr-repo-destroy-force-delete`,
+   * **Slice C — done, offline. The six mutating/brownfield specs decided, all
+     six enabled**: `apigw-redeploy`, `ecr-repo-destroy-force-delete`,
      `lambda-alias-tracks-unpublished-latest`, `named-resource-replacement`,
      `s3-acl-vs-object-ownership-log-delivery`,
-     `singleton-child-resource-clobber`. A brownfield spec cannot enable the arm
-     at all until `workspace_seed.entry_file` gains a per-arm `hcl_modules`
-     field with a hand-authored, plan-green module-based seed — the refusal
-     `test_a_brownfield_spec_cannot_enable_it_yet` pins. And each of these runs
-     live, so the fourth arm's tasks have to be promoted on the five shards
-     (`generator/shards.toml`) with the compose sidecar reachable inside a real
-     trial, which is the same operator environment Amendment 46's promotion
-     needs.
+     `singleton-child-resource-clobber`. `workspace_seed.entry_file` gained its
+     per-arm `hcl_modules` body, required iff the arm is enabled; the four
+     brownfield seeds are module-composed wherever the matrix shows a full module
+     fit for the SEEDED resources and `hcl_raw`-shaped where none fits, and
+     `make seed-parity` is green on all four arms of all four — every arm's seed
+     plans green offline and every `seed_assert` holds. `falsifiability`,
+     `grading-proof` and `tier1-coverage` are green on every enabled arm of all
+     six, plus two slice-A specs as regression. Two hybrid seeds are the slice's
+     real finding: a module can DISARM a trap (`vpc//modules/vpc-endpoints`
+     hard-codes `create_before_destroy` on the group it creates, and no `module`
+     block takes a `lifecycle` meta-argument) and a module input can be
+     unreachable under the host gates (`s3-bucket`'s `acl` pulls
+     `data.aws_canonical_user_id`, i.e. `s3:ListBuckets`, which `gates/aws_stub.py`
+     answers 400), so each of those resources stays raw in the seed with the
+     measurement recorded. One oracle defect the arm found was fixed at equal
+     strictness on every arm (s3-acl read a module-declared `count = 0` resource
+     as a planned one, scoring a missing grant 1.0).
+     **Live promotion is owed, and the arm forms are the point:** the three
+     shapes slice A's four read-only trials could not exercise are brownfield
+     mutating (seed deploy + a gating live check), greenfield mutating with a
+     gating teardown tier, and multi-step. Trials per form are listed with the
+     slice-C decisions in DECISIONS.md Amendment 46.
 
 ### M3 sharpening — modules and L2s capture *different* knowledge
 Community modules encode **composition** knowledge ("how to wire N resources
@@ -425,6 +439,19 @@ is a useful real-world calibration point for the upper end.
 See `docs/design/oracle-authority-proposal.md`. Decide **after** a full battery,
 using the measured divergence rate between static-green and live-green.
 
+Settled in the meantime, each by measurement (memos under `docs/design/`):
+an AWS emulator is not a grader (`floci-fidelity-spike.md`: 5 of 20 specs
+false-green on the value-rejection class, 2 false-red on references; an
+authoring loop for the 10 matching specs is the most it may be); a model is not
+a judge, deterministic or not (`model-as-oracle-spike.md`: no IaC corpus, no
+readable rule to falsify, unprovable equal strictness; its uses are authoring
+aids whose output is then falsified deterministically); `terraform console
+-plan` does not replace the HCL merge (`terraform-console-resolver-spike.md`:
+it returns values where the traversal needs referents, and every graded ARN is
+unknown at plan time), but its per-leaf unknowns give the plan-time-unknown
+case its deciding check. The static tiers, evaluating AWS APIs and deployed
+state remain the oracle, in that order of cost.
+
 ### M6 — closed-book knowledge probe (cheap, no AWS, no trials)
 Operationalizes the §3 law. For every scenario's trap, ask the model the
 underlying question **closed-book** — no workspace, no docs, no tools — and
@@ -446,8 +473,9 @@ the next model generation — which is itself a finding worth tracking.
 
 ### M7 — split the aws-bench scenario (throughput, isolation, hash blast radius)
 
-**Status: DONE — sharded at N = 4, `env setup` green on all four shards, Amendment 33
-ACCEPTED 2026-09-09 on its first promotion run.** `generator/shards.toml` holds the single `shard_count` knob; `make shards`
+**Status: DONE — sharded at N = 4 on 2026-09-09 (Amendment 33, ACCEPTED on its
+first promotion run) and raised to N = 5 on 2026-09-23 when the fourth arm made
+four mutating arms per spec; `env setup` green on all five shards.** `generator/shards.toml` holds the single `shard_count` knob; `make shards`
 materializes `scenarios/anchor-1..3` from the *tracked* files of
 `scenarios/anchor` plus the registry's `scenarios[]`; `generator/gen.py` stamps
 `scenario_id` per task and places it under `tasks/<scenario_id>/`, relocating

@@ -1,0 +1,569 @@
+#!/usr/bin/env bash
+# Reference solution -- HAND-AUTHORED (SCHEMA.md §8.2 point 8), Slice G
+# (apigw-redeploy). Same iteration as the awscdk/terraconstructs reference
+# solutions' own header comments describe (read either first) -- one REST
+# API, GET /hello + GET /version at revision 1, GET /status (MOCK, fixed
+# JSON body) added at revision 2, same stage serves both.
+#
+# MODULE CHOICE (docs/design/hcl-modules-spec-matrix.md §1): the registry
+# publishes no module for API Gateway REST v1, so the rest API, its resources,
+# methods, integrations, the deployment and the stage are raw HCL here exactly
+# as on hcl_raw. `terraform-aws-modules/lambda/aws` 8.8.2 replaces what each
+# route's handler took by hand -- the function, its execution role under the
+# path this account's credentials require, its log group, and the invoke
+# permission the module derives from one `allowed_triggers` entry.
+#
+# Like the two L2 arms, this arm gets no automatic redeploy machinery from its
+# modules: the deployment is raw, so the redeploy trigger is hand-written here
+# exactly as on hcl_raw, which is the whole point of measuring this scenario on
+# an arm whose modules do not cover its trap
+# (docs/apigw-redeploy-mechanics.md §5, "What a raw-HCL operator must
+# hand-write to match this"). The aws_api_gateway_deployment resource
+# below hand-implements it correctly:
+#   - `triggers.redeployment` = sha1(jsonencode([...])) over the COMPLETE
+#     set of plan-time-STATIC fields for every route (path_part/http_method/
+#     authorization/integration type/integration_http_method/templates) --
+#     deliberately NEVER a resource's own `.id`/`.arn` (those are
+#     provider-computed and plan-time-unknown for a brand-new resource in
+#     the same plan -- §5's "plan-time-unknown values" pitfall). This is
+#     what lets the hash resolve to a concrete hex string in
+#     `terraform show -json` PLAN output with zero prior state, so this
+#     file's offline falsifiability check (below) can diff two independent
+#     `terraform plan` runs directly, no apply needed.
+#   - `depends_on` lists every method's integration (+ the /status
+#     integration_response), covering the classic
+#     deployment-missing-integration-dependency footgun too.
+#   - `lifecycle { create_before_destroy = true }` avoids a stage-serving
+#     gap on replacement.
+# Twice-planned against this exact file through the loopback registry, and the
+# hashes are the same pair hcl_raw's reference records -- the module calls reach
+# none of the hashed fields, which is what had to be true for this arm to grade
+# the redeploy trigger at all:
+#   revision 1 triggers.redeployment = 0afc8ac589182f2e874b63d4221074863f34e9d2
+#   revision 2 triggers.redeployment = 885365e13ea6e4274af5b066e97a8369778d7065  (DIFFERENT)
+# See solution/broken/{stale-deployment-no-triggers,triggers-incomplete-hash}/
+# for the two negatives this correct shape is contrasted against -- both
+# PASS every static tier identically to this file; only a live apply tells
+# them apart (see each fixture's own solve.sh header).
+#
+# --- OFFLINE vs. LIVE switch -- see the awscdk reference solution's own
+# header for the full rationale; identical here (`terraform plan`/`apply`
+# in place of `cdk synth`/`cdk deploy`). LIVE=1 runs a real `terraform
+# apply` against ambient AWS credentials -- this script never writes or
+# edits provider.tf, exactly what a real agent solving this scenario is
+# bound to as well (see this scenario's instruction.md).
+#
+# Regenerating this scenario will NOT overwrite this file (destructive-safe
+# rule, SCHEMA.md §8.2 point 8).
+set -euo pipefail
+
+LIVE="${LIVE:-0}"
+PROJECT_DIR="$(pwd)"
+
+# STEP -- the MULTI-STEP form (DECISIONS.md Amendment 27,
+# docs/prompt-decomposition-audit.md). Unset/empty (the default) runs the
+# WHOLE scenario: this file is the reference solution for the FINAL step
+# (steps/02-change-request), whose oracle is the full tier suite, and it is
+# the shape every solution/broken/<catch>/ fixture is written against.
+#
+# STEP=01 stops after revision 1, then runs whatever tests/static_tiers.sh is
+# staged -- which under gates/oracle_falsifiability.py's step branch is step
+# 01's own (subset) oracle. steps/01-initial-deploy/solution/solve.sh is a
+# thin wrapper that sets this, so revision 1 has exactly ONE definition on
+# this arm; a duplicated heredoc in the step solution would drift from this
+# one the first time either is touched.
+STEP="${STEP:-}"
+mkdir -p lambda lambda-src
+
+write_lambda_zips() {
+  # hcl_raw has no Code.fromInline() equivalent -- aws_lambda_function
+  # always needs a real archive. Built here (not seeded) so this solve.sh
+  # is self-contained for BOTH offline plan (any bytes suffice for
+  # filebase64sha256) and LIVE apply (needs a REAL, working zip).
+  cat > lambda-src/hello.js <<'JS'
+exports.handler = async () => ({ statusCode: 200, body: "hello" });
+JS
+  cat > lambda-src/version.js <<'JS'
+exports.handler = async () => ({ statusCode: 200, body: JSON.stringify({ version: "1.0.0" }) });
+JS
+  ( cd lambda-src && cp hello.js index.js && zip -q -X ../lambda/hello.zip index.js && rm index.js )
+  ( cd lambda-src && cp version.js index.js && zip -q -X ../lambda/version.zip index.js && rm index.js )
+}
+
+# This script writes no provider.tf of its own. The SEEDED ./provider.tf
+# (arms/hcl-raw/environment/workspace/provider.tf, already present in this
+# workspace) carries a bare `provider "aws"` block that resolves ambient
+# AWS credentials, and it is not agent-owned -- leaving it untouched is
+# exactly what this scenario's instruction.md tells a real agent to do.
+
+write_rev1() {
+  cat > main.tf <<'TF'
+module "hello" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.8.2"
+
+  function_name = "apigw-redeploy-hello"
+  handler       = "index.handler"
+  runtime       = "nodejs20.x"
+  # This account's deploy credentials only permit creating and passing roles
+  # under this path; the module builds the execution role itself.
+  role_path = "/cdktn-bench-task/"
+
+  create_package         = false
+  local_existing_package = "${path.module}/lambda/hello.zip"
+
+  # The module would otherwise also permission the function's published
+  # version; nothing here publishes one.
+  create_current_version_allowed_triggers = false
+
+  allowed_triggers = {
+    api = {
+      service    = "apigateway"
+      source_arn = "${aws_api_gateway_rest_api.api.execution_arn}/*/GET/hello"
+    }
+  }
+}
+
+module "version" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.8.2"
+
+  function_name = "apigw-redeploy-version"
+  handler       = "index.handler"
+  runtime       = "nodejs20.x"
+  role_path     = "/cdktn-bench-task/"
+
+  create_package         = false
+  local_existing_package = "${path.module}/lambda/version.zip"
+
+  create_current_version_allowed_triggers = false
+
+  allowed_triggers = {
+    api = {
+      service    = "apigateway"
+      source_arn = "${aws_api_gateway_rest_api.api.execution_arn}/*/GET/version"
+    }
+  }
+}
+
+resource "aws_api_gateway_rest_api" "api" {
+  name = "apigw-redeploy-api"
+}
+
+resource "aws_api_gateway_resource" "hello" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  parent_id   = aws_api_gateway_rest_api.api.root_resource_id
+  path_part   = "hello"
+}
+
+resource "aws_api_gateway_method" "hello_get" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  resource_id   = aws_api_gateway_resource.hello.id
+  http_method   = "GET"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "hello_get" {
+  rest_api_id             = aws_api_gateway_rest_api.api.id
+  resource_id              = aws_api_gateway_resource.hello.id
+  http_method              = aws_api_gateway_method.hello_get.http_method
+  integration_http_method  = "POST"
+  type                     = "AWS_PROXY"
+  uri                      = module.hello.lambda_function_invoke_arn
+}
+
+resource "aws_api_gateway_resource" "version" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  parent_id   = aws_api_gateway_rest_api.api.root_resource_id
+  path_part   = "version"
+}
+
+resource "aws_api_gateway_method" "version_get" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  resource_id   = aws_api_gateway_resource.version.id
+  http_method   = "GET"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "version_get" {
+  rest_api_id             = aws_api_gateway_rest_api.api.id
+  resource_id              = aws_api_gateway_resource.version.id
+  http_method              = aws_api_gateway_method.version_get.http_method
+  integration_http_method  = "POST"
+  type                     = "AWS_PROXY"
+  uri                      = module.version.lambda_function_invoke_arn
+}
+
+resource "aws_api_gateway_deployment" "this" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+
+  triggers = {
+    redeployment = sha1(jsonencode([
+      aws_api_gateway_resource.hello.path_part,
+      aws_api_gateway_method.hello_get.http_method,
+      aws_api_gateway_method.hello_get.authorization,
+      aws_api_gateway_integration.hello_get.type,
+      aws_api_gateway_integration.hello_get.integration_http_method,
+      aws_api_gateway_resource.version.path_part,
+      aws_api_gateway_method.version_get.http_method,
+      aws_api_gateway_method.version_get.authorization,
+      aws_api_gateway_integration.version_get.type,
+      aws_api_gateway_integration.version_get.integration_http_method,
+    ]))
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  depends_on = [
+    aws_api_gateway_integration.hello_get,
+    aws_api_gateway_integration.version_get,
+  ]
+}
+
+resource "aws_api_gateway_stage" "prod" {
+  deployment_id = aws_api_gateway_deployment.this.id
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  stage_name    = "prod"
+}
+
+output "api_url" {
+  value = "${aws_api_gateway_stage.prod.invoke_url}/"
+}
+TF
+}
+
+write_rev2() {
+  cat > main.tf <<'TF'
+module "hello" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.8.2"
+
+  function_name = "apigw-redeploy-hello"
+  handler       = "index.handler"
+  runtime       = "nodejs20.x"
+  # This account's deploy credentials only permit creating and passing roles
+  # under this path; the module builds the execution role itself.
+  role_path = "/cdktn-bench-task/"
+
+  create_package         = false
+  local_existing_package = "${path.module}/lambda/hello.zip"
+
+  # The module would otherwise also permission the function's published
+  # version; nothing here publishes one.
+  create_current_version_allowed_triggers = false
+
+  allowed_triggers = {
+    api = {
+      service    = "apigateway"
+      source_arn = "${aws_api_gateway_rest_api.api.execution_arn}/*/GET/hello"
+    }
+  }
+}
+
+module "version" {
+  source  = "terraform-aws-modules/lambda/aws"
+  version = "8.8.2"
+
+  function_name = "apigw-redeploy-version"
+  handler       = "index.handler"
+  runtime       = "nodejs20.x"
+  role_path     = "/cdktn-bench-task/"
+
+  create_package         = false
+  local_existing_package = "${path.module}/lambda/version.zip"
+
+  create_current_version_allowed_triggers = false
+
+  allowed_triggers = {
+    api = {
+      service    = "apigateway"
+      source_arn = "${aws_api_gateway_rest_api.api.execution_arn}/*/GET/version"
+    }
+  }
+}
+
+resource "aws_api_gateway_rest_api" "api" {
+  name = "apigw-redeploy-api"
+}
+
+resource "aws_api_gateway_resource" "hello" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  parent_id   = aws_api_gateway_rest_api.api.root_resource_id
+  path_part   = "hello"
+}
+
+resource "aws_api_gateway_method" "hello_get" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  resource_id   = aws_api_gateway_resource.hello.id
+  http_method   = "GET"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "hello_get" {
+  rest_api_id             = aws_api_gateway_rest_api.api.id
+  resource_id              = aws_api_gateway_resource.hello.id
+  http_method              = aws_api_gateway_method.hello_get.http_method
+  integration_http_method  = "POST"
+  type                     = "AWS_PROXY"
+  uri                      = module.hello.lambda_function_invoke_arn
+}
+
+resource "aws_api_gateway_resource" "version" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  parent_id   = aws_api_gateway_rest_api.api.root_resource_id
+  path_part   = "version"
+}
+
+resource "aws_api_gateway_method" "version_get" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  resource_id   = aws_api_gateway_resource.version.id
+  http_method   = "GET"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_integration" "version_get" {
+  rest_api_id             = aws_api_gateway_rest_api.api.id
+  resource_id              = aws_api_gateway_resource.version.id
+  http_method              = aws_api_gateway_method.version_get.http_method
+  integration_http_method  = "POST"
+  type                     = "AWS_PROXY"
+  uri                      = module.version.lambda_function_invoke_arn
+}
+
+resource "aws_api_gateway_resource" "status" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  parent_id   = aws_api_gateway_rest_api.api.root_resource_id
+  path_part   = "status"
+}
+
+resource "aws_api_gateway_method" "status_get" {
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  resource_id   = aws_api_gateway_resource.status.id
+  http_method   = "GET"
+  authorization = "NONE"
+}
+
+resource "aws_api_gateway_method_response" "status_get_200" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  resource_id = aws_api_gateway_resource.status.id
+  http_method = aws_api_gateway_method.status_get.http_method
+  status_code = "200"
+  response_models = {
+    "application/json" = "Empty"
+  }
+}
+
+resource "aws_api_gateway_integration" "status_get" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  resource_id = aws_api_gateway_resource.status.id
+  http_method = aws_api_gateway_method.status_get.http_method
+  type        = "MOCK"
+  request_templates = {
+    "application/json" = "{\"statusCode\": 200}"
+  }
+}
+
+resource "aws_api_gateway_integration_response" "status_get_200" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+  resource_id = aws_api_gateway_resource.status.id
+  http_method = aws_api_gateway_method.status_get.http_method
+  status_code = aws_api_gateway_method_response.status_get_200.status_code
+  response_templates = {
+    "application/json" = jsonencode({ status = "ok", routes = 3 })
+  }
+}
+
+resource "aws_api_gateway_deployment" "this" {
+  rest_api_id = aws_api_gateway_rest_api.api.id
+
+  triggers = {
+    redeployment = sha1(jsonencode([
+      aws_api_gateway_resource.hello.path_part,
+      aws_api_gateway_method.hello_get.http_method,
+      aws_api_gateway_method.hello_get.authorization,
+      aws_api_gateway_integration.hello_get.type,
+      aws_api_gateway_integration.hello_get.integration_http_method,
+      aws_api_gateway_resource.version.path_part,
+      aws_api_gateway_method.version_get.http_method,
+      aws_api_gateway_method.version_get.authorization,
+      aws_api_gateway_integration.version_get.type,
+      aws_api_gateway_integration.version_get.integration_http_method,
+      aws_api_gateway_resource.status.path_part,
+      aws_api_gateway_method.status_get.http_method,
+      aws_api_gateway_method.status_get.authorization,
+      aws_api_gateway_integration.status_get.type,
+      aws_api_gateway_integration.status_get.request_templates,
+      aws_api_gateway_integration_response.status_get_200.response_templates,
+    ]))
+  }
+
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  depends_on = [
+    aws_api_gateway_integration.hello_get,
+    aws_api_gateway_integration.version_get,
+    aws_api_gateway_integration.status_get,
+    aws_api_gateway_integration_response.status_get_200,
+  ]
+}
+
+resource "aws_api_gateway_stage" "prod" {
+  deployment_id = aws_api_gateway_deployment.this.id
+  rest_api_id   = aws_api_gateway_rest_api.api.id
+  stage_name    = "prod"
+}
+
+output "api_url" {
+  value = "${aws_api_gateway_stage.prod.invoke_url}/"
+}
+TF
+}
+
+assert_facts() {
+  local plan="$1" expected_methods="$2"
+  local methods
+  methods="$(jq '[.planned_values.root_module.resources[] | select(.type=="aws_api_gateway_method")] | length' "$plan")"
+  [ "$methods" = "$expected_methods" ] || { echo "FALSIFIED: expected $expected_methods methods, got $methods in $plan" >&2; exit 1; }
+  jq -e '.planned_values.root_module.resources[] | select(.type=="aws_api_gateway_rest_api")' "$plan" >/dev/null || { echo "FALSIFIED: no rest_api in $plan" >&2; exit 1; }
+  jq -e '.planned_values.root_module.resources[] | select(.type=="aws_api_gateway_deployment")' "$plan" >/dev/null || { echo "FALSIFIED: no deployment in $plan" >&2; exit 1; }
+  echo "  OK: $expected_methods methods, rest_api + deployment present in $plan"
+}
+
+assert_hash_changed() {
+  local plan1="$1" plan2="$2"
+  local h1 h2
+  h1="$(jq -r '.planned_values.root_module.resources[] | select(.type=="aws_api_gateway_deployment") | .values.triggers.redeployment' "$plan1")"
+  h2="$(jq -r '.planned_values.root_module.resources[] | select(.type=="aws_api_gateway_deployment") | .values.triggers.redeployment' "$plan2")"
+  echo "  revision 1 triggers.redeployment: $h1"
+  echo "  revision 2 triggers.redeployment: $h2"
+  [ -n "$h1" ] && [ "$h1" != "null" ] || { echo "FALSIFIED: revision 1 has no resolved triggers.redeployment hash" >&2; exit 1; }
+  [ "$h1" != "$h2" ] || { echo "FALSIFIED: triggers.redeployment did NOT change between revisions -- no new deployment would be created" >&2; exit 1; }
+  echo "  OK: hash changed -- terraform will replace the deployment on redeploy"
+}
+
+if [ "$LIVE" != "1" ]; then
+  echo "== OFFLINE static-proof mode (LIVE unset/0): plan twice (no apply, no state), diff triggers.redeployment =="
+  write_lambda_zips
+
+  write_rev1
+  terraform init -input=false >/dev/null
+  terraform validate >/dev/null
+  terraform plan -input=false -out=plan.tfplan >/dev/null
+  terraform show -json plan.tfplan > plan.rev1.json
+  assert_facts plan.rev1.json 2
+
+  if [ "$STEP" = "01" ]; then
+    echo "== STEP=01: stopping after revision 1 (steps/01-initial-deploy reference solution) =="
+    if [ -f tests/static_tiers.sh ]; then
+      echo "== tests/static_tiers.sh found -- running it against revision 1 =="
+      bash tests/static_tiers.sh
+    else
+      echo "== NOTE: tests/static_tiers.sh not present -- the offline proof above is the full check =="
+    fi
+    exit 0
+  fi
+
+  write_rev2
+  terraform validate >/dev/null
+  terraform plan -input=false -out=plan.tfplan >/dev/null
+  terraform show -json plan.tfplan > plan.rev2.json
+  assert_facts plan.rev2.json 3
+  jq -e '.planned_values.root_module.resources[] | select(.type=="aws_api_gateway_integration") | select(.values.type=="MOCK")' plan.rev2.json >/dev/null \
+    || { echo "FALSIFIED: no MOCK integration in revision 2" >&2; exit 1; }
+
+  assert_hash_changed plan.rev1.json plan.rev2.json
+
+  if [ -f tests/static_tiers.sh ]; then
+    echo "== tests/static_tiers.sh found -- running it too =="
+    bash tests/static_tiers.sh
+  else
+    echo "== NOTE: tests/static_tiers.sh not present yet (generator/spec work pending) -- offline proof above is the full check for now =="
+  fi
+  exit 0
+fi
+
+echo "== LIVE mode: real deploy -> curl -> modify -> re-deploy -> curl =="
+echo "Account/region guardrail: this must be running with creds scoped to 886312446417 / us-east-1 only."
+
+# Cleanup runs on ANY exit path (pass, live_check failure, or a mid-script
+# error) -- CONTEXT's own rule: always delete live resources created,
+# leave the account as found. Finding 7 fix (2026-08-06): `terraform
+# destroy` alone does NOT remove the CloudWatch Logs log groups Lambda/API
+# Gateway auto-create on first invocation (/aws/lambda/apigw-redeploy-hello,
+# /aws/lambda/apigw-redeploy-version, /aws/apigateway/welcome) -- confirmed
+# residual after every prior LIVE proof run in this review. Deleted
+# explicitly here; `|| true` throughout since a log group may not exist
+# yet (e.g. a failure before either function was ever invoked).
+cleanup() {
+  echo "== cleanup: terraform destroy + residual log groups (finding 7) =="
+  terraform destroy -input=false -auto-approve || true
+  aws logs delete-log-group --log-group-name /aws/lambda/apigw-redeploy-hello >/dev/null 2>&1 || true
+  aws logs delete-log-group --log-group-name /aws/lambda/apigw-redeploy-version >/dev/null 2>&1 || true
+  aws logs delete-log-group --log-group-name /aws/apigateway/welcome >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+write_lambda_zips
+
+write_rev1
+terraform init -input=false
+terraform apply -input=false -auto-approve
+API_URL="$(terraform output -raw api_url)"
+echo "revision 1 API URL: $API_URL"
+
+# Finding 1 fix: bounded POLL (tests/live_check.py), not a single
+# immediate curl -- API Gateway stage-propagation latency after a fresh
+# deploy needs real margin (measured up to 60s on other arms; hcl-raw
+# itself measured 30s). check_200 below stays a quick, cheap regression
+# check for /hello and /version right after the FIRST deploy only
+# (proxy integrations, unaffected by the MOCK-route propagation lag a
+# control test isolated -- so an immediate sample here is sound). Finding
+# 6 fix (2026-08-07): the identical pair used to also run immediately
+# after the SECOND deploy, on the same un-polled single curl -- exactly
+# the riskiest sample point (see docs/apigw-redeploy-mechanics.md's own
+# propagation-window note) -- dropped; live_check.py's check_ok() below
+# already polls /hello and /version (REGRESSION_POLL_TIMEOUT_S) as part
+# of its own --expect ok contract, so that regression coverage still
+# exists, just bounded instead of a single sample.
+check_200() {
+  local path="$1"
+  local code
+  code="$(curl -s -o /tmp/resp.body -w '%{http_code}' "${API_URL}${path}")"
+  echo "  GET ${path} -> $code $(cat /tmp/resp.body)"
+  [ "$code" = "200" ] || { echo "LIVE CHECK FAILED: ${path} did not return 200" >&2; exit 1; }
+}
+
+check_200 "hello"
+check_200 "version"
+
+if [ "$STEP" = "01" ]; then
+  echo "== STEP=01: revision 1 is deployed and serving; stopping before the change request =="
+  # Step 01's own live_check.py (2-route contract) -- staged at tests/ by
+  # whoever invoked this. The EXIT trap still tears the account down, which
+  # is correct for this MANUAL proof shape: it proves "revision 1 deploys and
+  # serves", it is not the trial (in a real trial the AGENT deploys and
+  # nothing is destroyed until the post-trial reset).
+  python3 "$PROJECT_DIR/tests/live_check.py" --api-url "$API_URL" --expect ok
+  exit 0
+fi
+
+write_rev2
+terraform apply -input=false -auto-approve
+API_URL="$(terraform output -raw api_url)"
+echo "revision 2 API URL (should be identical -- same stage): $API_URL"
+
+# Finding 5 fix: the SAME shared checker (tests/live_check.py) the
+# broken/*/solve.sh fixtures below call with --expect stale, called here
+# with --expect ok -- one implementation, not two ad hoc ones. Finding 1's
+# fix lives inside it (POLL_TIMEOUT_S=180, bounded retry, never a single
+# immediate curl). Finding 3's fix is also there: only behavioral facts
+# are asserted (exact /status body + /hello + /version regression-free),
+# no deployment-count/stage-pointer assertion. Finding 6 fix: this is now
+# the ONLY /hello and /version check after the second deploy (see
+# check_200's own comment above for why the bare immediate pair was
+# dropped here).
+python3 "$PROJECT_DIR/tests/live_check.py" --api-url "$API_URL" --expect ok

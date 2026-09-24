@@ -23,6 +23,7 @@ requirements, AWS access, seed parity: docs/gates.md#check-reference-paths
 from __future__ import annotations
 
 import argparse
+import ast
 import json
 import shutil
 import subprocess
@@ -34,12 +35,21 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "gates"))
 from aws_stub import running_stub  # noqa: E402
+from tf_registry import arm_env  # noqa: E402
 from gen import ARM_WORKSPACE_SUBDIR, task_dir  # noqa: E402
 from jsonpath_jq import jsonpath_to_jq  # noqa: E402
 from spec_model import Arm, SeedAssert, Spec, StructuralAssert, load_spec  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 FIXTURES_DIR = Path(__file__).resolve().parent / "tests" / "fixtures"
+
+
+# One sentence, two call sites: the same condition means the same thing whether
+# it is a reference fixture's plan or a seed's.
+_NORMALISE_FAILED = (
+    "the plan could not be normalised, so no tier could grade it either -- "
+    "tiers.py's own normaliser said:\n"
+)
 
 
 @dataclass
@@ -156,6 +166,63 @@ def _run_toolchain(project: Path, env: dict[str, str]) -> str:
     return proc.stdout + proc.stderr
 
 
+# Run in the task's own tests/ directory: `tiers.normalised_plan_path` writes
+# `<artifact>.normalised.json` beside the artifact and prints where it put it.
+# The mechanism is the emitted one, not a copy of it.
+_NORMALISE_PROBE = (
+    "import sys; sys.path.insert(0, 'tests'); import tiers; "
+    "print(tiers.normalised_plan_path(sys.argv[1]))"
+)
+
+
+def _verifier_config(project: Path) -> dict:
+    """The generated `tests/verify.py` CONFIG, read as DATA.
+
+    `verify.py` ends in `raise SystemExit(tiers.main(...))`, so it cannot be
+    imported; the dict is a literal, so it can be parsed. Read rather than
+    restated because it is the same dict the trial's verifier reads -- an arm
+    whose `normalise_plan` flag changes changes this gate with it.
+    """
+    tree = ast.parse((project / "tests" / "verify.py").read_text())
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "CONFIG" for t in node.targets
+        ):
+            return ast.literal_eval(node.value)
+    raise AssertionError(f"no CONFIG literal in {project / 'tests' / 'verify.py'}")
+
+
+def _graded_artifact(project: Path, artifact: Path) -> tuple[Path, str]:
+    """`(document, detail)` -- the artifact a TIER would grade, not the one the
+    toolchain wrote.
+
+    On every arm that sets `normalise_plan` (docs/design/tf-modules-arm.md),
+    tiers.py hoists a module-shaped plan's `planned_values` resources out of
+    `child_modules` into `root_module.resources` -- the path every declared
+    assert speaks -- before any tier runs. It deliberately leaves
+    `configuration` in the module bodies, which is why a configuration-side
+    assert excludes this arm rather than being rewritten. A gate that resolved
+    declared paths against the RAW plan reported every values-side path on this
+    arm unresolvable while every trial resolved it: the gate contradicting the
+    thing it gates.
+
+    `detail` is non-empty only when normalisation failed, which is itself a hard
+    failure: an unnormalisable plan is one no tier can grade.
+    """
+    if not _verifier_config(project).get("normalise_plan"):
+        return artifact, ""
+    proc = subprocess.run(
+        [sys.executable, "-c", _NORMALISE_PROBE, str(artifact)],
+        cwd=project,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return artifact, (proc.stdout + proc.stderr).strip()
+    return Path(proc.stdout.strip()), ""
+
+
 def _assert_check_via_driver(
     project: Path, name: str, jsonpath: str, op: str, expected: object, artifact: Path
 ) -> tuple[bool, str]:
@@ -208,10 +275,16 @@ def check_arm(spec: Spec, arm: Arm, env: dict[str, str]) -> list[PathCheckResult
         )
         return results
 
-    with tempfile.TemporaryDirectory(prefix="check-paths-good-") as tmp_s:
+    # `arm_env`: on hcl_modules the loopback module registry, identity on every
+    # other arm. Without it this arm's `terraform init` resolves its modules from
+    # the PUBLIC registry -- a gate that passes on the network and fails in the
+    # arm's own offline image, or worse, the other way round.
+    with arm_env(arm, env) as run_env, tempfile.TemporaryDirectory(
+        prefix="check-paths-good-"
+    ) as tmp_s:
         tmp = Path(tmp_s)
-        project = _prepare_project(spec, arm, fixture_file, tmp, env)
-        log = _run_toolchain(project, env)
+        project = _prepare_project(spec, arm, fixture_file, tmp, run_env)
+        log = _run_toolchain(project, run_env)
 
         artifact = project / per_arm.output_contract.artifact_path
         if not artifact.exists() or artifact.stat().st_size == 0:
@@ -221,6 +294,12 @@ def check_arm(spec: Spec, arm: Arm, env: dict[str, str]) -> list[PathCheckResult
                     False,
                     f"no artifact produced at {artifact} -- toolchain output:\n{log[-4000:]}",
                 )
+            )
+            return results
+        artifact, norm_err = _graded_artifact(project, artifact)
+        if norm_err:
+            results.append(
+                PathCheckResult(f"{arm}/normalise", False, _NORMALISE_FAILED + norm_err)
             )
             return results
 
@@ -242,10 +321,11 @@ def check_arm(spec: Spec, arm: Arm, env: dict[str, str]) -> list[PathCheckResult
         if bad_fixture.exists():
             with tempfile.TemporaryDirectory(prefix="check-paths-bad-") as tmp_bad_s:
                 tmp_bad = Path(tmp_bad_s)
-                bad_project = _prepare_project(spec, arm, bad_fixture, tmp_bad, env)
-                bad_log = _run_toolchain(bad_project, env)
+                bad_project = _prepare_project(spec, arm, bad_fixture, tmp_bad, run_env)
+                bad_log = _run_toolchain(bad_project, run_env)
                 bad_artifact = bad_project / per_arm.output_contract.artifact_path
                 if bad_artifact.exists() and bad_artifact.stat().st_size > 0:
+                    bad_artifact, _ = _graded_artifact(bad_project, bad_artifact)
                     for a in spec.oracle.structural_asserts:
                         if not _applies(a, arm) or a.op != "not_exists":
                             continue
@@ -303,14 +383,19 @@ def check_seed_arm(spec: Spec, arm: Arm, env: dict[str, str]) -> list[PathCheckR
     assert seed is not None
     per_arm = getattr(spec.instruction.per_arm, arm)
 
-    with tempfile.TemporaryDirectory(prefix="check-seed-") as tmp_s:
+    # See check_arm() on `arm_env`: the seed is the workspace the agent opens, so
+    # if it composes registry modules they must resolve from the same offline
+    # responder the arm's image serves.
+    with arm_env(arm, env) as run_env, tempfile.TemporaryDirectory(
+        prefix="check-seed-"
+    ) as tmp_s:
         tmp = Path(tmp_s)
         try:
-            project = _prepare_project(spec, arm, None, tmp, env)
+            project = _prepare_project(spec, arm, None, tmp, run_env)
         except (FileNotFoundError, PermissionError) as exc:
             results.append(PathCheckResult(f"{arm}/seed", False, str(exc)))
             return results
-        log = _run_toolchain(project, env)
+        log = _run_toolchain(project, run_env)
 
         artifact = project / per_arm.output_contract.artifact_path
         if not artifact.exists() or artifact.stat().st_size == 0:
@@ -332,6 +417,12 @@ def check_seed_arm(spec: Spec, arm: Arm, env: dict[str, str]) -> list[PathCheckR
                 f"artifact produced at {per_arm.output_contract.artifact_path}",
             )
         )
+        artifact, norm_err = _graded_artifact(project, artifact)
+        if norm_err:
+            results.append(
+                PathCheckResult(f"{arm}/seed-normalise", False, _NORMALISE_FAILED + norm_err)
+            )
+            return results
 
         applicable = [a for a in seed.seed_asserts if arm in a.applies_to]
         if not applicable:

@@ -13,10 +13,14 @@ is now `platform-internal-services-ssm-endpoint`.
 Three things are graded, in three different places, and the split is
 deliberate:
 
-1. TIER 0 (static, every arm). The group carries the new name; the interface
-   endpoint still exists and is still wired to that group. This is what
-   makes the DO-NOTHING answer fail: the seed already deploys green, so
-   without a name assert an agent that changes nothing would score 1.0. See
+1. TIER 0 (static, every arm). The group carries the new name and the
+   interface endpoint still exists; on hcl_raw, terraconstructs and awscdk
+   the endpoint is additionally checked to be still wired to that group,
+   which on hcl_modules is read from the account by the gating live check
+   instead — the endpoint's configuration node lives inside a module body
+   there, where no tier-0 path reaches it. This is the tier that makes the
+   DO-NOTHING answer fail: the seed already deploys green, so without a name
+   assert an agent that changes nothing would score 1.0. See
    `solution/broken/seed-unchanged/`, which exists precisely to keep proving
    that.
 

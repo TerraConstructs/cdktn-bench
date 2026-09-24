@@ -106,7 +106,7 @@
 # ---------------------------------------------------------------------------
 # WHY THE hcl_raw SEED SHIPS ITS LAMBDA PACKAGE AS BASE64 IN S3
 # ---------------------------------------------------------------------------
-# This is the one place the three seeds visibly diverge, and it is an ARM fact,
+# This is the one place the seeds visibly diverge, and it is an ARM fact,
 # not an authoring choice:
 #   * awscdk         `lambda.Code.fromInline` puts the source in the template's
 #                    `Code.ZipFile`. No archive, no file.
@@ -204,6 +204,37 @@ arms:
       rather than awscdk's live-only grading. `compute.Code.fromInline` resolves
       offline on this arm because `hashicorp/archive` 2.8.0 is mirrored
       (arms/terraconstructs/environment/mirror-src/main.tf).
+  hcl_modules:
+    enabled: true
+    reason: >
+      docs/design/hcl-modules-spec-matrix.md §1 gives this scenario a full
+      module fit and the composition is the join the ticket is about: which
+      version the alias's target resolves to. One
+      `terraform-aws-modules/lambda/aws` 8.8.2 call authors the function, the
+      execution role and its logs policy; its `//modules/alias` submodule
+      authors the alias; `terraform-aws-modules/s3-bucket/aws` 5.16.1 and its
+      `//modules/object` submodule author the package bucket and the archive.
+      No resource is left raw, on the seed or on the reference.
+      MEASURED against real plans through the loopback registry before the arm
+      was enabled, because two submodule facts could each have made a correct
+      solution score 0.0 and neither is readable off the interface:
+      (1) `function_version` is a required passthrough with no module-side
+      smoothing, so the seed's literal `"1"` reaches
+      `.planned_values...aws_lambda_alias.values.function_version` verbatim and
+      a target derived from `module.<call>.lambda_function_version` makes that
+      key vanish exactly as it does on hcl_raw -- same shapes, same tier, no
+      `hcl_modules_override`;
+      (2) `refresh_alias` defaults TRUE, so the submodule builds
+      `aws_lambda_alias.with_refresh` and not the `aws_lambda_alias.no_refresh`
+      twin whose `lifecycle { ignore_changes = [function_version] }` would have
+      pinned the alias's target against every later apply. A solution that
+      flips that flag changes the alias's resource address, so the alias is
+      replaced rather than frozen; the account, not the plan, is where that
+      would show, and `tests/live_check.py` is the tier that reads it.
+      The packaging differs from hcl_raw's the way the two cdk-shaped seeds'
+      does -- `create_package = false` plus `s3_existing_package`, and the
+      module's own log group and role names -- which is legal by construction
+      here for the reason this file's seed header already gives.
 
 # ---------------------------------------------------------------------------
 # §2.7 workspace_seed — THE BROWNFIELD STARTING STATE
@@ -274,6 +305,55 @@ workspace_seed:
       resource "aws_lambda_alias" "live" {
         name             = "quote-service-live"
         function_name    = aws_lambda_function.quote_service.function_name
+        function_version = "1"
+      }
+
+    hcl_modules: |
+      module "quote_service_packages" {
+        source  = "terraform-aws-modules/s3-bucket/aws"
+        version = "5.16.1"
+
+        bucket_prefix = "cdktn-bench-quote-service-"
+        force_destroy = true
+      }
+
+      module "quote_service_package" {
+        source  = "terraform-aws-modules/s3-bucket/aws//modules/object"
+        version = "5.16.1"
+
+        bucket         = module.quote_service_packages.s3_bucket_id
+        key            = "quote-service.zip"
+        content_base64 = "UEsDBBQAAAAIAAAAIVwSlli1eAAAAHoAAAAIAAAAaW5kZXguanMNybEKgzAQANA9X3FjAhKko8UuwaWDUluHTiVNrlUoidzF0iD+e13fw98cKbEebfAfJKjBcg4OpIL6BHIVAJxsWthEjxUcyrLY6Rl9ruB87VrNiabwnl5ZruAWIgxur5miQ2aN4asvQ3drHmbo+6Y1d9hUITZ1FH9QSwECFAMUAAAACAAAACFcEpZYtXgAAAB6AAAACAAAAAAAAAAAAAAApAEAAAAAaW5kZXguanNQSwUGAAAAAAEAAQA2AAAAngAAAAAA"
+      }
+
+      module "quote_service" {
+        source  = "terraform-aws-modules/lambda/aws"
+        version = "8.8.2"
+
+        function_name = "cdktn-bench-quote-service"
+        handler       = "index.handler"
+        runtime       = "nodejs22.x"
+
+        create_package = false
+
+        s3_existing_package = {
+          bucket = module.quote_service_packages.s3_bucket_id
+          key    = module.quote_service_package.s3_object_id
+        }
+
+        publish = true
+
+        environment_variables = {
+          QUOTE_CURRENCY = "EUR"
+        }
+      }
+
+      module "quote_service_live" {
+        source  = "terraform-aws-modules/lambda/aws//modules/alias"
+        version = "8.8.2"
+
+        name             = "quote-service-live"
+        function_name    = module.quote_service.lambda_function_name
         function_version = "1"
       }
 
@@ -367,7 +447,7 @@ workspace_seed:
         for why that arm gets a separate, deliberately weaker assert instead of
         an `applies_to: [all]` entry.
       pins_catch: alias-still-serves-the-previous-version
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_alias')].values.function_version"
       op: eq
       expected: "1"
@@ -403,7 +483,7 @@ workspace_seed:
         seed edit could flip `publish` off and turn this into a different, much
         easier scenario while every other gate stayed green.
       pins_catch: alias-still-serves-the-previous-version
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_function')].values.publish"
       op: eq
       expected: true
@@ -417,7 +497,7 @@ workspace_seed:
         silently delete the only gate that proves a brownfield oracle rejects
         the absence of a change (SCHEMA.md §2.7, "the mandatory do-nothing
         negative").
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Lambda::Function')].Properties.Environment.Variables.QUOTE_CURRENCY"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_function')].values.environment[*].variables.QUOTE_CURRENCY"
       op: eq
@@ -426,7 +506,7 @@ workspace_seed:
     - name: the-alias-the-prompt-names-really-exists
       description: >
         Every arm's seed really declares the alias the change request talks
-        about, and all three arms give it the SAME PHYSICAL NAME. That last
+        about, and every arm gives it the SAME PHYSICAL NAME. That last
         clause is the reason this assert exists at all, and it is an arm fact
         discovered by running the gate rather than by reading a doc:
         terraconstructs' `compute.Alias` composes the deployed name itself --
@@ -439,7 +519,7 @@ workspace_seed:
         arm produced the account, which is precisely what it must never do.
         `eq` rather than `exists` so the COUNT is pinned too: exactly one
         alias, named exactly that.
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Lambda::Alias')].Properties.Name"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_alias')].values.name"
       op: eq
@@ -638,6 +718,26 @@ instruction:
         deploy_command: >-
           terraform init -input=false &&
           terraform apply -input=false -auto-approve
+    hcl_modules:
+      language_line: "Author this as Terraform HCL composed from `terraform-aws-modules` registry modules: they are the real `terraform-aws-modules` sources, served at an allowlisted set of versions you can discover at this environment's registry endpoint."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        # `-refresh=false` for the reason hcl_raw's copy of this command states,
+        # and for one more that is this arm's alone: the seeded workspace's state
+        # holds module-authored resources, so a refresh would ask the stub for
+        # every one of them rather than only for the handful a hand-written
+        # configuration declares.
+        plan_command: >-
+          terraform init && terraform validate &&
+          terraform plan -input=false -refresh=false -out=plan.tfplan &&
+          terraform show -json plan.tfplan > plan.json
+        # Identical to hcl_raw's: the modules come from the offline registry the
+        # arm image serves, so `init` needs no network and the apply is the same
+        # two commands. State lands at /app/project/terraform.tfstate.
+        deploy_command: >-
+          terraform init -input=false &&
+          terraform apply -input=false -auto-approve
     terraconstructs:
       language_line: "This workspace is a terraconstructs (TypeScript) app using its AWS L2 constructs."
       output_contract:
@@ -676,7 +776,16 @@ catches:
       account and writes the new number down explicitly, or points the alias at
       the unqualified function, has satisfied the ticket, and the oracle is
       written so that it scores 1.0 (see `oracle.intent`).
-    applies_to: [awscdk, hcl_raw, terraconstructs]
+      MODULE EXPOSURE, measured on real plans rather than read off the
+      interface: `lambda//modules/alias` 8.8.2 takes `function_version` as a
+      required passthrough and smooths nothing, so the mistake is written the
+      same way (the literal stays in the call) and reaches the graded artifact
+      the same way. The maintainable answer is
+      `function_version = module.<call>.lambda_function_version`, the root
+      module's own `Latest published version` output, which makes the key
+      known-after-apply exactly as the raw attribute reference does. Same
+      mistake, same tier, no `hcl_modules_override`.
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       # ASYMMETRIC BY MEASUREMENT, not by choice — see this file's header for
       # the two toolchain probes. On the TF arms the alias's target is a plain
@@ -697,7 +806,12 @@ catches:
       says every caller reaches this function through its alias — and it
       silently breaks every one of them. Caught at tier 0 on every arm by
       `the-alias-still-exists`, which pins both the name and the count.
-    applies_to: [awscdk, hcl_raw, terraconstructs]
+      On hcl_modules the same mistake is the `//modules/alias` call deleted
+      from the workspace, and the submodule offers a second spelling of it that
+      the count assert catches for the same reason: `use_existing_alias = true`
+      replaces the managed alias with a data source, so the graded artifact
+      declares no `aws_lambda_alias` at all.
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       awscdk: "0"
       hcl: "0"
@@ -758,7 +872,14 @@ oracle:
     account-inspecting answer `oracle.intent` above explicitly accepts. A tier
     that cannot fail for a reason this scenario is about is decoration, and the
     generated `tests/static_tiers.sh` says `SKIPPED_NO_ASSERTS` rather than
-    pretending otherwise.
+    pretending otherwise. That holds on hcl_modules too, and is stated here
+    because `docs/adding-scenarios.md` §6.3 requires a tier-0-only arm to say so
+    beside the catches: module composition moves nothing this scenario grades
+    into a quantified claim. The plan normaliser hoists the module-authored
+    alias and function into `root_module.resources`, so the three tier-0
+    asserts read the same two values at the same paths as on hcl_raw, and the
+    one fact no static tier can reach on any arm -- what the alias actually
+    serves -- is the live check's, not a policy's.
 
   awscdk_tier1_engine: rego
 
@@ -768,7 +889,7 @@ oracle:
         The requested change actually happened in the configuration. This is the
         assert the do-nothing answer fails, on every arm.
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Lambda::Function')].Properties.Environment.Variables.QUOTE_CURRENCY"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_function')].values.environment[*].variables.QUOTE_CURRENCY"
       op: eq
@@ -782,11 +903,11 @@ oracle:
         second alias next to the old one" both fail here rather than only one of
         them. This is also what keeps `alias-is-no-longer-pinned-to-the-seeds-version`
         below from passing vacuously. The expected value is `quote-service-live`
-        on all three arms: hcl_raw and awscdk write it literally, terraconstructs
+        on every arm: hcl_raw, hcl_modules and awscdk write it literally, terraconstructs
         composes it from its gridUUID (see the seed assert
         `the-alias-the-prompt-names-really-exists` for the mechanism).
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Lambda::Alias')].Properties.Name"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_alias')].values.name"
       op: eq
@@ -824,7 +945,7 @@ oracle:
         there is nothing here for a static path to compare. That arm is graded
         live.
       tier: "0"
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_alias')].values.function_version"
       op: not_regex
       expected: "^1$"
@@ -848,7 +969,7 @@ verifier:
     # replacement re-plans dirty forever), so idempotence is a real second
     # instrument and gating it costs the catch nothing. HERE the catch leaves a
     # perfectly CONVERGED state: the naive change applies cleanly, re-plans
-    # clean, and re-deploys clean on all three arms. That is precisely what
+    # clean, and re-deploys clean on every arm. That is precisely what
     # makes it dangerous, and it means idempotence has ZERO discriminating power
     # on this scenario. Gating an oracle that cannot see this scenario's catch
     # would add a way for a correct trial to fail without adding any way for an

@@ -51,7 +51,7 @@ workspace_id = "application-storage"
 # extra_cfg manifest slot, so two trials whose starting workspace
 # differs can never be pooled -- even when the image digest falls
 # back to a bare tag string (docker offline/not built locally).
-workspace_seed_sha256 = "708fcad262969b1bc4c2b96dcb14d63c1497eca7958dc646015715b640565c6b"
+workspace_seed_sha256 = "167f07d3853ed83d62fbab62bdf9349b4376d076c4da51c59f094cc5b2da8c47"
 category = "iac-abstraction"
 request_type = "mutation"
 aws_services = ["s3"]

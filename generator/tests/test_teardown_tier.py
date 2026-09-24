@@ -268,7 +268,14 @@ class TestConditionalEmission:
         future teardown file that skipped that list would survive a spec turning
         the tier back off."""
         for arm in pilot.arms.enabled_arms():
-            names = {p.name for p in (gen.task_dir(pilot, arm) / "tests").iterdir()}
+            # Files only: `_GENERATED_TESTS_FILES` is a list of emitted files,
+            # and running the emitted `ops.py` on the host leaves a gitignored
+            # `__pycache__/` beside it that no generator wrote.
+            names = {
+                p.name
+                for p in (gen.task_dir(pilot, arm) / "tests").iterdir()
+                if p.is_file()
+            }
             assert names <= set(gen._GENERATED_TESTS_FILES), names
             assert not any(n.startswith("teardown") for n in names)
 

@@ -46,6 +46,7 @@ import pytest
 
 import gen
 from spec_model import AGENT_IDENTITY_DENY_PATTERNS, Spec, load_spec
+from vendored_tree import is_vendored_module_file
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 ARMS_DIR = REPO_ROOT / "arms"
@@ -64,17 +65,6 @@ ALL_SPECS = [load_spec(p) for p in ALL_SPEC_PATHS]
 # would make any vocabulary scan meaningless noise.
 SCAN_EXCLUDE = {"package-lock.json"}
 
-# The hcl_modules arm's task dir carries the vendored `terraform-aws-modules`
-# trees, because the Dockerfile COPYs them. Upstream Terraform source is not
-# bench-authored text -- `lifecycle`, `create_before_destroy` and
-# `throttling_burst_limit` are the library's public surface, and discovering
-# them is the skill this arm measures. What makes the exemption safe is that
-# every file's sha256 is in `manifest.json` and the manifest's commit is the
-# pinned tag's, so no byte in a `<name>-<version>/` directory is ours
-# (generator/tests/test_vendored_modules.py, which owns that proof). The one
-# bench-authored file in the tree is `manifest.json` itself, and it is NOT
-# exempted here -- the responder answers `/v1/modules/search` out of it.
-VENDORED_MODULES_DIR = "modules"
 
 # Phrases that match a deny-list pattern for a reason unrelated to any
 # scenario's trap, and that live in the SHARED ARM IMAGE SOURCES
@@ -119,8 +109,7 @@ def _agent_visible_files(spec: Spec, arm: str):
     for path in sorted(env_dir.rglob("*")):
         if not path.is_file() or path.name in SCAN_EXCLUDE:
             continue
-        rel = path.relative_to(env_dir).parts
-        if len(rel) > 2 and rel[0] == VENDORED_MODULES_DIR:
+        if is_vendored_module_file(path, env_dir):
             continue
         yield path, True
     prompts = [p for p in (root / "instruction.md",) if p.is_file()]
@@ -409,8 +398,7 @@ def test_shared_arm_image_sources_leak_no_scenario_vocabulary(spec: Spec) -> Non
         for path in sorted(env_dir.rglob("*")):
             if not path.is_file() or path.name in SCAN_EXCLUDE:
                 continue
-            rel = path.relative_to(env_dir).parts
-            if len(rel) > 2 and rel[0] == VENDORED_MODULES_DIR:
+            if is_vendored_module_file(path, env_dir):
                 continue
             leaks = spec.identity_leaks(
                 _scrub(path.read_text(errors="ignore"), spec, arm),
