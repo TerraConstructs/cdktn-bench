@@ -34,10 +34,12 @@ It also COPIES (never writes) one shared, hand-authored library into a task's
 
     oracles/rego/lib/hcl_traversal.rego -> tasks/<shard>/<id>-<arm>/tests/
 
-for `oracle.hcl_traversal: true` (specs/SCHEMA.md §4.6), on BOTH TF-shaped
-arms: they are graded by the one `oracles/rego/<id>/policy.rego`, so both need
-the library it imports. The `_hcl` MERGE that library reads is emitted for
-`hcl_raw` ONLY — terraconstructs has no `.tf` files — see
+for `oracle.hcl_traversal: true` (specs/SCHEMA.md §4.6), on EVERY TF-shaped
+arm: they are graded by the one `oracles/rego/<id>/policy.rego`, so each needs
+the library it imports — without it every `hcl.*` call is a compile-time
+`rego_type_error` and `opa eval` aborts. The `_hcl` MERGE that library reads is
+emitted for `hcl_raw` ONLY — terraconstructs has no `.tf` files, and
+hcl_modules' graded resource lives in an installed module body — see
 `hcl_input_mode`'s comment in gen.py.
 
 The verifier itself is Python (DECISIONS.md Amendment 44). `tests/test.sh` is

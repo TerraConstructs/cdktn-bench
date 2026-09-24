@@ -2325,14 +2325,16 @@ def build_hcl_merge_py() -> str:
 # Which tier-1 input an `oracle.hcl_traversal` spec gets on which arm (specs/
 # SCHEMA.md §4.6). The two halves differ and conflating them was an executed
 # false FAIL on a correct solution in each direction:
-#   the shared Rego LIBRARY loads on BOTH TF-shaped arms, because
-#     oracles/rego/<id>/policy.rego is one file that grades both -- the moment
-#     it imports the resolver, an arm without the library file makes every
-#     `hcl.slot(...)` UNDEFINED and the reference solution is denied.
+#   the shared Rego LIBRARY loads on EVERY TF-shaped arm, because
+#     oracles/rego/<id>/policy.rego is one file that grades them all -- the
+#     moment it imports the resolver, an arm without the library file makes
+#     every `hcl.slot(...)` a compile-time `rego_type_error: undefined
+#     function`, which aborts `opa eval` and reports ENGINE_ERROR.
 #   the `.tf` MERGE runs on hcl_raw ONLY, because terraconstructs synthesizes
-#     cdk.tf.json and emits no `locals` block -- the parse would glob nothing,
-#     write an EMPTY `_hcl`, and trip the policy's own "no .tf source was
-#     supplied" fail-closed deny.
+#     cdk.tf.json and emits no `locals` block, and hcl_modules declares the
+#     graded resource inside an INSTALLED module body -- the parse would glob
+#     nothing (or the wrong thing), write an `_hcl` that answers nothing, and
+#     trip the policy's own "no .tf source was supplied" fail-closed deny.
 def hcl_input_mode(spec: Spec, arm: Arm) -> str | None:
     if not spec.oracle.hcl_traversal:
         return None
@@ -2341,15 +2343,21 @@ def hcl_input_mode(spec: Spec, arm: Arm) -> str | None:
     if arm == "terraconstructs":
         return "lib"
     if arm == "hcl_modules":
-        # Unreachable: Spec._hcl_traversal_excludes_hcl_modules refuses the
-        # combination at load time. An hcl_traversal oracle resolves symbols out
-        # of the .tf files the AGENT wrote, and on this arm the resource that
-        # carries the graded attribute lives inside an installed module body the
-        # merge never reads -- so the policy would resolve nothing and report a
-        # correct solution as wrong.
-        raise AssertionError(
-            "oracle.hcl_traversal cannot be graded on the hcl_modules arm"
-        )
+        # LIBRARY ONLY -- no merge, no `_hcl`, the normalised plan and nothing
+        # else. The graded resource lives inside an INSTALLED module body that
+        # no glob over the agent's own *.tf reads, so a merge here would write
+        # a document whose `_hcl` answers nothing and trip the policy's own
+        # "no .tf source was supplied" deny on a correct solution.
+        #
+        # WHY NOT `None`. policy.rego is ONE file for every TF-shaped arm, and
+        # the moment it says `import data.cdktn_bench.hcl` an arm that does not
+        # LOAD the library makes every `hcl.*` call a compile-time
+        # `rego_type_error: undefined function`, not an undefined value --
+        # measured on opa 1.19.0. `opa eval` then exits non-zero, which the
+        # generated verifier reports as ENGINE_ERROR: a correct solution
+        # graded as "the oracle did not run". The library is loaded and simply
+        # finds no `_hcl`, which every `hcl.*` entry point is total over.
+        return "lib"
     return None
 
 
@@ -4200,14 +4208,16 @@ def write_tests_dir(spec: Spec, arm: Arm, tests_dir: Path, step: Step | None = N
     # Copied only for the arm/spec combination whose generated script actually
     # loads it, so no other task dir gains a file. Any future shared library
     # joins this list rather than being pasted into a policy.
-    # BOTH TF-shaped arms, not just hcl_raw: oracles/rego/<id>/policy.rego is
-    # ONE file that grades them both, so the moment it imports the library
-    # every arm that loads that policy needs the library file beside it. The
+    # EVERY TF-shaped arm, not just hcl_raw: oracles/rego/<id>/policy.rego is
+    # ONE file that grades them all, so the moment it imports the library
+    # every arm that loads that policy needs the library file beside it -- a
+    # missing library makes each `hcl.*` call a compile-time
+    # `rego_type_error`, i.e. ENGINE_ERROR on a correct solution. The
     # arm-specific half is the `_hcl` MERGE (hcl_raw only) -- see
     # build_static_tiers_sh's `hcl_lib` / `hcl_merge` comment for the executed
     # false fail that this distinction cost before it was drawn.
     lib_dest = tests_dir / "hcl_traversal.rego"
-    if arm in ("hcl_raw", "terraconstructs") and spec.oracle.hcl_traversal:
+    if arm in ("hcl_raw", "terraconstructs", "hcl_modules") and spec.oracle.hcl_traversal:
         shutil.copy2(ORACLES_DIR / "rego" / "lib" / "hcl_traversal.rego", lib_dest)
     elif lib_dest.exists():
         lib_dest.unlink()

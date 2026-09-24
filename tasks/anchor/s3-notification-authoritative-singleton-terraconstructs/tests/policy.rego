@@ -2,8 +2,25 @@
 # never overwrites this file once it exists (specs/SCHEMA.md §8.2 rule 7).
 #
 # ###########################################################################
-# READ THIS FIRST -- ROUND 15 (2026-08-24). FOUR EXECUTED DEFECTS FIXED,
-# THREE OF THEM SILENT PASSES ON GENUINELY BROKEN ARTIFACTS.
+# READ THIS FIRST -- THIS POLICY GRADES FOUR ARMS AND ONLY ONE OF THEM HAS
+# `input._hcl`.
+# ###########################################################################
+#
+# `oracle.hcl_traversal` means "the hcl_raw arm MERGES HCL" and nothing more
+# (specs/SCHEMA.md §4.6). On terraconstructs and hcl_modules `input._hcl` is
+# ABSENT, and on hcl_modules every graded resource is declared inside an
+# INSTALLED module body. Read the "THE hcl_modules ARM" block below before any
+# rule: it owns the configuration-side module walk, the ONE instance-identity
+# domain (terraform's own plan ADDRESS), the `xslot` reader that picks between
+# the shared resolver and the plan-only one, and the two facts plan JSON does
+# not carry at all -- a `dynamic` block and a `local.` inside an installed
+# module body -- which are read through the normaliser's `x_unresolved` mark,
+# resolved one scope up, and whose lost strictness is recorded in
+# `not_verifiable`.
+#
+# ###########################################################################
+# ROUND 15 (2026-08-24). FOUR EXECUTED DEFECTS FIXED, THREE OF THEM SILENT
+# PASSES ON GENUINELY BROKEN ARTIFACTS.
 # ###########################################################################
 #
 # Round 14 was rejected by adversarial verification. Every item below was
@@ -93,8 +110,11 @@
 #
 # Scenario:   s3-notification-authoritative-singleton (specs/s3-notification-authoritative-singleton.yaml)
 # Intent doc: oracles/s3-notification-authoritative-singleton/intent.md
-# Graded against `terraform show -json` plan JSON for BOTH TF-shaped arms
-# (hcl_raw and, when enabled, terraconstructs) -- specs/SCHEMA.md §4.2/§8.
+# Graded against the NORMALISED `terraform show -json` plan JSON for every
+# TF-shaped arm -- hcl_raw, terraconstructs and hcl_modules -- specs/SCHEMA.md
+# §4.2/§8. Only hcl_raw also carries `input._hcl`, the agent's own `.tf` parsed
+# by hcl2json (`oracle.hcl_traversal` is arm-scoped, §4.6); the other two reach
+# every verdict from the plan. See "THE hcl_modules ARM" below.
 # `input` at policy-evaluation time is that plan JSON document. A generated
 # tests/static_tiers.sh runs:
 #   opa eval -f raw -I -d policy.rego 'data.cdktn_bench.s3_notification_authoritative_singleton.deny' < plan.json
@@ -287,59 +307,423 @@ import rego.v1
 # dictate its shape.
 import data.cdktn_bench.hcl
 
-# TOTAL (round 15). This was a BARE reference -- `input.configuration.
-# root_module.resources` -- nine lines above `planned_resources`, whose own
-# comment already explained why that is unsafe. Executed on the real merged
-# oracle input from this scenario's reference solution: deleting
-# `.configuration.root_module.resources` (or setting it to a string, or
-# deleting `.configuration` outright) made EVERY rule downstream of it
-# undefined, and an undefined `deny` rule does not deny -- `deny` came back
-# length 0, i.e. the whole tier-1 policy failed OPEN.
+# ###########################################################################
+# THE hcl_modules ARM -- PLAN-ONLY RESOLUTION
+# ###########################################################################
 #
-# That is reachable from an agent artifact, not just from a corrupted
-# document: everything inside a `module` block lands under
-# `.configuration.root_module.module_calls` / `.planned_values.root_module.
-# child_modules`, leaving `root_module.resources` ABSENT. Verified in the
-# image with all resources moved into `./modules/wiring` and `source_arn =
-# aws_s3_bucket.decoy.arn`: tier1_status=PASS, deny []. The only thing that
-# stopped a 1.0 was a tier-0 error, and "already denied at tier 0" is
-# exactly the mitigation this scenario retracted as unsound (see the ROUND
-# 14 block below and docs/design/conftest-hcl-traversal-spike.md sect 5.3).
+# `oracle.hcl_traversal` means "the hcl_raw arm merges HCL" and nothing more
+# (specs/SCHEMA.md §4.6). On hcl_modules `input._hcl` is ABSENT -- the graded
+# resource is declared inside an INSTALLED module body no glob over the agent's
+# own `*.tf` reads -- so every verdict there comes from the NORMALISED PLAN,
+# and this block is the whole of what makes that possible. Reading a symbol out
+# of an installed module body is refused rather than built
+# (docs/design/terraform-console-resolver-spike.md measured the cost).
 #
-# `object.get` turns the fail-open into an empty list, and the two
-# `_module_*` denies just below turn an empty list into a LOUD refusal that
-# names modules the way `module.x.out` is already named by the resolver.
-# The `is_array` guard is not belt-and-braces. `object.get` with a `[]`
-# default only covers ABSENT; a key present with a NON-LIST value sails
-# through, and `count("nope")` is 4, so the "empty but the plan has
-# resources" deny below would not fire either. Executed: setting
-# `.configuration.root_module.resources` to a string scored deny length 0 --
-# fail-open -- until this clause was added. Anything that is not a list
-# becomes the empty list, which the deny below then reports out loud.
-configured_resources := rs if {
-	raw := object.get(input, ["configuration", "root_module", "resources"], [])
-	is_array(raw)
-	rs := raw
-} else := []
+# AT THE ROOT EVERY HOP BELOW IS THE IDENTITY: `config_modules` is exactly
+# `[[], root_module]`, `module_prefix` is `""`, no reference starts with
+# `module.`, and `xslot` delegates to `hcl.slot` verbatim -- so hcl_raw and
+# terraconstructs reach the verdicts they reached before this block existed.
+#
+# Three of the four hops the plan carries; the fourth it does not, and that is
+# where the strictness bound lives. specs/SCHEMA.md §4.6 has the table, and
+# docs/adding-scenarios.md "The hcl_modules arm" the rule every policy on this
+# arm follows: gate on the normaliser's `x_unresolved` mark, resolve what the
+# calling node's own arguments give, quantify with `every` rather than `some`
+# because that scope is the whole CALL, and record what is left in
+# `not_verifiable`. Never read the absence as a pass.
 
-# --- MODULES ARE REFUSED BY NAME, not silently ungraded -------------------
-#
-# This oracle reads `root_module` only. A resource declared inside a
-# `module` block is invisible to every rule in this file, and invisibility
-# in a fail-closed design must never be spelled "no deny". These two rules
-# are the fail-closed floor under `configured_resources`.
-_child_modules_present if {
-	some _ in object.get(input, ["planned_values", "root_module", "child_modules"], [])
+# A module node path alternates "module_calls" / <call name> / "module", so
+# its length is a multiple of 3 and every third segment is a literal. That
+# shape is the filter, because `walk` yields every sub-object in the document.
+_seg_ok(p, i) if {
+	i % 3 == 0
+	p[i] == "module_calls"
 }
 
+_seg_ok(p, i) if i % 3 == 1
+
+_seg_ok(p, i) if {
+	i % 3 == 2
+	p[i] == "module"
+}
+
+_is_module_node_path(p) if {
+	count(p) % 3 == 0
+	every i, _ in p {
+		_seg_ok(p, i)
+	}
+}
+
+# `object.get`, not a bare reference: a document with no `configuration` at all
+# must leave this set EMPTY (which the fail-closed denies below report out
+# loud) rather than make every rule downstream of it undefined, and an
+# undefined `deny` rule does not deny.
+config_modules contains [p, m] if {
+	walk(object.get(input, ["configuration", "root_module"], {}), [p, m])
+	_is_module_node_path(p)
+	is_object(m)
+}
+
+# The address prefix a resource configured at module node path `p` carries in
+# `planned_values` after the hoist: "" at the root, "module.<call>." per level.
+# Instance keys are NOT reconstructed: a call with count/for_each plans as
+# `module.<call>[k].…`, which no prefix built from the configuration can name,
+# so such a resource fails to match its planned twin and is not selected --
+# the fail-closed direction.
+module_prefix(p) := concat("", [sprintf("module.%s.", [n]) |
+	some i, n in p
+	i % 3 == 1
+])
+
+_module_node(p) := object.get(input, array.concat(["configuration", "root_module"], p), {})
+
+# The `module_calls.<call>` node that instantiated module node path `p`: the
+# same path with its trailing "module" segment dropped.
+_calling_node(p) := object.get(input, array.concat(
+	["configuration", "root_module"],
+	array.slice(p, 0, count(p) - 1),
+), {})
+
+# The prefix the CALLER of module node path `p` carries.
+_parent_prefix(p) := module_prefix(array.slice(p, 0, count(p) - 3))
+
+# ROOT-domain prefix -> the module node path it reaches. Built from
+# `config_modules` so a nested call is keyed by its full
+# `module.a.module.b.` prefix, which is exactly how a reference to it is
+# spelled once qualified.
+_calls contains [pfx, p] if {
+	some [p, _] in config_modules
+	count(p) > 0
+	pfx := module_prefix(p)
+}
+
+# --- reference plumbing ---------------------------------------------------
+#
+# Terraform emits every PREFIX of a traversal beside the traversal itself
+# (`module.media.s3_bucket_arn` reads as `["module.media.s3_bucket_arn",
+# "module.media"]`). Prefixes are dropped on a SEGMENT BOUNDARY -- `.` or `[`
+# -- never by bare string prefix: `local.ab` is not a prefix of `local.abc`
+# though "local.ab" is a string prefix of it, and collapsing the two is the
+# defect the shared library's own `_deepest` header records.
+_extends(long, short) if startswith(long, concat("", [short, "."]))
+
+_extends(long, short) if startswith(long, concat("", [short, "["]))
+
+_some_extends(refs, r) if {
+	some q in refs
+	_extends(q, r)
+}
+
+_deepest(refs) := {r |
+	some r in refs
+	is_string(r)
+	not _some_extends(refs, r)
+}
+
+_symbol_prefixes := {"var.", "each.", "local.", "count.", "self.", "path.", "terraform."}
+
+_is_symbol(ref) if {
+	some pfx in _symbol_prefixes
+	startswith(ref, pfx)
+}
+
+_expr_refs_at(node, attr) := object.get(object.get(node, attr, {}), "references", [])
+
+_call_arg_refs(p, name) := _expr_refs_at(object.get(_calling_node(p), "expressions", {}), name)
+
+# EVERY reference in EVERY argument of the calling node, in one set. This is
+# the only resolution available for the two things a module body cannot
+# express: a `local.`, which plan JSON has no representation of at all, and an
+# `each.value` whose `for_each` collection the document does not expand. It
+# resolves the fact to the CALL rather than to one of its arguments, so the
+# strictness loss is bounded by the call -- which is why every caller of it
+# quantifies with `every` rather than `some` and records the bound in
+# `not_verifiable`.
+_call_all_refs(p) := {ref |
+	some _, e in object.get(_calling_node(p), "expressions", {})
+	some ref in object.get(e, "references", [])
+}
+
+# The module inputs a `for_each`-expanded resource iterates: `each.value.x`
+# names one element of that collection, so the argument the caller passed for
+# it is what decides the fact.
+_for_each_vars(r) := {name |
+	some ref in object.get(r, ["for_each_expression", "references"], [])
+	startswith(ref, "var.")
+	name := split(trim_prefix(ref, "var."), ".")[0]
+}
+
+# `attr`'s references on expression container `node`, spelled in the ROOT's
+# address domain. `r` is the owning resource (it carries the module node path
+# and the `for_each` expression); `node` is `r.expressions` for a top-level
+# argument and one nested block entry for a block argument.
+#
+# ONE var/each/local hop, not a fixpoint. A chain of module inputs passed call
+# to call is what the normaliser's own `module_input_chain` mark records, and
+# following it here would duplicate that walk in a second language; the mark is
+# the signal a rule gates on instead.
+_qrefs(r, node, attr) := direct | via_var | via_each | via_local if {
+	p := object.get(r, "x_path", [])
+	refs := _deepest(_expr_refs_at(node, attr))
+	direct := {concat("", [module_prefix(p), ref]) |
+		some ref in refs
+		not _is_symbol(ref)
+	}
+	via_var := {concat("", [_parent_prefix(p), a]) |
+		some ref in refs
+		startswith(ref, "var.")
+		some a in _deepest(_call_arg_refs(p, split(trim_prefix(ref, "var."), ".")[0]))
+	}
+	via_each := {concat("", [_parent_prefix(p), a]) |
+		some ref in refs
+		startswith(ref, "each.")
+		some name in _for_each_vars(r)
+		some a in _deepest(_call_arg_refs(p, name))
+	}
+	via_local := {concat("", [_parent_prefix(p), a]) |
+		count(p) > 0
+		some ref in refs
+		startswith(ref, "local.")
+		some a in _deepest(_call_all_refs(p))
+	}
+}
+
+# ONE module-output dereference hop: `<prefix>module.<c>.<out>` becomes
+# whatever that module's own `outputs.<out>` expression references, qualified
+# with the module's prefix. A reference that names no output of any call comes
+# back unchanged, so this is total.
+_deref_out(ref) := {concat("", [pfx, a]) |
+	some [pfx, p] in _calls
+	startswith(ref, pfx)
+	some a in _deepest(object.get(_module_node(p), ["outputs", trim_prefix(ref, pfx), "expression", "references"], []))
+}
+
+_step(refs) := kept | derefed if {
+	kept := {r |
+		some r in refs
+		count(_deref_out(r)) == 0
+	}
+	derefed := {a |
+		some r in refs
+		some a in _deref_out(r)
+	}
+}
+
+# THREE HOPS, not a fixpoint: Rego has no loop, and three levels of module
+# nesting is more than any vendored module in this arm has
+# (arms/hcl-modules/environment/modules). A deeper chain leaves a
+# `module.<c>.<out>` reference standing, which names no planned resource and
+# is therefore REFUSED by the arity gate below -- loud, never a silent pass.
+_resolve_outs(refs) := _step(_step(_step(refs)))
+
+# --- the ONE instance-identity domain: terraform's own plan ADDRESS -------
+#
+# `hcl.instance_of` returns a segment ARRAY and `hcl.instance_addr` renders it
+# as the plan address; the plan side has that address already. Both halves are
+# carried as the ADDRESS STRING from here on, so the two readers below compare
+# in one domain and a module-qualified instance needs no second spelling.
+#
+# WHICH RESOURCE a qualified reference names is answered by matching it against
+# the plan's OWN addresses rather than by tokenizing it. That is exact and
+# needs no tokenizer: every hoisted resource carries its full
+# `module.<call>.<type>.<name>[key]` address, including the numeric `[0]` index
+# that `hcl.parse_traversal` deliberately refuses -- and `count = var.create ?
+# 1 : 0` is how every vendored module in this arm declares its resources, so
+# refusing that spelling would refuse the whole arm.
+_slot_candidates(refs) := attributed | bare if {
+	attributed := {[q.address, q.type, trim_prefix(ref, concat("", [q.address, "."])), ref] |
+		some ref in refs
+		some q in planned_resources
+		startswith(ref, concat("", [q.address, "."]))
+	}
+	bare := {[q.address, q.type, "", ref] |
+		some ref in refs
+		some q in planned_resources
+		ref == q.address
+	}
+}
+
+_attr_segs(a) := [] if {
+	a == ""
+} else := split(a, ".")
+
+_pv_resolved(c) := {
+	"kind": "resolved",
+	"symbol": c[3],
+	"referent": c[3],
+	"referent_path": array.concat([c[1]], _attr_segs(c[2])),
+	"instance": c[0],
+	"attr_path": _attr_segs(c[2]),
+}
+
+# The plan-only slot reader. Same verdict SHAPE as `hcl.slot`, so
+# `slot_names_arn_of` and `slot_reason` are the single acceptance for both
+# readers and neither can drift into a looser test than the other. TOTAL by
+# `else` chain, and the arity gate is `== 1` here exactly as it is there.
+_plan_slot(r, node, attr) := v if {
+	count(_deepest(_expr_refs_at(node, attr))) == 0
+	v := {
+		"kind": "unresolvable",
+		"symbol": "<empty>",
+		"reason": "the slot carries no resource reference at all -- an omitted argument, an inline literal ARN and a wildcard ARN string all read exactly this way",
+	}
+} else := v if {
+	cands := _slot_candidates(_resolve_outs(_qrefs(r, node, attr)))
+	count(cands) > 1
+	v := {
+		"kind": "ambiguous",
+		"symbol": concat(", ", sort([c[3] | some c in cands])),
+		"reason": sprintf("the slot resolves, through this module call's own arguments, to %d independent referents (%v) and nothing in the plan selects one of them", [count(cands), sort([c[3] | some c in cands])]),
+		"candidates": sort([c[3] | some c in cands]),
+	}
+} else := _pv_resolved(c) if {
+	cands := _slot_candidates(_resolve_outs(_qrefs(r, node, attr)))
+	count(cands) == 1
+	some c in cands
+} else := {
+	"kind": "unresolvable",
+	"symbol": concat(", ", sort(_qrefs(r, node, attr))),
+	"reason": sprintf("the slot's reference list %v resolves, through this module call's own arguments and outputs, to NO resource this plan creates. A module INPUT is read from the calling node's `expressions`, a module OUTPUT from that module's own `outputs` -- a `local.` inside an installed module body, or a `dynamic` block, has no representation in plan JSON at all and is refused here rather than guessed at", [sort(_qrefs(r, node, attr))]),
+}
+
+# --- WHICH reader grades a slot ------------------------------------------
+#
+# The shared library's resolver is used exactly where it can decide: the ROOT
+# module of a plan whose slot names no module. Everywhere else the plan-only
+# reader is, and it is the only reader on hcl_modules. Delegation is verbatim
+# -- the raw `.references` list, unfiltered -- so hcl_raw and terraconstructs
+# behaviour is unchanged.
+xslotn(r, node, attr) := hcl.slot(_expr_refs_at(node, attr)) if {
+	count(object.get(r, "x_path", [])) == 0
+	not _names_a_module(node, attr)
+} else := _plan_slot(r, node, attr)
+
+_names_a_module(node, attr) if {
+	some ref in _expr_refs_at(node, attr)
+	startswith(ref, "module.")
+}
+
+xslot(r, attr) := xslotn(r, object.get(r, "expressions", {}), attr)
+
+# --- the two facts the plan simply does not carry ------------------------
+
+# A block written `dynamic` is absent from the configuration representation
+# entirely, which the normaliser records rather than guesses at. The vendored
+# `s3-bucket//modules/notification` writes BOTH its `lambda_function` and its
+# `topic` targets that way.
+_not_represented(r, attr) if {
+	some u in object.get(r, "x_unresolved", [])
+	u.attribute == attr
+	u.reason == "expression_not_represented"
+}
+
+# A `local.` read by a resource inside an installed module body. The normaliser
+# classifies it at depth > 0 only, so this is never true of a root resource --
+# where `local.` is the shared library's own job.
+_module_local(r, attr) := sym if {
+	some u in object.get(r, "x_unresolved", [])
+	u.attribute == attr
+	u.reason == "local_symbol"
+	sym := u.reference
+}
+
+# Every instance of `rtype` whose `attr` any argument of the call that
+# instantiated this resource's module names. The recourse of last resort, and
+# the reason every caller quantifies it with `every`: the strictness bound is
+# the CALL, not the argument.
+_call_instances(r, rtype, attr) := {c[0] |
+	count(object.get(r, "x_path", [])) > 0
+	some c in _slot_candidates(_resolve_outs({concat("", [_parent_prefix(object.get(r, "x_path", [])), a]) |
+		some a in _deepest(_call_all_refs(object.get(r, "x_path", [])))
+	}))
+	c[1] == rtype
+	c[2] == attr
+}
+
+# TOTAL, and the totality is load-bearing rather than tidy. A BARE
+# `input.configuration.root_module.resources` made EVERY rule downstream of it
+# undefined whenever that key was absent or held a non-list, and an undefined
+# `deny` rule does not deny -- executed, `deny` came back length 0, i.e. the
+# whole tier-1 policy failed OPEN. The `is_array` guard is not
+# belt-and-braces: `count("nope")` is 4, so a string value would have satisfied
+# the "empty but the plan has resources" deny's own guard too. Anything that is
+# not a list contributes nothing, which that deny then reports out loud.
+#
+# EVERY module body, not just the root. `config_modules` is `[[], root_module]`
+# for a plan with no module in it, so hcl_raw and terraconstructs get exactly
+# the list they got before -- and on hcl_modules the resources carrying every
+# graded attribute, which live under
+# `configuration.root_module.module_calls.<call>.module.resources`, become
+# visible instead of reading as an empty set.
+#
+# Each entry is ANNOTATED rather than paired with its path, so every rule below
+# keeps reading `r.address` / `r.type` / `r.expressions` unchanged:
+#   address           REWRITTEN to the module-qualified address, so a deny
+#                     message names `module.notif.aws_s3_bucket_notification.this`
+#                     rather than a bare local address two modules could share.
+#                     Identical to the old value at the root (prefix "").
+#   x_path            the module node path, which `_qrefs` needs.
+#   x_local_address   the address the CONFIGURATION spells, kept because
+#                     references inside a module body are module-local.
+#
+# A configuration node INSIDE A MODULE BODY that governs NO planned instance is
+# dropped. Every vendored module in this arm declares its resources
+# `count = var.create ? 1 : 0` (and its policies `for_each = {}`-able), so a
+# module body lists dozens of resources the call switched OFF -- and grading
+# one is a deny about a resource the plan does not create. Measured: the sns
+# module's own `aws_sns_topic_policy.this` is present in the configuration with
+# `count = 0` under `create_topic_policy = false`, and grading its (absent)
+# document denied a correct solution. Restricted to module bodies so that a
+# plan with no module in it is untouched.
+configured_resources := [object.union(r, {
+	"address": concat("", [module_prefix(p), object.get(r, "address", "")]),
+	"x_path": p,
+	"x_local_address": object.get(r, "address", ""),
+}) |
+	some [p, m] in config_modules
+	raw := object.get(m, "resources", [])
+	is_array(raw)
+	some r in raw
+	is_object(r)
+	_node_is_planned(p, object.get(r, "address", ""))
+]
+
+_node_is_planned(p, local_addr) if count(p) == 0
+
+_node_is_planned(p, local_addr) if {
+	some q in planned_resources
+	_governs(concat("", [module_prefix(p), local_addr]), q.address)
+}
+
+# --- A MODULE ON THE hcl_raw ARM IS REFUSED BY NAME ----------------------
+#
+# THE DENY IS ARM-SCOPED, and it is scoped by the one fact in `input` that
+# distinguishes the arms without naming them: `input._hcl`. It is present iff
+# the generated verifier ran the `hcl2json` merge, which is the hcl_raw arm and
+# only the hcl_raw arm (specs/SCHEMA.md §4.6, "the MERGE is hcl_raw only").
+# That arm's own premise is hand-written, module-free Terraform -- its
+# instruction says so, and its `local.` resolution reads the agent's own `*.tf`
+# and NOT any installed module body, so a resource hidden in a module really is
+# ungraded there. On hcl_modules `_hcl` is absent, this rule cannot fire, and
+# the module walk grades the module bodies for real.
+#
+# `_child_modules_present` had a SECOND definition reading
+# `planned_values.root_module.child_modules`. It was DEAD: the plan normaliser
+# HOISTS every module resource into `planned_values.root_module.resources` and
+# DELETES `child_modules` before any tier sees the document
+# (generator/verify_py.py::normalise_plan), so that key is never present at
+# evaluation time. Deleted rather than left beside the live one -- a
+# fail-closed floor that cannot fire is not defence in depth, it is a reader
+# believing there are two.
 _child_modules_present if {
 	some _ in object.get(input, ["configuration", "root_module", "module_calls"], {})
 }
 
 deny contains msg if {
+	hcl.hcl_supplied
 	_child_modules_present
 	msg := sprintf(
-		"this configuration declares resources inside `module` block(s) (%v), and this oracle reads the ROOT module only -- so the wiring inside them is not graded at all. That is refused rather than passed: an ungraded resource is indistinguishable from a correct one. Declare the bucket, the notification, the lambda permission and the topic policy in the root module. (The same boundary is why the symbol resolver refuses `module.x.out` by name; see tests/hcl_traversal.rego.)",
+		"this configuration declares resources inside `module` block(s) (%v), and this arm's oracle resolves symbols out of the agent's OWN `.tf` files, which no installed module body is part of -- so the wiring inside them is not graded at all. That is refused rather than passed: an ungraded resource is indistinguishable from a correct one. Declare the bucket, the notification, the lambda permission and the topic policy in the root module. (The same boundary is why the symbol resolver refuses `module.x.out` by name; see tests/hcl_traversal.rego. The hcl_modules arm is graded from the plan alone and is not subject to this rule.)",
 		[sort([name | some name, _ in object.get(input, ["configuration", "root_module", "module_calls"], {})])],
 	)
 }
@@ -407,11 +791,25 @@ sns_topics := [r |
 # `eval_conflict_error`, which aborts evaluation and scores a correct
 # solution 0.0 with no message at all. A set cannot conflict -- it just
 # holds the pair once.
-s3_invoke_principal_keys := {[r.type, r.name] |
+# The key carries the MODULE PREFIX as well. Two module calls can hold a
+# permission at the same `[type, name]` -- every vendored module names
+# its resources `this`/`allow` -- so a two-element key would join a
+# configuration node in one module to a planned instance in another and grade
+# the wrong `source_arn`. The prefix is `""` at the root, so a module-free plan
+# keys exactly as it did.
+s3_invoke_principal_keys := {[_planned_prefix(r), r.type, r.name] |
 	some r in planned_resources
 	r.type == "aws_lambda_permission"
 	object.get(r, ["values", "principal"], null) == "s3.amazonaws.com"
 }
+
+# The address prefix a HOISTED resource carries, as `module_prefix` spells it
+# for the configuration side. `x_module_path` holds the call chain WITH instance
+# keys (`module.fe["a"]`), which is why a `count`/`for_each` module call never
+# matches a prefix built from the configuration -- the fail-closed direction.
+_planned_prefix(r) := concat("", [sprintf("%s.", [segment]) |
+	some segment in object.get(r, "x_module_path", [])
+])
 
 permission_configs := [r |
 	some r in configured_resources
@@ -420,14 +818,8 @@ permission_configs := [r |
 
 s3_invoke_permissions := [r |
 	some r in permission_configs
-	[r.type, r.name] in s3_invoke_principal_keys
+	[module_prefix(r.x_path), r.type, r.name] in s3_invoke_principal_keys
 ]
-
-# ROUND-8 ARM-PARITY FIX (2026-08-23) -- `object.get` with an ARRAY path +
-# default, so a permission that sets no `source_arn` argument at all
-# resolves to `[]` here instead of leaving this function (and, before this
-# change, potentially the deny message that quotes it) undefined.
-source_arn_references(rp) := object.get(rp, ["expressions", "source_arn", "references"], [])
 
 # --- Reference-shape helpers, shared by both halves ------------------------
 #
@@ -1062,10 +1454,10 @@ notification_resource_configs := [r |
 notification_bucket_anchor contains [addr, inst] if {
 	some r in notification_resource_configs
 	addr := r.address
-	v := hcl.slot(object.get(r, ["expressions", "bucket", "references"], []))
+	v := xslot(r, "bucket")
 	v.kind == "resolved"
 	v.referent_path[0] == "aws_s3_bucket"
-	inst := v.instance
+	inst := _vinst(v)
 }
 
 # ROUTE 2 -- POSITIVELY ESTABLISHED FROM THE PLAN, not a widening. The
@@ -1091,37 +1483,43 @@ notification_bucket_anchor contains [addr, inst] if {
 	some inst in matches
 }
 
+# ONE INSTANCE-IDENTITY DOMAIN: terraform's own plan ADDRESS, as a string.
+# `hcl.slot` hands back the segment ARRAY `hcl.instance_of` builds and
+# `hcl.instance_addr` renders it as exactly that address; the plan side and the
+# module reader carry the address already. Rendering once, here, is what lets a
+# module-qualified instance (`module.media.aws_s3_bucket.this[0]`) be compared
+# against a root one with no second spelling anywhere.
+_vinst(v) := hcl.instance_addr(v.instance) if {
+	is_array(v.instance)
+} else := v.instance
+
+# `addr` is a CONFIGURATION address and a planned address carries the
+# instance key, so the join is "this configuration node governs that planned
+# instance" rather than string equality -- which is also what makes the module
+# arm's `module.notif.aws_s3_bucket_notification.this[0]` reachable from its
+# configuration node `module.notif.aws_s3_bucket_notification.this`.
+_governs(addr, planned_addr) if planned_addr == addr
+
+_governs(addr, planned_addr) if startswith(planned_addr, concat("", [addr, "["]))
+
 planned_bucket_argument(addr) := n if {
 	some p in planned_resources
-	p.address == addr
+	_governs(addr, p.address)
 	n := object.get(p, ["values", "bucket"], null)
 	is_string(n)
 }
 
-# ROUND 15: an instance identity, INCLUDING the `for_each`/`count` key, so
-# route 2 keys on exactly what `hcl.instance_of` now produces for route 1.
-# `terraform show -json` puts that key in `.index` on each planned instance
-# (verified: `{"address":"aws_s3_bucket.b[\"...-decoy\"]", "name":"b",
-# "index":"...-decoy"}`), so the two routes agree per INSTANCE rather than
-# per resource BLOCK. Keying on `[type, name]` alone -- what this returned
-# before -- collapsed every key of one `for_each` block into one anchor and
-# was half of the executed reward-1.0 wrong-instance pass.
-buckets_planned_named(name) := {inst |
+# An instance identity INCLUDING the `for_each`/`count` key, because keying on
+# type+label alone collapsed every key of one `for_each` block into one anchor
+# and was half of an executed reward-1.0 wrong-instance pass. `p.address` IS
+# that identity: terraform writes the key into it
+# (`aws_s3_bucket.b["...-decoy"]`), and it is the one domain `_vinst` renders
+# the resolver's own verdicts into.
+buckets_planned_named(name) := {p.address |
 	some p in planned_resources
 	p.type == "aws_s3_bucket"
 	object.get(p, ["values", "bucket"], null) == name
-	inst := _planned_instance(p)
 }
-
-# The plan-side twin of `hcl.instance_of`: `["aws_s3_bucket","b","media"]`
-# for a `for_each` instance, `["aws_s3_bucket","media"]` for a plain one.
-# A NUMERIC `count` index is a number in the plan and is stringified here so
-# it can never silently equal a string key of the same digits.
-_planned_instance(p) := [p.type, p.name, p.index] if {
-	is_string(p.index)
-} else := [p.type, p.name, sprintf("%v", [p.index])] if {
-	p.index
-} else := [p.type, p.name]
 
 notification_bucket_instances := {inst |
 	some [_, inst] in notification_bucket_anchor
@@ -1150,10 +1548,26 @@ notification_topic_anchor contains [addr, i, inst] if {
 	some r in notification_resource_configs
 	addr := r.address
 	some i, t in object.get(r, ["expressions", "topic"], [])
-	v := hcl.slot(object.get(t, ["topic_arn", "references"], []))
+	v := xslotn(r, t, "topic_arn")
 	v.kind == "resolved"
 	v.referent_path[0] == "aws_sns_topic"
-	inst := v.instance
+	inst := _vinst(v)
+}
+
+# A `dynamic "topic"` block -- how the vendored
+# `s3-bucket//modules/notification` writes its targets -- is ABSENT from the
+# configuration representation entirely, so the clause above sees no block at
+# all. The normaliser's `expression_not_represented` mark is its only trace,
+# and the topics the block wires are then nameable only from the arguments of
+# the call that instantiated the module. Block index `-1`: there is no block to
+# index, and saying so is what keeps `_topic_block_resolves` from claiming a
+# block resolved that this reader never saw. The PER-BLOCK granularity that is
+# lost here is recorded in `not_verifiable`, never passed over.
+notification_topic_anchor contains [addr, -1, inst] if {
+	some r in notification_resource_configs
+	_not_represented(r, "topic")
+	addr := r.address
+	some inst in _call_instances(r, "aws_sns_topic", "arn")
 }
 
 notification_topic_instances := {inst |
@@ -1192,10 +1606,10 @@ deny contains msg if {
 	some r in notification_resource_configs
 	some i, t in object.get(r, ["expressions", "topic"], [])
 	not _topic_block_resolves(r.address, i)
-	refs := object.get(t, ["topic_arn", "references"], [])
+	refs := _expr_refs_at(t, "topic_arn")
 	msg := sprintf(
 		"%s: its `topic` block #%d does not name an aws_sns_topic this configuration creates, so WHICH topic that block wires -- and therefore which topic must carry an sns:Publish policy -- cannot be established. Its `topic_arn` reference list %v reads as: %s. A topic ARN is provider-computed and therefore plan-time-unknown, so unlike the `bucket` argument there is no planned value to identify a topic by: write `topic_arn = aws_sns_topic.<name>.arn`, or a `local.` symbol this resolver can follow to it.",
-		[r.address, i, refs, _slot_label(hcl.slot(refs))],
+		[r.address, i, refs, _slot_label(xslotn(r, t, "topic_arn"))],
 	)
 }
 
@@ -1223,7 +1637,7 @@ deny contains msg if {
 		[
 			r.address,
 			object.get(r, ["expressions", "bucket", "references"], []),
-			_slot_label(hcl.slot(object.get(r, ["expressions", "bucket", "references"], []))),
+			_slot_label(xslot(r, "bucket")),
 			_planned_bucket_argument_label(r.address),
 			count(_planned_bucket_matches(r.address)),
 			count([b | some b in planned_resources; b.type == "aws_s3_bucket"]),
@@ -1247,8 +1661,8 @@ deny contains msg if {
 
 _topic_arn_slot_labels(r) := sort([label |
 	some t in object.get(r, ["expressions", "topic"], [])
-	refs := object.get(t, ["topic_arn", "references"], [])
-	v := hcl.slot(refs)
+	refs := _expr_refs_at(t, "topic_arn")
+	v := xslotn(r, t, "topic_arn")
 	label := sprintf("%v -> %s", [refs, _slot_label(v)])
 ])
 
@@ -1279,7 +1693,7 @@ slot_names_arn_of(v, type_prefix, anchors) if {
 	v.kind == "resolved"
 	v.referent_path[0] == type_prefix
 	v.attr_path == ["arn"]
-	v.instance in anchors
+	_vinst(v) in anchors
 }
 
 # --- the reason, TOTAL by `else` chain -----------------------------------
@@ -1309,11 +1723,11 @@ slot_reason(v, type_prefix, anchors) := r if {
 } else := r if {
 	v.kind == "resolved"
 	count(v.attr_path) == 0
-	r := sprintf("it resolves to `%s`, which names the `%s` instance `%s` but no attribute of it -- an ARN slot needs `.arn`", [v.referent, type_prefix, hcl.instance_addr(v.instance)])
+	r := sprintf("it resolves to `%s`, which names the `%s` instance `%s` but no attribute of it -- an ARN slot needs `.arn`", [v.referent, type_prefix, _vinst(v)])
 } else := r if {
 	v.kind == "resolved"
 	v.attr_path != ["arn"]
-	r := sprintf("it resolves to `%s` -- the `%s` attribute of `%s`, not its `arn`", [v.referent, concat(".", v.attr_path), hcl.instance_addr(v.instance)])
+	r := sprintf("it resolves to `%s` -- the `%s` attribute of `%s`, not its `arn`", [v.referent, concat(".", v.attr_path), _vinst(v)])
 } else := r if {
 	# ROUND 15: split on `count(anchors) > 0` / `== 0`, NOT on `== 1` /
 	# `!= 1`. Round 14 wrote the second clause for `!= 1` and said "there is
@@ -1328,7 +1742,7 @@ slot_reason(v, type_prefix, anchors) := r if {
 	# case it fires on.
 	v.kind == "resolved"
 	count(anchors) > 0
-	r := sprintf("it resolves to `%s`, i.e. the `arn` of `%s`, which is not among the %d `%s` instance(s) this configuration's own aws_s3_bucket_notification resources wire (%v) -- so this argument names a resource that is not on the notification path at all", [v.referent, hcl.instance_addr(v.instance), count(anchors), type_prefix, sort([hcl.instance_addr(a) | some a in anchors])])
+	r := sprintf("it resolves to `%s`, i.e. the `arn` of `%s`, which is not among the %d `%s` instance(s) this configuration's own aws_s3_bucket_notification resources wire (%v) -- so this argument names a resource that is not on the notification path at all", [v.referent, _vinst(v), count(anchors), type_prefix, sort([a | some a in anchors])])
 } else := r if {
 	# ROUND 14: this used to be the type-only ACCEPT clause of
 	# `slot_names_arn_of` (an executed silent PASS, see the ROUND 14 block
@@ -1342,7 +1756,7 @@ slot_reason(v, type_prefix, anchors) := r if {
 
 # --- slot 1: aws_lambda_permission.source_arn ----------------------------
 
-source_arn_verdict(rp) := hcl.slot(source_arn_references(rp))
+source_arn_verdict(rp) := xslot(rp, "source_arn")
 
 references_bucket(rp) if {
 	slot_names_arn_of(source_arn_verdict(rp), "aws_s3_bucket", notification_bucket_instances)
@@ -1392,6 +1806,12 @@ _planned_instance_keys(rtype, rname) := {k |
 	k := sprintf("%v", [p.index])
 }
 
+# `source_arn_references` and `arn_references` are DELETED, not left beside
+# `xslot`. Both returned the RAW `.references` list of a slot, which is the
+# reading that is wrong on hcl_modules (a module resource's own reference names
+# `var.x`/`each.value.y`/`local.z`, never the root's resource), and a helper
+# that still offers it is an invitation to grade a module slot with it.
+
 each_value_arn_instances(rp) := insts if {
 	v := source_arn_verdict(rp)
 	v.kind == "unresolvable"
@@ -1400,11 +1820,32 @@ each_value_arn_instances(rp) := insts if {
 	segs := hcl.parse_traversal(ref)
 	keys := _planned_instance_keys(rp.type, rp.name)
 	count(keys) > 0
-	insts := {[segs[0], segs[1], k] | some k in keys}
+	insts := {b.address |
+		some b in planned_resources
+		b.type == segs[0]
+		b.name == segs[1]
+		sprintf("%v", [b.index]) in keys
+	}
 }
 
 references_bucket(rp) if {
 	insts := each_value_arn_instances(rp)
+	count(insts - notification_bucket_instances) == 0
+}
+
+# `source_arn = local.bucket_arn` inside an INSTALLED module body -- how the
+# vendored `s3-bucket//modules/notification` writes its own permission, from
+# inputs it exposes no `source_arn` override for. plan JSON carries no `locals`
+# for a module body at all, so the slot itself cannot be read; the recourse is
+# one scope up, with the same `every` quantifier the topic policy's condition
+# position uses. A call handed a non-wired bucket ARN is still DENIED, which is
+# what keeps lambda-permission-not-scoped-to-bucket falsifiable through this
+# shape; the strictness lost (which ARGUMENT the local reads) is recorded in
+# `not_verifiable`.
+references_bucket(rp) if {
+	_module_local(rp, "source_arn")
+	insts := _call_instances(rp, "aws_s3_bucket", "arn")
+	count(insts) > 0
 	count(insts - notification_bucket_instances) == 0
 }
 
@@ -1415,7 +1856,7 @@ _source_arn_label(rp) := l if {
 	insts := each_value_arn_instances(rp)
 	l := sprintf("each.value.arn over `for_each = %s` -> %v", [
 		hcl.for_each_referent(rp.type, rp.name),
-		sort([hcl.instance_addr(i) | some i in insts]),
+		sort([i | some i in insts]),
 	])
 } else := _slot_label(source_arn_verdict(rp))
 
@@ -1431,10 +1872,10 @@ _source_arn_reason(rp) := r if {
 	count(bad) > 0
 	r := sprintf("its `source_arn` is `each.value.arn`, and this block's `for_each = %s` expands it to %v -- of which %v are NOT among the %d bucket instance(s) this configuration's own aws_s3_bucket_notification resources wire (%v). A `for_each` permission grants EVERY instance it expands to, so every one of them has to land on a wired bucket", [
 		hcl.for_each_referent(rp.type, rp.name),
-		sort([hcl.instance_addr(i) | some i in insts]),
-		sort([hcl.instance_addr(i) | some i in bad]),
+		sort([i | some i in insts]),
+		sort([i | some i in bad]),
 		count(notification_bucket_instances),
-		sort([hcl.instance_addr(a) | some a in notification_bucket_instances]),
+		sort([a | some a in notification_bucket_instances]),
 	])
 } else := slot_reason(source_arn_verdict(rp), "aws_s3_bucket", notification_bucket_instances)
 
@@ -1466,6 +1907,17 @@ _notification_wires_a_lambda(addr) if {
 	some _ in object.get(r, ["expressions", "lambda_function"], [])
 }
 
+# ... and from the PLANNED side, which is the only side that shows a
+# `dynamic "lambda_function"` block at all (the configuration representation
+# omits it entirely). Additive: a wiring visible on either side counts, so this
+# can only ever REQUIRE a permission that was not required before, never
+# release one.
+_notification_wires_a_lambda(addr) if {
+	some r in notification_planned
+	_governs(addr, r.address)
+	some _ in object.get(r, ["values", "lambda_function"], [])
+}
+
 notification_lambda_bucket_instances := {inst |
 	some [addr, inst] in notification_bucket_anchor
 	_notification_wires_a_lambda(addr)
@@ -1481,13 +1933,21 @@ _bucket_has_invoke_permission(inst) if {
 	inst in each_value_arn_instances(rp)
 }
 
+_bucket_has_invoke_permission(inst) if {
+	some rp in s3_invoke_permissions
+	_module_local(rp, "source_arn")
+	insts := _call_instances(rp, "aws_s3_bucket", "arn")
+	inst in insts
+	count(insts - notification_bucket_instances) == 0
+}
+
 deny contains msg if {
 	some inst in notification_lambda_bucket_instances
 	not _bucket_has_invoke_permission(inst)
 	msg := sprintf(
 		"%s: this configuration's own aws_s3_bucket_notification wires this bucket to a lambda_function target, but no aws_lambda_permission with principal s3.amazonaws.com in this plan is scoped to it -- S3 cannot invoke the function for this bucket. The s3.amazonaws.com-principal'd permissions in this plan resolve their `source_arn` to: %v.",
 		[
-			hcl.instance_addr(inst),
+			inst,
 			sort([sprintf("%s -> %s", [rp.address, _source_arn_label(rp)]) |
 				some rp in s3_invoke_permissions
 			]),
@@ -1563,7 +2023,28 @@ inline_policy_topics := [r |
 	some r in configured_resources
 	r.type == "aws_sns_topic"
 	r.expressions.policy
+	not _module_policy_from_default(r)
 ]
+
+# A MODULE that writes `policy = var.create_topic_policy ? null :
+# var.topic_policy` (the vendored `sns` module does, unconditionally) ALWAYS
+# carries a `policy` expression, so expression presence alone selects topics
+# that carry no inline policy at all -- and grading one DENIED a correct
+# solution whose topic policy is the notification submodule's own
+# `aws_sns_topic_policy` resource. `.planned_values` cannot tell the two apart:
+# it reports the value as plan-time-UNKNOWN in both spellings (measured).
+#
+# The normaliser can, and this is the only signal that does: it marks an
+# argument whose reference chain reaches an input the CALLER PASSED NOTHING FOR,
+# so the value comes from the module's own `variables.<x>.default` -- `null`
+# here -- which the plan does not carry. A caller that DOES pass a policy leaves
+# no such mark and is graded. Module bodies only: the mark is never produced for
+# a root resource.
+_module_policy_from_default(r) if {
+	some u in object.get(r, "x_unresolved", [])
+	u.attribute == "policy"
+	u.reason == "module_input_default"
+}
 
 # *** ROUND 17: `data_resources_by_addr` is DELETED, not left beside the
 # real thing. It indexed the PLAN's `data` resources so route 3 could read a
@@ -1581,8 +2062,6 @@ inline_policy_topics := [r |
 # `data "aws_iam_policy_document"` shape at its real path instead. What
 # survives is the two SLOT reference lists, which are genuine slots.
 policy_references(tp) := object.get(tp.expressions.policy, "references", [])
-
-arn_references(tp) := object.get(tp.expressions.arn, "references", [])
 
 # --- slot 2: aws_sns_topic_policy.arn (the ATTACHMENT slot) --------------
 #
@@ -1606,7 +2085,7 @@ arn_references(tp) := object.get(tp.expressions.arn, "references", [])
 # (`sns-topic-policy-hoisted-arn-with-a-direct-notification-topic-arn`
 # under solution/broken/ is its NEGATIVE twin; the positive is exercised by
 # the falsifiability gate through the reference solution's own spelling).
-topic_arn_verdict(tp) := hcl.slot(arn_references(tp))
+topic_arn_verdict(tp) := xslot(tp, "arn")
 
 # --- ROUND 16: WHICH policies this scenario is entitled to grade ---------
 #
@@ -1641,7 +2120,7 @@ _policy_topic_instance(tp) := inst if {
 	v.kind == "resolved"
 	v.referent_path[0] == "aws_sns_topic"
 	v.attr_path == ["arn"]
-	inst := v.instance
+	inst := _vinst(v)
 }
 
 graded_topic_policies := [tp |
@@ -1656,8 +2135,7 @@ graded_topic_policies := [tp |
 graded_inline_topics := [t |
 	some t in inline_policy_topics
 	some inst in notification_topic_instances
-	t.type == inst[0]
-	t.name == inst[1]
+	_governs(t.address, inst)
 ]
 
 # *** DELETED AT ROUND 16, not narrowed and not left beside its replacement:
@@ -1946,7 +2424,7 @@ _action_entries(v) := [a |
 #
 # An operator this reader cannot read at all (an interpolated key) is
 # excluded too: it could BE any of the three.
-_statement_source_arn_positions(st) := {[op, k, vals] |
+_statement_source_arn_positions(r, st) := {[op, k, vals, r] |
 	cond := _read(object.get(st, "Condition", {}))
 	is_object(cond)
 	some op, keys_raw in cond
@@ -2086,15 +2564,31 @@ _policy_document_data_blocks(r) := {[name, blk] |
 # Guarded by `not hcl.hcl_supplied` rather than by "the HCL route found
 # nothing", so an arm that DOES supply parsed source can never silently fall
 # back to the weaker reader by hiding its data block.
-_policy_document_plan_statements(r) := {[name, si, st] |
+_policy_document_plan_statements(r) := {[ds, si, st] |
 	not hcl.hcl_supplied
-	some name in _policy_document_data_names(r)
+	some addr in _policy_document_data_addrs(r)
 	some ds in configured_resources
 	ds.mode == "data"
 	ds.type == "aws_iam_policy_document"
-	ds.name == name
+	ds.address == addr
 	some si, st in object.get(ds, ["expressions", "statement"], [])
 	is_object(st)
+}
+
+# The `data "aws_iam_policy_document"` this resource's `policy` argument reads,
+# as a module-qualified ADDRESS rather than a bare name. On hcl_modules the
+# `policy` argument can be a module INPUT (`policy = var.topic_policy` inside
+# the sns module's own `aws_sns_topic`), so the document it names is only
+# reachable through the calling node -- which is what `_qrefs` resolves. At the
+# root the qualified reference IS the raw one, so this is the same set the bare
+# name produced.
+_policy_document_data_addrs(r) := {addr |
+	some ref in _qrefs(r, object.get(r, "expressions", {}), "policy")
+	parts := split(ref, ".")
+	some i, seg in parts
+	seg == "data"
+	parts[i + 1] == "aws_iam_policy_document"
+	addr := concat(".", array.slice(parts, 0, i + 3))
 }
 
 # The plan spells every leaf `{"constant_value": ...}` or
@@ -2144,7 +2638,7 @@ _plan_action_covers_publish(st) if object.get(st, "actions", null) == null
 # comes back as `[null, "arn:aws:s3:::*"]`, and the wildcard the
 # configuration hid is visible again. Verified against a real terraform
 # 1.15.8 plan; see `_plan_position_has_a_literal`. ***
-_plan_statement_source_arn_positions(st, name, si) := {[test, variable, vals] |
+_plan_statement_source_arn_positions(ds, st, addr, si) := {[test, variable, vals, ds] |
 	some ci, cond in _as_block_list(object.get(st, "condition", []))
 	is_object(cond)
 	test := _plan_leaf(object.get(cond, "test", {}))
@@ -2153,7 +2647,7 @@ _plan_statement_source_arn_positions(st, name, si) := {[test, variable, vals] |
 	variable := _plan_leaf(object.get(cond, "variable", {}))
 	is_string(variable)
 	_lower(variable) == "aws:sourcearn"
-	vals := _plan_position_value_slots(cond, name, si, ci)
+	vals := _plan_position_value_slots(cond, addr, si, ci)
 }
 
 # The reference list this position carries -- ONE slot, which `hcl.slot`
@@ -2161,12 +2655,12 @@ _plan_statement_source_arn_positions(st, name, si) := {[test, variable, vals] |
 # AMBIGUOUS and refused) -- UNLESS `.planned_values` shows the position also
 # holds a hardcoded literal, in which case the position is given an EMPTY
 # value list, which `_position_is_scoped` refuses outright.
-_plan_position_value_slots(cond, name, si, ci) := [] if {
-	_plan_position_has_a_literal(name, si, ci)
+_plan_position_value_slots(cond, addr, si, ci) := [] if {
+	_plan_position_has_a_literal(addr, si, ci)
 } else := [object.get(cond, ["values", "references"], [])]
 
-_plan_position_has_a_literal(name, si, ci) if {
-	some v in _plan_planned_condition_values(name, si, ci)
+_plan_position_has_a_literal(addr, si, ci) if {
+	some v in _plan_planned_condition_values(addr, si, ci)
 	v != null
 }
 
@@ -2175,9 +2669,9 @@ _plan_position_has_a_literal(name, si, ci) if {
 # whole data source), there is no list to check and NOTHING is asserted here
 # -- the reference slot alone decides, exactly as it did before, and that
 # is the residual this arm still carries.
-_plan_planned_condition_values(name, si, ci) := vals if {
+_plan_planned_condition_values(addr, si, ci) := vals if {
 	some r in planned_resources
-	r.address == sprintf("data.aws_iam_policy_document.%s", [name])
+	_governs(addr, r.address)
 	vals := object.get(r, ["values", "statement", si, "condition", ci, "values"], null)
 	is_array(vals)
 }
@@ -2243,7 +2737,7 @@ _data_action_definitely_excludes_publish(st) if {
 
 # The same POSITION unit as the JSON shape: one (test, variable) pair
 # carrying its WHOLE `values` list, literals included.
-_data_statement_source_arn_positions(st) := {[test, variable, vals] |
+_data_statement_source_arn_positions(r, st) := {[test, variable, vals, r] |
 	some raw in _as_block_list(_read(object.get(st, "condition", [])))
 	cond := _read(raw)
 	is_object(cond)
@@ -2269,20 +2763,20 @@ granting_statements(r) := (structured | from_data) | from_plan if {
 		some st in _statements(d)
 		_grants_s3_publish(st)
 		label := sprintf("%s statement %v", [r.address, object.get(st, "Sid", "<no Sid>")])
-		positions := _statement_source_arn_positions(st)
+		positions := _statement_source_arn_positions(r, st)
 	}
 	from_data := {[label, positions] |
 		some [name, blk] in _policy_document_data_blocks(r)
 		some i, st in _data_statements(blk)
 		_data_statement_grants_s3_publish(st)
 		label := sprintf("%s -> data.aws_iam_policy_document.%s statement #%d", [r.address, name, i])
-		positions := _data_statement_source_arn_positions(st)
+		positions := _data_statement_source_arn_positions(r, st)
 	}
 	from_plan := {[label, positions] |
-		some [name, si, st] in _policy_document_plan_statements(r)
+		some [ds, si, st] in _policy_document_plan_statements(r)
 		_plan_statement_grants_s3_publish(st)
-		label := sprintf("%s -> data.aws_iam_policy_document.%s statement #%d (read from the plan, no parsed source on this arm)", [r.address, name, si])
-		positions := _plan_statement_source_arn_positions(st, name, si)
+		label := sprintf("%s -> %s statement #%d (read from the plan, no parsed source on this arm)", [r.address, ds.address, si])
+		positions := _plan_statement_source_arn_positions(ds, st, ds.address, si)
 	}
 }
 
@@ -2295,11 +2789,44 @@ granting_statements(r) := (structured | from_data) | from_plan if {
 # list of them) fails here rather than passing vacuously.
 # `slot_names_arn_of` is the SAME acceptance test both dedicated ARN slots
 # use -- there is no looser variant here.
+# ONE reader for a condition position's value slot, owner-aware. `pos[3]` is
+# the resource whose `policy`/`statement` argument the position was read out of,
+# and it is what a `var.`/`each.`/`local.` hop inside a module body has to be
+# resolved against -- the same `xslotn` every dedicated ARN slot goes through,
+# so there is no looser test here.
+_pos_slot(pos, refs) := xslotn(pos[3], {"v": {"references": refs}}, "v")
+
 _position_is_scoped(pos) if {
 	count(pos[2]) > 0
 	every refs in pos[2] {
-		slot_names_arn_of(hcl.slot(refs), "aws_s3_bucket", notification_bucket_instances)
+		slot_names_arn_of(_pos_slot(pos, refs), "aws_s3_bucket", notification_bucket_instances)
 	}
+}
+
+# ... and the `local.`-inside-an-installed-module-body case, which plan JSON has
+# no representation of at all: the vendored
+# `s3-bucket//modules/notification` scopes its own SNS policy from
+# `local.bucket_arn`, computed from the `bucket_arn`/`bucket` inputs the caller
+# passed, and the submodule exposes no override. The recourse is one scope up:
+# EVERY `aws_s3_bucket` ARN the call was handed must be a wired instance.
+# `every`, not `some` -- a call handed a NON-wired bucket ARN beside the wired
+# one is exactly the mis-scoping mistake, and `some` would launder it. The
+# strictness lost (which ARGUMENT of the call the local reads) is recorded in
+# `not_verifiable`, never passed over.
+_position_is_scoped(pos) if {
+	count(pos[2]) > 0
+	every refs in pos[2] {
+		_module_local_names_only_wired_buckets(pos[3], refs)
+	}
+}
+
+_module_local_names_only_wired_buckets(owner, refs) if {
+	some ref in refs
+	startswith(ref, "local.")
+	count(object.get(owner, "x_path", [])) > 0
+	insts := _call_instances(owner, "aws_s3_bucket", "arn")
+	count(insts) > 0
+	count(insts - notification_bucket_instances) == 0
 }
 
 # ONE statement is scoped iff SOME of its `aws:SourceArn` condition
@@ -2364,7 +2891,7 @@ _policy_document_unreadable(r) if {
 # beside the right bucket says so.
 _position_value_labels(pos) := ["<this condition position carries no readable value list at all, so no value of it can name a bucket>"] if {
 	count(pos[2]) == 0
-} else := [_slot_label(hcl.slot(refs)) | some refs in pos[2]]
+} else := [_slot_label(_pos_slot(pos, refs)) | some refs in pos[2]]
 
 _position_label(pos) := sprintf("%v %v = value(s) %v", [pos[0], pos[1], _position_value_labels(pos)])
 
@@ -2425,7 +2952,7 @@ deny contains msg if {
 		[
 			tp.address,
 			count(granting_statements(tp)),
-			sort([hcl.instance_addr(a) | some a in notification_bucket_instances]),
+			sort([a | some a in notification_bucket_instances]),
 			policy_document_report(tp),
 		],
 	)
@@ -2455,7 +2982,7 @@ topic_policy_instances := {inst |
 	v.kind == "resolved"
 	v.referent_path[0] == "aws_sns_topic"
 	v.attr_path == ["arn"]
-	inst := v.instance
+	inst := _vinst(v)
 }
 
 # An inline `policy` argument is set on the `aws_sns_topic` BLOCK, so it
@@ -2464,8 +2991,7 @@ topic_policy_instances := {inst |
 # `instance_of` fix removes.
 _inline_policy_covers(inst) if {
 	some t in inline_policy_topics
-	t.type == inst[0]
-	t.name == inst[1]
+	_governs(t.address, inst)
 }
 
 # The per-policy `arn` diagnostic the DELETED `references_this_topic` deny
@@ -2489,8 +3015,8 @@ deny contains msg if {
 	msg := sprintf(
 		"%s: this configuration's own aws_s3_bucket_notification wires this topic, but no aws_sns_topic_policy is attached to it and it carries no inline `policy` argument -- S3 cannot publish to a topic whose resource policy does not grant it sns:Publish, so this notification target is dead. The topics this configuration's notification resources wire are %v. What each aws_sns_topic_policy's own `arn` argument resolves to is: %v. The topics carrying an inline `policy` argument are %v.",
 		[
-			hcl.instance_addr(inst),
-			sort([hcl.instance_addr(a) | some a in notification_topic_instances]),
+			inst,
+			sort([a | some a in notification_topic_instances]),
 			_topic_policy_attachment_report,
 			sort([sprintf("%s.%s", [t.type, t.name]) | some t in inline_policy_topics]),
 		],
@@ -2540,7 +3066,7 @@ deny contains msg if {
 		[
 			t.address,
 			count(granting_statements(t)),
-			sort([hcl.instance_addr(a) | some a in notification_bucket_instances]),
+			sort([a | some a in notification_bucket_instances]),
 			policy_document_report(t),
 		],
 	)
@@ -2571,6 +3097,48 @@ deny contains msg if {
 # condition they described is now a DENY (see the two
 # `notification_resource_configs` rules above), which is gating, so there is
 # nothing left for them to record.
+
+# --- WHAT THE MODULE ARM CANNOT VERIFY, NAMED RATHER THAN PASSED OVER ----
+#
+# `not_verifiable` is informational by contract, so nothing below may carry a
+# fact a deny should have carried. Each entry records a STRICTNESS BOUND of a
+# reading that DID happen and IS gating: the set-level fact is graded, the
+# finer-grained one is not establishable from plan JSON, and the entry says
+# which is which. The two shapes are the two things a terraform plan does not
+# represent -- a `dynamic` block, and a `local.` inside an installed module
+# body (docs/design/terraform-console-resolver-spike.md; specs/SCHEMA.md §4.6).
+
+not_verifiable contains msg if {
+	some r in notification_resource_configs
+	_not_represented(r, "topic")
+	msg := sprintf(
+		"%s: its `topic` targets are written as a `dynamic` block, which the configuration representation omits entirely, so WHICH block wires which topic cannot be established from plan JSON. The topics were taken from the arguments of the call that instantiated this module instead (%v), so the SET is graded -- every wired topic must still carry an sns:Publish policy scoped to a wired bucket, and that is a gating deny -- and only the per-block granularity is lost.",
+		[r.address, sort([i | some i in _call_instances(r, "aws_sns_topic", "arn")])],
+	)
+}
+
+not_verifiable contains msg if {
+	some rp in s3_invoke_permissions
+	sym := _module_local(rp, "source_arn")
+	msg := sprintf(
+		"%s: its `source_arn` reads %s, a value local to an INSTALLED module body, and plan JSON carries no `locals` for a module at all. It was graded one scope up instead: EVERY aws_s3_bucket ARN the call that instantiated this module was handed (%v) has to be a bucket this configuration's own notification wires, which is a gating deny. What cannot be established is WHICH of that call's arguments the local reads.",
+		[rp.address, sym, sort([i | some i in _call_instances(rp, "aws_s3_bucket", "arn")])],
+	)
+}
+
+not_verifiable contains msg if {
+	some tp in graded_topic_policies
+	some [_, positions] in granting_statements(tp)
+	some pos in positions
+	some refs in pos[2]
+	some ref in refs
+	startswith(ref, "local.")
+	count(object.get(pos[3], "x_path", [])) > 0
+	msg := sprintf(
+		"%s: the aws:SourceArn condition of its policy document reads %s, a value local to an INSTALLED module body that plan JSON does not represent. It was graded one scope up: EVERY aws_s3_bucket ARN the call that instantiated %s was handed (%v) has to be a bucket this configuration's own notification wires, which is a gating deny. What cannot be established is WHICH of that call's arguments the local reads.",
+		[tp.address, ref, pos[3].address, sort([i | some i in _call_instances(pos[3], "aws_s3_bucket", "arn")])],
+	)
+}
 
 # --- Audit-topic events must cover an ordinary user-initiated delete
 # (ROUND 6, 2026-08-22 -- an adversarial verifier PROVEN, by execution,

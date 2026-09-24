@@ -326,11 +326,12 @@ arms:
   - `enabled: true` → `reason` cites the composition trap this scenario is
     chosen to measure on the modules rung, and the arm requires the same shape
     terraconstructs requires: an `instruction.per_arm.hcl_modules` entry.
-    Two further combinations are refused at load: `allow_internet: false` (§0.2
-    — the modules come from a sidecar on the compose network), and
-    `oracle.hcl_traversal: true` (§4.6 — the merge reads the agent's own `.tf`
-    files, and on this arm the graded resource is declared inside an installed
-    module body it never sees). A **brownfield** spec owes one thing more:
+    One further combination is refused at load: `allow_internet: false` (§0.2
+    — the modules come from a sidecar on the compose network).
+    `oracle.hcl_traversal: true` is **allowed** alongside this arm and is
+    arm-scoped: the flag says the `hcl_raw` arm merges HCL, and enabling
+    `hcl_modules` is permitted when the policy grades that arm from the
+    normalised plan alone (§4.6). A **brownfield** spec owes one thing more:
     `workspace_seed.entry_file.hcl_modules` and its `extra_files` sibling, the
     arm's own seed body, required iff the arm is enabled exactly like the other
     arms' (§2.7).
@@ -1358,7 +1359,7 @@ oracle:
   cfn_guard_hints: [<string>, ...]   # optional, default []
   awscdk_tier1_engine: rego          # optional, default rego — §4.5 (awscdk only)
   tier0_engine: jq | rego            # optional, default jq — §4.5.1 (every arm)
-  hcl_traversal: false | true        # optional, default false — §4.6 (hcl_raw only)
+  hcl_traversal: false | true        # optional, default false — §4.6 (the hcl_raw MERGE only)
 ```
 
 ### 4.1 `intent`
@@ -1890,12 +1891,12 @@ on a *correct* solution, in either direction:
 
 | | which arms | why |
 |---|---|---|
-| the **library** (`-d hcl_traversal.rego`) | **hcl_raw AND terraconstructs** | `oracles/rego/<id>/policy.rego` is ONE file that grades both TF-shaped arms. The moment it says `import data.cdktn_bench.hcl`, every arm loading it needs the file: without it `hcl.slot(...)` is UNDEFINED, the acceptance rule never matches, and the **reference solution is denied**. |
-| the **`_hcl` merge** (`hcl2json` over `*.tf`) | **hcl_raw only** | terraconstructs synthesizes `cdk.tf.json` and has no `.tf` files. Running the merge there globs nothing, writes an **empty** `_hcl`, and trips the policy's own "no `.tf` source was supplied" fail-closed deny — a second false fail from the opposite mistake. |
+| the **library** (`-d hcl_traversal.rego`) | **EVERY TF-shaped arm** (hcl_raw, terraconstructs, hcl_modules) | `oracles/rego/<id>/policy.rego` is ONE file that grades them all. The moment it says `import data.cdktn_bench.hcl`, every arm loading it needs the file: without it each `hcl.*` call is a compile-time `rego_type_error: undefined function` — not an undefined value — so `opa eval` ABORTS and the verifier reports **ENGINE_ERROR on a correct solution** (measured, opa 1.19.0). |
+| the **`_hcl` merge** (`hcl2json` over `*.tf`) | **hcl_raw only** | terraconstructs synthesizes `cdk.tf.json` and has no `.tf` files, and hcl_modules declares the graded resource inside an INSTALLED module body no glob over the agent's own `*.tf` reads. Running the merge on either writes an `_hcl` that answers nothing and trips the policy's own "no `.tf` source was supplied" fail-closed deny — a second false fail from the opposite mistake. |
 
-`generator/gen.py::hcl_input_mode` calls these `hcl_lib` and
-`hcl_merge`; the terraconstructs branch emits
-`build_hcl_lib_only_block()` (library path + `LIB_MISSING` check, no parse).
+`generator/gen.py::hcl_input_mode` calls these `"lib"` and `"merge"`; the
+terraconstructs and hcl_modules branches both return `"lib"` (library path +
+`LIB_MISSING` check, no parse).
 The parse itself is a generated `tests/hcl_merge.py` (`build_hcl_merge_py()`),
 invoked as `python3 "$DIR/hcl_merge.py" "$ARTIFACT" "$HCL_MERGED"` and written
 for the hcl_raw arm only. A missing file is the same fail-closed `LIB_MISSING`
@@ -1966,11 +1967,14 @@ an oracle bug charged to the agent.
 > the generated verifier and belongs in its own change with its own
 > regeneration sweep.
 
-#### Scope: `hcl_raw` only, and that is verified rather than assumed
+#### Scope: the MERGE is `hcl_raw` only, and that is verified rather than assumed
 
-Setting `hcl_traversal: true` with `arms.hcl_raw` disabled is a **spec error**
-(`spec_model.Spec._hcl_traversal_requires_hcl_raw`), not a no-op. The other two
-arms were checked by synthesis and need nothing:
+`hcl_traversal: true` means **"the `hcl_raw` arm merges HCL"**. It is not a
+statement about the scenario, and it does not gate any other arm.
+
+Setting it with `arms.hcl_raw` disabled is a **spec error**
+(`spec_model.Spec._hcl_traversal_requires_hcl_raw`), not a no-op. The other
+three arms were checked by synthesis and need no merge:
 
 - **awscdk** — `cdk synth` resolves TS variables, so the template names its
   referent explicitly (`"SourceArn": {"Fn::GetAtt": ["MediaBucket…", "Arn"]}`).
@@ -1979,6 +1983,34 @@ arms were checked by synthesis and need nothing:
   the same `oracles/rego/<id>/policy.rego`, and simply never takes the
   `local.` path; a `TerraformLocal` on that arm would resolve to UNRESOLVABLE
   and DENY, which is fail-closed and loud.
+- **hcl_modules** — the graded resource is declared inside an INSTALLED module
+  body, which no glob over the agent's own `*.tf` reads, so the merge is not
+  run there and `input._hcl` is ABSENT. `hcl_input_mode` returns `"lib"`: the
+  resolver library is loaded (the policy is ONE file and a missing library
+  makes every `hcl.*` call a `rego_type_error`, which aborts `opa eval` and
+  reports ENGINE_ERROR on a correct solution — measured on opa 1.19.0), and no
+  `tests/hcl_merge.py` is written and no merged input path is declared. The
+  verifier hands the policy the NORMALISED PLAN and nothing else.
+
+**OWNER DECISION — traversal stays arm-scoped (Amendment 46 phase 6 slice B).**
+Enabling `hcl_modules` on an `hcl_traversal` spec is allowed *iff the policy
+reaches every verdict on that arm from the normalised plan alone*. No
+module-aware HCL traversal is built: resolving a symbol inside an installed
+module body would mean parsing third-party module sources, which
+`docs/design/terraform-console-resolver-spike.md` measured and the owner ruled
+too fragile to grade on. What the plan alone does carry is enough, and it is
+what a module-composed policy must read:
+
+| fact | where the plan carries it |
+|---|---|
+| a module INPUT a module resource reads (`var.x`) | `configuration.root_module.module_calls.<call>.expressions.<x>` |
+| a module OUTPUT the caller reads (`module.c.out`) | `module_calls.<c>.module.outputs.<out>.expression.references` |
+| a resource inside a module body | `module_calls.<c>.module.resources` (the values side is hoisted by the normaliser) |
+| a `dynamic` block the configuration omits | nowhere — only the normaliser's `x_unresolved` `expression_not_represented` mark |
+
+The last row is the one that cannot be closed: a policy must gate its reading
+on that mark and, where the fact is then not establishable, record
+`not_verifiable` naming the fact. It must never read the absence as a pass.
 
 ## 5. `verifier`
 

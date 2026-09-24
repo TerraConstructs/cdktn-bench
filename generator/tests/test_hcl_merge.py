@@ -34,6 +34,7 @@ from gen import (  # noqa: E402
     TIERS_PY,
     build_hcl_merge_py,
     build_verify_config,
+    hcl_input_mode,
     task_dir,
     write_tests_dir,
 )
@@ -115,7 +116,10 @@ def test_the_real_generated_task_ships_it_on_hcl_raw_only(spec: Spec) -> None:
     # the parser there would write an EMPTY `_hcl`, which the policy's own
     # fail-closed deny reads as "no .tf source was supplied" and scores a
     # correct solution 0.0.
-    for arm in ("terraconstructs", "awscdk"):
+    # hcl_modules declares the graded resource inside an INSTALLED module body
+    # no glob over the agent's own *.tf reads, so it gets the library and no
+    # merge either (SCHEMA.md §4.6, "the MERGE is hcl_raw only").
+    for arm in ("terraconstructs", "awscdk", "hcl_modules"):
         assert not (task_dir(spec, arm) / "tests" / "hcl_merge.py").exists()
 
 
@@ -135,3 +139,48 @@ def test_turning_the_flag_off_removes_a_stale_copy(tmp_path: Path) -> None:
     write_tests_dir(Spec.model_validate(off_raw), "hcl_raw", tests)
     assert not (tests / "hcl_merge.py").exists()
     assert not (tests / "hcl_traversal.rego").exists()
+
+
+# --- ARM-SCOPED TRAVERSAL (Amendment 46 phase 6 slice B) --------------------
+#
+# `oracle.hcl_traversal` + `arms.hcl_modules.enabled` used to be REFUSED at
+# load. It is allowed: the flag says the hcl_raw arm MERGES HCL, and on
+# hcl_modules the policy grades from the normalised plan alone.
+
+
+def test_hcl_modules_is_allowed_alongside_hcl_traversal(spec: Spec) -> None:
+    """The refusal is gone, and the arm it used to forbid is really enabled on
+    the one spec that sets the flag -- so this asserts the shipped combination
+    rather than a synthetic one."""
+    assert spec.oracle.hcl_traversal
+    assert spec.arms.hcl_modules.enabled
+    assert hcl_input_mode(spec, "hcl_raw") == "merge"
+    assert hcl_input_mode(spec, "terraconstructs") == "lib"
+    assert hcl_input_mode(spec, "hcl_modules") == "lib"
+
+
+def test_the_hcl_modules_task_gets_the_library_and_declares_no_merge(
+    spec: Spec, tmp_path: Path
+) -> None:
+    """No merge runs on this arm, so no pre-parser is written and no merged
+    input path is declared -- the policy is handed the normalised plan.
+
+    The LIBRARY is still written: policy.rego is one file for every TF-shaped
+    arm, and an arm that loads the policy without the library makes every
+    `hcl.*` call a compile-time `rego_type_error`, which aborts `opa eval` and
+    reports ENGINE_ERROR on a correct solution."""
+    tests = tmp_path / "tests"
+    write_tests_dir(spec, "hcl_modules", tests)
+    assert (tests / "hcl_traversal.rego").is_file()
+    assert not (tests / "hcl_merge.py").exists()
+    assert 'HCL_MERGED="' not in (tests / "static_tiers.sh").read_text()
+    assert build_verify_config(spec, "hcl_modules")["tier1"]["hcl"] == "lib"
+    assert 'CDKTN_VERIFIER_HCL_MERGED' not in (tests / "static_tiers.sh").read_text()
+
+
+def test_the_real_generated_hcl_modules_task_has_no_pre_parser(spec: Spec) -> None:
+    hcl_modules = task_dir(spec, "hcl_modules") / "tests"
+    assert (hcl_modules / "hcl_traversal.rego").is_file(), (
+        "regenerate: make gen SPEC=specs/{}.yaml".format(spec.id)
+    )
+    assert not (hcl_modules / "hcl_merge.py").exists()

@@ -1723,22 +1723,14 @@ class Spec(BaseModel):
             "module (DECISIONS.md Amendment 46 (g))"
         )
 
-    @model_validator(mode="after")
-    def _hcl_traversal_excludes_hcl_modules(self) -> "Spec":
-        """An `oracle.hcl_traversal` policy resolves symbols out of the `.tf`
-        files the AGENT wrote (SCHEMA.md §4.6). On hcl_modules the resource
-        carrying the graded attribute is declared inside an INSTALLED module
-        body, which that merge never reads, so the policy would resolve nothing
-        and grade a correct solution as wrong. Refused here rather than
-        half-supported: gen.py::hcl_input_mode has no mode for it."""
-        if self.oracle.hcl_traversal and self.arms.hcl_modules.enabled:
-            raise ValueError(
-                "oracle.hcl_traversal is true and arms.hcl_modules.enabled is "
-                "true: the HCL merge reads the agent's own .tf files, and on "
-                "this arm the graded resource is declared inside an installed "
-                "module body it never sees (SCHEMA.md §4.6)"
-            )
-        return self
+    # NOTE: `oracle.hcl_traversal` + `arms.hcl_modules.enabled` used to be
+    # REFUSED here. It is ALLOWED (SCHEMA.md §4.6, "the MERGE is hcl_raw
+    # only"): the flag says the hcl_raw arm merges HCL, not that the scenario
+    # is ungradeable elsewhere. On hcl_modules gen.py::hcl_input_mode returns
+    # "lib" -- resolver library loaded, no merge, no `_hcl` -- and the policy
+    # grades that arm from the normalised plan alone (Amendment 46 phase 6
+    # slice B). What makes that safe is a POLICY property, not a spec one, so
+    # it is proven by oracles/tests and the four gates, not asserted here.
 
     @model_validator(mode="after")
     def _seeded_files_unique_and_no_entry_file_collision(self) -> "Spec":

@@ -150,6 +150,11 @@ ARM_SPEC_IDS = frozenset({
     "named-resource-replacement",
     "s3-acl-vs-object-ownership-log-delivery",
     "singleton-child-resource-clobber",
+    # Phase 6 slice B: the one `oracle.hcl_traversal` spec. The flag is
+    # arm-scoped -- it says the hcl_raw arm MERGES HCL -- so enabling this arm is
+    # allowed when the policy grades it from the normalised plan alone
+    # (DECISIONS.md Amendment 46 phase 6 slice B; SCHEMA.md §4.6).
+    "s3-notification-authoritative-singleton",
 })
 
 

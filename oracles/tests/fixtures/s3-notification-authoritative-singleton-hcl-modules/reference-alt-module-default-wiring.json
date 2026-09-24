@@ -1,0 +1,598 @@
+{
+ "configuration": {
+  "root_module": {
+   "module_calls": {
+    "audit": {
+     "expressions": {
+      "create_topic_policy": {
+       "constant_value": false
+      },
+      "name": {
+       "constant_value": "cdktn-bench-media-ingest-audit"
+      }
+     },
+     "module": {
+      "outputs": {
+       "topic_arn": {
+        "description": "The ARN of the SNS topic, as a more obvious property (clone of id)",
+        "expression": {
+         "references": [
+          "aws_sns_topic.this[0].arn",
+          "aws_sns_topic.this[0]",
+          "aws_sns_topic.this"
+         ]
+        }
+       }
+      },
+      "resources": [
+       {
+        "address": "aws_sns_topic.this",
+        "expressions": {
+         "policy": {
+          "references": [
+           "var.create_topic_policy",
+           "var.topic_policy"
+          ]
+         }
+        },
+        "mode": "managed",
+        "name": "this",
+        "type": "aws_sns_topic",
+        "x_unresolved": [
+         {
+          "attribute": "policy",
+          "detail": "the caller passes no topic_policy, so the value comes from the module's own variables.topic_policy.default, which this document does not carry",
+          "reason": "module_input_default",
+          "reference": "var.topic_policy"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    "ingest": {
+     "expressions": {
+      "create_package": {
+       "constant_value": false
+      },
+      "function_name": {
+       "constant_value": "cdktn-bench-media-ingest-transcode"
+      },
+      "handler": {
+       "constant_value": "index.handler"
+      },
+      "local_existing_package": {
+       "constant_value": "function.zip"
+      },
+      "runtime": {
+       "constant_value": "nodejs22.x"
+      }
+     },
+     "module": {
+      "outputs": {
+       "lambda_function_arn": {
+        "description": "The ARN of the Lambda Function",
+        "expression": {
+         "references": [
+          "aws_lambda_function.this[0].arn",
+          "aws_lambda_function.this[0]",
+          "aws_lambda_function.this"
+         ]
+        }
+       },
+       "lambda_function_name": {
+        "description": "The name of the Lambda Function",
+        "expression": {
+         "references": [
+          "aws_lambda_function.this[0].function_name",
+          "aws_lambda_function.this[0]",
+          "aws_lambda_function.this"
+         ]
+        }
+       }
+      },
+      "resources": [
+       {
+        "address": "aws_lambda_function.this",
+        "expressions": {},
+        "mode": "managed",
+        "name": "this",
+        "type": "aws_lambda_function"
+       },
+       {
+        "address": "data.aws_iam_policy_document.logs",
+        "expressions": {
+         "statement": [
+          {
+           "actions": {
+            "references": [
+             "var.use_existing_cloudwatch_log_group",
+             "var.attach_create_log_group_permission"
+            ]
+           },
+           "effect": {
+            "constant_value": "Allow"
+           },
+           "resources": {
+            "references": [
+             "local.log_group_arn"
+            ]
+           }
+          }
+         ]
+        },
+        "mode": "data",
+        "name": "logs",
+        "type": "aws_iam_policy_document",
+        "x_unresolved": [
+         {
+          "attribute": "statement",
+          "detail": "the caller passes no use_existing_cloudwatch_log_group, so the value comes from the module's own variables.use_existing_cloudwatch_log_group.default, which this document does not carry",
+          "reason": "module_input_default",
+          "reference": "var.use_existing_cloudwatch_log_group"
+         },
+         {
+          "attribute": "statement",
+          "detail": "the caller passes no attach_create_log_group_permission, so the value comes from the module's own variables.attach_create_log_group_permission.default, which this document does not carry",
+          "reason": "module_input_default",
+          "reference": "var.attach_create_log_group_permission"
+         },
+         {
+          "attribute": "statement",
+          "detail": "a module-local value; this document carries no module source to resolve it",
+          "reason": "local_symbol",
+          "reference": "local.log_group_arn"
+         }
+        ]
+       }
+      ]
+     }
+    },
+    "media": {
+     "expressions": {
+      "bucket": {
+       "constant_value": "cdktn-bench-media-ingest-media"
+      }
+     },
+     "module": {
+      "outputs": {
+       "s3_bucket_arn": {
+        "description": "The ARN of the bucket. Will be of format arn:aws:s3:::bucketname",
+        "expression": {
+         "references": [
+          "aws_s3_bucket.this[0].arn",
+          "aws_s3_bucket.this[0]",
+          "aws_s3_bucket.this"
+         ]
+        }
+       },
+       "s3_bucket_id": {
+        "description": "The name of the bucket",
+        "expression": {
+         "references": [
+          "aws_s3_bucket.this[0].id",
+          "aws_s3_bucket.this[0]",
+          "aws_s3_bucket.this",
+          "aws_s3_directory_bucket.this[0].bucket",
+          "aws_s3_directory_bucket.this[0]",
+          "aws_s3_directory_bucket.this"
+         ]
+        }
+       }
+      },
+      "resources": [
+       {
+        "address": "aws_s3_bucket.this",
+        "expressions": {
+         "bucket": {
+          "references": [
+           "var.bucket"
+          ]
+         }
+        },
+        "mode": "managed",
+        "name": "this",
+        "type": "aws_s3_bucket"
+       }
+      ]
+     }
+    },
+    "media_notification": {
+     "expressions": {
+      "bucket": {
+       "references": [
+        "module.media.s3_bucket_id",
+        "module.media"
+       ]
+      },
+      "bucket_arn": {
+       "references": [
+        "module.media.s3_bucket_arn",
+        "module.media"
+       ]
+      },
+      "lambda_notifications": {
+       "references": [
+        "module.ingest.lambda_function_arn",
+        "module.ingest",
+        "module.ingest.lambda_function_name",
+        "module.ingest"
+       ]
+      },
+      "sns_notifications": {
+       "references": [
+        "module.audit.topic_arn",
+        "module.audit"
+       ]
+      }
+     },
+     "module": {
+      "outputs": {},
+      "resources": [
+       {
+        "address": "aws_lambda_permission.allow",
+        "expressions": {
+         "source_arn": {
+          "references": [
+           "local.bucket_arn"
+          ]
+         }
+        },
+        "for_each_expression": {
+         "references": [
+          "var.lambda_notifications",
+          "var.create_lambda_permission"
+         ]
+        },
+        "mode": "managed",
+        "name": "allow",
+        "type": "aws_lambda_permission",
+        "x_unresolved": [
+         {
+          "attribute": "source_arn",
+          "detail": "a module-local value; this document carries no module source to resolve it",
+          "reason": "local_symbol",
+          "reference": "local.bucket_arn"
+         }
+        ]
+       },
+       {
+        "address": "aws_s3_bucket_notification.this",
+        "expressions": {
+         "bucket": {
+          "references": [
+           "var.bucket"
+          ]
+         }
+        },
+        "mode": "managed",
+        "name": "this",
+        "type": "aws_s3_bucket_notification",
+        "x_unresolved": [
+         {
+          "attribute": "bucket",
+          "detail": "the caller's bucket argument is module.media.s3_bucket_id, which is itself unresolvable (module_output)",
+          "reason": "module_input_chain",
+          "reference": "var.bucket"
+         },
+         {
+          "attribute": "lambda_function",
+          "detail": "the plan carries this block but the configuration representation has no expression for it",
+          "reason": "expression_not_represented"
+         },
+         {
+          "attribute": "topic",
+          "detail": "the plan carries this block but the configuration representation has no expression for it",
+          "reason": "expression_not_represented"
+         }
+        ]
+       },
+       {
+        "address": "aws_sns_topic_policy.allow",
+        "expressions": {
+         "arn": {
+          "references": [
+           "each.value.topic_arn",
+           "each.value"
+          ]
+         },
+         "policy": {
+          "references": [
+           "data.aws_iam_policy_document.sns",
+           "each.key"
+          ]
+         }
+        },
+        "for_each_expression": {
+         "references": [
+          "var.sns_notifications",
+          "var.create_sns_policy"
+         ]
+        },
+        "mode": "managed",
+        "name": "allow",
+        "type": "aws_sns_topic_policy",
+        "x_unresolved": [
+         {
+          "attribute": "arn",
+          "detail": "names one instance of a repeated resource or module call, which the configuration representation does not expand",
+          "reason": "iteration",
+          "reference": "each.value.topic_arn"
+         },
+         {
+          "attribute": "arn",
+          "detail": "names one instance of a repeated resource or module call, which the configuration representation does not expand",
+          "reason": "iteration",
+          "reference": "each.value"
+         },
+         {
+          "attribute": "policy",
+          "detail": "names one instance of a repeated resource or module call, which the configuration representation does not expand",
+          "reason": "iteration",
+          "reference": "each.key"
+         }
+        ]
+       },
+       {
+        "address": "data.aws_iam_policy_document.sns",
+        "expressions": {
+         "statement": [
+          {
+           "actions": {
+            "constant_value": [
+             "sns:Publish"
+            ]
+           },
+           "condition": [
+            {
+             "test": {
+              "constant_value": "ArnEquals"
+             },
+             "values": {
+              "references": [
+               "local.bucket_arn"
+              ]
+             },
+             "variable": {
+              "constant_value": "aws:SourceArn"
+             }
+            }
+           ],
+           "effect": {
+            "constant_value": "Allow"
+           },
+           "principals": [
+            {
+             "identifiers": {
+              "constant_value": [
+               "s3.amazonaws.com"
+              ]
+             },
+             "type": {
+              "constant_value": "Service"
+             }
+            }
+           ],
+           "resources": {
+            "references": [
+             "each.value.topic_arn",
+             "each.value"
+            ]
+           },
+           "sid": {
+            "constant_value": "AllowSNSS3BucketNotification"
+           }
+          }
+         ]
+        },
+        "for_each_expression": {
+         "references": [
+          "var.sns_notifications",
+          "var.create_sns_policy"
+         ]
+        },
+        "mode": "data",
+        "name": "sns",
+        "type": "aws_iam_policy_document",
+        "x_unresolved": [
+         {
+          "attribute": "statement",
+          "detail": "a module-local value; this document carries no module source to resolve it",
+          "reason": "local_symbol",
+          "reference": "local.bucket_arn"
+         },
+         {
+          "attribute": "statement",
+          "detail": "names one instance of a repeated resource or module call, which the configuration representation does not expand",
+          "reason": "iteration",
+          "reference": "each.value.topic_arn"
+         },
+         {
+          "attribute": "statement",
+          "detail": "names one instance of a repeated resource or module call, which the configuration representation does not expand",
+          "reason": "iteration",
+          "reference": "each.value"
+         }
+        ]
+       }
+      ]
+     }
+    }
+   },
+   "resources": []
+  }
+ },
+ "planned_values": {
+  "root_module": {
+   "resources": [
+    {
+     "address": "module.audit.aws_sns_topic.this[0]",
+     "index": 0,
+     "mode": "managed",
+     "name": "this",
+     "type": "aws_sns_topic",
+     "values": {},
+     "x_module_path": [
+      "module.audit"
+     ]
+    },
+    {
+     "address": "module.ingest.aws_lambda_function.this[0]",
+     "index": 0,
+     "mode": "managed",
+     "name": "this",
+     "type": "aws_lambda_function",
+     "values": {},
+     "x_module_path": [
+      "module.ingest"
+     ]
+    },
+    {
+     "address": "module.ingest.data.aws_iam_policy_document.logs[0]",
+     "index": 0,
+     "mode": "data",
+     "name": "logs",
+     "type": "aws_iam_policy_document",
+     "values": {
+      "statement": [
+       {
+        "actions": [
+         "logs:CreateLogGroup",
+         "logs:CreateLogStream",
+         "logs:PutLogEvents"
+        ],
+        "condition": [],
+        "effect": "Allow",
+        "not_actions": null,
+        "not_principals": [],
+        "not_resources": null,
+        "principals": [],
+        "resources": [
+         null,
+         null
+        ],
+        "sid": null
+       }
+      ]
+     },
+     "x_module_path": [
+      "module.ingest"
+     ]
+    },
+    {
+     "address": "module.media.aws_s3_bucket.this[0]",
+     "index": 0,
+     "mode": "managed",
+     "name": "this",
+     "type": "aws_s3_bucket",
+     "values": {
+      "bucket": "cdktn-bench-media-ingest-media"
+     },
+     "x_module_path": [
+      "module.media"
+     ]
+    },
+    {
+     "address": "module.media_notification.aws_lambda_permission.allow[\"ingest\"]",
+     "index": "ingest",
+     "mode": "managed",
+     "name": "allow",
+     "type": "aws_lambda_permission",
+     "values": {
+      "principal": "s3.amazonaws.com"
+     },
+     "x_module_path": [
+      "module.media_notification"
+     ]
+    },
+    {
+     "address": "module.media_notification.aws_s3_bucket_notification.this[0]",
+     "index": 0,
+     "mode": "managed",
+     "name": "this",
+     "type": "aws_s3_bucket_notification",
+     "values": {
+      "lambda_function": [
+       {
+        "events": [
+         "s3:ObjectCreated:Put"
+        ],
+        "filter_prefix": null,
+        "filter_suffix": null,
+        "id": "ingest"
+       }
+      ],
+      "topic": [
+       {
+        "events": [
+         "s3:ObjectRemoved:*"
+        ],
+        "filter_prefix": null,
+        "filter_suffix": null,
+        "id": "audit"
+       }
+      ]
+     },
+     "x_module_path": [
+      "module.media_notification"
+     ]
+    },
+    {
+     "address": "module.media_notification.aws_sns_topic_policy.allow[\"audit\"]",
+     "index": "audit",
+     "mode": "managed",
+     "name": "allow",
+     "type": "aws_sns_topic_policy",
+     "values": {},
+     "x_module_path": [
+      "module.media_notification"
+     ]
+    },
+    {
+     "address": "module.media_notification.data.aws_iam_policy_document.sns[\"audit\"]",
+     "index": "audit",
+     "mode": "data",
+     "name": "sns",
+     "type": "aws_iam_policy_document",
+     "values": {
+      "statement": [
+       {
+        "actions": [
+         "sns:Publish"
+        ],
+        "condition": [
+         {
+          "test": "ArnEquals",
+          "values": [
+           null
+          ],
+          "variable": "aws:SourceArn"
+         }
+        ],
+        "effect": "Allow",
+        "not_actions": null,
+        "not_principals": [],
+        "not_resources": null,
+        "principals": [
+         {
+          "identifiers": [
+           "s3.amazonaws.com"
+          ],
+          "type": "Service"
+         }
+        ],
+        "resources": [
+         null
+        ],
+        "sid": "AllowSNSS3BucketNotification"
+       }
+      ]
+     },
+     "x_module_path": [
+      "module.media_notification"
+     ]
+    }
+   ]
+  }
+ }
+}

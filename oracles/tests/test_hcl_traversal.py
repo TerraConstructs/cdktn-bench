@@ -1823,3 +1823,129 @@ def test_zero_granting_statements_gets_its_own_message() -> None:
     assert bad, "a policy granting S3 nothing must DENY"
     assert any("found NO statement granting" in d for d in bad), bad
     assert not any("not every one of them is scoped" in d for d in bad), bad
+
+
+# ---------------------------------------------------------------------------
+# THE hcl_modules ARM: every verdict from the normalised plan, `_hcl` ABSENT
+# ---------------------------------------------------------------------------
+#
+# `oracle.hcl_traversal` is arm-scoped (specs/SCHEMA.md §4.6): the merge runs on
+# hcl_raw only, so on hcl_modules `input._hcl` is absent and the policy has to
+# reach every verdict from the plan. These checks are the offline half of that
+# proof -- `make falsifiability` and `make normaliser-parity` are the toolchain
+# half -- and each one runs its own `opa eval` and asserts the exit code, for
+# the reason this file's header gives: an aborted evaluation writes an EMPTY
+# result, which reads exactly like "nothing denied".
+#
+# The fixtures are real plans, trimmed; see their own README for what the trim
+# removes and for the verification that it changes no verdict.
+
+MODULE_FIXTURES = (
+    REPO_ROOT / "oracles" / "tests" / "fixtures"
+    / "s3-notification-authoritative-singleton-hcl-modules"
+)
+
+MODULE_REFERENCES = ("reference", "reference-alt-module-default-wiring")
+
+MODULE_BROKEN = (
+    "two-notification-resources-for-one-bucket",
+    "sns-publish-not-permitted",
+    "only-one-of-the-two-events-wired",
+    "lambda-permission-not-scoped-to-bucket",
+    "sns-topic-policy-not-scoped-to-bucket",
+    "inline-sns-topic-policy-not-scoped-to-bucket",
+    "audit-topic-wired-only-to-lifecycle-expiration",
+    "module-default-wiring-scoped-to-a-decoy-bucket-arn",
+)
+
+
+def _module_plan(name: str) -> dict:
+    document = json.loads((MODULE_FIXTURES / f"{name}.json").read_text())
+    assert "_hcl" not in document, (
+        f"{name}: this arm runs no HCL merge, so a fixture carrying `_hcl` would "
+        "prove the wrong thing"
+    )
+    return document
+
+
+def _module_query(name: str, rule: str) -> list:
+    rc, out, err = _eval(
+        f"data.cdktn_bench.s3_notification_authoritative_singleton.{rule}",
+        _module_plan(name),
+        SCENARIO_POLICY,
+        LIB,
+    )
+    assert rc == 0, f"opa ABORTED on {name} (exit {rc}): {err.strip()}"
+    result = json.loads(out).get("result")
+    return sorted(result[0]["expressions"][0]["value"]) if result else []
+
+
+@requires_opa
+@pytest.mark.parametrize("name", MODULE_REFERENCES)
+def test_the_hcl_modules_references_deny_nothing_without_hcl(name: str) -> None:
+    """Both module-composed reference solutions score 1.0 with `_hcl` absent.
+
+    The second one is the load-bearing case: it leaves
+    `create_lambda_permission`/`create_sns_policy` on, so BOTH graded edges are
+    authored inside the installed submodule from its own `local.bucket_arn`,
+    which plan JSON does not represent at all. The policy grades them one scope
+    up rather than denying a correct solution for a hop it cannot read.
+    """
+    assert _module_query(name, "deny") == []
+
+
+@requires_opa
+@pytest.mark.parametrize("name", MODULE_BROKEN)
+def test_every_hcl_modules_broken_fixture_denies_without_hcl(name: str) -> None:
+    assert _module_query(name, "deny") != []
+
+
+@requires_opa
+def test_what_the_module_arm_cannot_verify_is_named_not_passed_over() -> None:
+    """The two facts plan JSON does not carry are RECORDED, and each entry names
+    the fact and says which reading is still gating.
+
+    A silent pass wearing no note at all is the failure this suite exists for:
+    `not_verifiable` is informational by contract, so an EMPTY set here would
+    mean the arm's own strictness bounds are invisible to an operator reading a
+    grading transcript.
+    """
+    notes = _module_query("reference-alt-module-default-wiring", "not_verifiable")
+    assert any("`dynamic` block" in n for n in notes)
+    assert any("local.bucket_arn" in n and "source_arn" in n for n in notes)
+    assert any("local.bucket_arn" in n and "aws:SourceArn" in n for n in notes)
+
+
+@requires_opa
+def test_the_decoy_bucket_arn_is_a_DENY_and_not_a_note() -> None:
+    """The module-default shape reads both graded edges out of a module-local
+    value, and the ONLY thing that keeps the mis-scoped spelling from passing is
+    that the one-scope-up reading is GATING. This is that fixture's whole point:
+    the same wiring the second reference scores 1.0 on, with `bucket_arn`
+    pointing at a bucket the notification does not wire, must DENY.
+    """
+    denies = _module_query("module-default-wiring-scoped-to-a-decoy-bucket-arn", "deny")
+    assert any("module.decoy.aws_s3_bucket.this[0]" in d for d in denies)
+
+
+@requires_opa
+def test_a_module_boundary_is_refused_only_where_the_merge_runs() -> None:
+    """The `module` deny is arm-scoped by `input._hcl`, the one fact in the
+    document that says the hcl_raw merge ran.
+
+    Both directions matter and each was a real outcome: firing it on
+    hcl_modules would deny every solution the arm exists to grade, and dropping
+    it from hcl_raw would let a resource hidden in a module go ungraded there,
+    where the resolver reads only the agent's own `.tf`.
+    """
+    plan = _module_plan("reference")
+    assert _module_query("reference", "deny") == []
+    rc, out, err = _eval(
+        "data.cdktn_bench.s3_notification_authoritative_singleton.deny",
+        dict(plan, _hcl={"main.tf": {}}),
+        SCENARIO_POLICY,
+        LIB,
+    )
+    assert rc == 0, err.strip()
+    with_hcl = json.loads(out)["result"][0]["expressions"][0]["value"]
+    assert any("inside `module` block(s)" in d for d in with_hcl)

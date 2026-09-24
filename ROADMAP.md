@@ -380,14 +380,27 @@ Phases, each landing on its own:
      refused at spec load, and an arm's shared `environment/**` is prompt
      surface for every scenario on that arm
      (`generator/tests/test_scenario_identity.py`).
-   * **Slice B — one spec, owner decision owed.**
-     `s3-notification-authoritative-singleton` is refused by
-     `Spec._hcl_traversal_excludes_hcl_modules`: its oracle resolves symbols out
-     of the `.tf` the AGENT wrote, and on this arm the graded resource is
-     declared inside an installed module body that merge never reads. Either the
-     merge learns to read `.terraform/modules/` (a new capability, and the
-     agent's own file is no longer the unit graded) or the spec stays off the
-     arm with that stated as the reason.
+   * **Slice B — done, offline. One spec, owner decision taken: TRAVERSAL
+     STAYS ARM-SCOPED.** `s3-notification-authoritative-singleton` is ENABLED and
+     `Spec._hcl_traversal_excludes_hcl_modules` is deleted.
+     `oracle.hcl_traversal` means "the hcl_raw arm MERGES HCL" and nothing more:
+     `hcl_input_mode` returns `"lib"` on hcl_modules, so the resolver library
+     loads (a policy that imports it and does not load it is a compile-time
+     `rego_type_error`, i.e. ENGINE_ERROR on a correct solution), no
+     `tests/hcl_merge.py` is written, and the policy reaches every verdict from
+     the normalised plan alone. No module-aware HCL traversal was built —
+     `docs/design/terraform-console-resolver-spike.md` measured that and the owner
+     ruled it too fragile to grade on. All seven catches are kept with their own
+     fixtures, both scoping ones through published module inputs
+     (`lambda@8.8.2`'s `allowed_triggers[*].source_arn`, `sns@7.1.1`'s
+     `topic_policy`) rather than through the notification submodule the matrix
+     described; the module-DEFAULT wiring is a second reference at 1.0, graded one
+     scope up from the calling node because plan JSON represents neither a
+     `local.` inside an installed body nor a `dynamic` block, with what that
+     reading cannot establish recorded in `not_verifiable`. `falsifiability`,
+     `grading-proof`, `tier1-coverage` and `normaliser-parity` green on all four
+     arms; `hcl-merge-bytes` still 43/43 on hcl_raw. **Phase 6 is complete
+     offline.**
    * **Slice C — done, offline. The six mutating/brownfield specs decided, all
      six enabled**: `apigw-redeploy`, `ecr-repo-destroy-force-delete`,
      `lambda-alias-tracks-unpublished-latest`, `named-resource-replacement`,

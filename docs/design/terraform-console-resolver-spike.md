@@ -211,8 +211,16 @@ needs it.**
   measured that reads **known subtrees around an unknown leaf**: it recovers
   `QueryLanguage` and whole Pass/Choice bodies from a `definition`
   `planned_values` omits and `x_after_unknown` can only mark blind. It is also
-  the only thing that reads a known `module.x.out` chain, which
+  the only thing that reads a known `module.x.out` VALUE chain, which
   `hcl_traversal.rego` and `normalise_plan` both refuse on principle.
+  **Narrowed by Amendment 46 phase 6 slice B**, which needed the module-output
+  hop and did not need console for it: the REFERENCE a module output holds is in
+  the plan's own configuration
+  (`module_calls.<c>.module.outputs.<out>.expression.references`), so
+  `module.media.s3_bucket_arn` resolves to
+  `module.media.aws_s3_bucket.this[0].arn` with no evaluation at all. What stays
+  out of reach -- and what this memo's ruling still governs -- is the VALUE, and
+  a `local` inside an installed module body, which no configuration key carries.
 * **Sequencing.** Neither use is needed today: `sfn-jsonata`'s reference
   definition is all-literal and its policy already denies the unknown case
   fail-closed. Cite this memo when a spec first *needs* a known subtree out of

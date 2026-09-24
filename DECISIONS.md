@@ -9060,6 +9060,91 @@ moved it on all four arms of all four brownfield specs: previously published row
 for those scenarios no longer pool with new ones. That is by design and is the
 same consequence any seed edit has.
 
+**Phase 6 slice B, offline. OWNER DECISION: TRAVERSAL STAYS ARM-SCOPED.**
+`s3-notification-authoritative-singleton` — the one `oracle.hcl_traversal` spec —
+is ENABLED on the arm, and `Spec._hcl_traversal_excludes_hcl_modules` is deleted
+rather than worked around. The flag means "the `hcl_raw` arm merges HCL" and
+nothing more: `gen.py::hcl_input_mode` returns `"lib"` on hcl_modules, so the
+resolver library loads, no `tests/hcl_merge.py` is written, no merged input path
+is declared, and the verifier hands the policy the normalised plan and nothing
+else. **No module-aware HCL traversal is built** — resolving a symbol inside an
+installed module body means parsing third-party module sources, which
+`docs/design/terraform-console-resolver-spike.md` measured and the owner ruled too
+fragile to grade on. `specs/SCHEMA.md` §4.6 and §1 carry the rule.
+
+**`"lib"` and not `None`, and the difference is not cosmetic.** `policy.rego` is
+ONE file for every TF-shaped arm, so the moment it says
+`import data.cdktn_bench.hcl` an arm that does not LOAD the library makes every
+`hcl.*` call a compile-time `rego_type_error: undefined function`, not an
+undefined value — measured on opa 1.19.0. `opa eval` then exits non-zero, which
+the generated verifier reports as ENGINE_ERROR: a correct solution graded as "the
+oracle did not run". The library is loaded and simply finds no `_hcl`, which every
+`hcl.*` entry point is total over.
+
+**What the plan alone carries, and it was enough.** A module INPUT resolves
+through `configuration.root_module.module_calls.<call>.expressions.<x>`; a module
+OUTPUT through that call's `module.outputs.<out>.expression.references`, which is
+what makes `module.media.s3_bucket_arn` reachable as
+`module.media.aws_s3_bucket.this[0].arn`. Two things it does not carry at all: a
+`dynamic` block and a `local.` inside an installed module body. Both are read
+through the normaliser's `x_unresolved` annotation, resolved one scope up from the
+calling node's own arguments, and what that reading cannot establish is recorded
+in `not_verifiable` naming the fact — never read as a pass.
+
+Three policy changes, all measured on real plans through the loopback registry:
+
+- The `module`-boundary deny is now scoped by `input._hcl`, which is present iff
+  the hcl_raw merge ran. On that arm a resource hidden in a module really is
+  ungraded (the resolver reads the agent's own `.tf` and no installed body), and
+  it stays refused by name; on hcl_modules the walk grades the bodies for real.
+  `_child_modules_present`'s second definition, reading
+  `planned_values.root_module.child_modules`, was DEAD — the normaliser hoists and
+  deletes that key before any tier sees the document — and is deleted.
+- One instance-identity domain: terraform's own plan ADDRESS, as a string.
+  `hcl.instance_addr` already rendered the resolver's verdicts into it and the
+  plan side carries it, so a module-qualified instance needs no second spelling.
+- A configuration node INSIDE a module body that governs no planned instance is
+  dropped. Every vendored module declares its resources `count = var.create ? 1 :
+  0`, so a module body lists dozens the call switched off; grading the `sns`
+  module's `aws_sns_topic_policy.this` under `create_topic_policy = false` denied
+  a correct solution. Root nodes are untouched, so a module-free plan is
+  unchanged.
+
+Per catch, decided on measured plans:
+
+| catch | hcl_modules | how |
+|---|---|---|
+| two-notification-resources-for-one-bucket | KEPT, tier 0 | two `//modules/notification` calls plan two notifications; the flat count assert reads 2 nodes |
+| sns-publish-not-permitted | KEPT, tier 1 | `create_topic_policy=false` with no `topic_policy` and `create_sns_policy=false`; the per-wired-topic rule reads the topic out of the call's `sns_notifications` |
+| only-one-of-the-two-events-wired | KEPT, tier 0 | `sns_notifications` omitted |
+| lambda-permission-not-scoped-to-bucket | KEPT, tier 1 | `lambda@8.8.2`'s `allowed_triggers[*].source_arn` at a decoy bucket module; resolved to the decoy INSTANCE |
+| sns-topic-policy-not-scoped-to-bucket | KEPT, tier 1 | not as "unscoped" — the submodule always writes the condition — but as `bucket_arn` at a non-wired bucket, graded one scope up |
+| inline-sns-topic-policy-not-scoped-to-bucket | KEPT, tier 1 | `sns@7.1.1`'s `topic_policy` IS this arm's module-composed shape (main.tf:47 sets it on `aws_sns_topic.policy`); the condition is dropped from the caller's own document |
+| audit-topic-wired-only-to-lifecycle-expiration | KEPT, tier 1 | the events land in the planned `topic` block even though the block is `dynamic` |
+| the seven `local.*` laundering/decoy EXTRA fixtures (hcl_raw) | NOT PORTED | on this arm the equivalent mistake is a `local.` inside an INSTALLED body, which plan JSON does not represent; the honest outcome is the `not_verifiable` entry naming the local plus the one-scope-up `every` rule, and `module-default-wiring-scoped-to-a-decoy-bucket-arn` is the fixture that proves that rule gating |
+
+The matrix was wrong in the same direction it was wrong on the two sibling s3
+specs: `s3-bucket//modules/notification` removes BOTH scoping catches through its
+own `create_lambda_permission`/`create_sns_policy` paths, and `lambda@8.8.2` and
+`sns@7.1.1` reach both through published inputs. The module-default shape is a
+correct solution and ships as `solution/reference-alt-module-default-wiring/` at
+1.0, with the mis-scoped spelling as a non-catch negative. The tier-0 principal
+assert needed the same `eq` -> `set_eq` split the siblings needed, as a
+hcl_modules-only twin rather than an op change on the other three arms.
+
+**One known LOUD false fail, recorded rather than closed.** `sns@7.1.1`'s
+`topic_policy_statements` writes the caller's statements into a
+`dynamic "statement"` block inside the module's own
+`data "aws_iam_policy_document"`, which the configuration representation omits
+entirely — so a CORRECT solution built that way is DENIED as "this resolver cannot
+read the STRUCTURE of this topic policy's document". It is fail-closed and the
+deny message names the two shapes that do read (an inlined document, or
+`data "aws_iam_policy_document"` at the caller), which is what the reference uses.
+Closing it would need a fourth document route off `planned_values`, whose
+`aws:SourceArn` value is plan-time-unknown, so it would grade the identity from
+the flat `topic_policy_statements` argument union — the position-destroying
+mention test round 16 removed. Refused on those grounds.
+
 ---
 
 ## Amendment 47 — equipping hash scheme 2: Harbor's own equipping channels are in the hash — ACCEPTED

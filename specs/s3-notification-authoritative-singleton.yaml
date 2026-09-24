@@ -1374,6 +1374,50 @@
 #   * every pre-existing broken fixture on all three arms still scores 0.0
 #     at the same observed tier as before, and the reference solution
 #     scores 1.0 on all three.
+#
+# ###########################################################################
+# THE hcl_modules ARM, AND WHAT IS RESIDUAL ON IT
+# ###########################################################################
+#
+# `oracle.hcl_traversal` is ARM-SCOPED: it means "the hcl_raw arm merges HCL"
+# (SCHEMA.md §4.6). On hcl_modules `input._hcl` is ABSENT, no merge runs, and
+# the policy reaches every verdict from the NORMALISED plan alone. Nothing
+# above this block changes on any other arm. The per-catch decisions are on the
+# catches themselves; DECISIONS.md Amendment 46 "Phase 6 slice B" carries the
+# table and the measurements.
+#
+# WHAT IS RESIDUAL ON THIS ARM, stated here because it is operator-facing:
+#
+#   * A `local.` inside an INSTALLED module body, and a `dynamic` block, have
+#     NO representation in plan JSON. Both are read through the normaliser's
+#     `x_unresolved` mark and resolved ONE SCOPE UP -- from the arguments of
+#     the call that instantiated the module -- so the fact is resolved to the
+#     CALL, not to one argument of it. Quantified with `every` rather than
+#     `some`, so a call handed a non-wired bucket ARN is a GATING deny
+#     (fixture: `module-default-wiring-scoped-to-a-decoy-bucket-arn`); what is
+#     not establishable is WHICH argument the local reads, and that is recorded
+#     in `not_verifiable` naming the local. It is NOT a silent pass in either
+#     direction, and it is NOT full strictness either.
+#
+#   * A KNOWN LOUD FALSE FAIL, refused rather than closed. `sns@7.1.1`'s
+#     `topic_policy_statements` writes the caller's statements into a
+#     `dynamic "statement"` block inside the module's own
+#     `data "aws_iam_policy_document"`, which the configuration representation
+#     omits entirely -- so a CORRECT solution built that way is DENIED as "this
+#     resolver cannot read the STRUCTURE of this topic policy's document". The
+#     deny names the two shapes that DO read (an inlined document, or
+#     `data "aws_iam_policy_document"` at the caller, which is what this
+#     scenario's own hcl_modules reference uses), so it is actionable rather
+#     than mute. Closing it would need a fourth document route off
+#     `planned_values`, where the `aws:SourceArn` value is plan-time-unknown --
+#     so the identity would come from the FLAT `topic_policy_statements`
+#     argument union, i.e. the position-destroying mention test round 16
+#     removed at reward 1.0. Refused on those grounds.
+#
+#   * A module call with `count`/`for_each` plans as `module.<call>[k].…`,
+#     which no prefix built from the configuration can name, so such a
+#     resource is not selected -- the fail-closed direction, same as every
+#     other policy on this arm.
 
 id: s3-notification-authoritative-singleton
 # workspace_id (SCHEMA.md §0.1.1): single-step greenfield, so this is
@@ -1401,6 +1445,42 @@ services: [s3, lambda, sns, iam]
 arms:
   awscdk: true
   hcl_raw: true
+  hcl_modules:
+    enabled: true
+    reason: >
+      The trap is composition -- one authoritative child resource per
+      parent, with two graded edges out of it -- and
+      docs/design/hcl-modules-spec-matrix.md §1 gives a full fit:
+      `terraform-aws-modules/s3-bucket/aws` 5.16.1 for the bucket, its
+      `//modules/notification` submodule for the single
+      `aws_s3_bucket_notification`, `lambda/aws` 8.8.2 for the function and
+      (through `allowed_triggers`, variables.tf:429 -> main.tf:347,369) the
+      invoke permission, and `sns/aws` 7.1.1 for the audit topic and its
+      policy. The headline catch is if anything MORE exposed here than on
+      hcl_raw: two `//modules/notification` calls against one bucket plan
+      two `aws_s3_bucket_notification` resources, which the flat tier-0
+      count assert resolves to 2 nodes and fails, and nothing in either
+      module prevents the shape.
+      MEASURED, because the matrix says the notification submodule "has no
+      `source_arn` override" and that is only half the story: BOTH scoping
+      catches survive on this arm through a DIFFERENT published input at the
+      SAME tier. `lambda@8.8.2`'s `allowed_triggers[*].source_arn` is a
+      plain exposed input, and `sns@7.1.1`'s `topic_policy` (main.tf:47)
+      lands a caller-authored document on `aws_sns_topic.policy` -- the
+      provider's own inline shape, which this oracle already grades. Through
+      the notification submodule instead, `source_arn` and the SNS policy's
+      `aws:SourceArn` are both computed from `local.bucket_arn`
+      (modules/notification/main.tf:5,73), a module-local value plan JSON
+      does not represent: that shape is graded ONE SCOPE UP (every
+      aws_s3_bucket ARN the call was handed must be a wired bucket, which
+      keeps a decoy `bucket_arn` a gating deny) and the strictness it loses
+      is recorded in `not_verifiable`. It is a correct solution and is
+      graded as the second reference under
+      solution/reference-alt-module-default-wiring/.
+      `oracle.hcl_traversal` stays on for hcl_raw and is arm-scoped: no
+      merge runs here and the policy reaches every verdict from the
+      normalised plan alone (SCHEMA.md §4.6, DECISIONS.md Amendment 46
+      phase 6 slice B).
   terraconstructs:
     enabled: true
     reason: >
@@ -1458,6 +1538,15 @@ instruction:
         json_fields: []
     hcl_raw:
       language_line: "Author this as hand-written Terraform HCL (no modules)."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields: []
+    hcl_modules:
+      language_line: "Author this as Terraform HCL composed from `terraform-aws-modules` registry modules: they are the real `terraform-aws-modules` sources, served at an allowlisted set of versions you can discover at this environment's registry endpoint."
       output_contract:
         entry_file: main.tf
         artifact_path: plan.json
@@ -2313,7 +2402,7 @@ oracle:
     - name: s3-bucket-exists
       description: "An S3 bucket exists."
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::S3::Bucket')]"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket')]"
       op: exists
@@ -2321,7 +2410,7 @@ oracle:
     - name: lambda-function-exists
       description: "An AWS Lambda function exists."
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::Lambda::Function')]"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_function')]"
       op: exists
@@ -2329,7 +2418,7 @@ oracle:
     - name: sns-topic-exists
       description: "An SNS topic exists."
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::SNS::Topic')]"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_sns_topic')]"
       op: exists
@@ -2360,7 +2449,7 @@ oracle:
         ObjectCreated family entirely (e.g. an accidentally-duplicated
         ObjectRemoved event on the lambda target) still fails outright.
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='Custom::S3BucketNotifications')].Properties.NotificationConfiguration.LambdaFunctionConfigurations[*].Events"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_notification')].values.lambda_function[*].events"
       op: in
@@ -2406,7 +2495,7 @@ oracle:
         by the separate tier-1 `audit-topic-events-cover-a-real-delete`
         assert below, not by this one -- see that assert's own comment.
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='Custom::S3BucketNotifications')].Properties.NotificationConfiguration.TopicConfigurations[*].Events"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_notification')].values.topic[*].events"
       op: in
@@ -2465,7 +2554,7 @@ oracle:
         headline catch, two resources silently fighting over the same
         bucket's one authoritative configuration).
       tier: "0"
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_notification')].type"
       op: eq
       expected: "aws_s3_bucket_notification"
@@ -2483,6 +2572,33 @@ oracle:
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_permission')].values.principal"
       op: eq
       expected: "s3.amazonaws.com"
+
+    # lambda-permission-principal-is-s3-modules -- the SAME fact on the
+    # hcl_modules arm, with `set_eq` instead of `eq`, and the op difference is
+    # forced by the module rather than chosen. ONE `allowed_triggers` entry
+    # (lambda@8.8.2 variables.tf:429) plans TWO permissions -- the
+    # current-version and unqualified-alias triggers, main.tf:347,369 --
+    # measured on this scenario's own reference plan, so `eq`'s "0 or >1
+    # resolved nodes FAILS outright" rule would fail every correct solution on
+    # this arm. `set_eq` says nothing about MULTIPLICITY and everything about
+    # the VALUES, which is exactly the surviving claim: every principal granted
+    # anywhere in the plan is s3.amazonaws.com and nothing else, so a second
+    # permission granting some OTHER principal still fails. The
+    # "exactly one permission" half of `eq` is not lost, it was never a claim
+    # this scenario made -- `second-lambda-permission-scoped-to-the-topic` is
+    # caught by the SCOPING rules, which are per-permission.
+    - name: lambda-permission-principal-is-s3-modules
+      description: >
+        (hcl_modules only -- see lambda-permission-principal-is-s3 for the
+        other three arms.) Every Lambda resource-based permission in the plan
+        grants principal s3.amazonaws.com and no other principal. `set_eq`
+        rather than `eq` because one `allowed_triggers` entry plans two
+        permissions on this arm; see the comment above this assert.
+      tier: "0"
+      applies_to: [hcl_modules]
+      tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_lambda_permission')].values.principal"
+      op: set_eq
+      expected: ["s3.amazonaws.com"]
 
     # sns-topic-policy-exists-cfn: an unconditional (not fail-closed-Rego)
     # tier-0 existence check is sound here specifically BECAUSE this
@@ -2851,7 +2967,7 @@ oracle:
         opposite direction (a topic-ARN hoist had been scoring 0.0 on
         hcl_raw and 1.0 on awscdk).
       tier: "1"
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       tf_jsonpath: "$.configuration.root_module.resources[?(@.type=='aws_lambda_permission')].expressions.source_arn.references[*]"
       op: regex
       expected: "^aws_s3_bucket\\."
@@ -3066,7 +3182,7 @@ oracle:
         `hand-authored-topic-policy-attached-to-a-different-topic` extra
         broken fixtures.
       tier: "1"
-      applies_to: [hcl_raw, terraconstructs]
+      applies_to: [hcl_raw, terraconstructs, hcl_modules]
       # DOCUMENTATION ONLY -- a tier-1 path is never executed by the
       # generated tests/static_tiers.sh (SCHEMA.md); the real rule is the
       # Rego above. ROUND 16: this path is deliberately left as the COARSEST
@@ -3216,7 +3332,7 @@ oracle:
         file's own "oracle must tolerate" point 4, round-5's union case) --
         only a subset containing NEITHER accepted literal fails.
       tier: "1"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='Custom::S3BucketNotifications')].Properties.NotificationConfiguration.TopicConfigurations[*].Events"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_s3_bucket_notification')].values.topic[*].events"
       op: contains
@@ -3803,11 +3919,20 @@ catches:
       to 2 nodes, and `eq`'s own "0 or >1 resolved nodes FAILS outright"
       rule (SCHEMA.md §4.2's op table) fails regardless of the two nodes'
       (identical) value.
-    applies_to: [hcl_raw]
+      ON hcl_modules THE CATCH IS MORE EXPOSED, NOT LESS, and at the same
+      tier: two `s3-bucket//modules/notification` calls against one bucket
+      plan two `aws_s3_bucket_notification` resources, which the normaliser
+      hoists side by side and
+      exactly-one-notification-resource-per-bucket-tf resolves to 2 nodes and
+      fails on `eq`'s own ambiguity rule. Nothing in the submodule prevents a
+      second call -- and "one module call per stakeholder ask" is the same
+      instinct the raw shape trips on, one abstraction up.
+    applies_to: [hcl_raw, hcl_modules]
     predicted_tier_caught:
       awscdk: "0"
       hcl: "0"
       terraconstructs_override: null
+      hcl_modules_override: "0"
 
   - name: sns-publish-not-permitted
     taxonomy: graph-dependency
@@ -3840,11 +3965,19 @@ catches:
       entirely in `sns-topic-policy-allows-s3-publish-tf`'s own Rego
       fail-closed rule (denies when BOTH `topic_policy_configs` and
       `inline_policy_topics` are empty -- see policy.rego's own header).
-    applies_to: [hcl_raw, terraconstructs]
+      ON hcl_modules the shape is `create_topic_policy = false` on
+      `sns@7.1.1` with no `topic_policy` passed AND `create_sns_policy =
+      false` on the notification submodule -- the topic is wired and nothing
+      grants it anything. Caught at tier 1 by the same per-wired-topic rule,
+      which reads the topic instance out of the notification call's
+      `sns_notifications` argument rather than out of a `topic` block the
+      `dynamic` spelling omits.
+    applies_to: [hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       awscdk: "0"
       hcl: "1"
       terraconstructs_override: null
+      hcl_modules_override: "1"
 
   - name: only-one-of-the-two-events-wired
     taxonomy: nested-attribute
@@ -3861,10 +3994,17 @@ catches:
       artifact) and, redundantly, by sns-topic-exists (0 resolved nodes)
       -- both tier 0, the cheapest possible catch for "half the ticket was
       never attempted."
+      ON hcl_modules the shape is the notification submodule call with
+      `lambda_notifications` set and `sns_notifications` omitted -- the same
+      omission one abstraction up; caught at tier 0 by
+      object-removed-notification-targets-a-topic and sns-topic-exists
+      exactly as on the raw arm.
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       awscdk: "0"
       hcl: "0"
       terraconstructs_override: null
+      hcl_modules_override: "0"
 
   - name: lambda-permission-not-scoped-to-bucket
     taxonomy: graph-dependency
@@ -3920,10 +4060,27 @@ catches:
       `lambda.CfnPermission` -- reproducing what an agent hand-rolling the
       permission (or reaching for the L1 escape hatch) would produce, not a
       contrived shape unique to these fixtures.
+      ON hcl_modules THE CATCH SURVIVES THROUGH A DIFFERENT INPUT THAN THE
+      MATRIX PREDICTS, at the same tier.
+      docs/design/hcl-modules-spec-matrix.md records
+      `s3-bucket//modules/notification` as having no `source_arn` override
+      (variables.tf:39-58; it computes the scope from `local.bucket_arn`,
+      main.tf:5,73) -- but `lambda@8.8.2`'s `allowed_triggers[*].source_arn`
+      (variables.tf:429 -> main.tf:347,369) is a published input that lands on
+      the permission verbatim, so the fixture points it at a decoy bucket
+      module with no raw resource anywhere. It is resolved through the call's
+      own argument and then through `module.decoy`'s `s3_bucket_arn` output, so
+      the deny names the decoy INSTANCE rather than merely "some bucket".
+      Through the submodule instead, the mistake is `bucket_arn` pointing at a
+      non-wired bucket, which is graded ONE SCOPE UP -- every aws_s3_bucket ARN
+      the call was handed has to be wired -- and shipped as the extra fixture
+      module-default-wiring-scoped-to-a-decoy-bucket-arn.
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       awscdk: "1"
       hcl: "1"
       terraconstructs_override: null
+      hcl_modules_override: null
 
   - name: sns-topic-policy-not-scoped-to-bucket
     taxonomy: graph-dependency
@@ -3971,11 +4128,23 @@ catches:
       clauses are falsified instead by the awscdk-only extra broken
       fixtures `hand-authored-topic-policy-not-scoped-to-bucket` and
       `hand-authored-topic-policy-attached-to-a-different-topic`.
-    applies_to: [hcl_raw, terraconstructs]
+      ON hcl_modules the standalone `aws_sns_topic_policy` is the notification
+      submodule's own (`create_sns_policy = true`), whose document scopes
+      `aws:SourceArn` to `local.bucket_arn` -- a module-local value plan JSON
+      does not represent, so the UNSCOPED spelling is not expressible through
+      that interface at all. The MIS-scoped one is: the fixture passes
+      `bucket_arn = module.decoy.s3_bucket_arn` beside the wired `bucket`, and
+      the policy grades it one scope up -- EVERY aws_s3_bucket ARN the call was
+      handed has to be a wired bucket -- which makes the decoy a gating deny
+      while the correct call still scores 1.0. The strictness that reading
+      loses (WHICH argument of the call the local reads) is recorded in
+      `not_verifiable`, never passed over.
+    applies_to: [hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       awscdk: "1"
       hcl: "1"
       terraconstructs_override: null
+      hcl_modules_override: "1"
 
   - name: inline-sns-topic-policy-not-scoped-to-bucket
     taxonomy: graph-dependency
@@ -4017,11 +4186,21 @@ catches:
       `AWS::SNS::TopicPolicy`. That is exactly the reading
       `predicted_tier_caught` already carries for terraconstructs on this
       row, where the inline shape is equally unreachable.
-    applies_to: [hcl_raw]
+      ON hcl_modules this IS the module-composed topic-policy shape rather
+      than an alternative to it: `sns@7.1.1` sets `policy = var.topic_policy`
+      directly on `aws_sns_topic` (main.tf:47) whenever the caller passes
+      `create_topic_policy = false` plus a document, which is the provider's
+      own inline shape and what this scenario's own hcl_modules reference
+      solution uses. The fixture drops the `aws:SourceArn` condition from that
+      caller-authored `data "aws_iam_policy_document"`; the position is read
+      from the ROOT plan's own `statement[*].condition[*]`, so the grading is
+      at full instance strength with no `local.` hop anywhere.
+    applies_to: [hcl_raw, hcl_modules]
     predicted_tier_caught:
       awscdk: "1"
       hcl: "1"
       terraconstructs_override: null
+      hcl_modules_override: "1"
 
   - name: audit-topic-wired-only-to-lifecycle-expiration
     taxonomy: nested-attribute
@@ -4051,10 +4230,17 @@ catches:
       escape hatch needed on either typed arm. Passes every tier-0 assert
       and every OTHER tier-1 rule; fails
       audit-topic-events-cover-a-real-delete alone (tier 1).
+      ON hcl_modules the events are the notification call's
+      `sns_notifications[*].events`, which land in the planned `topic` block
+      verbatim even though the block itself is `dynamic` -- the VALUES side
+      carries it, so this rule reads exactly what it reads on every other
+      arm.
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
     predicted_tier_caught:
       awscdk: "1"
       hcl: "1"
       terraconstructs_override: null
+      hcl_modules_override: "1"
 
 verifier:
   budget:

@@ -641,6 +641,43 @@ is one.
   out of the vendored source on this arm and only on this arm. Record it beside
   the catch; whether it cheapens the catch is an owner call.
 
+**An `oracle.hcl_traversal` spec may enable this arm, and the flag is ARM-SCOPED.**
+`hcl_traversal: true` says "the `hcl_raw` arm merges HCL" (`SCHEMA.md` §4.6) and
+says nothing about any other arm. `gen.py::hcl_input_mode` returns `"lib"` here:
+the resolver library is written into `tests/` and NO `tests/hcl_merge.py` is, so
+`input._hcl` is absent and the policy has to reach every verdict from the
+normalised plan. The library is still written, and that is not tidiness — the
+policy is ONE file for every TF-shaped arm, so an arm that imports
+`data.cdktn_bench.hcl` without loading it makes each `hcl.*` call a compile-time
+`rego_type_error`, `opa eval` exits non-zero, and the verifier reports
+ENGINE_ERROR on a correct solution. Three facts the policy then needs:
+
+* a module INPUT a module resource reads (`var.x`) is in
+  `configuration.root_module.module_calls.<call>.expressions.<x>`;
+* a module OUTPUT the caller reads (`module.c.out`) is in that call's
+  `module.outputs.<out>.expression.references`, which is how
+  `module.media.s3_bucket_arn` becomes `module.media.aws_s3_bucket.this[0].arn` —
+  match a resolved reference against the plan's OWN addresses rather than
+  tokenizing it, because every vendored module writes `count = var.create ? 1 : 0`
+  and `hcl.parse_traversal` deliberately refuses the numeric `[0]` spelling;
+* a `dynamic` block, or a `local.` inside an INSTALLED module body, is in neither
+  — only the normaliser's `x_unresolved` mark records it. Gate the reading on that
+  mark, resolve what you can from the calling node's own arguments (which is a
+  strictness loss, so quantify it with `every`, not `some`), and record what is
+  left in `not_verifiable` naming the fact. Never read the absence as a pass.
+
+Do **not** teach the merge to read `.terraform/modules/`: the owner ruled that
+too fragile to grade on (`docs/design/terraform-console-resolver-spike.md`,
+Amendment 46 slice B), and the agent's own file stops being the unit graded.
+
+**A module body lists resources the call switched OFF.** Every vendored module
+declares its resources `count = var.create ? 1 : 0`, and Terraform's configuration
+representation lists a declared resource whatever its `count` resolves to — so a
+rule that walks module bodies grades resources the plan does not create, and a
+deny about one is a deny about nothing. Drop a module-body configuration node that
+governs no planned instance; leave root nodes alone, so a module-free plan is
+provably unchanged.
+
 **What goes wrong silently.** A fixture that scores 0.0 because `init` failed
 is not a catch — check the tier and the deny message, not just the reward. The
 arm's whole toolchain is ONE labelled step (`terraform init && validate && plan

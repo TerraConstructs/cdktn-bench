@@ -287,6 +287,10 @@
         "path": "tasks/anchor/s3-notification-authoritative-singleton-awscdk"
       },
       {
+        "name": "s3-notification-authoritative-singleton-hcl-modules",
+        "path": "tasks/anchor/s3-notification-authoritative-singleton-hcl-modules"
+      },
+      {
         "name": "s3-notification-authoritative-singleton-hcl-raw",
         "path": "tasks/anchor/s3-notification-authoritative-singleton-hcl-raw"
       },

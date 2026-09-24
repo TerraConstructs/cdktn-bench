@@ -46,6 +46,31 @@ CALL's own arguments -- or deny with an accurate reason:
 a `dynamic` block (Terraform's configuration representation omits it
 entirely), and a `local` (plan JSON has no representation of one at all).
 
+**A module OUTPUT is resolvable, and from the plan alone.** A caller names a
+module-created resource as `module.<call>.<output>`, never by the resource's own
+address, and the configuration carries what that output holds:
+`module_calls.<call>.module.outputs.<out>.expression.references`. Dereference it
+and qualify with the call's prefix, and `module.media.s3_bucket_arn` becomes
+`module.media.aws_s3_bucket.this[0].arn` — enough to discriminate INSTANCES, not
+merely types. One output can hold several candidates (`s3_bucket_id` names both
+`aws_s3_bucket` and `aws_s3_directory_bucket`); keep the ones that name a
+resource the plan really creates and refuse an ambiguity that survives that.
+
+**Match a resolved reference against the plan's OWN addresses; do not tokenize
+it.** Every hoisted resource carries its full
+`module.<call>.<type>.<name>[key]` address, so "which resource does this
+reference name, and which attribute of it" is a `startswith` against
+`planned_resources` — and that is the only reading that survives the numeric
+`[0]` index every vendored module produces (`count = var.create ? 1 : 0`), which
+`hcl_traversal.rego`'s tokenizer deliberately refuses.
+
+**A module body lists resources the call switched OFF.** Terraform's
+configuration representation lists a declared resource whatever its `count`
+resolves to, so a rule that walks module bodies grades resources the plan does
+not create — an executed reward-1.0 on one spec and an executed false FAIL on
+another. Drop a module-body configuration node that governs no planned instance,
+and leave root nodes alone so a module-free plan is provably unchanged.
+
 **A "modules are present" guard must not read `child_modules`.** It is gone
 from the normalised document, so a fail-closed rule that spelled "this
 configuration uses modules" as `planned_values.root_module.child_modules`
