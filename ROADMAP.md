@@ -289,10 +289,33 @@ channel, and `cli_equipping` records content digests rather than flag paths.
 The **tuned** cell for both TF arms is the **bench-owned index tool**, not
 `hashicorp/terraform-mcp-server` (v1.3.0 hard-codes the public registry URL,
 `pkg/client/registry.go:24`) — `docs/design/registry-index-tool.md` design B, with
-its own phases after the `hcl_modules` arm lands: the index tool in the sidecar,
-then the tuned-row equipping developed on the **train** split only, then the
-amendment that re-registers prereg §2.2's tuned cell. Provider *docs* on those
-arms come from AWS Docs MCP.
+its own phases after the `hcl_modules` arm lands. Provider *docs* on those arms
+come from AWS Docs MCP.
+
+Phases (Amendment 51, DRAFT):
+
+1. **done** — the index tool in the `tf-registry` sidecar (design B): upstream's
+   nine tool names and input schemas answered from the vendored manifest and the
+   provider mirror, every miss a *successful* result naming what exists, no
+   outbound socket in the process. No compose change; `/mcp` and the registry
+   protocol are one process on 8081.
+2. **done** — the run dimension. `Spec.equipping.levels` opts a **train** spec in;
+   one task dir per `(arm, level)`; the material corpus-wide under `equipping/`
+   with per-file sha256; the level carried on the published row as a third
+   `harness` value (`tuned-stale`), derived from the hashed channel and refused
+   when it disagrees; the holdout refusal before any write.
+3. **done** — the label is checked against the artifact
+   (`gates/tuned_equipping.py`, `make equipping-check` in `make check`), and a
+   tuned task's `instruction.md`/`tests/`/`solution/` are byte-identical to its
+   bare sibling's, so an equipping level cannot change what was graded.
+4. **BLOCKING, not started** — install the declared MCP servers in the arm images
+   (`awslabs.aws-documentation-mcp-server` on all three tuned arms,
+   `awslabs.aws-iac-mcp-server` on awscdk) and turn `make equipping-preflight`
+   green. Until then the declaration is honest about intent and false about the
+   container, and **no tuned trial may be run**: claude-code registers a server it
+   cannot start, logs it, and continues, so the row would overstate the equipping.
+5. The tuned-row equipping iterated on the **train** split only, then the live
+   trials that promote Amendment 51 out of DRAFT.
 
 ### M3 — the `hcl-modules` arm (treat as a falsification test, not an enhancement)
 Raw HCL is arguably a strawman: Terraform best practice is community modules

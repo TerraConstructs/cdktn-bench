@@ -227,6 +227,71 @@ def harbor_equipping_offenders(task_dir: str | Path) -> list[str]:
     return offenders
 
 
+# --- The equipping LEVEL a row is labelled with (ROADMAP M2) ----------------
+#
+# `metrics/result_schema.json`'s `harness` field is the equipping axis, and
+# `metrics/tokens_to_green.py` already keys every cell on it -- so the M2
+# factorial's third level is a third `harness` value, not a parallel field. One
+# map, read by the emitter and by the generator's own tests:
+LEVEL_TO_HARNESS = {"bare": "empty", "tuned": "tuned", "tuned-stale": "tuned-stale"}
+# Matched longest-first, so a level name ending in another level's name is read
+# as itself. `bare` is absent by construction: it is the no-suffix case.
+_LEVEL_SUFFIXES = ("-tuned-stale", "-tuned")
+
+
+class EquippingLabelMismatch(ValueError):
+    """A task whose equipping LEVEL and equipping CHANNEL disagree.
+
+    The signature M2 failure mode is a mislabelled row: a `-tuned` task dir whose
+    material never reached the hash (so it is a bare trial published as tuned), or
+    a bare task dir carrying equipping nobody registered (so a tuned trial is
+    published as empty). Both pool incomparable trials into one cell, which is
+    exactly what the hash exists to prevent -- so they are refused, never warned.
+    """
+
+
+def equipping_level(task_dir: str | Path) -> str:
+    """One task's equipping level, cross-checked against the hash's own channel.
+
+    The level's NAME comes from the task directory
+    (`generator/gen.py::task_basename`), because `tuned` and `tuned-stale` are
+    deliberately indistinguishable from inside the container -- same skill
+    directory name, same frontmatter `name`, same MCP list -- so no in-container
+    channel can tell them apart, and inventing one would make the level itself an
+    observable the agent could condition on.
+
+    Whether the task is equipped AT ALL comes from Harbor's declarations, the
+    same channel `compute_equipping_hash` folds in (scheme 2, Amendment 47) and
+    the same one the holdout gate reads. A disagreement between the two is
+    refused: see EquippingLabelMismatch.
+    """
+    task_dir = Path(task_dir)
+    level = "bare"
+    for suffix in _LEVEL_SUFFIXES:
+        if task_dir.name.endswith(suffix):
+            level = suffix.lstrip("-")
+            break
+    declared = harbor_equipping_offenders(task_dir)
+    if level == "bare" and declared:
+        raise EquippingLabelMismatch(
+            f"{task_dir} has no equipping-level suffix, so it would be published "
+            f"as harness={LEVEL_TO_HARNESS['bare']!r}, but it declares equipping: "
+            f"{'; '.join(declared)}. Unregistered equipping on a bare row."
+        )
+    if level != "bare" and not declared:
+        raise EquippingLabelMismatch(
+            f"{task_dir} names level {level!r} but declares no equipping in "
+            f"task.toml [environment] (mcp_servers / skills_dir), the channel the "
+            f"equipping hash reads. A bare trial cannot be published as tuned."
+        )
+    return level
+
+
+def harness_for_task(task_dir: str | Path) -> str:
+    """The `harness` value one task's rows carry, from `equipping_level`."""
+    return LEVEL_TO_HARNESS[equipping_level(task_dir)]
+
+
 def _tree_sha256(root: Path) -> str:
     """One digest over a directory: the canonical JSON of every file's posix path
     and sha256, sorted. Two skill dirs with identical bytes digest alike whatever

@@ -1,0 +1,79 @@
+{
+  "schema": 1,
+  "generated_by": "scripts/vendor_equipping.py",
+  "packages": [
+    {
+      "name": "cdk-authoring",
+      "dir": "bench/cdk-authoring",
+      "level": "tuned",
+      "licence": "bench-authored, this repository's licence",
+      "files": {
+        "SKILL.md": "2d7f87cd7be61a5897775c162f2c757c75309bab06b5883d584834e25142bea4"
+      }
+    },
+    {
+      "name": "cdk-authoring",
+      "dir": "bench/cdk-authoring-stale",
+      "level": "tuned-stale",
+      "licence": "bench-authored, this repository's licence",
+      "files": {
+        "SKILL.md": "159ec529e8eee68b571933dceba91fd15e9aa4efa17e1ffd5755d487d91894b0"
+      }
+    },
+    {
+      "name": "terraform-skill",
+      "dir": "vendor/terraform-skill-1.0.0",
+      "level": "tuned-stale",
+      "licence": "Apache-2.0",
+      "files": {
+        "LICENSE": "a53c0d83ddc48483ed6d7946b27a5e5430f1cb247320ad33e00016e7bebe2437",
+        "SKILL.md": "27b09cec0dc0166dc9aff730997ccc796242120aadb133ba4c0877ff242d672b",
+        "references/ci-cd-workflows.md": "3336ae8caa1d22fdc2aae86e55b9998883470844d247ccf137b36a987899c2b5",
+        "references/module-patterns.md": "0dad39d43d90e540856c8d4be430d27df985a4877bae903620ed9fb00ca32679",
+        "references/quick-reference.md": "ec5aa76fbcf05cc45ac998ac89133eb2e3c92b868a62a4c07450e2eb12470682",
+        "references/security-compliance.md": "3b330ebe42a3484c7aafbca17604b66663fc35f884dd4896b384b29133e8e1a8",
+        "references/testing-frameworks.md": "904fe954b5e42de8821d53f290ae10b8f6dec93026b52fd404fb6ebcd535d90e"
+      },
+      "upstream_repo": "antonbabenko/terraform-skill",
+      "upstream_tag": "v1.0.0",
+      "upstream_commit": "7ec2e136cb51dd9a01c0704200f992b19c2f3771"
+    },
+    {
+      "name": "terraform-skill",
+      "dir": "vendor/terraform-skill-1.17.1",
+      "level": "tuned",
+      "licence": "Apache-2.0",
+      "files": {
+        "LICENSE": "a53c0d83ddc48483ed6d7946b27a5e5430f1cb247320ad33e00016e7bebe2437",
+        "SKILL.md": "70c0038375d3738b4ecfca1016add39ef48a206cbed653c9a1cb336026a5e384",
+        "references/ci-cd-workflows.md": "3ebb9a1d1e88c1f321381a0c179b9f9701e5dc0376bd6fac889feac4dd2de6c4",
+        "references/code-intelligence-lsp.md": "ee5f167d265948960f37dddb393e8473f67090e68e1f2be612db9d1c02e7434e",
+        "references/code-patterns.md": "791e4cb2ed1097fd0b7ddfec94da5440a2ea79bc521c36c6f2fc7e54a14eb1a1",
+        "references/module-patterns.md": "1d98ddc72dca8be36e12ee669c2ba605d255fc5f67ad42e0ee23314e7fe05a3d",
+        "references/quick-reference.md": "07fefaa3d3f84ef53129dc61a081415291d396666d9a613b0a9820e92ca1dd8e",
+        "references/security-compliance.md": "9db93c0a08001ec759b380855afd9378a9b6f452c0f875415c7509888038a2b8",
+        "references/state-management.md": "9912a56d21df2ddc12f9dbda6fa8f9712c16d85e7030991f3011971f999ecc64",
+        "references/testing-frameworks.md": "a35483a965a649603065882498587c62a2badc373a05d6e6620b19eb8dcb425f"
+      },
+      "upstream_repo": "antonbabenko/terraform-skill",
+      "upstream_tag": "v1.17.1",
+      "upstream_commit": "b59d2be9ff4db8f835c8459e05e325ba11e3a21f"
+    }
+  ],
+  "servers": [
+    {
+      "name": "aws-documentation-mcp-server",
+      "distribution": "PyPI awslabs.aws-documentation-mcp-server",
+      "version": "1.2.1",
+      "licence": "Apache-2.0",
+      "transport": "stdio"
+    },
+    {
+      "name": "aws-iac-mcp-server",
+      "distribution": "PyPI awslabs.aws-iac-mcp-server",
+      "version": "1.0.26",
+      "licence": "Apache-2.0",
+      "transport": "stdio"
+    }
+  ]
+}

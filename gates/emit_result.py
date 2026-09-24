@@ -39,7 +39,7 @@ from gates.audit import (
     resolve_step_names,
 )
 from gates.blast_radius import BlastRadiusUnavailable, from_artifacts_dir
-from gates.equipping import compute_equipping_hash
+from gates.equipping import LEVEL_TO_HARNESS, compute_equipping_hash, harness_for_task
 from metrics.extract_signals import trial_signals
 
 sys.path.insert(0, str(_REPO_ROOT / "generator"))
@@ -1244,7 +1244,7 @@ def to_result_row(
     record: dict[str, Any],
     *,
     model: str,
-    harness: str,
+    harness: str | None = None,
     oracle_version: str,
     censored: bool | None = None,
     max_iters: int | None = None,
@@ -1305,6 +1305,27 @@ def to_result_row(
             "forms are never pooled, so it is never defaulted."
         )
 
+    # The equipping axis is DERIVED, never taken on trust: `harness_for_task`
+    # reads the same `task.toml [environment]` channel the equipping hash folds in
+    # and cross-checks it against the task dir's level suffix, so a row cannot be
+    # labelled `tuned` by a flag while carrying no equipping (ROADMAP M2).
+    # An explicit `harness=` is accepted only when it agrees.
+    if not record.get("task_dir"):
+        raise ValueError(
+            "to_result_row: record has no task_dir — the equipping axis is read "
+            "off the task's own declarations, so a row cannot be labelled without "
+            "one. build_result_record always sets it."
+        )
+    derived_harness = harness_for_task(record["task_dir"])
+    if harness is not None and harness != derived_harness:
+        raise ValueError(
+            f"to_result_row: harness={harness!r} was passed, but "
+            f"{record['task_dir']} derives harness={derived_harness!r} from its "
+            f"equipping level and Harbor's own declarations. The equipping axis is "
+            f"read off the hashed channel, not off a flag -- fix the caller, or "
+            f"the task."
+        )
+
     tokens_input = record.get("n_input_tokens") or 0
     tokens_output = record.get("n_output_tokens") or 0
     tokens_cached = record.get("n_cache_tokens")
@@ -1327,7 +1348,7 @@ def to_result_row(
         "oracle_version": oracle_version,
         "arm": record["arm"],
         "model": model,
-        "harness": harness,
+        "harness": derived_harness,
         "validity_class": record["validity_class"],
         "split_group": resolve_split_group(spec_id),
         "tokens_input": tokens_input,
@@ -1408,7 +1429,10 @@ def main(argv: list[str] | None = None) -> int:
     # validated shape) only when --model/--harness/--oracle-version are all
     # given, in addition to the raw record this CLI always prints. ----------
     parser.add_argument("--model", default=None, help="If set (with --harness/--oracle-version), also emit a metrics/result_schema.json row.")
-    parser.add_argument("--harness", default=None, choices=["empty", "tuned"])
+    # Accepted for the cross-check `to_result_row` performs, and for the existing
+    # "--model/--harness/--oracle-version all present" trigger below; the value
+    # itself is derived from the task, so a wrong one is refused rather than used.
+    parser.add_argument("--harness", default=None, choices=sorted(set(LEVEL_TO_HARNESS.values())))
     parser.add_argument("--oracle-version", default=None)
     parser.add_argument("--spec-id", default=None, help="Spec id (e.g. 'apigw-openapi') for split_group resolution (generator/split.py) -- NOT the --scenario/--task values below.")
     parser.add_argument("--scenario", default=None, help="Row's 'scenario' field (aws-bench scenario id, e.g. 'anchor' or 'anchor-2').")

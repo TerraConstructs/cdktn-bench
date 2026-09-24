@@ -41,7 +41,7 @@ from gates.emit_result import (
     resolve_split_group,
     to_result_row,
 )
-from gates.tests.conftest import ARMS, REPO_ROOT, SCENARIOS, trial_dir
+from gates.tests.conftest import ARMS, FIXTURES_DIR, REPO_ROOT, SCENARIOS, trial_dir
 from metrics.validate_result import validate_result
 from oracles.tests.toolcheck import find_tool
 
@@ -472,7 +472,7 @@ class TestToResultRowIsARealSchemaProducer:
         row = to_result_row(
             record,
             model="claude-sonnet-5",
-            harness="tuned",
+            harness="empty",
             oracle_version="oracles@abc123",
             censored=True,
             scenario="anchor",
@@ -485,7 +485,9 @@ class TestToResultRowIsARealSchemaProducer:
         assert row["trial_id"] == "trial-0007"
         assert row["job_id"] == "job-0001"
         assert row["censored"] is True
-        assert row["harness"] == "tuned"
+        # The fixture task declares no equipping, so `empty` is the only label
+        # to_result_row will accept for it -- passing `tuned` is refused.
+        assert row["harness"] == "empty"
         assert validate_result(row) == []
 
     def test_spec_id_is_persisted_on_the_row_distinct_from_scenario(self, task_dir) -> None:
@@ -502,7 +504,7 @@ class TestToResultRowIsARealSchemaProducer:
         row = to_result_row(
             record,
             model="claude-sonnet-5",
-            harness="tuned",
+            harness="empty",
             oracle_version="oracles@abc123",
             scenario="anchor",
             spec_id="apigw-openapi",
@@ -955,6 +957,9 @@ class TestToResultRowAutoCensoring:
             "reward": reward,
             "n_input_tokens": tokens_total,
             "n_output_tokens": 0,
+            # to_result_row reads the equipping level off the task itself, so even
+            # a censoring-only record needs a task dir to be labelled from.
+            "task_dir": str(FIXTURES_DIR / "task-dir"),
         }
         if n_llm_calls is not None:
             record["n_llm_calls"] = n_llm_calls

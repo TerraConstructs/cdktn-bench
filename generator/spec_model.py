@@ -236,6 +236,44 @@ class HclModulesArm(BaseModel):
         return self
 
 
+EQUIPPING_DEFAULT_REASON = (
+    "no tuned equipping cell registered for this scenario yet; `bare` is the "
+    "only level emitted (ROADMAP M2, prereg §2.2)"
+)
+
+
+@_strict
+class Equipping(BaseModel):
+    """The `arm x equipping` run dimension's per-spec OPT-IN (ROADMAP M2).
+
+    Equipping is not a property of a scenario -- the same prompt, image and
+    oracle run at every level, and the material itself is corpus-wide under
+    `equipping/`. What a spec decides is only whether tuned tasks are emitted
+    FOR it, which is the same shape `arms.hcl_modules` uses to gate an optional
+    arm per spec, and `reason` is required in both directions for the same
+    reason: a level that is off must say why in the spec, not in a reviewer's
+    memory.
+
+    `bare` is never listed -- it is always emitted, and a spec listing nothing
+    stays byte-identical to one written before this field existed. A HOLDOUT
+    spec must list nothing: `gen.py::enforce_no_holdout_equipping` refuses a
+    tuned task for it (prereg §7.1, DECISIONS.md Amendment 10), and the check
+    runs on the generated tree rather than here so the rule has exactly one
+    enforcement point.
+    """
+
+    levels: list[Literal["tuned", "tuned-stale"]] = Field(default_factory=list)
+    reason: str = EQUIPPING_DEFAULT_REASON
+
+    @model_validator(mode="after")
+    def _levels_unique_and_reason_nonempty(self) -> "Equipping":
+        if len(set(self.levels)) != len(self.levels):
+            raise ValueError(f"equipping.levels has duplicates: {self.levels}")
+        if not self.reason or not self.reason.strip():
+            raise ValueError("equipping.reason is required in both directions")
+        return self
+
+
 @_strict
 class Arms(BaseModel):
     awscdk: Literal[True]
@@ -1581,6 +1619,9 @@ class Spec(BaseModel):
     difficulty: Annotated[int, Field(ge=1, le=3)]
     services: Annotated[list[str], Field(min_length=1)]
     arms: Arms
+    # The equipping dimension's opt-in. Absent = `bare` only, which is every
+    # spec in the corpus today, so no task dir and no equipping_hash moves.
+    equipping: Equipping = Field(default_factory=Equipping)
     instruction: Instruction
     seeded_files: list[SeededFile] = Field(default_factory=list)
     # §2.7, optional. Absent = the GREENFIELD shape: `entry_file` ships §2.4's

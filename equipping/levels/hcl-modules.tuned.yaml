@@ -1,0 +1,20 @@
+# hcl_modules, equipping level `tuned` (prereg §2.2 as restated by DECISIONS.md
+# Amendment 46 and docs/design/registry-index-tool.md design B).
+skills:
+  - source: vendor/terraform-skill-1.17.1
+    as: terraform-skill
+mcp_servers:
+  # The bench-owned index tool, not hashicorp/terraform-mcp-server: v1.3.0
+  # hard-codes the public registry URL (pkg/client/registry.go:24) with no
+  # override, so it can neither answer from this arm's manifest nor run offline.
+  # Served by the tf-registry sidecar this arm's compose file already declares;
+  # `terraform` is the server name so a skill that says "Terraform MCP" resolves.
+  - name: terraform
+    transport: streamable-http
+    url: http://tf-registry:8081/mcp
+  # Provider attribute and valid-string lookup, the deliberate fairness row both
+  # TF arms get so the comparison is not handicapped (prereg §2.2).
+  - name: aws-documentation
+    transport: stdio
+    command: awslabs.aws-documentation-mcp-server
+    args: []

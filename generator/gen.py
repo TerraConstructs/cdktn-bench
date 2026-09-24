@@ -37,7 +37,7 @@ import tomllib
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import get_args
+from typing import cast, get_args
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -50,6 +50,7 @@ from verify_py import (  # noqa: E402
     build_test_sh_shim,
     build_verify_py,
 )
+import equipping as equipping_material  # noqa: E402
 from spec_model import Arm, Spec, Step, load_spec  # noqa: E402
 from oracles.emit import emit_oracles  # noqa: E402
 from gates.equipping import _discover_equipping_files, harbor_equipping_offenders  # noqa: E402
@@ -97,20 +98,30 @@ def scenario_id_for(spec: Spec, arm: Arm) -> str:
     return shard_for(spec, arm)
 
 
-def task_dir(spec: Spec, arm: Arm) -> Path:
-    return TASKS_DIR / scenario_id_for(spec, arm) / f"{spec.id}-{ARM_DIRNAME[arm]}"
+def task_basename(spec: Spec, arm: Arm, level: str = equipping_material.BARE) -> str:
+    """`<spec id>-<arm dirname>` at level `bare`, plus `-<level>` above it.
+
+    Bare keeps the name it has always had, so no already-published task dir,
+    local-registry entry or equipping_hash moves when a spec opts into a tuned
+    level (ROADMAP M2)."""
+    suffix = "" if level == equipping_material.BARE else f"-{level}"
+    return f"{spec.id}-{ARM_DIRNAME[arm]}{suffix}"
 
 
-def stale_task_dirs(spec: Spec, arm: Arm) -> list[Path]:
+def task_dir(spec: Spec, arm: Arm, level: str = equipping_material.BARE) -> Path:
+    return TASKS_DIR / scenario_id_for(spec, arm) / task_basename(spec, arm, level)
+
+
+def stale_task_dirs(spec: Spec, arm: Arm, level: str = equipping_material.BARE) -> list[Path]:
     """This (spec, arm) task's directories under a shard it no longer belongs
     to. Raising generator/shards.toml's shard_count moves tasks between
     scenarios; a copy left under the old shard is a task bound to an account
     no trial resets, so generate() sweeps them (carrying their hand-authored
     files to the new shard first -- see sweep_stale_task_dirs)."""
-    current = task_dir(spec, arm)
+    current = task_dir(spec, arm, level)
     return sorted(
         p
-        for p in TASKS_DIR.glob(f"*/{spec.id}-{ARM_DIRNAME[arm]}")
+        for p in TASKS_DIR.glob(f"*/{task_basename(spec, arm, level)}")
         if p.is_dir() and p != current
     )
 # spec field name -> the subdirectory of environment/ that each arm's
@@ -781,9 +792,13 @@ def write_workspace_seed_extras(spec: Spec, arm: Arm, workspace: Path) -> None:
 # needs an allowlist entry. Module-level because
 # workspace_files_missing_from_dockerfile() below must apply the SAME
 # definition of "build artifact, not task content" when it decides which
-# workspace files need a Dockerfile COPY.
-_ARTIFACT_SUFFIXES = (".js", ".d.ts", ".tsbuildinfo")
-_ARTIFACT_DIRS = {"node_modules", "cdk.out", "cdktf.out", "dist"}
+# workspace files need a Dockerfile COPY -- and because the identity scan
+# (generator/tests/test_scenario_identity.py) reads these two names to skip the
+# same artifacts: an arm source file the gates import (the tf-registry
+# responder) leaves `__pycache__` next to itself, and a .pyc holding a
+# scenario's trap word is a leak the scan must not attribute to arm prose.
+_ARTIFACT_SUFFIXES = (".js", ".d.ts", ".tsbuildinfo", ".pyc")
+_ARTIFACT_DIRS = {"node_modules", "cdk.out", "cdktf.out", "dist", "__pycache__"}
 _JS_ALLOWLIST: set[str] = set()
 
 
@@ -983,6 +998,39 @@ def patch_dockerfile_workspace_copies(
     block.extend(f"COPY {workspace_subdir}/{rel} ./{rel}" for rel in missing)
     rendered = "\n".join(block)
 
+    lines = text.splitlines()
+    cmd_idx = next(
+        (i for i in reversed(range(len(lines))) if lines[i].strip().upper().startswith("CMD")),
+        None,
+    )
+    if cmd_idx is None:
+        return text.rstrip("\n") + "\n\n" + rendered + "\n"
+    prefix = [""] if cmd_idx > 0 and lines[cmd_idx - 1].strip() else []
+    lines[cmd_idx:cmd_idx] = prefix + rendered.split("\n") + [""]
+    return "\n".join(lines) + "\n"
+
+
+def patch_dockerfile_equipping_copy(text: str) -> str:
+    """Append the one COPY that lands a tuned task's `environment/equipping/` in
+    the image, before the trailing CMD. Same patch-the-copied-arm-file mechanism
+    as patch_dockerfile_workspace_copies, and only ever called for a task at a
+    tuned level -- a bare task's Dockerfile stays byte-identical to its arm's.
+
+    A directory COPY, not the named-file discipline the workspace COPYs follow:
+    the named discipline exists to keep the GRADED workspace's contract explicit,
+    and this tree is neither graded nor in the workspace. Its contents are pinned
+    and digested elsewhere (equipping/MANIFEST.json) and hashed into the trial
+    (gates/equipping.py), so a blanket copy cannot smuggle anything in unnoticed.
+    """
+    block = [
+        "# --- Equipping material (generator-appended) ------------------------------",
+        "# The skills this task's agent is equipped with, plus the MCP declarations",
+        "# task.toml repeats. Landed OUTSIDE the project directory on purpose: this is",
+        "# equipping, not part of the artifact the verifier grades.",
+        "# Generated — regenerate with `make gen` / `make gen-all`, never hand-edit.",
+        f"COPY equipping/ {equipping_material.CONTAINER_EQUIPPING_ROOT}/",
+    ]
+    rendered = "\n".join(block)
     lines = text.splitlines()
     cmd_idx = next(
         (i for i in reversed(range(len(lines))) if lines[i].strip().upper().startswith("CMD")),
@@ -1273,7 +1321,9 @@ def workspace_seed_sha256(spec: Spec) -> str | None:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def build_task_toml(spec: Spec, arm: Arm, task_uuid: str) -> str:
+def build_task_toml(
+    spec: Spec, arm: Arm, task_uuid: str, level: str = equipping_material.BARE
+) -> str:
     per_arm = getattr(spec.instruction.per_arm, arm)
     live = spec.verifier.live_check
     # agent_role_name and concurrency mode are spec-driven. `None` -- any spec
@@ -1459,7 +1509,7 @@ def build_task_toml(spec: Spec, arm: Arm, task_uuid: str) -> str:
         *multi_step_header,
         "",
         "[task]",
-        f'name = "iac-abstraction/{spec.id}-{ARM_DIRNAME[arm]}"',
+        f'name = "iac-abstraction/{task_basename(spec, arm, level)}"',
         # `workspace_header()` -- the step-1-safe header -- not the whole-arc
         # `title`, on a MULTI-STEP spec (SCHEMA.md §0.1). task.toml is
         # host-side metadata Harbor never uploads into the agent environment
@@ -1615,6 +1665,16 @@ def build_task_toml(spec: Spec, arm: Arm, task_uuid: str) -> str:
         # so restating it would rewrite every task.toml in the corpus to say
         # what it already means. See Spec.allow_internet.
         [] if spec.allow_internet else ["allow_internet = false"]
+    ) + (
+        # The equipping level's own two Harbor channels -- `skills_dir` and the
+        # `[[environment.mcp_servers]]` tables -- both of which gates/equipping.py
+        # folds into the hash as scheme 2 (DECISIONS.md Amendment 47). Empty at
+        # `bare`, so every task.toml in the corpus stays byte-identical.
+        equipping_material.task_toml_environment_lines(
+            equipping_material.load_level(ARM_DIRNAME[arm], level)
+            if level != equipping_material.BARE
+            else {"skills": [], "mcp_servers": []}
+        )
     ) + [
         "",
     ] + build_steps_toml(spec, live)
@@ -4435,7 +4495,46 @@ def write_multi_step_layout(spec: Spec, arm: Arm, arm_dir: Path) -> None:
             make_executable(solve_sh)
 
 
-def generate_arm(spec: Spec, arm: Arm) -> Path:
+# Everything in a task dir that is NOT the equipping level's own two outputs.
+# `task.toml` carries the level's Harbor declarations and `environment/` carries
+# its material and the COPY that lands it; every other path is the scenario, and
+# the scenario is what the two levels must share byte-for-byte.
+_LEVEL_OWNED_PATHS = ("task.toml", "environment")
+
+
+def mirror_bare_task_material(bare_dir: Path, tuned_dir: Path) -> None:
+    """Make a tuned task's non-equipping bytes identical to its bare sibling's.
+
+    Equipping changes the PROMPT SURFACE, never the oracle: H1 and H2 are only
+    readable if a tuned trial and a bare trial of the same scenario are graded by
+    the same verifier, from the same instruction, against the same negative
+    fixtures. Regenerating is not enough to guarantee that -- `solution/solve.sh`
+    and the `solution/broken/` fixtures are HAND-AUTHORED and destructive-safe
+    (SCHEMA.md §8.2), so the generator scaffolds a stub for a task directory it
+    has not seen before and never overwrites the real one. A tuned task dir is
+    always new, so without this it ships a stub that exits 1 and no negative
+    fixtures at all.
+
+    Copied from the bare sibling rather than authored twice: two copies of a
+    hand-authored reference solution drift, and the drift would be a silent
+    change of oracle between two cells of one factorial.
+    `gates/tuned_equipping.py` re-checks the identity this establishes.
+    """
+    for entry in sorted(tuned_dir.iterdir()):
+        if entry.name in _LEVEL_OWNED_PATHS:
+            continue
+        shutil.rmtree(entry) if entry.is_dir() else entry.unlink()
+    for entry in sorted(bare_dir.iterdir()):
+        if entry.name in _LEVEL_OWNED_PATHS:
+            continue
+        dest = tuned_dir / entry.name
+        if entry.is_dir():
+            shutil.copytree(entry, dest, ignore=_ignore_build_artifacts)
+        else:
+            shutil.copy2(entry, dest)
+
+
+def generate_arm(spec: Spec, arm: Arm, level: str = equipping_material.BARE) -> Path:
     if arm in ARMS_PENDING_IMAGE:
         raise NotImplementedError(
             f"arm {arm!r} cannot be generated yet: this module has no per-arm "
@@ -4446,16 +4545,22 @@ def generate_arm(spec: Spec, arm: Arm) -> Path:
             "is still missing is the pilot's module-based references "
             "(docs/design/tf-modules-arm.md milestone 5)."
         )
-    arm_dir = task_dir(spec, arm)
+    arm_dir = task_dir(spec, arm, level)
     arm_dir.mkdir(parents=True, exist_ok=True)
 
     # environment/ -- byte-copy + entry_file overwrite
     write_environment(spec, arm, arm_dir / "environment")
+    # ... then this level's equipping material on top, into an `equipping/`
+    # subdirectory created only at a tuned level, with the COPY that lands it.
+    equipping_material.materialize(ARM_DIRNAME[arm], level, arm_dir / "environment")
+    if level != equipping_material.BARE:
+        dockerfile = arm_dir / "environment" / "Dockerfile"
+        dockerfile.write_text(patch_dockerfile_equipping_copy(dockerfile.read_text()))
 
     # task.toml -- reuse existing UUID if this path was generated before
     task_toml_path = arm_dir / "task.toml"
     task_uuid = existing_task_uuid(task_toml_path) or str(uuid.uuid4())
-    task_toml_path.write_text(build_task_toml(spec, arm, task_uuid))
+    task_toml_path.write_text(build_task_toml(spec, arm, task_uuid, level))
 
     if spec.is_multi_step():
         write_multi_step_layout(spec, arm, arm_dir)
@@ -4716,6 +4821,34 @@ class HoldoutEquippingViolation(RuntimeError):
     """Raised by enforce_no_holdout_equipping -- see its own docstring."""
 
 
+def spec_group_or_none(spec_id: str) -> str | None:
+    """`specs/split.yaml`'s group for a spec id, or None when the split file does
+    not exist yet. An unclassified spec already reads as None from spec_group,
+    so both "not yet classified" cases land in one value."""
+    try:
+        return spec_group(spec_id)
+    except FileNotFoundError:
+        return None
+
+
+def refuse_holdout_equipping_optin(spec: Spec) -> None:
+    """A HOLDOUT spec may not OPT IN to a tuned level (prereg §7.1, Amendment 10).
+
+    Refused before `generate()` writes anything, so `make gen` cannot leave a
+    half-built violation behind for `enforce_no_holdout_equipping` -- which reads
+    the generated tree -- to find. Same rule, same rationale, earlier and on the
+    declaration rather than on the bytes.
+    """
+    if spec.equipping.levels and spec_group_or_none(spec.id) == "holdout":
+        raise HoldoutEquippingViolation(
+            f"spec {spec.id!r} is assigned to the HOLDOUT split (specs/split.yaml) "
+            f"but declares equipping.levels = {spec.equipping.levels}. Per prereg "
+            f"§7.1 / DECISIONS.md Amendment 10, tuned equipping is developed on the "
+            f"TRAIN split only -- a holdout scenario SELECTS among equippings "
+            f"already built on train."
+        )
+
+
 def enforce_no_holdout_equipping(spec: Spec, generated: dict[Arm, Path]) -> None:
     """DECISIONS.md Amendment 10 / prereg §7.1: "tuned skills/MCP equipping
     must be developed on a held-out scenario split, never tuned on the
@@ -4814,11 +4947,18 @@ def update_local_registry(spec: Spec, generated: dict[Arm, Path]) -> None:
         )
     tasks: list[dict[str, str]] = dataset.setdefault("tasks", [])
 
-    this_spec_names = {f"{spec.id}-{ARM_DIRNAME[arm]}" for arm in ARM_DIRNAME}
+    this_spec_names = {
+        task_basename(spec, arm, level)
+        for arm in ARM_DIRNAME
+        for level in (equipping_material.BARE, *equipping_material.TUNED_LEVELS)
+    }
     tasks[:] = [t for t in tasks if t.get("name") not in this_spec_names]
-    for arm in generated:
-        name = f"{spec.id}-{ARM_DIRNAME[arm]}"
-        path = task_dir(spec, arm).relative_to(REPO_ROOT).as_posix()
+    for key in generated:
+        arm, _, level = str(key).partition("@")
+        arm = cast(Arm, arm)
+        level = level or equipping_material.BARE
+        name = task_basename(spec, arm, level)
+        path = task_dir(spec, arm, level).relative_to(REPO_ROOT).as_posix()
         tasks.append({"name": name, "path": path})
     tasks.sort(key=lambda t: t["name"])
 
@@ -4873,21 +5013,61 @@ def generate(spec_path: Path) -> dict[Arm, Path]:
     # destroyed by the regeneration itself, `make gen` exits 0, and a holdout
     # scenario's equipping material is silently gone. This one fails LOUDLY
     # while the material still exists.
-    existing_dirs: dict[Arm, Path] = {
-        arm: task_dir(spec, arm) for arm in spec.arms.enabled_arms() if task_dir(spec, arm).exists()
-    }
+    refuse_holdout_equipping_optin(spec)
+    # A level a spec opts into is emitted only for the arms whose tuned material
+    # is DEFINED (`equipping/levels/<arm>.<level>.yaml`). prereg §2.2 names
+    # material for three arms and none for terraconstructs, so the (arm, level)
+    # grid is legitimately ragged; inventing a cell to square it would be
+    # unregistered equipping. Every omission is printed, so a ragged grid is a
+    # stated fact rather than a silent one.
+    def levels_for(arm: Arm) -> list[str]:
+        defined = equipping_material.available_levels(ARM_DIRNAME[arm])
+        return [equipping_material.BARE, *(l for l in spec.equipping.levels if l in defined)]
+
+    for arm in spec.arms.enabled_arms():
+        for level in spec.equipping.levels:
+            if level not in levels_for(arm):
+                print(
+                    f"WARNING: {spec.id}: no tuned material defined for "
+                    f"({arm}, {level}) -- {equipping_material.level_path(ARM_DIRNAME[arm], level).relative_to(REPO_ROOT)} "
+                    f"does not exist, so that cell is not emitted",
+                    file=sys.stderr,
+                )
+
+    existing_dirs: dict[Arm, Path] = {}
+    for arm in spec.arms.enabled_arms():
+        for level in levels_for(arm):
+            path = task_dir(spec, arm, level)
+            if path.exists():
+                existing_dirs[cast(Arm, f"{arm}@{level}")] = path
     enforce_no_holdout_equipping(spec, existing_dirs)
     sweep_stale_task_dirs(spec)
 
     generated: dict[Arm, Path] = {}
     for arm in spec.arms.enabled_arms():
-        generated[arm] = generate_arm(spec, arm)
-    # tear down a generated but now-disabled optional arm's dir
-    for arm in set(get_args(Arm)) - set(spec.arms.enabled_arms()):
-        stale = task_dir(spec, arm)
-        if stale.exists():
-            shutil.rmtree(stale)
-    self_check_parity(spec, generated)
+        for level in levels_for(arm):
+            # The bare task keeps the plain `arm` key so every existing caller of
+            # generate() -- parity self-check, local registry, callers in tests --
+            # reads exactly what it read before. A tuned task is keyed
+            # `<arm>@<level>`, which no Arm literal can collide with.
+            key = arm if level == equipping_material.BARE else f"{arm}@{level}"
+            generated[cast(Arm, key)] = generate_arm(spec, arm, level)
+        # `bare` is levels_for()'s first element, so its dir exists by now.
+        for level in levels_for(arm)[1:]:
+            mirror_bare_task_material(task_dir(spec, arm), task_dir(spec, arm, level))
+    # tear down a generated but now-disabled optional arm's dir, and any tuned
+    # level this spec has stopped opting into
+    for arm in get_args(Arm):
+        for level in (equipping_material.BARE, *equipping_material.TUNED_LEVELS):
+            if arm in spec.arms.enabled_arms() and level in levels_for(arm):
+                continue
+            stale = task_dir(spec, arm, level)
+            if stale.exists():
+                enforce_no_holdout_equipping(spec, {cast(Arm, arm): stale})
+                shutil.rmtree(stale)
+    # Parity is an ARM property: the tuned tasks carry a byte-identical
+    # instruction.md, and the check's own error messages are keyed by Arm.
+    self_check_parity(spec, {k: v for k, v in generated.items() if "@" not in str(k)})
     # Post-generation check as well: generate_arm()/write_environment() only
     # wipes `environment/`, so equipping material placed elsewhere under the
     # task dir (task root, tests/, solution/) survives that wipe and is caught

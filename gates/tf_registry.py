@@ -76,6 +76,7 @@ def cli_config_text(port: int, inherited: Path | None) -> str:
 def running_registry(
     root: Path | str | None = None,
     env: dict[str, str] | None = None,
+    mirror_root: Path | str | None = None,
 ) -> Iterator[dict[str, str]]:
     """Start the responder over `root`, yield a ready-to-use `env=` dict.
 
@@ -86,6 +87,12 @@ def running_registry(
     and the access log removed on any exit, including an exception raised inside
     the `with` block -- so a caller reads `CDKTN_BENCH_TF_REGISTRY_LOG` while the
     block is still open.
+
+    `mirror_root` is for the index tool's provider answers only: the responder
+    defaults to the mirror path inside the arm image, which does not exist on the
+    host, and a caller with a `docker cp`ed copy (gates/oracle_falsifiability.py
+    keeps one under .cache/) points this at it. Absent, the provider tools answer
+    that no mirror is present rather than describing a provider that is not here.
     """
     root = Path(MODULES_ROOT if root is None else root)
     if not (root / "manifest.json").is_file():
@@ -99,8 +106,11 @@ def running_registry(
     pump: threading.Thread | None = None
     log_path = Path(tmp) / "access.log"
     log = log_path.open("w")
+    command = [sys.executable, str(RESPONDER), "--root", str(root), "--port", "0"]
+    if mirror_root is not None:
+        command += ["--mirror-root", str(mirror_root)]
     proc = subprocess.Popen(
-        [sys.executable, str(RESPONDER), "--root", str(root), "--port", "0"],
+        command,
         stdout=subprocess.PIPE,
         stderr=log,
         text=True,

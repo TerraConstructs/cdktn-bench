@@ -195,6 +195,48 @@ the tier reports, and a destroy that fails for a transient AWS reason is not
 retried (the destroy is a toolchain run, not an `aws` call, so Amendment 35's
 retry does not reach inside it).
 
+## Equipping levels (`arm x equipping`)
+
+A spec opts in with `equipping.levels` (specs/SCHEMA.md §1.1) and the generator
+emits one task directory per `(arm, level)`: `<spec id>-<arm dirname>` at `bare`,
+`<spec id>-<arm dirname>-<level>` above it. `bare` is always emitted and never
+listed, so a spec that says nothing produces exactly the bytes it produced
+before. The material is corpus-wide under `equipping/`, keyed
+`levels/<arm dirname>.<level>.yaml`; a level is emitted only for the arms whose
+file exists, and `make gen` prints a WARNING naming every pair it therefore does
+not emit, so a ragged grid is stated rather than silent.
+
+What a tuned level adds to a task, and nothing else:
+
+| path | what moves |
+|---|---|
+| `environment/equipping/skills/<name>/` | the level's skill trees, copied from `equipping/` |
+| `environment/equipping/mcp.json` | the same MCP list as a file, so the hash's file glob sees it too |
+| `environment/Dockerfile` | one appended `COPY equipping/ /opt/equipping/` (`patch_dockerfile_equipping_copy`), outside `/app/project` |
+| `task.toml [environment]` | `skills_dir` plus one `[[environment.mcp_servers]]` table per server — the two channels Harbor reads |
+
+Everything else is the scenario and is byte-identical across levels:
+`instruction.md`, `tests/` and `solution/` (the reference solution and the
+`solution/broken/` negative fixtures) are mirrored from the bare sibling by
+`mirror_bare_task_material`. That copy is not a convenience — `solution/solve.sh`
+and the negative fixtures are hand-authored and destructive-safe, so a freshly
+created tuned dir would otherwise carry the scaffolded stub that exits 1 and no
+negative fixtures at all, and an equipping level would silently change what was
+graded. `gates/tuned_equipping.py` re-checks the identity per level.
+
+**Holdout.** A spec assigned `holdout` in `specs/split.yaml` may list no levels:
+`generate()` refuses before it writes anything and
+`enforce_no_holdout_equipping` refuses again on the generated tree (prereg §7.1,
+DECISIONS.md Amendment 10). Tuned equipping is developed on `train` only.
+
+**Row labelling.** The level is not a new result field. It is the existing
+`harness` column (`metrics/result_schema.json`), whose enum M2 extends to
+`empty` / `tuned` / `tuned-stale`, so `metrics/tokens_to_green.py`'s
+`(scenario_form, arm, model, harness)` cell key already carries the equipping
+dimension and `tuned` can never pool with `tuned-stale`. The value is derived by
+`gates/equipping.py::harness_for_task`, never passed as a flag — see
+docs/gates.md "tuned-equipping".
+
 ## Scenario shards
 
 A shard IS an AWS member account. aws-bench binds one scenario to exactly one

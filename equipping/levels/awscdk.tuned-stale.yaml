@@ -1,0 +1,20 @@
+# awscdk, equipping level `tuned-stale` (ROADMAP M2 H2, the staleness cost).
+# Identical to `tuned` in every channel except the skill body: same MCP servers,
+# same skill directory name and frontmatter, so the level is not discoverable
+# from inside the container. What is stale is recorded in
+# scripts/vendor_equipping.pins.json.
+skills:
+  - source: bench/cdk-authoring-stale
+    as: cdk-authoring
+mcp_servers:
+  # The MCP the Kiro power itself declares (kirodotdev/powers/
+  # aws-infrastructure-as-code/mcp.json), pinned. Its CDK documentation,
+  # samples and best-practice tools need no AWS credentials.
+  - name: aws-iac
+    transport: stdio
+    command: awslabs.aws-iac-mcp-server
+    args: []
+  - name: aws-documentation
+    transport: stdio
+    command: awslabs.aws-documentation-mcp-server
+    args: []

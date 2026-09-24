@@ -9332,3 +9332,200 @@ radius.
   The pattern now excludes those names (`L1_NOT_AN_ESCAPE`), the finding is
   retracted in ROADMAP §3, and the benchmark has no mechanical escape-hatch
   evidence yet.
+
+---
+
+## Amendment 51 (2026-09-24) — the `arm x equipping` factorial: prereg §2.2's tuned cell, re-registered as an artifact — DRAFT
+
+> Numbered 51 by the M2 work order; no Amendment 50 exists in this file. The gap
+> is left as-is rather than closed, because renumbering an amendment breaks every
+> reference already written against its number.
+
+**Decision.** Equipping becomes a **run dimension** the generator emits, the
+published row labels it from the hashed channel, and prereg §2.2's tuned cell is
+re-registered as a pinned artifact instead of a name. Five parts:
+
+1. **The dimension.** `Spec.equipping.levels` (`specs/SCHEMA.md` §1.1) opts one
+   spec into `tuned`, `tuned-stale`, or both. `bare` is always emitted and never
+   listed, so a spec that says nothing produces the bytes it produced before and
+   no published `equipping_hash` moves. One task dir per `(arm, level)`:
+   `<spec id>-<arm dirname>` at `bare`, `<spec id>-<arm dirname>-<level>` above
+   it. The material is corpus-wide under `equipping/` (`equipping/README.md`),
+   keyed `levels/<arm dirname>.<level>.yaml` — a scenario does not own equipping,
+   it only opts in, which is the shape `arms.hcl_modules` already uses.
+2. **The row label is the existing `harness` column, not a new field.**
+   `metrics/tokens_to_green.py` already keys every cell on
+   `(scenario_form, arm, model, harness)`, so the factorial's third level is a
+   third `harness` value — the enum becomes `empty` / `tuned` / `tuned-stale` —
+   and `tuned` can never pool with `tuned-stale`. The value is **derived, never
+   passed**: `gates/equipping.py::harness_for_task` reads the level name off the
+   task directory and reads *whether the task is equipped at all* off
+   `task.toml [environment] mcp_servers`/`skills_dir`, the same channel the
+   equipping hash folds in (scheme 2, Amendment 47) and the same one the holdout
+   gate reads. A disagreement in either direction is refused, and `to_result_row`
+   refuses a `--harness` that contradicts the task, or a record with no
+   `task_dir`, rather than defaulting.
+   *Why the level name comes off the directory:* `tuned` and `tuned-stale` are
+   deliberately indistinguishable inside the container — same skill directory
+   name, same frontmatter `name`, same MCP list — so no in-container channel can
+   tell them apart, and inventing one would make the level an observable the agent
+   could condition on.
+3. **Equipping changes the prompt surface, never the oracle.** A tuned task dir
+   differs from its bare sibling in exactly two paths, `task.toml` and
+   `environment/`. `instruction.md`, `tests/` and `solution/` (the reference
+   solution *and* the `solution/broken/` negative fixtures `make falsifiability`
+   and `make grading-proof` read) are byte-identical, mirrored from the bare task
+   by `gen.py::mirror_bare_task_material`. This is not tidiness: those files are
+   hand-authored and destructive-safe (SCHEMA.md §8.2), so a freshly created tuned
+   dir would otherwise ship the scaffolded `solve.sh` stub that exits 1 and no
+   negative fixtures at all, and an equipping level would silently change what was
+   graded.
+4. **The declaration is checked against the artifact.** The equipping hash proves
+   a *declaration* moved; it cannot prove the material *arrived*, and Harbor makes
+   both ways of not arriving silent — skills are installed with
+   `cp -r <skills_dir>/* ... || true`, and claude-code logs an MCP server it
+   cannot start and continues (`harbor/agents/installed/claude_code.py`). So
+   `gates/tuned_equipping.py` (`make equipping-check`, wired into `make check`;
+   `make equipping-preflight` for the Docker half) checks `skills_dir` against a
+   real tree, the Dockerfile COPY against the declared path, `mcp.json` against
+   `task.toml`, the oracle bytes against the bare sibling, and every declared
+   `stdio` command against the arm image's PATH.
+5. **Holdout.** A `holdout` spec may list no level: `generate()` refuses before it
+   writes anything, and `enforce_no_holdout_equipping` refuses again on the
+   generated tree (prereg §7.1, Amendment 10). Tuned equipping is developed and
+   iterated on `train` only; a holdout scenario SELECTS among equippings already
+   built on train.
+
+**The tuned cell, as built.** Pins verified by
+`scripts/vendor_equipping.py --verify` (19 files, 4 packages); per-file sha256 in
+`equipping/MANIFEST.json`, pins *and their reasoning* in
+`scripts/vendor_equipping.pins.json`.
+
+| arm | `tuned` skill | `tuned` MCP | upstream commit | licence | `tuned-stale` |
+|---|---|---|---|---|---|
+| `hcl_modules` | `terraform-skill` v1.17.1 | bench index tool (`streamable-http http://tf-registry:8081/mcp`) + AWS Docs MCP 1.2.1 | antonbabenko/terraform-skill `b59d2be9ff4db8f835c8459e05e325ba11e3a21f` | Apache-2.0 (LICENSE vendored; GitHub reads "Other" only because of a prepended copyright header) | same skill at v1.0.0, `7ec2e136cb51dd9a01c0704200f992b19c2f3771` |
+| `hcl_raw` | same | AWS Docs MCP 1.2.1 only — **no index tool** | same | Apache-2.0 | same |
+| `awscdk` | `cdk-authoring`, **bench-written** | `awslabs.aws-iac-mcp-server` 1.0.26 + AWS Docs MCP 1.2.1 | awslabs/mcp (Apache-2.0); the skill *cites* kirodotdev/powers `aws-infrastructure-as-code` | the Kiro power is **not redistributable** (no LICENSE; a use licence for Kiro users) → pointer + bench skill | same skill with v1-era facts |
+| `terraconstructs` | none | none | — | — | none |
+
+**What is stale, exactly** (H2 must name its own independent variable).
+*Terraform v1.0.0:* no feature-guard/version-floor table (`removed` 1.7+, provider
+functions 1.8+, cross-variable validation 1.9+, S3 `use_lockfile` 1.10+,
+`write_only` 1.11+); prescribes `dynamodb_table` state locking with `use_lockfile`
+absent everywhere (the arms pin terraform ≥ 1.11.1); no `state-management.md`; no
+"validate schemas before asserting" guard (added v1.14.0). *CDK v1-era:*
+`@aws-cdk/aws-*` and `@aws-cdk/core` imports (the arm pins `aws-cdk-lib` 2.263.0,
+so they do not compile), `CDK_NEW_BOOTSTRAP=1`, `cdk synth` without
+`--no-lookups`. Both levels keep the same skill directory name, the same
+frontmatter `name` and the same MCP list.
+
+**Three finisher decisions, recorded rather than left implicit.**
+
+* **`hcl_raw` tuned carries no index tool.** §2.2-as-restated (Amendment 46) names
+  the index tool for both Terraform arms; this reads that more narrowly. The tool
+  answers from a vendored module manifest and `hcl_raw` vendors no modules, so
+  every answer it could give on that arm is "not available in this environment";
+  serving it also means standing the `tf-registry` sidecar up on `hcl_raw`, moving
+  every `hcl_raw` compose hash for no information. §2.2's symmetry principle asks
+  for "an ecosystem docs/MCP layer plus an authoring skill", which AWS Docs MCP
+  plus the vendored skill satisfies. **Reversible**: add
+  `equipping/levels/hcl-raw.tuned.yaml`'s server and the sidecar.
+* **The AWSCDK skill is bench-written.** §2.2 names Kiro Powers; the power ships no
+  LICENSE and a use licence for Kiro users, so redistributing its prose is not
+  available. The substitution is a pointer plus a bench skill
+  (`equipping/bench/cdk-authoring.UPSTREAM.md`), which changes what the tuned cell
+  *is* and is therefore registered here rather than assumed equivalent.
+* **`terraconstructs` stays blank.** §2.2 names no material for it (the arm
+  post-dates the table, Amendments 2 and 46). A cell invented to square the grid
+  would be unregistered equipping, so the grid is ragged and `make gen` prints a
+  WARNING naming every omitted `(arm, level)`.
+
+**What a tuned row's hash covers — and what it does not.** The hash (scheme 2)
+covers the copied `skills/` tree byte for byte, the emitted `mcp.json`,
+`[environment] skills_dir`, `[environment] mcp_servers`, `instruction.md`, the
+workspace seed and the image digest. It therefore moves per level and per byte of
+skill text (proved below). It does **not** cover the *version* of an MCP server
+declared only by `command`: the pin lives in `equipping/MANIFEST.json`, which
+ships in no task. Once phase 4 installs the servers in the arm Dockerfiles the
+image digest covers them, which is the reason the install must be pinned in the
+Dockerfile and not resolved at trial time. AWS Docs MCP additionally reaches the
+public internet by design, so for that server the hash pins the client and never
+the corpus it answers from — logged, and the same deliberate fairness trade §2.2
+already made.
+
+**H1 and H2, with their falsifiers and the field they read.**
+
+* **H1** — giving an arm its ecosystem's real equipping collapses
+  read-before-write and tokens-to-green follows. Read from `rbw` (a first-class
+  row field since Amendment 49) and `tokens_total`, per
+  `(scenario_form, arm, model, harness)` cell. *Falsified* if `tuned` ≈ `empty`
+  on `rbw` within the pre-registered n, or if `rbw` falls and tokens-to-green does
+  not: discovery cost that does not pay for itself is not the claim.
+* **H2 (the staleness cost)** — a deliberately outdated skill *increases* error
+  rate relative to no skill at all. Read from `reward`/`validity_class` and
+  `tokens_total` on the `tuned-stale` cell against the `empty` cell of the same
+  arm. *Falsified* if `tuned-stale` ≥ `empty` on reward, i.e. stale guidance is
+  still better than none — which would be a finding, not a failure.
+* Neither hypothesis is readable if the two cells were graded differently, which
+  is what part 3 above exists to make impossible.
+
+**DRAFT, and what promotes it.** Nothing here has run a trial. It is promoted by
+the first tuned live trial whose row carries `harness: tuned` derived from a
+container that actually held the material — which requires phase 4 (the MCP
+servers installed in the arm images) and `make equipping-preflight` green.
+
+**Evidence (host-side).**
+
+* `make gen-all` byte scope: the only generated bytes this amendment moves are the
+  six new tuned task directories, plus 22 copies of the `tf-registry` responder
+  (one reworded docstring, each copy `diff`-identical to the arm source). No
+  bare task's `task.toml`, instruction, oracle or `.sh` byte moves.
+* Equipping hash, one spec, three arms x three levels: nine distinct digests —
+  awscdk `2f22f1ec`/`89ad1962`/`945e1026`, hcl-raw
+  `92264cbb`/`0c6db3de`/`9d1e81c7`, hcl-modules `6896322f`/`667e58ad`/`d3439a08`
+  (first 8 hex, fixed image digest). One appended character in a vendored
+  `SKILL.md` moves it.
+* `diff -r` bare vs tuned, all six pairs: the only differences are
+  `environment/Dockerfile` (the appended COPY), `environment/equipping/` (new) and
+  `task.toml`.
+* `make equipping-check` (static): 6 of 6 OK, exit 0. `make equipping-preflight`
+  (with images): **exit 1 for all six**, naming
+  `awslabs.aws-documentation-mcp-server` (three arms) and
+  `awslabs.aws-iac-mcp-server` (awscdk) as absent from PATH. That red is the
+  amendment's own blocking finding, not a test defect.
+* MCP round trip against the sidecar in the rebuilt `cdktn-bench/hcl-modules:dev`
+  (scratch compose file, one session): `initialize` → `notifications/initialized`
+  → `tools/list` (nine names) → one `tools/call` per tool, no `isError`; five
+  deliberate misses all successful results carrying "is not available in this
+  environment"; the same call twice byte-identical.
+* Holdout: `equipping.levels` on a holdout spec raises `HoldoutEquippingViolation`
+  before any write, `make gen` exit 1.
+* `scripts/vendor_equipping.py --verify`: OK, 19 files across 4 packages.
+* **The level name does not reach the agent.** It is in the task directory name,
+  which becomes Harbor's `trial_name` (first 32 characters plus a uuid,
+  `harbor/models/trial/config.py::generate_trial_name`) and from there the
+  docker-compose PROJECT name — so the question is whether a project name carries
+  into the container. Checked against the real arm image under a project named
+  `ecs-swappiness-awscdk-tuned-stal`: `hostname` is the container id, `/etc/hosts`
+  holds only that id, and no environment variable names the project or the level.
+  Harbor's base compose sets no `hostname` and compose injects no
+  `COMPOSE_PROJECT_NAME`. The level therefore stays host-side, which is what makes
+  the deliberate `tuned`/`tuned-stale` indistinguishability real rather than
+  nominal.
+
+**One defect fixed in passing.** The identity scan
+(`generator/tests/test_scenario_identity.py`) read `.pyc` files: importing the
+`tf-registry` responder from the gates tests leaves `__pycache__` beside an arm
+source file, `_ARTIFACT_DIRS` did not list it, so the generator copied that
+bytecode into 20 task directories and the scan attributed a scenario's trap
+vocabulary to arm prose. `__pycache__`/`.pyc` join `_ARTIFACT_DIRS`/
+`_ARTIFACT_SUFFIXES`, and the scan now reads those two names from the generator
+rather than keeping its own list. The one genuine leak underneath (`idempotent` in
+a responder docstring) is reworded.
+
+**One usability fix to the index tool.** `search_modules` matched `module_query`
+as one literal string, so the most natural phrasing of the commonest request —
+"s3 bucket" — matched nothing while "s3" matched three modules. Every
+whitespace-separated word must now match, each anywhere in a module name, its
+description or one of its input names. A single-word query is unaffected; a
+handicap on the tuned level is not a property of the index.

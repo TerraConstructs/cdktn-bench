@@ -50,7 +50,10 @@ at all, so vendoring plus a responder is the whole option space
 (`docs/design/tf-module-registry-loopback.md` §4).
 
 `responder.py` serves one vendored tree (`--root`, the directory holding
-`manifest.json`) on one ephemeral loopback port and answers six things:
+`manifest.json`) and one provider mirror (`--mirror-root`, default the image's
+`/opt/terraform-plugin-mirror`; a host gate with a `docker cp`ed copy under
+`.cache/` passes `running_registry(mirror_root=…)`) on one ephemeral loopback
+port, and answers six things:
 
 | request | response |
 | --- | --- |
@@ -79,13 +82,44 @@ manifest it reads: that flag is the module-selection answer, and it lives only i
 `scripts/vendor_modules.pins.json` on the host
 (`docs/hcl-modules-vendoring.md`).
 
-`POST /mcp` is the phase-4 skeleton of the bench-owned index tool
-(`docs/design/registry-index-tool.md` design B): the nine tool names and input
-schemas of `terraform-mcp-server`'s `registry` toolset, with every call
-answering a **successful** result reading `<tool>: not available in this
-environment`. A successful decline rather than an error is deliberate — an
-error reads to an agent as an outage worth retrying, while the text states the
-bound it is working inside. M2 replaces the bodies, not the hosting.
+`POST /mcp` is the bench-owned index tool (`docs/design/registry-index-tool.md`
+design B, the M2 **tuned** equipping row for both Terraform arms): the nine tool
+names and input schemas of `terraform-mcp-server`'s `registry` toolset —
+upstream's, so a skill or a model that knows those names calls the same tools
+with the same arguments — answered from this manifest and this mirror, because
+v1.3.0 hard-codes the public registry URL (`pkg/client/registry.go:24`) and can
+neither be redirected here nor run offline.
+
+| tool | source of truth | a miss |
+| --- | --- | --- |
+| `search_modules` | manifest names + input names parsed from each module's `variables.tf` | empty page, `total: 0` |
+| `get_module_details` | `variables.tf` / `outputs.tf` / `versions.tf` of that version; `//<path>` addresses a submodule | names the allowlist, the versions, or the submodules |
+| `get_latest_module_version` | manifest versions of that name | names the allowlist |
+| `get_latest_provider_version`, `get_provider_capabilities` | the mirror's own `index.json` (versions) and `<version>.json` (platforms) | names the mirrored providers or versions |
+| `search_providers`, `get_provider_details` | — declined in favour of **AWS Docs MCP** | the same decline |
+| `search_policies`, `get_policy_details` | — no Sentinel policy library is served | the same decline |
+
+Two properties carry the honesty of the answers. **A bound of the environment is
+a successful result** whose text ends on `<what> is not available in this
+environment` and then names what does exist — an error reads to an agent as an
+outage worth retrying, and a bare "not found" reads as a bad query rather than a
+bounded environment. The one `isError` result is a malformed argument, which is
+the caller's to fix. **Nothing is guessed**: `type` and `default` are the
+verbatim HCL source text, and a field the reader cannot read — `rds`'
+`master_user_secret_kms_key_id` writes its description as a heredoc — is named in
+a `not_shown` list and omitted from the row. README/`docs/`/`examples/` are pruned
+from the vendored tree, so the answers say that module documentation prose is not
+available here rather than reconstructing it; provider *docs* come from AWS Docs
+MCP, which is prereg §2.2's fairness row for both Terraform arms anyway.
+
+The search endpoint (the untuned row, design C) and the index tool (the tuned
+row, design B) are one process over one manifest, so the two equipping levels
+differ in discovery *tooling* and never in what is available —
+`gates/tests/test_registry_index_tool.py` asserts they list the same set. That
+file also derives the nine schemas from the memo's §1 table, holds one golden per
+tool and per refusal over the real vendored manifest, asserts two runs are
+byte-identical, and drives every tool through the `socket.connect` audit hook so
+the offline guarantee covers the new code paths.
 
 `running_registry(root)` is the host-gate lifecycle, shaped like
 `running_stub()`: it starts the responder once, waits for its `PORT=<n>`
@@ -334,6 +368,50 @@ when its conversion succeeded — and `n_llm_calls` comes from that event's own
 (no required field changed, so `schema_version` stays 1.1). Pinned by
 `gates/tests/test_audit_stream_fallback.py` against a reduced copy of the real
 trial that motivated it (`gates/tests/fixtures/awscdk/no-trajectory/`).
+
+## tuned-equipping
+
+`gates/tuned_equipping.py` — `make equipping-check` (bytes only, wired into
+`make check`) and `make equipping-preflight` (adds one `docker run` per declared
+`stdio` MCP command, so it needs `make build-arms` first). It exists because the
+equipping hash proves a **declaration** moved and cannot prove the material
+**arrived**, and Harbor makes both ways of not arriving silent:
+
+* skills are installed with `cp -r <skills_dir>/* $CLAUDE_CONFIG_DIR/skills/
+  2>/dev/null || true` (`harbor/agents/installed/claude_code.py::
+  _build_register_skills_command`) — a missing or empty tree is a no-op;
+* MCP servers are written into `$CLAUDE_CONFIG_DIR/.claude.json`
+  (`_build_register_mcp_servers_command`) and started by claude-code, which
+  reports a server it cannot start in its own log and continues — a `stdio`
+  server whose `command` is not installed in the arm image is an absent tool, not
+  a failed trial.
+
+What it checks, per generated task:
+
+| check | catches |
+|---|---|
+| `equipping_level` / `harness_for_task` | a `-tuned` dir declaring no equipping (a bare trial published as tuned), and a bare dir carrying equipping nobody registered |
+| `static_defects` | `skills_dir` resolving to nothing, a `skills_dir` outside `/opt/equipping/`, a missing Dockerfile COPY, a `stdio` server with no command, `mcp.json` disagreeing with `task.toml` |
+| `oracle_identity_defects` | any byte outside `task.toml`/`environment/` differing from the bare sibling — equipping changes the prompt surface, never the oracle |
+| `image_defects` | a declared `stdio` MCP command that is not on PATH in `cdktn-bench/<arm>:dev` |
+
+**Status: the image half is RED.** No arm image installs
+`awslabs.aws-documentation-mcp-server` (all three tuned arms) or
+`awslabs.aws-iac-mcp-server` (awscdk), so a tuned trial run today would publish a
+row overstating what the agent had. That install is the phase that unblocks the
+first tuned trial (DECISIONS.md Amendment 51).
+
+### Where the `harness` value comes from
+
+`gates/equipping.py::harness_for_task` is the only producer. The level NAME is
+read off the task directory suffix, because `tuned` and `tuned-stale` are
+deliberately indistinguishable inside the container — same skill directory name,
+same frontmatter `name`, same MCP list — so no in-container channel can tell them
+apart and inventing one would make the level an observable the agent could
+condition on. Whether the task is equipped AT ALL is read off `task.toml
+[environment]`, the same channel the hash folds in (scheme 2, Amendment 47) and
+the same one the holdout gate reads. `to_result_row` refuses a `harness=` argument
+that disagrees, and refuses a record with no `task_dir` rather than defaulting.
 
 ## emit-result
 

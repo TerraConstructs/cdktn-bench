@@ -1,0 +1,15 @@
+{
+  "mcp_servers": [
+    {
+      "name": "terraform",
+      "transport": "streamable-http",
+      "url": "http://tf-registry:8081/mcp"
+    },
+    {
+      "name": "aws-documentation",
+      "transport": "stdio",
+      "command": "awslabs.aws-documentation-mcp-server",
+      "args": []
+    }
+  ]
+}

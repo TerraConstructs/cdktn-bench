@@ -80,6 +80,18 @@ Both conditions keep the execute-and-read-error loop. **Tuned** adds each ecosys
 > registry sidecar plus the arm's one-line toolchain sentence: module *availability*
 > is the arm's substrate, and only *discovery tooling* is the tuned level.
 
+> **Re-registered as built (`DECISIONS.md` Amendment 51, DRAFT).** M2 turned the
+> table above into emitted task directories, so the tuned cell is now a pinned,
+> digested artifact rather than a name: the vendored authoring skill and its sha,
+> the bench index tool, AWS Docs MCP, the `tuned-stale` variant and exactly what is
+> stale in it, and the AWSCDK substitution the Kiro power's licence forces (the
+> power is not redistributable; the skill is bench-written and cites it). The
+> factorial's third level (`tuned-stale`, H2) is a third value of the published
+> `harness` column, so it is its own cell and never pools with `tuned`. Amendment
+> 51 also records what is NOT yet true: no arm image installs the declared MCP
+> servers, so no tuned trial may be run until `make equipping-preflight` is green.
+> The `terraconstructs` cell stays blank — this table names no material for it.
+
 Symmetry principle: each arm gets the *same kind* of equipping — an ecosystem docs/MCP layer plus an authoring skill — differing only in substrate. Note both TF arms additionally get AWS Docs MCP so the comparison is not handicapped on provider-attribute lookup; that is a deliberate fairness choice, logged. What makes the comparison unriggable is that no arm gets a capability class the others are denied.
 
 ### 2.3 Scope boundary — authoring, not day-2 state management

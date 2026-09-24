@@ -78,9 +78,10 @@
       "type": "string",
       "enum": [
         "empty",
-        "tuned"
+        "tuned",
+        "tuned-stale"
       ],
-      "description": "The empty-vs-tuned equipping axis (prereg \u00a72.2 / build plan Phase 2 item 4): \"empty\" = bare container, loop only; \"tuned\" = arm-specific MCP servers + skills injected."
+      "description": "The equipping axis (prereg \u00a72.2 / build plan Phase 2 item 4, third level added by ROADMAP M2): \"empty\" = bare container, loop only; \"tuned\" = arm-specific MCP servers + skills injected; \"tuned-stale\" = the same material at a pin whose version-specific facts no longer hold, which is M2's H2 (the staleness cost) and is therefore its OWN cell, never pooled with \"tuned\". The value is derived from the task, not passed as a flag: gates/equipping.py::harness_for_task reads the task dir's equipping level and cross-checks it against the task.toml [environment] mcp_servers/skills_dir channel the equipping hash folds in, and refuses a disagreement."
     },
     "validity_class": {
       "type": "string",

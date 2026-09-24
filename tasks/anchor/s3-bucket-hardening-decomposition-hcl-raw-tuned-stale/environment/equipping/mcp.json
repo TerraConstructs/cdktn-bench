@@ -1,0 +1,10 @@
+{
+  "mcp_servers": [
+    {
+      "name": "aws-documentation",
+      "transport": "stdio",
+      "command": "awslabs.aws-documentation-mcp-server",
+      "args": []
+    }
+  ]
+}

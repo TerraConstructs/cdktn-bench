@@ -1,0 +1,127 @@
+{
+  "schema": 1,
+  "why_this_file": "Pins and reasoning for the M2 tuned-equipping material (prereg \u00a72.2). Ships in no image and reaches no agent, so the rationale lives here; equipping/MANIFEST.json carries only names, versions and digests and is swept with the generator's deny list.",
+  "packages": [
+    {
+      "name": "terraform-skill",
+      "dir": "terraform-skill-1.17.1",
+      "level": "tuned",
+      "arms": [
+        "hcl_raw",
+        "hcl_modules"
+      ],
+      "prereg_row": "\u00a72.2 tuned, TF arms: \"Anton Babenko Terraform authoring skills / best practices\"",
+      "upstream_repo": "antonbabenko/terraform-skill",
+      "upstream_tag": "v1.17.1",
+      "upstream_commit": "b59d2be9ff4db8f835c8459e05e325ba11e3a21f",
+      "subtree": "skills/terraform-skill",
+      "licence": "Apache-2.0",
+      "licence_note": "LICENSE at the pinned commit is Apache-2.0 with a `Copyright 2026 Anton Babenko` header; GitHub's classifier reports `Other` only because of that prepended header. Redistribution is permitted with the licence and an attribution notice, both vendored beside the tree.",
+      "redistributable": true
+    },
+    {
+      "name": "terraform-skill",
+      "dir": "terraform-skill-1.0.0",
+      "level": "tuned-stale",
+      "arms": [
+        "hcl_raw",
+        "hcl_modules"
+      ],
+      "prereg_row": "ROADMAP M2 H2 (the staleness cost): the same skill at an older pin",
+      "upstream_repo": "antonbabenko/terraform-skill",
+      "upstream_tag": "v1.0.0",
+      "upstream_commit": "7ec2e136cb51dd9a01c0704200f992b19c2f3771",
+      "subtree": ".",
+      "subtree_note": "v1.0.0 has no skills/ directory: SKILL.md and references/ sit at the repo root. Only those two paths are vendored; CLAUDE.md, tests/ and CI files are not part of the skill.",
+      "licence": "Apache-2.0",
+      "redistributable": true,
+      "staleness": {
+        "kind": "older pinned commit of the same upstream skill (not a bench-authored corruption)",
+        "gap": "17 minor releases, 2026-01-18 -> 2026-06-03",
+        "what_is_stale": [
+          "No feature-guard / version-floor table. v1.17.1 gates `removed` blocks (1.7+), provider-defined functions (1.8+), cross-variable validation (1.9+), S3 native lock-file (1.10+) and `write_only` arguments (1.11+) behind an explicit runtime floor check; v1.0.0's version guidance stops at 1.7+ and names none of them.",
+          "State locking is DynamoDB-only. v1.0.0 prescribes `dynamodb_table` (references/ci-cd-workflows.md:350, references/security-compliance.md:316) and the string `use_lockfile` appears nowhere in it; v1.17.1 says `use_lockfile` is the correct default from 1.10+ and DynamoDB is no longer required. The arms pin Terraform >= 1.11.1, so the stale advice is wrong for the runtime the agent has.",
+          "No references/state-management.md at all (v1.17.1's largest reference, 46 KB).",
+          "No schema fact-check step. v1.17.1 opens its test guidance with \"validate resource schemas ... so assertions target real attributes\"; the anti-hallucination guards arrived in v1.14.0 (`umbrella update ... LLM hallucination guards, fact-checks`) and are absent from v1.0.0."
+        ],
+        "why_plausibly_harmful": "H2 predicts a stale skill is worse than no skill. Each item above is a concrete mechanism: confident guidance at a version floor the arm does not match (DynamoDB locking), no floor check before emitting a newer feature, and no instruction to verify an attribute name against a schema before writing it -- the last is exactly the read-before-write step whose absence the bench measures as rbw."
+      }
+    },
+    {
+      "name": "aws-documentation-mcp-server",
+      "level": "tuned",
+      "arms": [
+        "awscdk",
+        "hcl_raw",
+        "hcl_modules"
+      ],
+      "prereg_row": "\u00a72.2 tuned, all arms: \"AWS Docs MCP\" (the deliberate fairness row)",
+      "upstream_repo": "awslabs/mcp",
+      "subtree": "src/aws-documentation-mcp-server",
+      "distribution": "PyPI awslabs.aws-documentation-mcp-server",
+      "version": "1.2.1",
+      "licence": "Apache-2.0",
+      "redistributable": true,
+      "vendored": false,
+      "vendoring_note": "Declared, not vendored: it is a server, not text. requires-python >=3.10 and six third-party dependencies (mcp, httpx, pydantic, markdownify, loguru, beautifulsoup4), so it cannot be a stdlib-only in-image file. The pinned wheel must be installed into each arm image before a tuned row is run; UNPROVEN here (no image was rebuilt).",
+      "launch_form": "stdio, the published console script `awslabs.aws-documentation-mcp-server` (pyproject [project.scripts] -> awslabs.aws_documentation_mcp_server.server:main). `uvx awslabs.aws-documentation-mcp-server@1.2.1`, the form the README documents, resolves from PyPI at container start: a network fetch inside the measured trial and a second uncontrolled input, so the pre-installed console script is declared instead.",
+      "reaches_the_public_internet": true,
+      "reaches_the_public_internet_note": "This server fetches docs.aws.amazon.com at call time, by design and per prereg \u00a72.2. It is the one tuned component whose ANSWERS the equipping hash cannot cover; the version pin bounds the client, not the corpus."
+    },
+    {
+      "name": "aws-iac-mcp-server",
+      "level": "tuned",
+      "arms": [
+        "awscdk"
+      ],
+      "prereg_row": "\u00a72.2 tuned, AWSCDK arm: \"AWS MCP + AWSCDK agent-tool plugins\"",
+      "upstream_repo": "awslabs/mcp",
+      "subtree": "src/aws-iac-mcp-server",
+      "distribution": "PyPI awslabs.aws-iac-mcp-server",
+      "version": "1.0.26",
+      "licence": "Apache-2.0",
+      "redistributable": true,
+      "vendored": false,
+      "vendoring_note": "Same shape as the docs server: declared and pinned, installed into the awscdk image, not vendored as text. UNPROVEN here.",
+      "launch_form": "stdio, console script `awslabs.aws-iac-mcp-server`. Its CDK tools (search_cdk_documentation, search_cdk_samples_and_constructs, cdk_best_practices, read_iac_documentation_page, search_cloudformation_documentation) need no AWS credentials; the deploy/troubleshoot tools do, and are not used by an authoring trial.",
+      "is_the_kiro_power_mcp": "Yes -- kirodotdev/powers/aws-infrastructure-as-code/mcp.json declares exactly this server. The power's CONFIG is this pin; the power's PROSE is what is not redistributable, see cdk-authoring below."
+    },
+    {
+      "name": "cdk-authoring",
+      "dir": "bench/cdk-authoring",
+      "level": "tuned",
+      "arms": [
+        "awscdk"
+      ],
+      "prereg_row": "\u00a72.2 tuned, AWSCDK arm: \"AWSCDK agent-tool plugins / Kiro Powers\"",
+      "redistributable": false,
+      "resolution": "Vendored as a POINTER plus a bench-written skill, per the task's own fallback. equipping/bench/cdk-authoring/SKILL.md is ours; UPSTREAM.md cites the power, its MCP pin and what was read. No upstream prose is copied.",
+      "cites_repo": "kirodotdev/powers",
+      "cites_path": "aws-infrastructure-as-code/POWER.md",
+      "cites_read_at": "HEAD as read 2026-09-24 (the repo publishes no tags; the pin is the path plus this note)",
+      "cites_licence": "proprietary -- README.md: \"Unless otherwise specified by the license in the individual power or the repository that hosts it, Kiro users have a non-exclusive license to access, download, and otherwise use the power for their personal or business purposes.\" No LICENSE file; no redistribution grant.",
+      "licence": "bench-authored, this repository's licence"
+    },
+    {
+      "name": "cdk-authoring",
+      "dir": "bench/cdk-authoring-stale",
+      "level": "tuned-stale",
+      "arms": [
+        "awscdk"
+      ],
+      "prereg_row": "ROADMAP M2 H2 (the staleness cost), awscdk arm",
+      "licence": "bench-authored, this repository's licence",
+      "redistributable": true,
+      "staleness": {
+        "kind": "the same bench-written skill with its version-specific facts left as they were true for aws-cdk v1",
+        "what_is_stale": [
+          "Package layout: `@aws-cdk/aws-<service>` per-service packages and `Construct`/`Stack` from `@aws-cdk/core`, instead of the single `aws-cdk-lib` plus the separate `constructs` package. The arm pins aws-cdk-lib 2.263.0 / constructs 10.8.1, so every import in the stale examples resolves to nothing.",
+          "Bootstrap: `CDK_NEW_BOOTSTRAP=1 cdk bootstrap` described as required. That variable was the v1 opt-in to the modern bootstrap and is meaningless in v2.",
+          "Synth: `cdk synth` without `--no-lookups`, which the arm's offline gate needs."
+        ],
+        "what_is_identical": "Everything else, byte for byte: the loop, the layer table's intent, the enum guidance, the whole escape-hatch section and the Do-not list, and the frontmatter `name`/`description` -- so the level is not discoverable from inside the container.",
+        "why_plausibly_harmful": "H2 predicts a stale skill is worse than no skill. A v1 import block does not compile against the arm's pinned aws-cdk-lib, so the agent spends turns recovering from confident, wrong guidance it would not have had bare; and the stale bootstrap sentence sends it at an environment step an authoring trial has no business touching."
+      }
+    }
+  ]
+}

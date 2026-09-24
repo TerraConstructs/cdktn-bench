@@ -86,7 +86,12 @@ both tables rather than silently dropped or guessed into either side.
 
 **SCENARIO-FORM stratification is mechanical and is applied FIRST.** Every row
 carries a REQUIRED `scenario_form`, and `cell_key` is
-`(scenario_form, arm, model, harness)`, so no cell can mix forms. The label is
+`(scenario_form, arm, model, harness)`, so no cell can mix forms. `harness` is
+also the equipping axis, and it carries the `arm x equipping` factorial's three
+levels — `empty`, `tuned`, `tuned-stale` (DECISIONS.md Amendment 51) — so the
+staleness cell never pools with the tuned one and no parallel field was added.
+The value is derived from the task's own declarations, never from a flag
+(`gates/equipping.py::harness_for_task`). The label is
 composite — a step-shape base plus a `-brownfield` suffix when the workspace is
 seeded — because the two dimensions are independent and neither may absorb the
 other: `greenfield`, `brownfield`, `multi-step`, `multi-step-brownfield`,

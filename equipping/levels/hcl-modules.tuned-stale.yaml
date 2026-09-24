@@ -1,0 +1,16 @@
+# hcl_modules, equipping level `tuned-stale` (ROADMAP M2 H2, the staleness cost).
+# Identical to `tuned` in every channel except the skill pin: same MCP servers,
+# same sidecar, same skill DIRECTORY NAME and frontmatter `name`, so the level is
+# not discoverable from inside the container. The only difference an agent can
+# observe is the guidance itself -- which is the independent variable.
+skills:
+  - source: vendor/terraform-skill-1.0.0
+    as: terraform-skill
+mcp_servers:
+  - name: terraform
+    transport: streamable-http
+    url: http://tf-registry:8081/mcp
+  - name: aws-documentation
+    transport: stdio
+    command: awslabs.aws-documentation-mcp-server
+    args: []

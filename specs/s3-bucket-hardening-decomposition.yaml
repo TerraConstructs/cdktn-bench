@@ -466,6 +466,19 @@ arms:
       it). Verified against real plans through the loopback registry, not read
       off the module source.
 
+# The `arm x equipping` run dimension (ROADMAP M2). `bare` is always emitted;
+# listing a tuned level emits one further task per (arm, level). This scenario is
+# assigned `train` in specs/split.yaml, which is the only place tuned equipping
+# may be developed (prereg §7.1, DECISIONS.md Amendment 10).
+equipping:
+  levels: [tuned, tuned-stale]
+  reason: >
+    train-split scenario carrying four independent hardening controls on one
+    resource, so H1's read-before-write signal has several chances to show per
+    trial and is not one coin flip; and every arm's tuned material
+    (equipping/levels/) is defined, so the (arm, equipping) cell is complete
+    rather than ragged.
+
 instruction:
   shared_body: |
     We need an S3 bucket for archived customer documents.

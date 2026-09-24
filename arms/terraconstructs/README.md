@@ -382,3 +382,26 @@ Amendment 2.
 3. **Memory floor (§6)**: `memory_mb >= 4096` in this arm's future
    `task.toml [environment]` blocks — flag if that conflicts with any budget
    assumption elsewhere in the plan.
+
+## Equipping levels (M2, `../../equipping/README.md`)
+
+The `arm x equipping` factorial's material is corpus-wide, not per arm: it lives
+under `equipping/`, keyed `levels/terraconstructs.<level>.yaml`, and a spec opts in with
+`equipping.levels` (`../../specs/SCHEMA.md` §1.1). Three levels — `bare` (what
+this arm emits today), `tuned` (prereg §2.2's row), `tuned-stale` (H2's staleness
+cost: the same material at a pin whose version-specific facts no longer hold).
+
+- **No tuned cell.** prereg §2.2 names tuned material for the three arms it
+  defines and none for this one (added later, `../../DECISIONS.md` Amendments 2 and
+  46). Inventing a cell here would be unregistered equipping, so
+  `equipping/levels/terraconstructs.*.yaml` does not exist, the grid is left
+  ragged, and `make gen` prints a WARNING naming the omitted pair for every spec
+  that opts in — the blank cell is stated, never silent.
+
+A tuned task of this arm differs from its bare sibling in exactly two paths —
+`task.toml` (`skills_dir` + `[[environment.mcp_servers]]`) and `environment/`
+(`equipping/` plus one appended `COPY equipping/ /opt/equipping/`). Nothing else
+moves: `instruction.md`, `tests/` and `solution/` are byte-identical, so the two
+levels are graded by the same oracle. `make equipping-check` /
+`make equipping-preflight` check that the declaration matches the artifact
+(`../../docs/gates.md#tuned-equipping`).

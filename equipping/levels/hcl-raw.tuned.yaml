@@ -1,0 +1,11 @@
+# hcl_raw, equipping level `tuned`. No index tool: see equipping/README.md.
+skills:
+  - source: vendor/terraform-skill-1.17.1
+    as: terraform-skill
+mcp_servers:
+  # Provider attribute and valid-string lookup, the deliberate fairness row both
+  # TF arms get so the comparison is not handicapped (prereg §2.2).
+  - name: aws-documentation
+    transport: stdio
+    command: awslabs.aws-documentation-mcp-server
+    args: []

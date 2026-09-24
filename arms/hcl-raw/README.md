@@ -238,3 +238,33 @@ ran because of qemu binfmt emulation. Fixed by leaving the ARG bare.)
 
 See `../../DECISIONS.md` Amendment 2: the `terraform-aws-modules` arm was dropped from
 the v1 build (prereg deviation, user-directed) — this arm is raw HCL only.
+
+## Equipping levels (M2, `../../equipping/README.md`)
+
+The `arm x equipping` factorial's material is corpus-wide, not per arm: it lives
+under `equipping/`, keyed `levels/hcl-raw.<level>.yaml`, and a spec opts in with
+`equipping.levels` (`../../specs/SCHEMA.md` §1.1). Three levels — `bare` (what
+this arm emits today), `tuned` (prereg §2.2's row), `tuned-stale` (H2's staleness
+cost: the same material at a pin whose version-specific facts no longer hold).
+
+- **Tuned**: the vendored `terraform-skill` (Anton Babenko, v1.17.1) plus AWS Docs
+  MCP for provider attribute and valid-string lookup — prereg §2.2's deliberate
+  fairness row for both Terraform arms.
+- **No index tool on this arm.** It answers from a vendored module manifest and
+  this arm vendors no modules, so every answer it could give here is "not available
+  in this environment"; serving it would also stand the `tf-registry` sidecar up on
+  this arm and move every `hcl_raw` compose hash for no information. Recorded as a
+  finisher decision in `../../DECISIONS.md` Amendment 51.
+- **`tuned-stale`**: the same skill at v1.0.0 — no feature-guard/version-floor
+  table, `dynamodb_table` state locking with no `use_lockfile`, and no
+  "validate schemas before asserting" guard.
+- **Not yet runnable**: AWS Docs MCP is not installed in this image, so
+  `make equipping-preflight` is red for both tuned levels.
+
+A tuned task of this arm differs from its bare sibling in exactly two paths —
+`task.toml` (`skills_dir` + `[[environment.mcp_servers]]`) and `environment/`
+(`equipping/` plus one appended `COPY equipping/ /opt/equipping/`). Nothing else
+moves: `instruction.md`, `tests/` and `solution/` are byte-identical, so the two
+levels are graded by the same oracle. `make equipping-check` /
+`make equipping-preflight` check that the declaration matches the artifact
+(`../../docs/gates.md#tuned-equipping`).

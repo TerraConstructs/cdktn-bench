@@ -340,6 +340,38 @@ arms:
 
 ---
 
+## 1.1 `equipping` — the `arm x equipping` run dimension (optional)
+
+```yaml
+equipping:
+  levels: [tuned, tuned-stale]   # `bare` is never listed; it is always emitted
+  reason: >
+    why this scenario is (or is not) part of the equipping factorial
+```
+
+Absent = `levels: []`, which is every spec written before this field existed, so
+a spec that says nothing emits exactly the tasks it emitted before and no
+`equipping_hash` moves.
+
+Equipping is a **run** dimension, not a scenario property: the prompt, the image,
+the oracle and the shard are identical across levels, and only the skills and MCP
+servers the agent is handed change. The material itself therefore lives once for
+the whole corpus under `equipping/` (see `equipping/README.md`), and a spec
+decides only whether tuned tasks are emitted **for it**. `reason` is required in
+both directions, the same discipline `arms.hcl_modules.reason` follows.
+
+One task directory is emitted per `(arm, level)`: `<spec id>-<arm dirname>` at
+`bare` (unchanged) and `<spec id>-<arm dirname>-<level>` above it. A level is
+emitted only for the arms whose material is defined
+(`equipping/levels/<arm dirname>.<level>.yaml`); `make gen` prints a WARNING for
+every pair it therefore does not emit, so a ragged grid is stated, never silent.
+
+**Holdout discipline.** A spec assigned `holdout` in `specs/split.yaml` must list
+no levels: `generator/gen.py::generate` refuses before it writes anything, and
+`enforce_no_holdout_equipping` refuses again on the generated tree — tuned
+equipping is developed on the TRAIN split only (prereg §7.1, DECISIONS.md
+Amendment 10).
+
 ## 2. `instruction`
 
 ```yaml

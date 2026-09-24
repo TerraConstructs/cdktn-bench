@@ -66,6 +66,19 @@ ALL_SPECS = [load_spec(p) for p in ALL_SPEC_PATHS]
 SCAN_EXCLUDE = {"package-lock.json"}
 
 
+def _is_build_artifact(path: Path, root: Path) -> bool:
+    """A file the generator itself refuses to copy into a task
+    (`gen._ARTIFACT_DIRS`/`_ARTIFACT_SUFFIXES`), read from the generator rather
+    than restated: compiled bytecode and emitted JS are not arm prose, and a
+    scenario trap word inside a `.pyc` is an artifact of whoever imported the
+    source, not a leak an author can reword. Importing the tf-registry responder
+    (gates/tests) is enough to create one."""
+    rel = path.relative_to(root)
+    return any(part in gen._ARTIFACT_DIRS for part in rel.parts[:-1]) or path.name.endswith(
+        gen._ARTIFACT_SUFFIXES
+    )
+
+
 # Phrases that match a deny-list pattern for a reason unrelated to any
 # scenario's trap, and that live in the SHARED ARM IMAGE SOURCES
 # (`arms/<arm>/environment/**`) rather than in generated text.
@@ -108,6 +121,8 @@ def _agent_visible_files(spec: Spec, arm: str):
     env_dir = root / "environment"
     for path in sorted(env_dir.rglob("*")):
         if not path.is_file() or path.name in SCAN_EXCLUDE:
+            continue
+        if _is_build_artifact(path, env_dir):
             continue
         if is_vendored_module_file(path, env_dir):
             continue
@@ -397,6 +412,8 @@ def test_shared_arm_image_sources_leak_no_scenario_vocabulary(spec: Spec) -> Non
         env_dir = ARMS_DIR / gen.ARM_DIRNAME[arm] / "environment"
         for path in sorted(env_dir.rglob("*")):
             if not path.is_file() or path.name in SCAN_EXCLUDE:
+                continue
+            if _is_build_artifact(path, env_dir):
                 continue
             if is_vendored_module_file(path, env_dir):
                 continue

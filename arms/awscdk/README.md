@@ -180,3 +180,30 @@ docker run --rm --network none --entrypoint /usr/local/bin/preflight.sh \
   — the authoritative single-platform on-disk size; `docker images`'s ~1.3 GB
   figure on this host counts a buildx-generated multi-manifest/attestation
   index, not the runnable image content).
+
+## Equipping levels (M2, `../../equipping/README.md`)
+
+The `arm x equipping` factorial's material is corpus-wide, not per arm: it lives
+under `equipping/`, keyed `levels/awscdk.<level>.yaml`, and a spec opts in with
+`equipping.levels` (`../../specs/SCHEMA.md` §1.1). Three levels — `bare` (what
+this arm emits today), `tuned` (prereg §2.2's row), `tuned-stale` (H2's staleness
+cost: the same material at a pin whose version-specific facts no longer hold).
+
+- **Tuned**: a bench-written `cdk-authoring` skill plus `awslabs.aws-iac-mcp-server`
+  and AWS Docs MCP. prereg §2.2 names "AWS MCP + AWSCDK agent-tool plugins / Kiro
+  Powers"; the Kiro power's prose is **not redistributable** (no LICENSE, a
+  use-licence for Kiro users), so the skill is bench-written and cites it in
+  `../../equipping/bench/cdk-authoring.UPSTREAM.md`.
+- **`tuned-stale`**: the same skill with v1-era facts — `@aws-cdk/aws-*` and
+  `@aws-cdk/core` imports (this arm pins `aws-cdk-lib` 2.263.0, so they do not
+  compile), `CDK_NEW_BOOTSTRAP=1`, `cdk synth` without `--no-lookups`.
+- **Not yet runnable**: neither MCP server is installed in this image, so
+  `make equipping-preflight` is red for both tuned levels.
+
+A tuned task of this arm differs from its bare sibling in exactly two paths —
+`task.toml` (`skills_dir` + `[[environment.mcp_servers]]`) and `environment/`
+(`equipping/` plus one appended `COPY equipping/ /opt/equipping/`). Nothing else
+moves: `instruction.md`, `tests/` and `solution/` are byte-identical, so the two
+levels are graded by the same oracle. `make equipping-check` /
+`make equipping-preflight` check that the declaration matches the artifact
+(`../../docs/gates.md#tuned-equipping`).

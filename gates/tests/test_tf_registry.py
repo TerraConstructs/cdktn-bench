@@ -1,4 +1,4 @@
-"""The loopback module registry: protocol, allowlist, MCP skeleton, offline init.
+"""The loopback module registry: protocol, allowlist, MCP transport, offline init.
 
 The end-to-end test is the one that matters: real `terraform init`, real module
 resolution, and the proof that it came from the responder is the responder's own
@@ -175,7 +175,11 @@ class TestSearch:
         assert hits and all("decoy" not in json.dumps(h) for h in hits)
 
 
-class TestMcpSkeleton:
+class TestMcpTransport:
+    """The streamable-http transport and the tool list. What the nine tools
+    ANSWER is gates/tests/test_registry_index_tool.py; here the fake tree stands
+    in, so these tests hold whatever the vendored set contains."""
+
     def test_initialize_issues_a_session_id_that_round_trips(self, registry):
         status, payload, headers = rpc(registry, {"jsonrpc": "2.0", "id": 1, "method": "initialize"})
         assert status == 200
@@ -207,11 +211,11 @@ class TestMcpSkeleton:
         assert "resources" in by_name["search_providers"]["properties"]["provider_document_type"]["enum"]
 
     def test_the_nine_names_are_the_ones_the_design_memo_read_off_v1_3_0(self, registry):
-        """M2 replaces these bodies in place, so an agent tuned against the real
-        `hashicorp/terraform-mcp-server` registry toolset must find the same nine
-        names here. The memo's table was read off the tagged source; deriving the
-        expectation from it means a renamed tool fails here rather than being
-        copied twice and agreeing with itself."""
+        """An agent tuned against the real `hashicorp/terraform-mcp-server`
+        registry toolset must find the same nine names here. The memo's table was
+        read off the tagged source; deriving the expectation from it means a
+        renamed tool fails here rather than being copied twice and agreeing with
+        itself."""
         memo = (REPO_ROOT / "docs" / "design" / "registry-index-tool.md").read_text()
         section = memo.split("## 1.")[1].split("## 2.")[0]
         documented = set()
@@ -227,19 +231,34 @@ class TestMcpSkeleton:
         _, payload, _ = rpc(registry, {"jsonrpc": "2.0", "id": 6, "method": "tools/list"})
         assert {t["name"] for t in payload["result"]["tools"]} == documented
 
-    def test_every_call_declines_as_a_successful_result(self, registry):
-        for name in ("search_modules", "get_provider_details", "search_policies"):
+    def test_a_bound_of_the_environment_is_a_successful_result(self, registry):
+        """The two shapes of refusal, over the wire. A bound of the environment is
+        a RESULT -- an error reads to an agent as an outage worth retrying -- and
+        every one of them ends on the same phrase, which is what a skill or a
+        grader matches on."""
+        for name, arguments in (
+            ("get_module_details", {"module_id": "terraform-aws-modules/eks/aws/21.0.0"}),
+            ("get_provider_details", {"provider_doc_id": "8894603"}),
+            ("search_policies", {"policy_query": "cis"}),
+        ):
             _, payload, _ = rpc(registry, {
                 "jsonrpc": "2.0", "id": 4, "method": "tools/call",
-                "params": {"name": name, "arguments": {}},
+                "params": {"name": name, "arguments": arguments},
             })
             result = payload["result"]
-            # A declined call is a result, not an error: an error reads to an
-            # agent as an outage worth retrying.
-            assert result["isError"] is False
-            assert result["content"] == [
-                {"type": "text", "text": f"{name}: not available in this environment"}
-            ]
+            assert result["isError"] is False, name
+            assert "is not available in this environment" in result["content"][0]["text"]
+
+    def test_a_missing_argument_is_the_one_error_result(self, registry):
+        """The exception, and the reason it is one: a caller mistake is the
+        caller's to fix, while answering it as a miss would state something false
+        about the environment."""
+        _, payload, _ = rpc(registry, {
+            "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+            "params": {"name": "get_module_details", "arguments": {}},
+        })
+        assert payload["result"]["isError"] is True
+        assert payload["result"]["content"][0]["text"].startswith("get_module_details: module_id is required")
 
     def test_an_unknown_tool_is_a_jsonrpc_error(self, registry):
         _, payload, _ = rpc(registry, {

@@ -179,12 +179,42 @@ and `plan-normaliser-survey.md` (the evidence behind the normaliser).
 - **Version selection is real**: `kms` is served at 4.2.2 and 4.0.0 (the exact pin
   `eks` and `route53` carry), and the `eks` provider coupling is settled against the
   `hcl-raw` provider pin (`../../DECISIONS.md` Amendment 48).
-- **A `/mcp` endpoint ships with the sidecar** from phase 4 whose `tools/list` is the
-  nine registry tool names and whose every call answers "not available in this
-  environment" until M2 lands the bench-owned index tool, so M2 lands in place with
-  no new hosting.
+- **A `/mcp` endpoint ships with the sidecar** from phase 4, and M2's index tool
+  landed in it with no new hosting and no compose change: `/mcp` and the module
+  registry protocol are the same process on the same port 8081.
 - **`allow_internet` stays at Harbor's default**: the forced `host` override in the
   CLI config never consults DNS, so masking does not depend on it.
+
+## The index tool (M2's tuned row)
+
+`environment/tf-registry/responder.py` answers the nine tool names of
+`terraform-mcp-server` v1.3.0's `registry` toolset — upstream's names and input
+schemas, so a skill or a model that knows them calls the same tools with the same
+arguments — from the vendored manifest and the provider mirror
+(`--mirror-root`, default `/opt/terraform-plugin-mirror`). The HashiCorp server
+itself cannot be the tuned row: v1.3.0 hard-codes the public registry URL
+(`pkg/client/registry.go:24`) with no override. The per-tool table, the two
+honesty properties and the test map are in `../../docs/gates.md#tf-registry`; what
+is specific to this arm:
+
+- **Module inputs and outputs come from the module's own `.tf` files**, read by a
+  small stdlib HCL attribute reader in the responder. It reports source text and
+  never evaluates: `type` and `default` are verbatim, and the one field it cannot
+  read across 1257 inputs and 415 outputs (`rds`' heredoc description) is named in
+  a `not_shown` list instead of guessed.
+- **`//<path>` addresses a submodule.** `iam`'s root declares no inputs and no
+  outputs at all — it is called through `//modules/iam-policy` and friends — so a
+  tool that could only answer about roots would answer nothing for the module an
+  agent writes.
+- **No prose.** README, `docs/` and `examples/` are pruned from the vendored tree,
+  so no answer reconstructs module documentation; provider *docs* come from AWS
+  Docs MCP, prereg §2.2's fairness row for both Terraform arms.
+- **Decoys stay unmarked.** The manifest carries no `decoy` flag (see "Amendment
+  46 (c)" above) and neither does any answer built from it; a test asserts the
+  string appears in no answer at all.
+- **The untuned row is the same allowlist.** The search endpoint (design C) and
+  the index tool (design B) are one process over one manifest, so the equipping
+  levels differ in discovery tooling only.
 
 ## Equipping levels (M2 axis, `../../docs/prereg-iac-abstraction-benchmark.md` §2.2)
 
@@ -196,3 +226,18 @@ and `plan-normaliser-survey.md` (the evidence behind the normaliser).
   **not** the tuned equipping: v1.3.0 hard-codes the public registry URL
   (`pkg/client/registry.go:24`) with no override, so it cannot answer from the
   allowlist and cannot run offline.
+- **`tuned-stale`**: the same MCP list and the same skill DIRECTORY name, with the
+  skill at v1.0.0 — H2 isolates one variable, the guidance's own facts, and the
+  level is therefore not observable from inside the container.
+
+The material itself is corpus-wide under `../../equipping/`, keyed
+`levels/hcl-modules.<level>.yaml`; a spec opts in with `equipping.levels`
+(`../../specs/SCHEMA.md` §1.1). A tuned task of this arm differs from its bare
+sibling in exactly two paths — `task.toml` (`skills_dir` +
+`[[environment.mcp_servers]]`) and `environment/` (`equipping/` plus one appended
+`COPY equipping/ /opt/equipping/`); `instruction.md`, `tests/` and `solution/` are
+byte-identical, so both levels are graded by the same oracle.
+`make equipping-check` / `make equipping-preflight` check that the declaration
+matches the artifact (`../../docs/gates.md#tuned-equipping`). **Not yet runnable**:
+AWS Docs MCP is not installed in this image, so the image half is red for both
+tuned levels; the index tool itself needs no install (it is the sidecar).

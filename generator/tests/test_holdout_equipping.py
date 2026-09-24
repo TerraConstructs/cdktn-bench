@@ -16,12 +16,29 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pytest
-from gen import HoldoutEquippingViolation, enforce_no_holdout_equipping
+from gen import (
+    HoldoutEquippingViolation,
+    enforce_no_holdout_equipping,
+    refuse_holdout_equipping_optin,
+)
 
 
 @dataclass
 class _FakeSpec:
     id: str
+
+
+@dataclass
+class _FakeEquipping:
+    levels: list
+
+
+@dataclass
+class _FakeOptInSpec:
+    """`refuse_holdout_equipping_optin` reads only `.id` and `.equipping.levels`."""
+
+    id: str
+    equipping: _FakeEquipping
 
 
 def _make_arm_dir(root, name: str) -> object:
@@ -100,3 +117,28 @@ class TestTrainAndUnknownAreSilent:
         (arm_dir / "notes.md").write_text("not equipping\n")
         spec = _FakeSpec(id="sfn-jsonata")
         enforce_no_holdout_equipping(spec, {"awscdk": arm_dir})  # must not raise
+
+
+class TestHoldoutCannotOptIn:
+    """The refusal on the DECLARATION, before `generate()` writes anything -- so a
+    `make gen` on a holdout spec that opts in cannot leave a half-built violation
+    for the generated-tree check to find."""
+
+    def test_holdout_spec_declaring_a_level_raises(self):
+        spec = _FakeOptInSpec(id="sfn-jsonata", equipping=_FakeEquipping(levels=["tuned"]))
+        with pytest.raises(HoldoutEquippingViolation) as exc:
+            refuse_holdout_equipping_optin(spec)
+        assert "sfn-jsonata" in str(exc.value) and "HOLDOUT" in str(exc.value)
+
+    def test_holdout_spec_declaring_no_level_is_silent(self):
+        refuse_holdout_equipping_optin(
+            _FakeOptInSpec(id="sfn-jsonata", equipping=_FakeEquipping(levels=[]))
+        )
+
+    def test_train_spec_declaring_a_level_is_silent(self):
+        refuse_holdout_equipping_optin(
+            _FakeOptInSpec(
+                id="s3-bucket-hardening-decomposition",
+                equipping=_FakeEquipping(levels=["tuned", "tuned-stale"]),
+            )
+        )

@@ -338,7 +338,15 @@ if [ "${#CLI_EQUIP_FLAGS[@]}" -gt 0 ]; then
   CANDIDATE_SPEC_IDS=()
   for _base in "$(basename "${TASK_PATH:-.}")" "${DATASET%@*}"; do
     [ -z "$_base" ] || [ "$_base" = "." ] && continue
-    for _suffix in -awscdk -hcl-raw -terraconstructs; do
+    # An EQUIPPING level suffix comes off first: a task dir is
+    # `<spec-id>-<arm-dirname>[-<level>]` (generator/gen.py::task_basename), and a
+    # tuned task is exactly the invocation this guard exists to catch.
+    for _level in -tuned-stale -tuned; do
+      case "$_base" in
+        *"$_level") _base="${_base%"$_level"}" ;;
+      esac
+    done
+    for _suffix in -awscdk -hcl-raw -hcl-modules -terraconstructs; do
       case "$_base" in
         *"$_suffix") CANDIDATE_SPEC_IDS+=("${_base%"$_suffix"}") ;;
       esac

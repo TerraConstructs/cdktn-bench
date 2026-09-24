@@ -255,12 +255,36 @@
         "path": "tasks/anchor/s3-bucket-hardening-decomposition-awscdk"
       },
       {
+        "name": "s3-bucket-hardening-decomposition-awscdk-tuned",
+        "path": "tasks/anchor/s3-bucket-hardening-decomposition-awscdk-tuned"
+      },
+      {
+        "name": "s3-bucket-hardening-decomposition-awscdk-tuned-stale",
+        "path": "tasks/anchor/s3-bucket-hardening-decomposition-awscdk-tuned-stale"
+      },
+      {
         "name": "s3-bucket-hardening-decomposition-hcl-modules",
         "path": "tasks/anchor/s3-bucket-hardening-decomposition-hcl-modules"
       },
       {
+        "name": "s3-bucket-hardening-decomposition-hcl-modules-tuned",
+        "path": "tasks/anchor/s3-bucket-hardening-decomposition-hcl-modules-tuned"
+      },
+      {
+        "name": "s3-bucket-hardening-decomposition-hcl-modules-tuned-stale",
+        "path": "tasks/anchor/s3-bucket-hardening-decomposition-hcl-modules-tuned-stale"
+      },
+      {
         "name": "s3-bucket-hardening-decomposition-hcl-raw",
         "path": "tasks/anchor/s3-bucket-hardening-decomposition-hcl-raw"
+      },
+      {
+        "name": "s3-bucket-hardening-decomposition-hcl-raw-tuned",
+        "path": "tasks/anchor/s3-bucket-hardening-decomposition-hcl-raw-tuned"
+      },
+      {
+        "name": "s3-bucket-hardening-decomposition-hcl-raw-tuned-stale",
+        "path": "tasks/anchor/s3-bucket-hardening-decomposition-hcl-raw-tuned-stale"
       },
       {
         "name": "s3-bucket-hardening-decomposition-terraconstructs",
