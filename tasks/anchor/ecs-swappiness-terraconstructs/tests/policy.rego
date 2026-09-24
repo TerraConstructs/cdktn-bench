@@ -2,8 +2,11 @@
 #
 # Scenario:      ecs-swappiness (specs/ecs-swappiness.yaml)
 # Intent doc:    oracles/ecs-swappiness/intent.md
-# Graded against `terraform show -json` plan JSON for BOTH TF-shaped arms
-# (hcl_raw and, when enabled, terraconstructs) -- specs/SCHEMA.md §4.2/§8.
+# Graded against `terraform show -json` plan JSON for every TF-shaped arm --
+# hcl_raw, terraconstructs and hcl_modules -- specs/SCHEMA.md §4.2/§8. On
+# hcl_modules the task definition is declared inside a module body; the plan
+# normaliser hoists it into `root_module.resources`, so the one filter below
+# reads it there like any other arm's, with the module call path on `.address`.
 # `input` at policy-evaluation time is that plan JSON document. A generated
 # tests/static_tiers.sh runs:
 #   opa eval -f raw -I -d policy.rego 'data.cdktn_bench.ecs_swappiness.deny' < plan.json
@@ -28,11 +31,13 @@
 # "forgot maxSwap" mistake already fails the EXISTING tier-0
 # swappiness-value-correct assert (Swappiness is simply absent from the
 # synthesized artifact) -- this rule can only ever fire against those two
-# arms via a deliberate L1/override escape-hatch fixture. hcl_raw has no such
-# construct-level protection: `container_definitions` is an untyped
-# jsonencode()'d JSON blob, so `swappiness: 42` with no `maxSwap` key sits
-# right there, literal and structurally well-formed, in real plan JSON --
-# THIS rule is the only thing that ever catches that on hcl_raw. Verified
+# arms via a deliberate L1/override escape-hatch fixture. Neither hcl_raw nor
+# hcl_modules has such construct-level protection: the raw
+# `container_definitions` is an untyped jsonencode()'d JSON blob, and the ecs
+# container-definition submodule types both fields as bare `optional(number)`
+# and supplies neither, so `swappiness: 42` with no `maxSwap` key sits right
+# there, literal and structurally well-formed, in real plan JSON --
+# THIS rule is the only thing that ever catches that on either arm. Verified
 # against real `terraform show -json` output for a hand-built hcl_raw
 # negative fixture (swappiness=42, no maxSwap key at all):
 #   $ jq '.planned_values.root_module.resources[]
@@ -85,14 +90,13 @@ deny contains msg if {
 # see toy-ssm-parameter/policy.rego for the worked example this scenario's
 # generator warning points at): that mechanism exists for a value derived
 # from ANOTHER resource's provider-computed output (an ARN, a generated
-# id) going `(known after apply)` at plan time. This scenario has exactly
-# ONE resource in the whole plan -- the task definition itself -- and
-# nothing in container_definitions (a literal image string, literal
-# numbers) can reference any other resource's attribute, so
-# values.container_definitions can never go plan-time-unknown here
-# regardless of how a correct solution is authored. `make check-paths
-# SPEC=specs/ecs-swappiness.yaml` (generator/tests/fixtures/ecs-swappiness/)
-# confirms this empirically against real plan JSON. The generator's own
-# plan-time-value-path warning is a blanket heuristic on any tier-1
-# tf_jsonpath under `.values...` -- correct to flag generically, verified
-# not to apply to this specific scenario.
+# id) going `(known after apply)` at plan time. Nothing this scenario asks
+# for puts such a value inside container_definitions -- the image is a
+# literal registry string and the swappiness/maxSwap pair are literal
+# numbers -- and on hcl_modules the only value the container-definition
+# submodule interpolates is the log group NAME it sets itself, which is
+# plan-time-known. Measured on real plan JSON for every enabled arm's
+# reference through `make falsifiability`, where tier 1 reports PASS rather
+# than an unresolved path. The generator's plan-time-value-path warning is a
+# blanket heuristic on any tier-1 tf_jsonpath under `.values...` -- correct
+# to flag generically, verified not to apply to this scenario.

@@ -33,11 +33,13 @@ from shards import ARM_ORDER
 from spec_model import HCL_MODULES_DEFAULT_REASON, Arm, Spec, load_spec
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-# The GREENFIELD spec every mutation test below starts from: `workspace_seed.
-# entry_file` has no `hcl_modules` field, so a brownfield spec cannot enable the
-# arm until its per-arm seeds are authored (phase 5) --
+# The GREENFIELD spec every mutation test below starts from. It must be one the
+# arm is SILENT on, because the mutations are what add the arm block and the
+# per-arm entry; a spec that already enables the arm cannot show the refusals.
+# `workspace_seed.entry_file` has no `hcl_modules` field, so a brownfield spec
+# cannot enable the arm until its per-arm seeds are authored --
 # `test_a_brownfield_spec_cannot_enable_it_yet` pins that refusal.
-GREENFIELD_SPEC = REPO_ROOT / "specs" / "ecs-swappiness.yaml"
+GREENFIELD_SPEC = REPO_ROOT / "specs" / "ecr-repo-destroy-force-delete.yaml"
 BROWNFIELD_SPEC = REPO_ROOT / "specs" / "named-resource-replacement.yaml"
 ALL_SPEC_PATHS = sorted(
     [p for p in (REPO_ROOT / "specs").glob("*.yaml") if p.name != "split.yaml"]
@@ -91,6 +93,7 @@ ARM_SPEC_IDS = frozenset({
     "asg-launch-template-tag-propagation",
     "caller-identity-arn-as-principal",
     "ddb-gsi-attribute-definitions",
+    "ecs-swappiness",
     "lambda-log-group-ownership-and-retention",
     "s3-lambda-log-retention",
     "s3-notification-custom-resource-tax",
@@ -123,15 +126,16 @@ def test_the_reason_holds_in_both_directions(path: Path) -> None:
     assert spec.arms.hcl_modules.reason == HCL_MODULES_DEFAULT_REASON
 
 
-def test_a_refusal_states_its_own_reason() -> None:
+def test_a_refusal_states_its_own_reason(greenfield_raw: dict) -> None:
     """The one shape the presence-keyed rule above admits that the old
-    membership-keyed one refused: `enabled: false` WITH a reason. ecs-swappiness
-    is that spec -- full module fit, trap in the wrong family -- and keeping it
-    named here is what stops the rule from being vacuous."""
-    raw = yaml.safe_load((REPO_ROOT / "specs" / "ecs-swappiness.yaml").read_text())
-    block = raw["arms"]["hcl_modules"]
-    assert block["enabled"] is False
-    assert "docs/adding-scenarios.md" in block["reason"]
+    membership-keyed one refused: `enabled: false` WITH a reason, which is a
+    different and more useful fact than silence. No shipped spec carries that
+    shape right now, so it is pinned as a mutation rather than by name."""
+    spec = _mutated(greenfield_raw, lambda d: d["arms"].update(
+        {"hcl_modules": {"enabled": False, "reason": "the trap has no module path"}}
+    ))
+    assert spec.arms.hcl_modules.enabled is False
+    assert spec.arms.hcl_modules.reason != HCL_MODULES_DEFAULT_REASON
 
 
 def test_default_reason_names_the_gap() -> None:

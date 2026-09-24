@@ -520,11 +520,15 @@ lenient instead of fixing the fixture.
 
 ## 6.3 The `hcl_modules` arm
 
-Enabled per spec (`specs/SCHEMA.md` §1), and only for a scenario whose trap is
-about COMPOSITION — how N resources are wired into a working system — because
-that is what a community module encodes and what this rung exists to measure.
-A property-semantics trap belongs on the other three arms; a module that passes
-the property through measures nothing new.
+Enabled per spec (`specs/SCHEMA.md` §1). A scenario whose trap is about
+COMPOSITION — how N resources are wired into a working system — is what a
+community module encodes, and it is where the arm's oracle differential lives.
+It is NOT the admission test: what the arm measures is the impact of FORCING
+module composition, so a trap a module merely passes through is still a
+measurement — the token cost of an agent made to reach for a module — and is
+admitted on that basis (owner's call, overruling `ecs-swappiness`'s written
+refusal; DECISIONS.md Amendment 46's slice A). What a spec owes either way is
+the measured module fit and the per-catch red-green verdict below.
 
 **Authoring the reference.** Use a module where
 `docs/design/hcl-modules-spec-matrix.md` §1 says one fits, and a raw resource

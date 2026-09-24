@@ -151,6 +151,10 @@
         "path": "tasks/anchor/ecs-swappiness-awscdk"
       },
       {
+        "name": "ecs-swappiness-hcl-modules",
+        "path": "tasks/anchor/ecs-swappiness-hcl-modules"
+      },
+      {
         "name": "ecs-swappiness-hcl-raw",
         "path": "tasks/anchor/ecs-swappiness-hcl-raw"
       },

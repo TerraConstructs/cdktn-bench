@@ -353,20 +353,23 @@ Phases, each landing on its own:
    until those run.
 6. **Corpus roll-out**, in three slices because the three have different
    blockers.
-   * **Slice A — done, offline. Ten read-only greenfield specs decided, nine
-     of them enabled**, each with a module-composed reference, a negative
+   * **Slice A — done, offline. Ten read-only greenfield specs decided, all
+     ten enabled**, each with a module-composed reference, a negative
      fixture per catch that applies, and the red-green verdict recorded beside
      every catch a module default moves: `s3-lambda-log-retention`,
      `s3-notification-custom-resource-tax`, `ddb-gsi-attribute-definitions`,
      `caller-identity-arn-as-principal`,
      `lambda-log-group-ownership-and-retention`,
      `asg-launch-template-tag-propagation`,
-     `apigwv2-route-settings-zero-vs-unset`, `apigw-openapi`, `sfn-jsonata`.
-     The tenth,
-     `ecs-swappiness`, is REFUSED in writing: full module fit, but its trap is
-     property semantics inside one resource, which this rung cannot measure.
+     `apigwv2-route-settings-zero-vs-unset`, `apigw-openapi`, `sfn-jsonata`,
+     `ecs-swappiness`. The last was refused in writing and the owner overruled
+     the refusal: the arm measures what forcing module composition costs, so a
+     trap composition adds nothing to is a signal to measure rather than
+     grounds to exclude. Its catches keep their tiers; one changes mechanism
+     (the module's typed `container_definitions` silently drops a mis-nested
+     key instead of shipping it).
      `falsifiability`, `grading-proof` and `tier1-coverage` are green on every
-     enabled arm of all nine, plus the three pilots as regression -- with
+     enabled arm of all ten, plus the three pilots as regression -- with
      `sfn-jsonata`'s new arm inheriting that spec's own pre-existing tracked
      tier-1 coverage gap (the non-gating SKIP its other two arms already
      carried) rather than a new one; three

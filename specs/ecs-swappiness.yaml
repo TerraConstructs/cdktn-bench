@@ -31,23 +31,31 @@ arms:
       place this identical-construct fact actually changes a predicted tier
       (relative to hcl_raw, not relative to awscdk).
   hcl_modules:
-    enabled: false
+    enabled: true
     reason: >
-      The trap is property semantics inside one resource, not composition.
-      docs/adding-scenarios.md §6.3 admits this arm only for a scenario whose
-      trap is about how N resources are wired into a working system, and
-      docs/design/hcl-modules-spec-matrix.md §2 measured the module side of
-      both catches as "Unchanged": `ecs//modules/container-definition` 7.6.1
-      types `linuxParameters.swappiness`/`.maxSwap` as `optional(number)`
-      fields (modules/container-definition/variables.tf:186-206) and then
-      `jsonencode()`s the whole object into the same `container_definitions`
-      string the raw resource stores, so both the tier-0 `|fromjson` assert
-      and the tier-1 Rego rule would read a byte-identical artifact to
-      hcl_raw. A module call here restates the hcl_raw arm rather than
-      measuring a new authoring substrate. Nothing about the module fit
-      blocks it -- §1 rates it full, via `ecs//modules/service` with
-      `create_service = false` plus `ecs//modules/container-definition` --
-      it is the trap that does not belong on this rung.
+      This arm measures what forcing module composition COSTS, so a scenario
+      whose trap composition adds nothing to is a signal to measure -- the
+      token price of an agent made to reach for a module for a
+      single-resource property -- not a reason to exclude it (owner's call,
+      overruling this spec's earlier written refusal).
+      The module fit is full and was MEASURED on a real plan through the
+      loopback registry before the arm was enabled: one
+      `ecs//modules/service` 7.6.1 call with `create_service = false` composes
+      the `aws_ecs_task_definition`, its execution role, that role's policy and
+      the task role, and the nested `container-definition` submodule authors the
+      container JSON, so no raw resource is left. The measurement that gated
+      the decision is whether the module makes `container_definitions`
+      plan-time-unknown, because that would score a CORRECT solution 0.0 at
+      tier 0 through the `|fromjson` path: it does not. The only value the
+      submodule interpolates into the JSON is the log group NAME it sets itself,
+      never a provider-computed output, so `values.container_definitions`
+      resolves in full and the plan normaliser hoists the resource out of the
+      module body into `root_module.resources` where every tier-0 assert and the
+      Rego bundle already look. Both catches stay reachable at the tier the
+      `hcl` column already predicts, so neither needs an
+      `hcl_modules_override`; one catch's MECHANISM changes and its verdict does
+      not -- see swappiness-nested-attribute's own description for the
+      measured drop.
 
 instruction:
   shared_body: |
@@ -84,6 +92,15 @@ instruction:
         artifact_path: cdktf.out/stacks/ecs-swappiness/plan.json
         synth_command: "npx cdktn synth"
         json_fields: []
+    hcl_modules:
+      language_line: "Author this as Terraform HCL composed from `terraform-aws-modules` registry modules: they are the real `terraform-aws-modules` sources, served at an allowlisted set of versions you can discover at this environment's registry endpoint."
+      output_contract:
+        entry_file: main.tf
+        artifact_path: plan.json
+        plan_command: >-
+          terraform init && terraform validate && terraform plan -out=plan.tfplan
+          && terraform show -json plan.tfplan > plan.json
+        json_fields: []
 
 catches:
   - name: swappiness-nested-attribute
@@ -111,10 +128,22 @@ catches:
       renderLinuxParameters(), and its container-definition.ts:986 call
       site, confirm the ONE nesting CDK itself ever produces:
       ContainerDefinitions[*].LinuxParameters.Swappiness).
+      On hcl_modules the mistake is reachable and the tier does not move, but
+      its MECHANISM does, measured on a real plan rather than read off the
+      module source: `ecs//modules/service`'s `container_definitions` is a
+      `map(object(...))`, so Terraform's own type conversion silently DISCARDS
+      a `swappiness` key written at the container's own top level -- `validate`
+      and `plan` both succeed, and the value is simply absent from the
+      container JSON instead of riding into it the way an untyped
+      `jsonencode()` blob carries it. Either way the tier-0
+      swappiness-value-correct assert resolves ZERO nodes and fails, which is
+      why this stays a tier-0 catch with its own fixture and needs no
+      hcl_modules_override.
     predicted_tier_caught:
       awscdk: "0"
       hcl: "0"
       terraconstructs_override: null
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
 
   - name: swappiness-requires-maxswap
     taxonomy: graph-dependency
@@ -156,10 +185,22 @@ catches:
           for this property" case SCHEMA.md §3 names
           terraconstructs_override for — set below to diverge from hcl's
           predicted tier.
+        - hcl_modules: caught at tier "1", exactly like hcl_raw, and measured
+          before the arm was enabled: `container-definition`'s
+          `linuxParameters` is an object whose `maxSwap` and `swappiness`
+          fields are both bare `optional(number)` with NO default
+          (modules/container-definition/variables.tf:186-206), and the
+          submodule only strips nulls and merges `initProcessEnabled` in, so a
+          call that states swappiness alone plans a container with
+          `linuxParameters` = {initProcessEnabled, swappiness} and no maxSwap.
+          Nothing in the module supplies the missing half or drops the present
+          one -- tier 0 passes, and the same Rego rule denies with the same
+          message hcl_raw gets.
     predicted_tier_caught:
       awscdk: "0"
       hcl: "1"
       terraconstructs_override: "0"
+    applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
 
 oracle:
   intent: >
@@ -179,7 +220,7 @@ oracle:
     - name: taskdef-exists
       description: "An AWS::ECS::TaskDefinition exists."
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ECS::TaskDefinition')]"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_ecs_task_definition')]"
       op: exists
@@ -192,7 +233,7 @@ oracle:
         silently dropped, per aws-cdk-lib's own jsdoc, is a materially
         different, harder variant this scenario does not exercise).
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ECS::TaskDefinition')].Properties.RequiresCompatibilities"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_ecs_task_definition')].values.requires_compatibilities"
       op: contains
@@ -208,7 +249,8 @@ oracle:
     # terraconstructs (see that catch's own description above): their
     # LinuxParameters construct silently renders NO Swappiness property at
     # all when maxSwap is unset, so this same path resolves to zero nodes
-    # there too. It does NOT catch the maxSwap-dependency catch on hcl_raw —
+    # there too. It does NOT catch the maxSwap-dependency catch on hcl_raw or
+    # hcl_modules —
     # see maxswap-present-when-swappiness-tuned below for why that needs a
     # dedicated tier-1 check instead of a second tier-0 assert (kept
     # deliberately tier-1 rather than made a trivial "maxSwap key exists"
@@ -216,14 +258,15 @@ oracle:
     # divergence documented above is actually exercised through the pipeline
     # instead of erased by a uniform tier-0 shortcut).
     #
-    # `|fromjson`: hcl_raw/terraconstructs's `values.container_definitions`
-    # is a `jsonencode(...)`'d STRING (SCHEMA.md §4.2's documented case),
-    # decoded before continuing the path. Plan-time-knownness (SCHEMA.md
-    # §4.2.1): the reference solution's container_definitions references NO
-    # other resource's provider-computed output (image is a literal
-    # registry string, no ECR repo/ARN lookups) — verified this stays fully
-    # `values`-resolved (not `(known after apply)`) for both TF arms'
-    # reference fixtures.
+    # `|fromjson`: every TF-shaped arm's `values.container_definitions` is a
+    # `jsonencode(...)`'d STRING (SCHEMA.md §4.2's documented case), decoded
+    # before continuing the path — on hcl_modules the `jsonencode()` is the
+    # service submodule's own. Plan-time-knownness (SCHEMA.md
+    # §4.2.1): no arm's reference container_definitions references another
+    # resource's provider-computed output (image is a literal
+    # registry string, no ECR repo/ARN lookups; the module interpolates only
+    # the log group name it sets itself) — verified fully `values`-resolved
+    # (not `(known after apply)`) on all three TF arms' reference fixtures.
     - name: swappiness-value-correct
       description: >
         The container's memory swappiness is set to exactly 42, nested at
@@ -231,7 +274,7 @@ oracle:
         this assert's own comment in the spec source for how this single
         check does double duty across both declared catches).
       tier: "0"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ECS::TaskDefinition')].Properties.ContainerDefinitions[*].LinuxParameters.Swappiness"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_ecs_task_definition')].values.container_definitions|fromjson[*].linuxParameters.swappiness"
       op: eq
@@ -261,7 +304,7 @@ oracle:
         verified per-arm tier divergence this choice exists to preserve
         rather than erase.
       tier: "1"
-      applies_to: [awscdk, hcl_raw, terraconstructs]
+      applies_to: [awscdk, hcl_raw, terraconstructs, hcl_modules]
       cfn_jsonpath: "$.Resources[?(@.Type=='AWS::ECS::TaskDefinition')].Properties.ContainerDefinitions[*].LinuxParameters.MaxSwap"
       tf_jsonpath: "$.planned_values.root_module.resources[?(@.type=='aws_ecs_task_definition')].values.container_definitions|fromjson[*].linuxParameters.maxSwap"
       op: exists

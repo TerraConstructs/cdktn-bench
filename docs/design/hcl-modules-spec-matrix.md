@@ -130,11 +130,26 @@ unvalidated structural passthrough — every ddb-gsi catch
 is exactly as representable as on raw — no defaults change, no tier move.
 
 **ecs//modules/container-definition@7.6.1** (`modules/container-definition/variables.tf:186-206`):
-`swappiness-nested-attribute`/`swappiness-requires-maxswap`: `linuxParameters.swappiness`/
-`.maxSwap` are typed `optional(number)` fields inside an object with `default={}`
-— but the submodule still `jsonencode()`s the whole thing into the same
-`container_definitions` string the raw resource stores, so the tier-0
-`|fromjson` jsonpath reads identically either way. Unchanged.
+`swappiness-requires-maxswap` is UNCHANGED, measured: `linuxParameters.swappiness`/
+`.maxSwap` are typed `optional(number)` fields with no default inside an object
+with `default={}`, the submodule only strips nulls and merges `initProcessEnabled`
+in, and it `jsonencode()`s the result into the same `container_definitions` string
+the raw resource stores — so a call stating swappiness alone plans the same
+missing-maxSwap container, the tier-0 `|fromjson` jsonpath reads it identically,
+and the tier-1 Rego rule denies with the same message.
+`swappiness-nested-attribute` keeps its tier and changes MECHANISM, which this
+file first missed: `ecs//modules/service`'s `container_definitions` is a
+`map(object(...))`, so Terraform's type conversion silently DISCARDS a
+`swappiness` key written at the container's own top level. `validate` and `plan`
+both succeed and the value never reaches the plan, where raw HCL carries it into
+an artifact ECS ignores at deploy; both shapes resolve the tier-0 assert to zero
+nodes, so the catch stays at tier 0 with its own fixture.
+The task definition plans plan-time-known: the only value the submodule
+interpolates into the JSON is the log group name it sets itself, never a
+provider-computed output, so a correct composition does not score 0.0 through the
+`|fromjson` path. `create_service = false` plus `launch_type`/
+`requires_compatibilities`/`network_mode` is the whole call — the module creates
+the execution role, its policy and the task role itself, and needs no cluster.
 
 **apigateway-v2@6.1.1** (`variables.tf:334-344`): `burst-limit-left-unset`/
 `throttle-set-to-zero`: **HIDDEN** — `stage_default_route_settings` is an

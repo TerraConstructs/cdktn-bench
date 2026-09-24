@@ -8500,9 +8500,10 @@ amendment is ACCEPTED on landing rather than on a live run.
 
 ## Amendment 46 — the `hcl_modules` arm is reintroduced as a per-spec-gated fourth arm — DRAFT
 
-**Status: DRAFT until the phase-5 live promotion trial.** What lands now is
-schema and plumbing only: no spec enables the arm, no image exists, and
-`generator/gen.py::ARMS_PENDING_IMAGE` refuses to emit a task for it.
+**Status: DRAFT until the acm `hcl_modules` re-trial promotes it.** The image,
+the registry sidecar and thirteen enabled read-only specs exist (phases 4-6
+below); two live `hcl_modules` rows are clean and the third was graded wrong by
+an oracle since fixed (`docs/live-results.md`, 2026-09-23).
 
 **`hcl_modules` is an ARM, not a scenario treatment attribute** (this closes
 ROADMAP open decision 4). Composing from `terraform-aws-modules` changes the
@@ -8684,14 +8685,21 @@ per message and a non-zero `opa eval` reports ENGINE_ERROR with its stderr.
 
 **Phase 6 slice A, offline** (this amendment stays DRAFT: it promotes on the live
 trials, which need the operator's own environment). Ten read-only greenfield
-specs decided, nine enabled; `ecs-swappiness` is refused in writing — full
-module fit, but its trap is property semantics inside one resource, and
-`ecs//modules/container-definition` `jsonencode()`s the trapped fields into the
-same `container_definitions` string the raw resource stores, so both tiers would
-read a byte-identical artifact. Enabling the arm is now an enumerated decision
+specs decided, all ten enabled. `ecs-swappiness` was refused in writing by the
+slice's implementer — full module fit, but its trap is property semantics inside
+one resource, and `ecs//modules/container-definition` `jsonencode()`s the trapped
+fields into the same `container_definitions` string the raw resource stores, so
+both tiers read a byte-identical artifact — and the owner OVERRULED that refusal:
+what the arm measures is the impact of forcing module composition, so a scenario
+where composition adds nothing to the artifact is a signal to measure (the token
+cost of an agent made to reach for a module for one resource's property), not a
+reason to exclude. A trap outside the composition family is therefore not by
+itself grounds to refuse the arm; `docs/adding-scenarios.md` §6.3 records that.
+Enabling the arm is an enumerated decision
 (`generator/tests/test_hcl_modules_arm.py::ARM_SPEC_IDS`) rather than a
-three-pilot exception, and a spec may refuse it in writing rather than only by
-silence.
+three-pilot exception. A spec may still refuse it in writing rather than only by
+silence, and no shipped spec does, so that shape is pinned as a schema mutation
+rather than by naming a spec.
 
 What the module defaults did to each catch, every verdict measured on a real plan
 through the loopback registry BEFORE the decision was taken:
@@ -8783,6 +8791,29 @@ through the loopback registry BEFORE the decision was taken:
   hcl_raw's own tracked tier-1 coverage gap (seven tier-1 asserts, one catch
   predicting tier 1) rather than a new one, recorded in
   `generator/check_tier1_coverage.py`.
+- `ecs-swappiness` — no catch removed, no tier moved, no `hcl_modules_override`
+  and no Rego rule change: the policy is values-side only and the normaliser
+  hoists the module's resource. One `ecs//modules/service` 7.6.1 call with
+  `create_service = false` composes the task definition, its execution role,
+  that role's policy and the task role, and the nested `container-definition`
+  submodule writes the container JSON, so nothing stays raw. The measurement
+  that gated the decision is the one `sfn-jsonata` needed: the submodule
+  interpolates only the log group name it sets itself, never a
+  provider-computed output, so `values.container_definitions` reaches
+  `planned_values` verbatim and a correct composition scores 1.0 with both
+  tier-0 asserts resolved rather than 0.0 through the `|fromjson` path. What the
+  arm changes is one catch's MECHANISM, not its verdict:
+  `container_definitions` is a `map(object(...))`, so Terraform's own type
+  conversion silently DISCARDS a `swappiness` key written at the container's own
+  top level — `validate` and `plan` succeed and the value never reaches the
+  plan, where hcl_raw ships it into an artifact ECS then ignores. Both shapes
+  fail the same tier-0 assert on zero resolved nodes, so the catch keeps its
+  fixture at tier 0. The maxSwap catch is untouched: both `maxSwap` and
+  `swappiness` are bare `optional(number)` with no default, so the module
+  supplies neither half, tier 0 passes and the same Rego rule denies with the
+  same message hcl_raw gets, differing only in the module call path on the
+  address.
+
 - `apigw-openapi` — PARTIAL FIT and that is the point: the registry publishes no
   API Gateway REST v1 module, so every resource the catches live on stays raw HCL
   and only the Lambda side is composed. No Rego change and no catch moved. A rung
