@@ -8498,12 +8498,14 @@ amendment is ACCEPTED on landing rather than on a live run.
 
 ---
 
-## Amendment 46 — the `hcl_modules` arm is reintroduced as a per-spec-gated fourth arm — DRAFT
+## Amendment 46 — the `hcl_modules` arm is reintroduced as a per-spec-gated fourth arm — ACCEPTED
 
-**Status: DRAFT until the acm `hcl_modules` re-trial promotes it.** The image,
-the registry sidecar and thirteen enabled read-only specs exist (phases 4-6
-below); two live `hcl_modules` rows are clean and the third was graded wrong by
-an oracle since fixed (`docs/live-results.md`, 2026-09-23).
+**Status: ACCEPTED 2026-09-24** on `jobs/amend46-promotion`: three read-only
+`hcl_modules` trials scored 1.0 through the compose sidecar, and the fourth,
+graded 0.0 by an oracle that could not see a module-created zone, scored 1.0
+on the fixed policy when re-run (`docs/live-results.md`). The mutating and
+brownfield arm forms are promoted by phase 6 slice C's own trials; until then
+rows on those forms are not published.
 
 **`hcl_modules` is an ARM, not a scenario treatment attribute** (this closes
 ROADMAP open decision 4). Composing from `terraform-aws-modules` changes the

@@ -398,3 +398,18 @@ verifier printed no reason for any tier-1 FAIL and charged an opa crash as
 FAIL; it now prints one `DENY:` line per message and returns ENGINE_ERROR.
 Amendment 46 stays DRAFT until the acm `hcl_modules` trial is re-run on the
 fixed policy; the two clean `hcl_modules` rows stand as its evidence so far.
+
+## Amendment 46 promotion — 2026-09-24 (acm re-trial on the fixed policy)
+
+`jobs/amend46-promotion/2026-09-24__10-00-21`; the same task, image and
+sidecar shape as the battery above, one trial, after the created-zone rule
+fix in `d1bccdf`. The agent again composed the zone through the route53
+module and the certificate through the acm module.
+
+| scenario | arm | reward | output tok | LLM calls | tier0 | tier1 |
+|---|---|---:|---:|---:|:---:|:---:|
+| acm-dns-validation-record-wiring | hcl_modules | 1.0 | 5,828 | 18 | pass | PASS |
+
+Output tokens come from the `claude-code-stream` fallback (Harbor's
+trajectory conversion hit its step-id gap on this run). With this row every
+read-only `hcl_modules` form has a clean live trial; Amendment 46 is ACCEPTED.

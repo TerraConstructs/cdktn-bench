@@ -143,8 +143,9 @@ Full rules: `docs/adding-scenarios.md` §1 item 3a. The short form:
   files are shims), 45 (OPA/Rego grades tier 1 on every arm; cfn-guard is
   retired from the oracle and kept as an arm capability) and 47 (equipping hash
   scheme 2: Harbor's own `task.toml [environment]` MCP/skills declarations and
-  `environment/docker-compose.yaml` are in the hash) and 48 (`arms/hcl-raw`
-  mirrors `hashicorp/aws` 6.66.0) are ACCEPTED** (promotion
+  `environment/docker-compose.yaml` are in the hash), 48 (`arms/hcl-raw`
+  mirrors `hashicorp/aws` 6.66.0) and 46 (the `hcl_modules` arm, per-spec
+  gated, served by the loopback registry sidecar) are ACCEPTED** (promotion
   runs for the harness-changing ones under `jobs/amend3*-promotion`).
   Rows produced under them are publishable within
   their own stratum. Any new amendment that changes the harness re-enters
