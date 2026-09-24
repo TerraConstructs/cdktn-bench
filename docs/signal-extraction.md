@@ -162,9 +162,29 @@ and `generator/tests/test_scenario_identity.py` enforces this at build time.
 
 ---
 
-## 3. Not yet mechanized
+## 3. The same signals, on the published row
 
-- **blast radius** (`replace` vs `update` counts for a change) — needs the
-  plan/changeset persisted as a trial artifact first; see ROADMAP M1.
-- `metrics/extract_signals.py` is **not** wired into `make check` and has no
-  tests yet; treat its output as analysis, not as a gate, until it does.
+The recipes above are the exploratory path. For anything that will be reported,
+read the row instead: `gates/emit_result.py` emits `rbw`, `escape_hatch` and
+`blast_radius` as first-class fields of a `metrics/result_schema.json` row, and
+`make metrics` reports them per cell. The row is the durable copy — a job dir can
+be deleted, and a trial's container already is.
+
+- `rbw` and `escape_hatch` come from this module's own
+  `trial_signals(trial_dir, arm)`, so the numbers are the same ones the table
+  above prints. Note the CLI resolves the arm from the trial dir NAME, which
+  harbor truncates: a dir with no arm suffix left reports `?`, no entry file, and
+  so no rbw. `gates/emit_result.py` is told the arm explicitly and does not have
+  that gap.
+- `blast_radius` is read from the plan (or synthesized template) the verifier
+  persisted into `/logs/artifacts`, collected into `<trial>/artifacts/`. Counts
+  come from `resource_changes[]` — create/update/delete/replace/no-op/read, the
+  total, and the root-vs-module split. A trial that ran before the verifier kept
+  that file carries `blast_radius_unavailable` with the reason; the field cannot
+  be backfilled from anything else the trial wrote.
+- `gates/artifact_collector.py --out <dir> specs/<id>.yaml` produces the same
+  artifacts host-side, off real toolchain runs and no AWS, when a question needs
+  an answer before the next live trial.
+
+`metrics/extract_signals.py`'s importable half is tested
+(`metrics/test_extract_signals.py`); its CLI table is still analysis, not a gate.

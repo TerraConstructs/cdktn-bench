@@ -426,6 +426,75 @@ def _iters_km_administrative(
     return km_median_iqr(times_events)
 
 
+def summarize_profile(valid_rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """The profile columns for one cell (ROADMAP "a profile, not a scalar"):
+    read-before-write incidence, escape-hatch incidence, blast radius.
+
+    All three are OPTIONAL row fields, so each reports its own known-row
+    denominator: a mean over the rows that carry it plus the count that do not.
+    Averaging over the whole cell would silently read a missing field as zero,
+    which is exactly how a pre-artifact trial would drag a blast-radius mean
+    down without anything in the output saying so.
+
+    Blast radius is summarized per SOURCE, never pooled across them: a
+    `cloudformation-template` row has no action breakdown at all, so pooling it
+    with plan rows would divide replace counts by a denominator that includes
+    rows where a replace could not have been observed.
+    """
+    rbw_pcts = [
+        float(r["rbw"]["pct"])
+        for r in valid_rows
+        if isinstance(r.get("rbw"), dict) and r["rbw"].get("pct") is not None
+    ]
+    # A transcript that shows the entry file was never mutated is a real
+    # observation, counted apart from having no transcript to read at all.
+    n_rbw_no_write = sum(
+        1
+        for r in valid_rows
+        if isinstance(r.get("rbw"), dict) and r["rbw"].get("pct") is None
+    )
+    escapes = [r["escape_hatch"] for r in valid_rows if r.get("escape_hatch") is not None]
+
+    by_source: dict[str, dict[str, Any]] = {}
+    for r in valid_rows:
+        radius = r.get("blast_radius")
+        if not isinstance(radius, dict):
+            continue
+        block = by_source.setdefault(
+            radius["source"], {"n": 0, "totals": [], "replaces": [], "modules": []}
+        )
+        block["n"] += 1
+        block["totals"].append(float(radius.get("total") or 0))
+        counts = radius.get("counts")
+        if isinstance(counts, dict):
+            block["replaces"].append(float(counts.get("replace") or 0))
+        if radius.get("module") is not None:
+            block["modules"].append(float(radius["module"]))
+    blast: dict[str, Any] = {}
+    for source, block in sorted(by_source.items()):
+        blast[source] = {
+            "n": block["n"],
+            "resources_total": _order_stats(block["totals"]),
+            "replaced": _order_stats(block["replaces"]),
+            "module_scoped": _order_stats(block["modules"]),
+        }
+
+    return {
+        "rbw_pct": _order_stats(rbw_pcts),
+        "n_rbw_known": len(rbw_pcts),
+        "n_rbw_no_entry_file_write": n_rbw_no_write,
+        "n_rbw_unknown": len(valid_rows) - len(rbw_pcts) - n_rbw_no_write,
+        "escape_hatch": {
+            "yes": escapes.count("yes"),
+            "no": escapes.count("no"),
+            "not_applicable": escapes.count("n/a"),
+            "n_unknown": len(valid_rows) - len(escapes),
+        },
+        "blast_radius_by_source": blast,
+        "n_blast_radius_unknown": len(valid_rows) - sum(b["n"] for b in blast.values()),
+    }
+
+
 def summarize_cell(
     rows: list[dict[str, Any]],
     *,
@@ -526,6 +595,7 @@ def summarize_cell(
     return {
         "n_valid": n_valid,
         "n_excluded_invalid": n_excluded,
+        "profile": summarize_profile(valid_rows),
         "n_tier1_not_verifiable": n_tier1_not_verifiable,
         "sensitivity_excluding_tier1_not_verifiable": sensitivity_excluding_tier1_not_verifiable,
         "success_rate": {
@@ -953,14 +1023,55 @@ def _fmt(value: Any, digits: int = 0) -> str:
     return str(value)
 
 
+def _rbw_cell(profile: dict[str, Any]) -> str:
+    stats = profile["rbw_pct"]
+    if stats is None:
+        return (
+            f"n/a ({profile['n_rbw_no_entry_file_write']} no-write, "
+            f"{profile['n_rbw_unknown']} unknown)"
+        )
+    cell = f"{stats['mean']:.1f}% ({profile['n_rbw_known']})"
+    if profile["n_rbw_no_entry_file_write"]:
+        cell += f" +{profile['n_rbw_no_entry_file_write']} no-write"
+    if profile["n_rbw_unknown"]:
+        cell += f" +{profile['n_rbw_unknown']} unknown"
+    return cell
+
+
+def _escape_cell(profile: dict[str, Any]) -> str:
+    e = profile["escape_hatch"]
+    return f"{e['yes']}/{e['no']}/{e['not_applicable']} ({e['n_unknown']})"
+
+
+def _blast_cell(profile: dict[str, Any]) -> str:
+    """One cell per source, never a pooled figure -- `counts` is null on a
+    template-sourced row, so a replace mean across sources would divide by rows
+    where no replace could have been observed."""
+    by_source = profile["blast_radius_by_source"]
+    if not by_source:
+        return f"n/a ({profile['n_blast_radius_unknown']} unknown)"
+    parts = []
+    for source, block in by_source.items():
+        total = block["resources_total"]
+        repl = block["replaced"]
+        part = f"{source}: {total['mean']:.1f} res"
+        if repl is not None:
+            part += f", {repl['mean']:.1f} repl"
+        parts.append(part + f" (n={block['n']})")
+    if profile["n_blast_radius_unknown"]:
+        parts.append(f"{profile['n_blast_radius_unknown']} unknown")
+    return "; ".join(parts)
+
+
 def _render_cell_table(lines: list[str], cells: list[dict[str, Any]]) -> None:
     lines.append(
         "| Arm | Model | Harness | N valid | Excl. invalid | Success rate "
         "(Wilson 95% CI) | Tokens-to-green median [IQR] (KM, admin-censored) | "
         "Iterations-to-green median [IQR] | Tokens mean±stddev (uncensored) | "
-        "n tier1_not_verifiable |"
+        "n tier1_not_verifiable | rbw% mean (n) | Escape hatch y/n/na (unk) | "
+        "Blast radius mean per source |"
     )
-    lines.append("|---|---|---|---|---|---|---|---|---|---|")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for c in cells:
         sr = c["success_rate"]
         tkm = c["tokens_to_green_km"]
@@ -991,10 +1102,12 @@ def _render_cell_table(lines: list[str], cells: list[dict[str, Any]]) -> None:
         mean_cell = (
             f"{tstats['mean']:.0f}±{tstats['stddev']:.0f}" if tstats else "n/a"
         )
+        prof = c["profile"]
         lines.append(
             f"| {c['arm']} | {c['model']} | {c['harness']} | {c['n_valid']} | "
             f"{c['n_excluded_invalid']} | {success_cell} | {tokens_cell} | "
-            f"{iters_cell} | {mean_cell} | {c['n_tier1_not_verifiable']} |"
+            f"{iters_cell} | {mean_cell} | {c['n_tier1_not_verifiable']} | "
+            f"{_rbw_cell(prof)} | {_escape_cell(prof)} | {_blast_cell(prof)} |"
         )
 
 

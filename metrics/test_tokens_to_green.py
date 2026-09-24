@@ -36,6 +36,7 @@ from tokens_to_green import (
     main,
     render_markdown,
     summarize_cell,
+    summarize_profile,
     wilson_interval,
 )
 
@@ -983,3 +984,100 @@ class TestScenarioFormStratification:
         bad[SOURCE_LABEL_KEY] = "rows/bad.json"
         with pytest.raises(ScenarioFormMissing, match="rows/bad.json"):
             build_report([make_row(), bad], [])
+
+
+# ---------------------------------------------------------------------------
+# Profile columns (ROADMAP M1)
+# ---------------------------------------------------------------------------
+
+
+def plan_radius(total, replace=0, module=0, root=None):
+    counts = {k: 0 for k in ("create", "update", "delete", "replace", "no_op", "read", "other")}
+    counts["replace"] = replace
+    counts["create"] = total - replace
+    return {
+        "source": "terraform-plan",
+        "total": total,
+        "root": total - module if root is None else root,
+        "module": module,
+        "counts": counts,
+    }
+
+
+TEMPLATE_RADIUS = {
+    "source": "cloudformation-template",
+    "total": 9,
+    "root": None,
+    "module": None,
+    "counts": None,
+}
+
+
+class TestProfileColumns:
+    def test_each_column_reports_its_own_known_denominator(self):
+        rows = [
+            make_row(rbw={"tokens": 10, "msgs": 1, "output_tokens": 100, "pct": 10.0},
+                     escape_hatch="yes", blast_radius=plan_radius(4, replace=1)),
+            make_row(rbw={"tokens": 30, "msgs": 2, "output_tokens": 100, "pct": 30.0},
+                     escape_hatch="no", blast_radius=plan_radius(6, replace=3)),
+            # A pre-artifact trial: no plan was persisted, and the row says so.
+            make_row(blast_radius_unavailable="no artifacts/ in this trial dir"),
+        ]
+        profile = summarize_profile(rows)
+        assert profile["n_rbw_known"] == 2
+        assert profile["n_rbw_unknown"] == 1
+        assert profile["rbw_pct"]["mean"] == 20.0
+        assert profile["escape_hatch"] == {"yes": 1, "no": 1, "not_applicable": 0, "n_unknown": 1}
+        assert profile["n_blast_radius_unknown"] == 1
+        block = profile["blast_radius_by_source"]["terraform-plan"]
+        assert block["n"] == 2
+        assert block["resources_total"]["mean"] == 5.0
+        assert block["replaced"]["mean"] == 2.0
+
+    def test_a_missing_field_never_reads_as_zero(self):
+        """The whole reason each column carries its own denominator: averaging a
+        pre-artifact row in as a 0 would drag the mean down silently."""
+        with_field = summarize_profile([make_row(blast_radius=plan_radius(8))])
+        with_one_missing = summarize_profile(
+            [make_row(blast_radius=plan_radius(8)), make_row()]
+        )
+        plan = "terraform-plan"
+        assert with_field["blast_radius_by_source"][plan]["resources_total"]["mean"] == 8.0
+        assert with_one_missing["blast_radius_by_source"][plan]["resources_total"]["mean"] == 8.0
+        assert with_one_missing["n_blast_radius_unknown"] == 1
+
+    def test_sources_are_never_pooled(self):
+        profile = summarize_profile(
+            [make_row(blast_radius=plan_radius(4, replace=2)), make_row(blast_radius=TEMPLATE_RADIUS)]
+        )
+        by_source = profile["blast_radius_by_source"]
+        assert sorted(by_source) == ["cloudformation-template", "terraform-plan"]
+        # No action breakdown exists behind a template, so no replace mean is
+        # invented for it -- and the plan mean is not diluted by its absence.
+        assert by_source["cloudformation-template"]["replaced"] is None
+        assert by_source["terraform-plan"]["replaced"]["mean"] == 2.0
+
+    def test_a_transcript_showing_no_entry_file_write_is_not_unknown(self):
+        profile = summarize_profile(
+            [make_row(rbw={"tokens": None, "msgs": None, "output_tokens": 400, "pct": None})]
+        )
+        assert profile["n_rbw_known"] == 0
+        assert profile["n_rbw_no_entry_file_write"] == 1
+        assert profile["n_rbw_unknown"] == 0
+        assert profile["rbw_pct"] is None
+
+    def test_not_applicable_is_never_counted_as_no(self):
+        profile = summarize_profile([make_row(arm="hcl-raw", escape_hatch="n/a")])
+        assert profile["escape_hatch"]["not_applicable"] == 1
+        assert profile["escape_hatch"]["no"] == 0
+
+    def test_invalid_rows_are_excluded_before_the_profile_is_computed(self):
+        cell = summarize_cell(
+            [
+                make_row(rbw={"tokens": 10, "msgs": 1, "output_tokens": 100, "pct": 10.0}),
+                make_row(validity_class="invalid-bypass",
+                         rbw={"tokens": 90, "msgs": 9, "output_tokens": 100, "pct": 90.0}),
+            ]
+        )
+        assert cell["profile"]["n_rbw_known"] == 1
+        assert cell["profile"]["rbw_pct"]["mean"] == 10.0

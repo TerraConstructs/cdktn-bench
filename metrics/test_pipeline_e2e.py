@@ -126,3 +126,41 @@ def test_a_mixed_form_directory_refuses_a_combined_headline_end_to_end(tmp_path:
     assert md.count("## Scenario form:") == 2
     assert "## Scenario form: greenfield" in md
     assert "## Scenario form: brownfield" in md
+
+
+def test_the_profile_columns_reach_benchmark_json_and_the_markdown(tmp_path: Path) -> None:
+    """ROADMAP M1: rbw, escape-hatch and blast radius are first-class row fields,
+    so they must arrive in the report without a second pass over the job dir."""
+    _write_rows_as_a_real_job_would(tmp_path)
+    assert main([str(tmp_path)]) == 0
+
+    report = json.loads((tmp_path / "benchmark.json").read_text())
+    profiles = {c["arm"]: c["profile"] for c in report["cells"]}
+    assert set(profiles) == {"awscdk", "hcl-raw", "terraconstructs", "hcl-modules"}
+
+    for arm, profile in profiles.items():
+        # One valid fixture per arm carries a transcript; its two invalid
+        # siblings are excluded from the cell before the profile is computed.
+        assert profile["n_rbw_known"] == 1, arm
+        assert profile["rbw_pct"]["mean"] == 90.0, arm
+        assert profile["n_blast_radius_unknown"] == 0, arm
+
+    # A template-sourced row is summarized under its own source, never pooled
+    # with plan rows: it has no action breakdown to average.
+    assert list(profiles["awscdk"]["blast_radius_by_source"]) == ["cloudformation-template"]
+    assert profiles["awscdk"]["blast_radius_by_source"]["cloudformation-template"]["replaced"] is None
+    assert profiles["awscdk"]["escape_hatch"]["yes"] == 1
+
+    plan_block = profiles["hcl-modules"]["blast_radius_by_source"]["terraform-plan"]
+    assert plan_block["replaced"]["mean"] == 1.0
+    assert plan_block["module_scoped"]["mean"] == 2.0
+    # hcl-raw has no abstraction to leave: "n/a", counted apart from "no".
+    assert profiles["hcl-raw"]["escape_hatch"] == {
+        "yes": 0, "no": 0, "not_applicable": 1, "n_unknown": 0
+    }
+
+    md = (tmp_path / "benchmark.md").read_text()
+    assert "rbw% mean (n)" in md
+    assert "Escape hatch y/n/na (unk)" in md
+    assert "Blast radius mean per source" in md
+    assert "terraform-plan: 6.0 res, 1.0 repl (n=1)" in md

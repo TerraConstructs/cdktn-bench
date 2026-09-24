@@ -1,0 +1,35 @@
+{
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "module.bucket.aws_s3_bucket.this",
+      "type": "aws_s3_bucket",
+      "change": {
+        "actions": [
+          "create"
+        ]
+      },
+      "module_address": "module.bucket"
+    },
+    {
+      "address": "module.bucket[\"logs\"].aws_s3_bucket.this[0]",
+      "type": "aws_s3_bucket",
+      "change": {
+        "actions": [
+          "create",
+          "delete"
+        ]
+      },
+      "module_address": "module.bucket[\"logs\"]"
+    },
+    {
+      "address": "aws_iam_role.app",
+      "type": "aws_iam_role",
+      "change": {
+        "actions": [
+          "update"
+        ]
+      }
+    }
+  ]
+}

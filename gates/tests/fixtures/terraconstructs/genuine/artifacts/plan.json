@@ -1,0 +1,24 @@
+{
+  "format_version": "1.2",
+  "resource_changes": [
+    {
+      "address": "aws_s3_bucket.this",
+      "type": "aws_s3_bucket",
+      "change": {
+        "actions": [
+          "create"
+        ]
+      }
+    },
+    {
+      "address": "aws_s3_bucket_policy.this",
+      "type": "aws_s3_bucket_policy",
+      "change": {
+        "actions": [
+          "delete",
+          "create"
+        ]
+      }
+    }
+  ]
+}

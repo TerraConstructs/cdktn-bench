@@ -227,6 +227,179 @@
       "type": "string",
       "format": "date-time",
       "description": "ISO 8601 timestamp the trial completed."
+    },
+    "blast_radius": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "OPTIONAL profile column (ROADMAP \u00a72 \"a profile, not a scalar\", M1): how much infrastructure this solution's change actually moves. Computed by gates/blast_radius.py from the artifact the verifier persisted into /logs/artifacts and harbor collected into <trial>/artifacts/ -- never from a post-hoc re-run. The Terraform read is `resource_changes[]`, NOT `planned_values`: that array is flat, carries `module_address` and instance-keyed addresses, and holds the `change.actions` the counts are keyed on; `planned_values` is a desired-state tree with no actions in it, so it cannot express what gets replaced. ABSENT on a row whose trial persisted no usable artifact -- `blast_radius_unavailable` then carries the reason, and the two fields are mutually exclusive. Multi-step rows describe the FINAL step's artifact, the change the reward is attributed to.",
+      "required": [
+        "source",
+        "total",
+        "root",
+        "module",
+        "counts"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "enum": [
+            "terraform-plan",
+            "cloudformation-changeset",
+            "cloudformation-template"
+          ],
+          "description": "Which document the counts were read from, because the three do not carry the same information. `terraform-plan` (`terraform show -json`) fills every bucket and both halves of the root/module split. `cloudformation-changeset` (DescribeChangeSet, `Changes[].ResourceChange` Action + Replacement) fills the buckets but has no module concept. `cloudformation-template` is what an awscdk trial carries with no deployment behind it -- a synthesized template states what will exist, not what a deployment would do to what is already there -- so `total` is its `Resources` count and `counts`/`root`/`module` are all null. A row with a null `counts` must never be pooled into a replace-rate comparison with a plan-sourced row."
+        },
+        "total": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of `resource_changes[]` elements (plan/changeset) or `Resources` entries (template)."
+        },
+        "root": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Elements with an empty/absent `module_address` -- authored directly in the root module. Null for a changeset or template source, which has no module concept."
+        },
+        "module": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Elements with a non-empty `module_address` -- reached through a module call. `root + module == total` for a plan source; null for the other two. This split is the compression claim under test: the same resources moved from a different authoring surface."
+        },
+        "counts": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": false,
+          "description": "Each element bucketed on its `change.actions`, exactly one bucket per element, so the buckets sum to `total`: [\"create\"]->create, [\"update\"]->update, [\"delete\"]->delete, [\"create\",\"delete\"] and [\"delete\",\"create\"]->replace, [\"no-op\"]->no_op, [\"read\"]->read, anything else->other (and listed in `unclassified_actions`). Null for a `cloudformation-template` source, which has no actions.",
+          "required": [
+            "create",
+            "update",
+            "delete",
+            "replace",
+            "no_op",
+            "read",
+            "other"
+          ],
+          "properties": {
+            "create": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "update": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "delete": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "replace": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Destroyed and recreated rather than updated in place -- the count ROADMAP \u00a72 names as the blast-radius headline."
+            },
+            "no_op": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "read": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "A data-source read."
+            },
+            "other": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "An action pair the bucket mapping does not name (Terraform's `forget`, or a future action). Counted rather than dropped, and spelled out in `unclassified_actions`."
+            }
+          }
+        },
+        "unclassified_actions": {
+          "type": "array",
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "description": "The verbatim `change.actions` value of every element that landed in the `other` bucket, present only when that count is non-zero. Makes an action Terraform adds later visible as unclassified instead of silently absorbed into a named bucket."
+        },
+        "artifact": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Path, relative to the trial dir, of the persisted artifact the counts were read from (e.g. \"artifacts/plan.json\", \"steps/02-change-request/artifacts/ScenarioStack.template.json\")."
+        }
+      }
+    },
+    "blast_radius_unavailable": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Why `blast_radius` is absent on this row -- present only when it is, and never alongside it. A trial run before the verifier persisted its plan/template into /logs/artifacts reads \"no artifacts/ ...\" or \"no plan.json or *.template.json under artifacts/\": the field is not recoverable after the fact from anything else the trial kept, so the row carries the reason instead of a fabricated zero."
+    },
+    "rbw": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "OPTIONAL profile column, READ-BEFORE-WRITE: output tokens emitted before the first mutation of the arm's own entry file (`lib/scenario-stack.ts` / `main.ts` / `main.tf`), counting Write/Edit/MultiEdit/NotebookEdit on that file and Bash redirects into it. The comprehension-cost proxy ROADMAP \u00a73 finding 1 rests on. Emitted by gates/emit_result.py from metrics/extract_signals.py::trial_signals at gate time, not extracted post-hoc from a job dir that may be gone. ABSENT when the trial left no session transcript to scan (agent/sessions/**/*.jsonl); `tokens` is null WITHIN the object when a transcript exists but the entry file was never mutated -- the two cases are different and are not collapsed. Multi-step: rbw is a share, so it is never summed across steps -- the top-level numbers are the FINAL step's and `steps` carries each step's own.",
+      "required": [
+        "tokens",
+        "msgs",
+        "output_tokens",
+        "pct"
+      ],
+      "properties": {
+        "tokens": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Output tokens before the first entry-file mutation. Null when the entry file was never mutated in this trial (or step)."
+        },
+        "msgs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Assistant messages before that first mutation, deduplicated by `message.id` (a session jsonl repeats `usage` on every content block, so a naive sum double-counts -- docs/signal-extraction.md \u00a71)."
+        },
+        "output_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "The denominator: total output tokens in the scanned session."
+        },
+        "pct": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 100,
+          "description": "100 * tokens / output_tokens -- the comparable figure; the absolute scales with trial size. Null whenever `tokens` is."
+        },
+        "steps": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object"
+          },
+          "description": "Per-step breakdown, present only on a multi-step trial: step output-dir name -> the same four fields for that step alone."
+        }
+      }
+    },
+    "escape_hatch": {
+      "type": "string",
+      "enum": [
+        "yes",
+        "no",
+        "n/a"
+      ],
+      "description": "OPTIONAL profile column: did the solution ever leave the arm's L2 abstraction? An EVER-USED flag scanned across every write to the entry file, not a final-state check. awscdk: `Cfn*`, addPropertyOverride, addOverride, defaultChild, escapeHatch. terraconstructs: a provider/aws import or a raw `new Aws*`/`new DataAws*`. hcl-modules: a `resource \"aws_*\"` block beside the module calls. \"n/a\" for hcl-raw, which is provider resources by construction and has no abstraction to leave -- distinct from \"no\", and never pooled with it. Multi-step: \"yes\" if any step escaped. ABSENT when the trial left no session transcript to scan (patterns in metrics/extract_signals.py::ESCAPE)."
     }
   }
 }

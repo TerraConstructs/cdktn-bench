@@ -14,13 +14,20 @@ document static_tiers.sh writes into the run's logs dir, not the plan.json
 under the project dir, and tier 0 grades the plan itself -- both live in that
 working copy.
 
+Its own CLI (`--out`) writes one collection tree per spec: each fixture's kept
+artifacts in the `<trial>/artifacts/` shape harbor produces, with the blast
+radius read off each, so that field can be proved end to end without a live run.
+
 Nothing here writes to the repo, and no call reaches real AWS.
 """
 
 from __future__ import annotations
 
+import argparse
+import json
 import shutil
 import sys
+import tempfile
 import time
 import types
 from collections.abc import Iterator
@@ -32,9 +39,11 @@ sys.path.insert(0, str(REPO_ROOT / "generator"))
 sys.path.insert(0, str(REPO_ROOT / "gates"))
 
 import oracle_falsifiability as of  # noqa: E402
+from aws_stub import running_stub  # noqa: E402
+from blast_radius import BlastRadiusUnavailable, from_artifacts_dir  # noqa: E402
 from gen import ARM_DIRNAME, task_dir  # noqa: E402
 from oracle_falsifiability import arm_env  # noqa: E402
-from spec_model import Arm, Spec, Step  # noqa: E402
+from spec_model import Arm, Spec, Step, load_spec  # noqa: E402
 
 ARMS: tuple[Arm, ...] = ("hcl_raw", "terraconstructs", "awscdk", "hcl_modules")
 
@@ -146,6 +155,7 @@ class Collected:
     tests: Path
     plan: Path | None
     merged: Path | None
+    artifacts: Path | None
     reward: float | None
     seconds: float
     workdir: Path | None
@@ -198,12 +208,102 @@ def collect(
                 work = keep.last
                 plan = work / "project" / artifact_rel if work else None
                 merged = work / "logs" / "verifier" / "oracle-input.json" if work else None
+                # What the verifier itself kept for collection; in a real trial
+                # harbor downloads this directory into <trial>/artifacts/, which
+                # is where gates/blast_radius.py reads.
+                kept = work / "logs" / "artifacts" if work else None
                 collected = Collected(
                     label=label, spec_id=spec.id, arm=arm, fixture=name, step=step,
                     task=task, tests=tdir,
                     plan=plan if plan and plan.is_file() and plan.stat().st_size else None,
                     merged=merged if merged and merged.is_file() and merged.stat().st_size else None,
+                    artifacts=kept if kept and kept.is_dir() and any(kept.iterdir()) else None,
                     reward=run.reward, seconds=round(time.time() - t0, 1), workdir=work,
                 )
                 prune(work)
                 yield collected
+
+
+# --- CLI: collect one spec's artifacts into a reusable tree ------------------
+
+
+def write_collection(collected: Collected, out: Path) -> dict:
+    """One fixture's kept artifacts copied under `out`, in the same
+    `<trial>/artifacts/` shape harbor produces, plus what it costs and what
+    blast radius reads off it. Returns the manifest entry."""
+    entry: dict = {
+        "label": collected.label,
+        "spec_id": collected.spec_id,
+        "arm": collected.arm,
+        "fixture": collected.fixture,
+        "step": collected.step.name if collected.step else None,
+        "reward": collected.reward,
+        "seconds": collected.seconds,
+        "artifacts": None,
+        "bytes": 0,
+        "blast_radius": None,
+        "blast_radius_unavailable": None,
+    }
+    if collected.artifacts is None:
+        entry["blast_radius_unavailable"] = "the verifier kept no artifacts for this run"
+        return entry
+    dest = out / collected.slug / "artifacts"
+    dest.mkdir(parents=True, exist_ok=True)
+    names = []
+    for src in sorted(collected.artifacts.iterdir()):
+        if src.is_file():
+            shutil.copyfile(src, dest / src.name)
+            names.append(src.name)
+            entry["bytes"] += src.stat().st_size
+    entry["artifacts"] = [f"{collected.slug}/artifacts/{n}" for n in names]
+    try:
+        radius, path = from_artifacts_dir(dest)
+        radius["artifact"] = str(path.relative_to(out))
+        entry["blast_radius"] = radius
+    except BlastRadiusUnavailable as exc:
+        entry["blast_radius_unavailable"] = str(exc)
+    return entry
+
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(
+        description="Run one spec's fixtures and keep the artifacts their verifiers "
+        "persisted, in the <trial>/artifacts/ shape harbor produces."
+    )
+    ap.add_argument("spec", type=Path, help="Path to a specs/<id>.yaml.")
+    ap.add_argument("--out", type=Path, required=True, help="Collection tree to write.")
+    ap.add_argument("--work-dir", type=Path, default=None, help="Where kept working copies land.")
+    ap.add_argument("--arm", action="append", choices=ARMS, help="Repeatable; default every arm.")
+    args = ap.parse_args(argv)
+
+    args.out.mkdir(parents=True, exist_ok=True)
+    work = args.work_dir or Path(tempfile.gettempdir()) / "artifact-collection-work"
+    keep = install(work)
+    spec = load_spec(args.spec)
+
+    manifest: list[dict] = []
+    with running_stub() as env:
+        env["TF_IN_AUTOMATION"] = "1"
+        env.pop("NODE_OPTIONS", None)
+        for collected in collect(spec, env, keep, arms=tuple(args.arm or ARMS)):
+            entry = write_collection(collected, args.out)
+            manifest.append(entry)
+            radius = entry["blast_radius"]
+            print(
+                f"{collected.label:70s} reward={collected.reward} "
+                f"{collected.seconds:5.1f}s {entry['bytes']:>8d}B "
+                + (
+                    f"{radius['source']} total={radius['total']}"
+                    if radius
+                    else f"NO BLAST RADIUS: {entry['blast_radius_unavailable']}"
+                ),
+                flush=True,
+            )
+    (args.out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+    kept = sum(1 for e in manifest if e["blast_radius"] is not None)
+    print(f"\n{kept}/{len(manifest)} runs yielded a blast radius -> {args.out / 'manifest.json'}")
+    return 0 if manifest else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

@@ -38,7 +38,9 @@ from gates.audit import (
     audit_trial,
     resolve_step_names,
 )
+from gates.blast_radius import BlastRadiusUnavailable, from_artifacts_dir
 from gates.equipping import compute_equipping_hash
+from metrics.extract_signals import trial_signals
 
 sys.path.insert(0, str(_REPO_ROOT / "generator"))
 from split import spec_group  # noqa: E402
@@ -970,6 +972,67 @@ def _recover_tokens_from_transcripts(trial_dir: Path, out: dict[str, Any]) -> No
     out["tokens_source"] = "claude-code-stream"
 
 
+ARTIFACTS_DIRNAME = "artifacts"
+
+
+def read_blast_radius(trial_dir: str | Path) -> tuple[dict[str, Any] | None, str | None]:
+    """``(blast_radius, unavailable_reason)`` -- exactly one of the two is None.
+
+    Reads the plan (or synthesized template) the verifier persisted into
+    ``/logs/artifacts``, which harbor collects into the trial's own
+    ``artifacts/`` (``harbor/models/trial/paths.py``, the convention directory).
+    A trial run before the verifier persisted it has an empty ``artifacts/`` and
+    yields ``(None, reason)``: the field is not computable after the fact from
+    anything else the trial kept, and saying so is the whole point of the reason
+    string. See gates/blast_radius.py for what each source carries.
+
+    Multi-step: the FINAL step's artifacts, which is the change the row's reward
+    is attributed to, with earlier steps tried only if the final one persisted
+    nothing.
+    """
+    trial_dir = Path(trial_dir)
+    steps = resolve_step_names(trial_dir)
+    dirs = (
+        [trial_dir / "steps" / name / ARTIFACTS_DIRNAME for name in reversed(steps)]
+        if steps
+        else [trial_dir / ARTIFACTS_DIRNAME]
+    )
+    reasons: list[str] = []
+    for artifacts in dirs:
+        if not artifacts.is_dir():
+            reasons.append(f"no {artifacts.relative_to(trial_dir)}/ in this trial dir")
+            continue
+        try:
+            radius, path = from_artifacts_dir(artifacts)
+        except BlastRadiusUnavailable as exc:
+            reasons.append(str(exc))
+            continue
+        radius["artifact"] = str(path.relative_to(trial_dir))
+        return radius, None
+    return None, "; ".join(reasons) or "no artifacts directory in this trial dir"
+
+
+def read_rbw_and_escape_hatch(trial_dir: str | Path, arm: str) -> dict[str, Any]:
+    """``{"rbw": ..., "escape_hatch": ...}``, both None when the trial left no
+    session transcript for metrics/extract_signals.py to scan.
+
+    Emitted at gate time rather than extracted post-hoc, so the published row
+    carries the profile columns (ROADMAP "a profile, not a scalar") instead of
+    requiring a second pass over a job dir that may no longer exist.
+    """
+    try:
+        signals = trial_signals(trial_dir, arm)
+    except OSError as exc:
+        return {"rbw": None, "escape_hatch": None, "signals_error": str(exc)}
+    if signals is None:
+        return {
+            "rbw": None,
+            "escape_hatch": None,
+            "signals_error": "no agent/sessions/**/*.jsonl transcript in this trial dir",
+        }
+    return signals
+
+
 def _extract_score_fields(trial_dir: Path) -> dict[str, Any]:
     """Best-effort reward/token/cost extraction from the harbor-level result.json.
 
@@ -1103,6 +1166,8 @@ def build_result_record(
 
     tier1_not_verifiable, tier1_not_verifiable_detail = read_tier1_not_verifiable(trial_dir)
     tier_evidence = read_tier_evidence(trial_dir)
+    blast_radius, blast_radius_unavailable = read_blast_radius(trial_dir)
+    signals = read_rbw_and_escape_hatch(trial_dir, arm)
 
     record: dict[str, Any] = {
         "trial_dir": str(trial_dir),
@@ -1128,7 +1193,17 @@ def build_result_record(
         # have left evidence from a prior static-tier run in the same
         # container, and its presence is itself diagnostic.
         "tier_evidence": tier_evidence,
+        # The profile columns, attached regardless of validity_class for the
+        # same reason as tier_evidence: what the agent read before it wrote, and
+        # what the change would move, are facts about the trial's own logs.
+        "blast_radius": blast_radius,
+        "rbw": signals["rbw"],
+        "escape_hatch": signals["escape_hatch"],
     }
+    if blast_radius_unavailable is not None:
+        record["blast_radius_unavailable"] = blast_radius_unavailable
+    if signals.get("signals_error") is not None:
+        record["signals_error"] = signals["signals_error"]
     # Provenance, present only when the audit fell back to the stream
     # transcript because harbor's converter left the step without a trajectory
     # (gates/audit.py, docs/upstream/harbor-trajectory-step-id-gap.md). Absent
@@ -1292,6 +1367,17 @@ def to_result_row(
         row["n_llm_calls"] = record["n_llm_calls"]
     if record.get("tier_evidence") is not None:
         row["tier_evidence"] = record["tier_evidence"]
+    # Null-with-a-reason, never omitted-and-silent: a row from a trial whose
+    # verifier did not persist a plan says so in `blast_radius_unavailable`, so
+    # "not computable for this trial" is distinguishable from "nobody looked".
+    if record.get("blast_radius") is not None:
+        row["blast_radius"] = record["blast_radius"]
+    elif record.get("blast_radius_unavailable") is not None:
+        row["blast_radius_unavailable"] = record["blast_radius_unavailable"]
+    if record.get("rbw") is not None:
+        row["rbw"] = record["rbw"]
+    if record.get("escape_hatch") is not None:
+        row["escape_hatch"] = record["escape_hatch"]
     # Provenance for a row harbor could not price or convert itself: both keys
     # are absent on a row built from the ATIF trajectory and harbor's own
     # token totals, so their presence is the whole signal.

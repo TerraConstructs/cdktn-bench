@@ -1,0 +1,4 @@
+{"type": "assistant", "message": {"id": "m1", "usage": {"output_tokens": 100}, "content": [{"type": "tool_use", "name": "Read", "input": {"file_path": "/app/project/main.tf"}}]}}
+{"type": "assistant", "message": {"id": "m2", "usage": {"output_tokens": 200}, "content": [{"type": "tool_use", "name": "Grep", "input": {"pattern": "Bucket"}}]}}
+{"type": "assistant", "message": {"id": "m3", "usage": {"output_tokens": 60}, "content": [{"type": "tool_use", "name": "Write", "input": {"file_path": "/app/project/main.tf", "content": "module \"bucket\" {\n  source = \"terraform-aws-modules/s3-bucket/aws\"\n}"}}]}}
+{"type": "assistant", "message": {"id": "m4", "usage": {"output_tokens": 40}, "content": [{"type": "tool_use", "name": "Bash", "input": {"command": "terraform validate"}}]}}

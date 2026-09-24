@@ -9238,3 +9238,97 @@ bump are not pooled.
   `s3-acl-vs-object-ownership-log-delivery` report NOT_AUTHORED (no reference fixture
   under `generator/tests/fixtures/`), unchanged by this bump.
 * Full `pytest` (1858 passed, 6 skipped) and `ci/check-smoke-drift.sh` green.
+
+## Amendment 49 (2026-09-24) — blast radius is a row field, and the verifier keeps the document it graded — DRAFT
+
+**Decision.** The published result row (`metrics/result_schema.json`) gains three
+OPTIONAL profile columns, and the generated verifier keeps one more file so the
+first of them is computable at all:
+
+1. **`blast_radius`** — counts over the plan's `resource_changes[]`:
+   create / update / delete / replace / no-op / read (plus `other`, which also
+   spells out the action lists that landed in it), the total, and the
+   root-vs-module split on `module_address`. `gates/blast_radius.py` is the
+   reader; `source` says which document answered.
+2. **`rbw`** — output tokens before the first mutation of the arm's own entry
+   file, with the share, from `metrics/extract_signals.py::trial_signals`.
+3. **`escape_hatch`** — `yes` / `no` / `n/a`, an ever-used flag over every write
+   to the entry file.
+
+Every existing row stays valid: all three are optional, nothing is added to
+`required`, and `schema_version` stays `1.1`.
+
+**`resource_changes[]`, never `planned_values`.** That array is flat, carries
+`module_address` and instance-keyed addresses, and holds the `change.actions` the
+counts are keyed on. `planned_values` is a desired-state tree with no actions in
+it, so reading it would produce a confident zero-replace answer for a plan that
+replaces everything — wrong output, no error.
+
+**What awscdk carries, stated rather than implied.** With no deployment there is
+no CloudFormation changeset, so an awscdk row's equivalent read is the
+synthesized template's `Resources` count: `total` is that count and
+`counts`/`root`/`module` are all null. A template says what will exist, not what
+a deployment would do to what is already there. `metrics/tokens_to_green.py`
+summarizes blast radius **per source** and never pools them, because a replace
+mean spanning a null-`counts` row would divide by rows where a replace could not
+have been observed. A live awscdk trial can upgrade to `DescribeChangeSet`, which
+fills the same buckets (`from_changeset`, implemented and tested, unused so far).
+
+**Why the verifier changes.** `resource_changes[]` exists only in the plan, which
+lived in a container that is deleted. `tests/tiers.py` now copies the raw
+artifact — and the normalised copy beside it, which is the document the tiers
+actually graded — into `/logs/artifacts`, harbor's collection convention
+directory (`harbor/models/trial/paths.py`), which lands in `<trial>/artifacts/`.
+The path derives from `LOGS.parent`, so the single `/logs/verifier` export the
+host gates already rewrite repoints it too and **no `.sh` shim byte moves**.
+Best-effort by contract: a copy that fails prints `ARTIFACT NOT PERSISTED` and
+changes no reward, because the artifact is evidence for a measurement and never a
+grading input — a full disk must not turn a correct solution into a 0.0.
+
+**Null with a reason, never a fabricated zero.** A trial that kept no usable
+artifact gets `blast_radius_unavailable` instead of `blast_radius`, and the two
+are mutually exclusive. The field is not backfillable from anything else a trial
+wrote, which is exactly why the reason is carried on the row.
+
+**Cost.** One spec's 26-fixture collection: ~7 KB per awscdk template, 23–29 KB
+per hcl-raw plan pair, 40–55 KB terraconstructs, 248–338 KB hcl-modules (whose
+plans carry the vendored modules' configuration), against an ~812 KB read-only
+trial dir.
+
+**DRAFT, and what promotes it.** This moves generated verifier behaviour, so it
+follows the classification the Python-verifier change took (Amendment 44: a
+verifier-only change, ACCEPTED on its own promotion run, not on landing).
+**It is promoted by the next live trial whose row carries a non-null
+`blast_radius`** read from an artifact that trial's own verifier persisted. Until
+then the host-side proof below stands, and no published row claims a blast
+radius.
+
+**Evidence (host-side).**
+
+* `make gen-all` byte scope: 82 files, 2,542 inserted lines, no deletions — the
+  identical 31-line block in every task's `tests/tiers.py`, which is
+  byte-identical across tasks by construction. No `task.toml`, instruction,
+  oracle or `.sh` byte moves.
+* `gates/artifact_collector.py --out` over
+  `specs/s3-bucket-hardening-decomposition.yaml`, all four arms, under
+  `gates/aws_stub.py`: 26 of 27 fixture runs yield a non-null blast radius from
+  real toolchain output. The 27th is `hcl-modules broken/module-sourced-from-a-
+  local-path`, denied by the module-source rule before either tier runs, so no
+  plan exists to keep — and its entry says so rather than reporting zero.
+* Rows built from that collection and run through `make metrics`: the three new
+  columns render per cell, per source — awscdk `cloudformation-template: 3.7 res`
+  (no replace figure), hcl-modules `terraform-plan: 7.3 res, 0.0 repl` with
+  module-scoped 7.3, hcl-raw `5.6 res` with module-scoped 0.
+* `gates/emit_result.py` over the five `jobs/amend46-promotion` trials
+  (2026-09-23 and 2026-09-24): all five rows validate, all five carry non-null
+  `rbw` (5.3%–59.0%) and `escape_hatch`, and all five carry
+  `blast_radius_unavailable: "no plan.json or *.template.json under artifacts/"`
+  — those trials ran before the verifier kept anything, and the reader says so
+  instead of crashing or inventing a count.
+* **One retraction comes with this.** Publishing `escape_hatch` required fixing
+  the awscdk pattern first: a bare `\bCfn[A-Z]\w+` matched `new cdk.CfnOutput(...)`,
+  template plumbing with no L2 to leave, and that match was the whole of ROADMAP
+  §3 finding 5 ("CDK required an escape hatch on `apigw-redeploy`, both steps").
+  The pattern now excludes those names (`L1_NOT_AN_ESCAPE`), the finding is
+  retracted in ROADMAP §3, and the benchmark has no mechanical escape-hatch
+  evidence yet.

@@ -9,9 +9,16 @@ Metrics (all mechanical, no judgement):
                                        arm's entry file. Comprehension cost proxy.
   tool_calls                        -- total tool_use blocks
   escape_hatch                      -- did the solution ever leave the L2?
-                                       (awscdk: Cfn*/addPropertyOverride/addOverride/
+                                       (awscdk: L1 Cfn* resources, addOverride,
                                         defaultChild; tcons: provider-level raw
-                                        resources; hcl-raw: n/a by construction)
+                                        resources; hcl-modules: a resource block
+                                        beside the module calls; hcl-raw: n/a by
+                                        construction)
+
+`trial_signals(trial_dir, arm)` is the importable entry point: gates/emit_result.py
+calls it so rbw and escape-hatch reach the published row at gate time. The CLI
+below is the exploratory table, and resolves the arm from the trial dir NAME,
+which harbor truncates -- pass the arm explicitly for anything reportable.
 """
 import json, glob, os, re, sys
 from collections import Counter
@@ -20,10 +27,27 @@ ENTRY = {  # arm -> substrings identifying the agent-owned entry file
     "awscdk": ("lib/scenario-stack.ts",),
     "terraconstructs": ("lib/scenario-stack.ts", "main.ts"),
     "hcl-raw": ("main.tf",),
+    "hcl-modules": ("main.tf",),
 }
+# `Cfn*` names that are NOT an escape from an L2: template plumbing with no L2
+# equivalent to leave. Excluded because the field is published -- a bare
+# `\bCfn[A-Z]\w+` lit up on `new cdk.CfnOutput(...)` and produced the only
+# "escape hatch required" reading the benchmark ever had.
+L1_NOT_AN_ESCAPE = (
+    "CfnOutput", "CfnParameter", "CfnCondition", "CfnMapping",
+    "CfnRule", "CfnTag", "CfnDynamicReference", "CfnJson",
+)
 ESCAPE = {
-    "awscdk": re.compile(r"\bCfn[A-Z]\w+|addPropertyOverride|addOverride|defaultChild|escapeHatch", re.I),
+    "awscdk": re.compile(
+        r"\bCfn(?!%s)[A-Z]\w+|addPropertyOverride|addOverride|defaultChild|escapeHatch"
+        % "|".join(n[len("Cfn"):] + r"\b" for n in L1_NOT_AN_ESCAPE),
+        re.I,
+    ),
     "terraconstructs": re.compile(r"from\s+['\"][^'\"]*provider/aws|new\s+(?:DataAws|Aws)\w+\s*\(|addOverride", re.I),
+    # The hcl_modules escape is authoring a provider resource beside the module
+    # calls; `n/a` for hcl-raw, which is provider resources by construction and
+    # so has no abstraction to leave.
+    "hcl-modules": re.compile(r"^\s*resource\s+\"aws_", re.M),
     "hcl-raw": None,
 }
 MUTATORS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
@@ -36,7 +60,7 @@ MUTATORS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 RESET_DIR_PREFIX = "scenario-reset"
 
 
-ARMS = ("terraconstructs", "hcl-raw", "awscdk")
+ARMS = ("terraconstructs", "hcl-modules", "hcl-raw", "awscdk")
 
 
 def arm_of(name):
@@ -127,6 +151,55 @@ def scan_session(path, arm):
                 rbw_msgs=rbw_msgs, escape=esc)
 
 
+ESCAPE_YES, ESCAPE_NO, ESCAPE_NA = "yes", "no", "n/a"
+
+
+def _pct(rbw_tok, out_tok):
+    return round(100.0 * rbw_tok / out_tok, 2) if rbw_tok and out_tok else None
+
+
+def trial_signals(trial_dir, arm):
+    """`{"rbw": {...}, "escape_hatch": ...}` for one trial dir, or None when the
+    trial left no session transcript to read.
+
+    The importable half of this module: gates/emit_result.py calls it so rbw and
+    escape-hatch are emitted as first-class row fields at gate time, rather than
+    re-derived from the job dir afterwards by the CLI below.
+
+    **Multi-step.** rbw is a SHARE, so summing it across steps is meaningless --
+    each step is its own read-then-write episode. The trial-level numbers are the
+    FINAL step's (the step the row's reward is attributed to, Amendment 26's
+    `final` strategy) and every step's own numbers are carried under `steps`.
+    escape_hatch is the opposite: an ever-used flag over every step's writes.
+    """
+    per_step = [(step, scan_session(path, arm)) for step, path in sessions_for(trial_dir)]
+    if not per_step:
+        return None
+    escapes = {s["escape"] for _, s in per_step}
+    if escapes == {ESCAPE_NA}:
+        escape = ESCAPE_NA
+    else:
+        escape = ESCAPE_YES if "YES" in escapes else ESCAPE_NO
+    _, last = per_step[-1]
+    rbw = {
+        "tokens": last["rbw_tok"],
+        "msgs": last["rbw_msgs"],
+        "output_tokens": last["out_tok"],
+        "pct": _pct(last["rbw_tok"], last["out_tok"]),
+    }
+    if len(per_step) > 1 or per_step[0][0] != "-":
+        rbw["steps"] = {
+            step: {
+                "tokens": s["rbw_tok"],
+                "msgs": s["rbw_msgs"],
+                "output_tokens": s["out_tok"],
+                "pct": _pct(s["rbw_tok"], s["out_tok"]),
+            }
+            for step, s in per_step
+        }
+    return {"rbw": rbw, "escape_hatch": escape}
+
+
 def main(job_dirs):
     print(f"{'trial':44s} {'step':18s} {'rw':>4s} {'out_tok':>8s} {'msgs':>5s} "
           f"{'calls':>6s} {'rbw_tok':>8s} {'rbw%':>5s} {'esc':>4s} {'cost':>7s}")
@@ -155,7 +228,7 @@ def main(job_dirs):
                              if meta else (res.get("agent_result") or {}).get("cost_usd")) or 0.0
                 if meta:
                     reward = (meta.get("verifier_result") or {}).get("rewards", {}).get("reward")
-                pct = (100.0 * s["rbw_tok"] / s["out_tok"]) if s["rbw_tok"] and s["out_tok"] else None
+                pct = _pct(s["rbw_tok"], s["out_tok"])
                 print(f"{name[:44]:44s} {step[:18]:18s} {str(reward):>4s} {s['out_tok']:8d} "
                       f"{s['msgs']:5d} {s['calls']:6d} {str(s['rbw_tok'] if s['rbw_tok'] is not None else '-'):>8s} "
                       f"{(f'{pct:.0f}%' if pct else '-'):>5s} {s['escape']:>4s} {s['cost']:7.2f}")
@@ -173,7 +246,7 @@ def main(job_dirs):
             print(f"{'!! UNRESOLVED ARM -- NOT IN ANY ROLLUP ROW BELOW':44s} {len(unknown):3d}")
             for r in unknown:
                 print(f"   {r['trial']}")
-        for arm in ("awscdk", "terraconstructs", "hcl-raw"):
+        for arm in ARMS:
             rows = [r for r in agg if r["arm"] == arm and r["reward"] is not None]
             if not rows:
                 continue

@@ -39,6 +39,11 @@ SEED_RECEIPT = Path(
 HCL_MERGED = Path(
     os.environ.get("CDKTN_VERIFIER_HCL_MERGED") or LOGS / "oracle-input.json"
 )
+# Harbor's collection convention: everything written here is downloaded into the
+# trial's own `artifacts/` (harbor/models/trial/paths.py). Derived from LOGS
+# rather than hardcoded, so repointing the shim's one /logs/verifier export
+# moves this too and no gate needs a second patch.
+ARTIFACTS = Path(os.environ.get("CDKTN_VERIFIER_ARTIFACTS_DIR") or LOGS.parent / "artifacts")
 DIR = Path(__file__).resolve().parent
 
 # The region the verifier container is NOT handed. Without it every `aws` call
@@ -765,6 +770,31 @@ def normalise_artifact(cfg, artifact):
         return "ENGINE_ERROR", artifact
 
 
+# --- persisting the graded documents ----------------------------------------
+
+
+def persist_artifacts(artifact, graded):
+    """Copy the graded plan (or template) into harbor's collection directory.
+
+    Blast radius (gates/blast_radius.py) counts `resource_changes[]`, which only
+    the plan carries and which nothing else the trial keeps can reconstruct -- so
+    a row's blast radius exists only if the document that produced it was kept.
+    Both the RAW artifact and the normalised copy are kept: tier 0 and tier 1
+    graded the normalised one, and the raw one is what the counts are read from.
+
+    Best-effort by contract: a copy that fails is reported on stdout and changes
+    no reward. The artifact is the evidence for a measurement, never a grading
+    input, and a full disk must not turn a correct solution into a 0.0.
+    """
+    try:
+        ARTIFACTS.mkdir(parents=True, exist_ok=True)
+        for src in dict.fromkeys([Path(artifact), Path(graded)]):
+            if src.is_file():
+                shutil.copyfile(src, ARTIFACTS / src.name)
+    except OSError as exc:
+        out("ARTIFACT NOT PERSISTED: %s" % exc)
+
+
 # --- the AWS preflight ------------------------------------------------------
 
 AWS_UNAVAILABLE_LINES = (
@@ -1112,6 +1142,7 @@ def static_tiers(cfg):
     # `_hcl` merge all have to grade the SAME document, or a module resource
     # denied by a policy could be absent from the asserts that scored it.
     norm_status, graded = normalise_artifact(cfg, artifact)
+    persist_artifacts(artifact, graded)
     out("", "== tier-0: structural asserts (%d applicable) ==" % cfg["tier0"]["total"])
     tier0_pass = tier_0(cfg["tier0"], graded, norm_status)
     tier1_status = tier_1(cfg["tier1"], graded, norm_status)

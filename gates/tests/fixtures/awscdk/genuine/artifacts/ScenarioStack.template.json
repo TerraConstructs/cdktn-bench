@@ -1,0 +1,13 @@
+{
+  "Resources": {
+    "Bucket83908E77": {
+      "Type": "AWS::S3::Bucket"
+    },
+    "BucketPolicyE9A3008A": {
+      "Type": "AWS::S3::BucketPolicy"
+    },
+    "CDKMetadata": {
+      "Type": "AWS::CDK::Metadata"
+    }
+  }
+}

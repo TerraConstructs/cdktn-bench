@@ -216,6 +216,28 @@ rule `result_schema.json`'s own `validity_class` field description states):
   `benchmark.md`'s own rendered table still only shows the pooled-per-cell
   numbers.
 
+- **`profile`** (`summarize_profile`) — the three profile columns ROADMAP §2
+  names ("a profile, not a scalar"), each over the cell's valid rows and each
+  with **its own known-row denominator**, because all three are optional row
+  fields: averaging a row that lacks one would read the missing field as zero.
+  - **`rbw_pct`** — mean/median/p25/p75 of `rbw.pct`, over `n_rbw_known` rows.
+    `n_rbw_no_entry_file_write` counts rows whose transcript was read but showed
+    no mutation of the entry file (a real observation), `n_rbw_unknown` rows with
+    no transcript to read at all — two different facts, never collapsed.
+  - **`escape_hatch`** — `yes`/`no`/`not_applicable` counts plus `n_unknown`.
+    `n/a` is hcl-raw, which is provider resources by construction and has no
+    abstraction to leave; it is **never** counted as a `no`.
+  - **`blast_radius_by_source`** — one block per `blast_radius.source`, **never
+    pooled across sources**: a `cloudformation-template` row has no action
+    breakdown at all, so a replace mean spanning it would divide by rows where a
+    replace could not have been observed. Each block carries `n` and order stats
+    for `resources_total`, `replaced` and `module_scoped`; `replaced` is `null`
+    for a template source. `n_blast_radius_unknown` counts rows whose trial
+    persisted no usable artifact (their own `blast_radius_unavailable` says why).
+
+  `benchmark.md`'s cell table renders these as three trailing columns: `rbw%
+  mean (n)`, `Escape hatch y/n/na (unk)` and `Blast radius mean per source`.
+
 **Per-catch tier-attribution table** (`build_tier_attribution`) — over
 failed (`reward < 1.0`) valid rows' `tier_evidence`:
 
@@ -338,6 +360,23 @@ test still pass unmodified:
   ("MAX_ITERS = 8 feedback cycles or MAX_TOKENS per trajectory, whichever
   first"). An explicit `censored=True`/`False` always wins over
   auto-detection.
+- **`read_blast_radius(trial_dir)`** — reads the plan (or synthesized template)
+  the verifier persisted into `/logs/artifacts` and harbor collected into
+  `<trial>/artifacts/`, and counts it with `gates/blast_radius.py`. Returns
+  `(radius, None)` or `(None, reason)`, and `to_result_row` emits exactly one of
+  the optional `blast_radius` / `blast_radius_unavailable` properties — never
+  both, never neither. A trial that kept no artifact cannot have the field
+  backfilled from anything else it wrote, so the reason string is the answer.
+  Multi-step rows describe the FINAL step's artifact.
+- **`read_rbw_and_escape_hatch(trial_dir, arm)`** — calls
+  `metrics/extract_signals.py::trial_signals`, so the `rbw` object and the
+  `escape_hatch` flag are emitted at gate time instead of re-derived later from
+  a job dir. Both are `None` when the trial left no
+  `agent/sessions/**/*.jsonl`; `rbw.tokens` is null WITHIN the object when a
+  transcript exists but the entry file was never mutated. rbw is a share and is
+  never summed across steps — the top-level numbers are the final step's, with
+  `rbw.steps` carrying each step's own; `escape_hatch` is the opposite, an
+  ever-used flag over every step.
 
 ## Budget enforcement (`scripts/run-bench.sh`)
 
@@ -426,7 +465,10 @@ header; summary:
 
 `extract_signals.py` pulls deterministic per-trial signals (read-before-write,
 escape-hatch incidence, turns, tool calls, cost) out of a completed job dir, plus
-a per-arm rollup. See **[../docs/signal-extraction.md](../docs/signal-extraction.md)**
+a per-arm rollup. Its `trial_signals(trial_dir, arm)` is what
+`gates/emit_result.py` calls to put `rbw` and `escape_hatch` on the row, so the
+CLI table and the published field are the same computation; the CLI is for
+exploration, the row is the durable copy. See **[../docs/signal-extraction.md](../docs/signal-extraction.md)**
 for usage, the quick recipes for reward/cost tables and failure triage, and the
 message-id deduplication gotcha that makes naive token sums double-count.
 

@@ -416,6 +416,33 @@ verification that produced the score. When Harbor's own abort predicate says
 the scoring step started and died, the earlier steps are dropped from the
 search entirely and the readers return their honest "no evidence" value.
 
+### The profile columns
+
+Three optional row fields come from the same trial dir, alongside the validity
+verdict, so the published row is self-contained and nothing has to re-read a job
+dir that may be gone:
+
+* **`blast_radius`** — `read_blast_radius` reads the plan (or synthesized
+  CloudFormation template) the generated verifier copied into `/logs/artifacts`
+  and Harbor collected into `<trial>/artifacts/`, and counts it with
+  `gates/blast_radius.py`: create/update/delete/replace/no-op/read over
+  `resource_changes[]`, the total, and the root-vs-module split on
+  `module_address`. Dispatch is on the persisted name — `plan.json` for a
+  Terraform-shaped arm, `<Stack>.template.json` for awscdk, which carries the
+  resource count and a null action breakdown because a template with no
+  deployment behind it says what will exist, not what a deployment would do.
+  A trial that kept no usable artifact gets `blast_radius_unavailable` with the
+  reason instead; the field cannot be backfilled, so it is never guessed at zero.
+  Multi-step reads the final step's artifacts, mirroring the evidence readers
+  above.
+* **`rbw`** / **`escape_hatch`** — `read_rbw_and_escape_hatch` calls
+  `metrics/extract_signals.py::trial_signals` over the trial's own session
+  transcripts. Both are absent when there is no transcript to scan; `rbw.tokens`
+  is null WITHIN the object when a transcript exists but the arm's entry file was
+  never mutated. rbw is a share and is never summed across steps (the top-level
+  numbers are the final step's, `rbw.steps` carries each step's own);
+  `escape_hatch` is an ever-used flag over every step.
+
 ## check-reference-paths
 
 `generator/check_reference_paths.py`.
@@ -578,6 +605,18 @@ Fixtures are produced through `gates/artifact_collector.py`, which drives
 `gates/oracle_falsifiability.py::_run_solve` under the aws-stub, so a fixture
 runs here exactly as `make falsifiability` runs it — same toolchain
 requirements and the same runtime class.
+
+That module also has a CLI of its own for the blast-radius half:
+
+```
+uv run python gates/artifact_collector.py specs/<id>.yaml --out <dir> [--arm ARM]
+```
+
+It writes each fixture's kept artifacts in the `<trial>/artifacts/` shape Harbor
+produces, plus a manifest carrying the blast radius read off each — the host-side
+way to exercise that field on real toolchain output, with no live trial and no
+AWS. A fixture denied before either tier (the `hcl_modules` module-source rule,
+say) has no plan to keep, and its entry says that rather than reporting zero.
 
 Producing an artifact costs 25–60s; grading one with every column costs
 milliseconds. `OUT=<dir>` keeps the collected tree and a manifest, and

@@ -65,9 +65,9 @@ posture** and never pooled (Amdts 23/27/28):
 
 | metric | definition | state |
 |---|---|---|
-| **read-before-write (rbw)** | output tokens emitted before the first mutation of the arm's own entry file, absolute and as a share of the trial | **built** (`metrics/extract_signals.py`) |
-| **escape-hatch incidence** | did the solution ever leave the L2 (`Cfn*`, `addOverride`, `defaultChild`; provider-level raw resources) | **built** |
-| **blast radius** | resources `replace`d vs `update`d in place by a change | **not built** — needs the plan/changeset captured as an artifact |
+| **read-before-write (rbw)** | output tokens emitted before the first mutation of the arm's own entry file, absolute and as a share of the trial | **built** (`metrics/extract_signals.py`), and a row field |
+| **escape-hatch incidence** | did the solution ever leave the L2 (L1 `Cfn*` **resources** — not `CfnOutput`/`CfnParameter`-style plumbing — `addOverride`, `defaultChild`; provider-level raw resources) | **built**, and a row field |
+| **blast radius** | over the plan's `resource_changes[]`: create/update/delete/replace/no-op/read counts, the total, and the root-vs-module split | **built** (`gates/blast_radius.py`; awscdk carries the template's resource count with a null action breakdown — see M1) |
 
 ### Why not a maintainability rubric
 
@@ -186,8 +186,13 @@ run). **n=1 per cell — these are hypotheses, not findings.**
    in the workspace is the cache. Consequence: our fresh-session design does
    not measure un-amortized cost — it measures cost amortized **through the
    artifact**, which is how real maintenance works.
-5. **CDK required an escape hatch on `apigw-redeploy`, both steps** — first
-   mechanical escape-hatch evidence, from a scenario not designed to test it.
+5. **RETRACTED — "CDK required an escape hatch on `apigw-redeploy`, both steps"
+   was a false positive.** Both trials' only L1 use was `new cdk.CfnOutput(...)`,
+   which the escape-hatch regex matched on a bare `\bCfn[A-Z]\w+`. Template
+   plumbing with no L2 to leave is not an escape hatch; the pattern now excludes
+   it (`metrics/extract_signals.py::L1_NOT_AN_ESCAPE`), which it had to before
+   the flag became a published row field (Amendment 49). **The benchmark has no
+   mechanical escape-hatch evidence yet.**
 
 ---
 
@@ -234,16 +239,34 @@ arm). Only the first is visible in a trial. M6 separates them.
 
 ## 4. Measurement roadmap
 
-### M1 — finish the profile (cheap, no new trials)
-Land `blast radius` (needs the plan/changeset persisted as a trial artifact),
-wire `metrics/extract_signals.py` into the metrics pipeline with tests, and emit
-rbw / escape-hatch as first-class result fields rather than post-hoc extraction.
+### M1 — finish the profile — **done host-side; blast radius promotes on the next live trial**
+All three profile columns are first-class fields of the published row
+(`metrics/result_schema.json`), emitted by `gates/emit_result.py` at gate time
+rather than extracted afterwards from a job dir that may be gone, and reported
+per cell by `make metrics` (`metrics/README.md` "Profile columns").
+DECISIONS.md Amendment 49 records the row and artifact change.
 
 Blast radius reads **`resource_changes[]`**, not `planned_values`: it is already
 flat, carries `module_address` and instance-keyed addresses, and holds the
 `change.actions` the metric counts. That is the same read the `hcl_modules` plan
 normaliser needs (M3 phase 3, `docs/design/tf-modules-arm.md` §1), so the
-artifact is captured once and serves both.
+artifact is captured once and serves both. Precisely: counts of
+create/update/delete/replace/no-op/read (plus `other`, with the unnamed action
+lists spelled out) over `resource_changes[]`, the total, and the root-vs-module
+split on `module_address` — `gates/blast_radius.py`. **awscdk carries less and
+says so:** absent a deployment there is no changeset, so the equivalent read is
+the synthesized template's `Resources` count with a null action breakdown, and a
+null-`counts` row is never pooled into a replace-rate comparison. A live awscdk
+trial can upgrade to the changeset read, which fills the same buckets.
+
+Computability rests on the artifact: the generated verifier now copies the raw
+plan (and the normalised copy beside it) or the template into `/logs/artifacts`,
+which harbor collects into `<trial>/artifacts/`. Cost measured over one spec's
+26-fixture collection: 7 KB per awscdk template, 23–29 KB per hcl-raw plan pair,
+40–55 KB terraconstructs, 248–338 KB hcl-modules — against an ~812 KB read-only
+trial dir. **The four `jobs/amend46-promotion` trials predate this**, so their
+rows carry `blast_radius: null` with `blast_radius_unavailable` naming the
+reason; the field is not backfillable and is never guessed at zero.
 
 ### M2 — equipping factorial: does materialized discovery erase the tax?
 The harness is **already built for this**: `gates/equipping.py` hashes
