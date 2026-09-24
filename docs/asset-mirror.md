@@ -1,11 +1,11 @@
 # Build-time asset mirror
 
-Every arm image downloads the same six pinned assets at build time — opa, jq,
-hcl2json, the cfn-guard tarball, the terraform zip and the AWS CLI zip. A task
-image embeds its arm's Dockerfile verbatim, so it refetches all of them on a
-cold build. When a network cannot pull a 57 MB GitHub release asset reliably,
-that turns every task build into a coin flip, and Harbor voids a trial whose
-compose build exceeds `build_timeout_sec`, 600 seconds by default.
+Every arm image downloads the same seven pinned assets at build time — opa, jq,
+hcl2json, the cfn-guard tarball, the terraform zip, the uv tarball and the AWS
+CLI zip. A task image embeds its arm's Dockerfile verbatim, so it refetches all
+of them on a cold build. When a network cannot pull a 57 MB GitHub release asset
+reliably, that turns every task build into a coin flip, and Harbor voids a trial
+whose compose build exceeds `build_timeout_sec`, 600 seconds by default.
 
 `scripts/asset_mirror.py` keeps those assets on the host and serves them over
 HTTP to the build containers.
@@ -45,6 +45,16 @@ pays it for the eight its vendored module tree declares, measured at ~45s agains
 Harbor's 600s cold-build timeout. A ninth would need that headroom argued rather
 than assumed — `arms/hcl-modules/README.md` records why `kreuzwerker/docker`, at
 370s on its own, is excluded.
+
+The second such step is `uv tool install`, which puts the tuned levels' pinned
+MCP servers in the three equipped arms and resolves their wheels from PyPI. Only
+the `uv` tarball itself is mirrored — 19.0 MB arm64 / 19.8 MB amd64, and the one
+asset this network has been seen to throttle to ~8 KB/s per connection, which is
+the whole argument for mirroring it. The wheels behind it are left unmirrored:
+the two server wheels are 38 KB and 74 KB, and their dependency closures resolve
+in well under a minute against Harbor's 600s cold-build timeout. What makes them
+reproducible is the version `ARG` next to each install in the Dockerfile, not a
+checksum here.
 
 ## Populate, serve, build
 

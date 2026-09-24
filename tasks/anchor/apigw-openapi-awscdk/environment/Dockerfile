@@ -25,6 +25,16 @@
 #                          runs every structural assert through it. Same pin
 #                          in all three arms; apt's bookworm jq is 1.6.)
 #
+# Tuned-equipping tools, pinned the same way and installed at build time so no
+# resolve happens at trial time. They are prompt surface, never a grading path;
+# equipping/levels/awscdk.tuned*.yaml declares them and the image digest (in the
+# equipping hash) covers these pins:
+#   uv          0.12.18   (installs the server below into /opt/uv-tools)
+#   AWS Docs MCP 1.2.1    (`awslabs.aws-documentation-mcp-server` on PATH)
+# The level also declares AWS IaC MCP 1.0.26, which is NOT installed: guardpycfn
+# publishes no linux/aarch64 wheel, so on this host arch it only builds through a
+# Rust toolchain. The step below says what that would cost.
+#
 # BOTH tier-1 graders ship here on purpose. cfn-guard 3.2.0 cannot express a
 # cross-resource logical-id join, so it cannot be the grading AUTHORITY in a
 # cross-arm comparison (DECISIONS.md Amendment 29 sect 4 makes equal-strictness
@@ -185,6 +195,66 @@ RUN set -eu; \
     echo "${JQ_SHA256}  /usr/local/bin/jq" | sha256sum -c -; \
     chmod 0755 /usr/local/bin/jq; \
     jq --version
+
+# --- uv: the installer that puts the pinned MCP server below into this image.
+# --- Pinned tarball + hardcoded sha256, fetched through the same mirror probe as
+# --- every other asset here (docs/asset-mirror.md). The checksum is the one
+# --- astral-sh publishes beside the release asset
+# --- (uv-<triple>-unknown-linux-gnu.tar.gz.sha256), re-verified against the
+# --- bytes downloaded, so this pin is cross-checked upstream the way terraform's
+# --- and hcl2json's are and unlike opa's.
+ARG UV_VERSION=0.12.18
+RUN set -eu; \
+    case "${TARGETARCH}" in \
+      amd64) UV_TRIPLE="x86_64-unknown-linux-gnu"; UV_SHA256="89eadd7c76fc063887959510d5ba0ab1264dfd5f1143b925ddb73021a40acf16" ;; \
+      arm64) UV_TRIPLE="aarch64-unknown-linux-gnu"; UV_SHA256="afb6291f3f0a6b4521fc67b947822506c41dde5b60d2189dd8f3695b2ac8c9e7" ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    URL="https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${UV_TRIPLE}.tar.gz"; \
+    ASSET_MIRROR_URL="$ASSET_MIRROR/uv-${UV_TRIPLE}.tar.gz"; \
+    if curl -fsI --connect-timeout 2 --max-time 5 "$ASSET_MIRROR_URL" >/dev/null 2>&1; then URL="$ASSET_MIRROR_URL"; fi; \
+    curl -fsSL --http1.1 --retry 5 --retry-all-errors -o /tmp/uv.tar.gz "$URL"; \
+    echo "${UV_SHA256}  /tmp/uv.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/uv.tar.gz -C /tmp; \
+    install -m 0755 "/tmp/uv-${UV_TRIPLE}/uv" /usr/local/bin/uv; \
+    install -m 0755 "/tmp/uv-${UV_TRIPLE}/uvx" /usr/local/bin/uvx; \
+    rm -rf /tmp/uv.tar.gz "/tmp/uv-${UV_TRIPLE}"; \
+    uv --version
+
+# --- where `uv tool install` lands, and the interpreter it is allowed to use.
+# --- UV_TOOL_BIN_DIR is on PATH, so the console script each server's wheel
+# --- declares IS the command equipping/levels/<arm>.tuned*.yaml declares and
+# --- gates/tuned_equipping.py resolves. UV_PYTHON_DOWNLOADS=never forbids a
+# --- python-build-standalone fetch, which would be an unpinned interpreter: both
+# --- servers floor at Python >=3.10 and this image's apt python3 is 3.11.
+ENV UV_TOOL_DIR=/opt/uv-tools \
+    UV_TOOL_BIN_DIR=/usr/local/bin \
+    UV_PYTHON_DOWNLOADS=never
+
+# --- AWS Docs MCP server, a `stdio` server this arm's tuned equipping declares
+# --- (equipping/levels/*.tuned*.yaml, pinned in equipping/MANIFEST.json).
+# --- Installed at BUILD time and pinned by ARG so the image digest covers the
+# --- version; never resolved by `uvx` at launch, because claude-code logs an MCP
+# --- server it cannot start and carries on, so a trial-time fetch failure would
+# --- publish a tuned row whose container had no server.
+ARG AWS_DOCUMENTATION_MCP_VERSION=1.2.1
+RUN set -eu; \
+    uv tool install --no-cache --python /usr/bin/python3 \
+      "awslabs.aws-documentation-mcp-server==${AWS_DOCUMENTATION_MCP_VERSION}"; \
+    command -v awslabs.aws-documentation-mcp-server
+
+# --- AWS IaC MCP server, the second `stdio` server the awscdk tuned level
+# --- declares (equipping/levels/awscdk.tuned*.yaml) -- NOT INSTALLED, and the
+# --- reason is upstream, not a choice: 1.0.26 imports `guardpycfn` at module
+# --- load (tools/cloudformation_compliance_checker.py), and guardpycfn 0.1.0
+# --- publishes wheels for macos-arm64, manylinux x86_64 and win_amd64 only. On
+# --- a linux/arm64 build -- the bench's own host arch -- uv therefore builds it
+# --- from its Rust sdist, maturin finds no cargo and downloads rustup mid-build.
+# --- Installing it here would mean an unpinned Rust toolchain plus a crates.io
+# --- crate tree inside a measured image, which is a registered-artifact decision
+# --- and not one this file may make. `make equipping-preflight` stays red for
+# --- the two awscdk tuned rows until it is taken; ROADMAP.md M2 phase 4 and
+# --- DECISIONS.md Amendment 51 carry the options.
 
 # --- Workspace scaffold ---------------------------------------------------
 # /app/project is the agent's working directory: a starting CDK TypeScript

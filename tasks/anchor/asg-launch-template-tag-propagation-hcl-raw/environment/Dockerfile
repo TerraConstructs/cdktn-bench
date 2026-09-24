@@ -25,6 +25,15 @@
 #                       every existing Rego rule in the repo.
 #   aws CLI v2        — agent-container parity only; no grading path uses it
 #
+# Tuned-equipping tools, pinned the same way and installed at build time so no
+# resolve happens at trial time. They are prompt surface, never a grading path;
+# equipping/levels/hcl-raw.tuned*.yaml declares them and the image digest (in the
+# equipping hash) covers these pins:
+#   uv           0.12.18 — installs the server below into /opt/uv-tools
+#   AWS Docs MCP 1.2.1   — `awslabs.aws-documentation-mcp-server` on PATH. Its
+#                          stdio handshake is offline; its tool calls reach the
+#                          public docs site by design (prereg's fairness trade).
+#
 # Base image is digest-pinned (not just tag-pinned) so a rebuild months from
 # now can't silently swap the OS layer under an already-measured toolchain —
 # see ../../DECISIONS.md "Pinning standard". Re-pin by running
@@ -188,6 +197,53 @@ RUN set -eu; \
     echo "${HCL2JSON_SHA256}  /usr/local/bin/hcl2json" | sha256sum -c -; \
     chmod 0755 /usr/local/bin/hcl2json; \
     hcl2json -version
+
+# --- uv: the installer that puts the pinned MCP server below into this image.
+# --- Pinned tarball + hardcoded sha256, fetched through the same mirror probe as
+# --- every other asset here (docs/asset-mirror.md). The checksum is the one
+# --- astral-sh publishes beside the release asset
+# --- (uv-<triple>-unknown-linux-gnu.tar.gz.sha256), re-verified against the
+# --- bytes downloaded, so this pin is cross-checked upstream the way terraform's
+# --- and hcl2json's are and unlike opa's.
+ARG UV_VERSION=0.12.18
+RUN set -eu; \
+    case "${TARGETARCH}" in \
+      amd64) UV_TRIPLE="x86_64-unknown-linux-gnu"; UV_SHA256="89eadd7c76fc063887959510d5ba0ab1264dfd5f1143b925ddb73021a40acf16" ;; \
+      arm64) UV_TRIPLE="aarch64-unknown-linux-gnu"; UV_SHA256="afb6291f3f0a6b4521fc67b947822506c41dde5b60d2189dd8f3695b2ac8c9e7" ;; \
+      *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    URL="https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${UV_TRIPLE}.tar.gz"; \
+    ASSET_MIRROR_URL="$ASSET_MIRROR/uv-${UV_TRIPLE}.tar.gz"; \
+    if curl -fsI --connect-timeout 2 --max-time 5 "$ASSET_MIRROR_URL" >/dev/null 2>&1; then URL="$ASSET_MIRROR_URL"; fi; \
+    curl -fsSL --http1.1 --retry 5 --retry-all-errors -o /tmp/uv.tar.gz "$URL"; \
+    echo "${UV_SHA256}  /tmp/uv.tar.gz" | sha256sum -c -; \
+    tar -xzf /tmp/uv.tar.gz -C /tmp; \
+    install -m 0755 "/tmp/uv-${UV_TRIPLE}/uv" /usr/local/bin/uv; \
+    install -m 0755 "/tmp/uv-${UV_TRIPLE}/uvx" /usr/local/bin/uvx; \
+    rm -rf /tmp/uv.tar.gz "/tmp/uv-${UV_TRIPLE}"; \
+    uv --version
+
+# --- where `uv tool install` lands, and the interpreter it is allowed to use.
+# --- UV_TOOL_BIN_DIR is on PATH, so the console script each server's wheel
+# --- declares IS the command equipping/levels/<arm>.tuned*.yaml declares and
+# --- gates/tuned_equipping.py resolves. UV_PYTHON_DOWNLOADS=never forbids a
+# --- python-build-standalone fetch, which would be an unpinned interpreter: both
+# --- servers floor at Python >=3.10 and this image's apt python3 is 3.11.
+ENV UV_TOOL_DIR=/opt/uv-tools \
+    UV_TOOL_BIN_DIR=/usr/local/bin \
+    UV_PYTHON_DOWNLOADS=never
+
+# --- AWS Docs MCP server, a `stdio` server this arm's tuned equipping declares
+# --- (equipping/levels/*.tuned*.yaml, pinned in equipping/MANIFEST.json).
+# --- Installed at BUILD time and pinned by ARG so the image digest covers the
+# --- version; never resolved by `uvx` at launch, because claude-code logs an MCP
+# --- server it cannot start and carries on, so a trial-time fetch failure would
+# --- publish a tuned row whose container had no server.
+ARG AWS_DOCUMENTATION_MCP_VERSION=1.2.1
+RUN set -eu; \
+    uv tool install --no-cache --python /usr/bin/python3 \
+      "awslabs.aws-documentation-mcp-server==${AWS_DOCUMENTATION_MCP_VERSION}"; \
+    command -v awslabs.aws-documentation-mcp-server
 
 # --- pre-warm the hashicorp/aws provider filesystem mirror. This step needs
 # --- network (image build time only); nothing after this layer does.

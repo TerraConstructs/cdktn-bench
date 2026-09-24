@@ -9446,12 +9446,14 @@ covers the copied `skills/` tree byte for byte, the emitted `mcp.json`,
 workspace seed and the image digest. It therefore moves per level and per byte of
 skill text (proved below). It does **not** cover the *version* of an MCP server
 declared only by `command`: the pin lives in `equipping/MANIFEST.json`, which
-ships in no task. Once phase 4 installs the servers in the arm Dockerfiles the
-image digest covers them, which is the reason the install must be pinned in the
-Dockerfile and not resolved at trial time. AWS Docs MCP additionally reaches the
-public internet by design, so for that server the hash pins the client and never
-the corpus it answers from — logged, and the same deliberate fairness trade §2.2
-already made.
+ships in no task. **Installed, and the image digests cover the pins.** AWS Docs
+MCP is `ARG`-pinned in each arm's Dockerfile and `uv tool install`ed at build time
+into `/opt/uv-tools`, so its version is inside the image the digest addresses and
+nothing resolves a server at launch. The exception is `awslabs.aws-iac-mcp-server`
+on awscdk, which does not install on linux/arm64 at all (below). AWS Docs MCP
+additionally reaches the public internet by design, so for that server the hash
+pins the client and never the corpus it answers from — logged, and the same
+deliberate fairness trade §2.2 already made.
 
 **H1 and H2, with their falsifiers and the field they read.**
 
@@ -9471,8 +9473,35 @@ already made.
 
 **DRAFT, and what promotes it.** Nothing here has run a trial. It is promoted by
 the first tuned live trial whose row carries `harness: tuned` derived from a
-container that actually held the material — which requires phase 4 (the MCP
-servers installed in the arm images) and `make equipping-preflight` green.
+container that actually held the material. Both Terraform arms are now ready for
+that; awscdk is not, for the reason below.
+
+**Phase 4: the servers installed in the images, and the one that cannot be.**
+`uv` 0.12.18 is pinned by version and sha256 and fetched through the asset
+mirror's probe-then-fallback (the checksum astral-sh publishes beside the release
+asset); `awslabs.aws-documentation-mcp-server` 1.2.1 is `uv tool install`ed at
+build time into `/opt/uv-tools` with `UV_TOOL_BIN_DIR=/usr/local/bin`, so the
+console script the wheel declares IS the command the level yaml declares — the
+two needed no reconciliation — and `UV_PYTHON_DOWNLOADS=never` holds the
+interpreter at the apt python3 the image already had (3.11, against the package's
+>=3.10 floor) instead of an unpinned python-build-standalone download. Cost: about
++110-120 MB per image, 41 MB of it the tool venv. `make equipping-preflight` is
+green for the four Terraform tuned rows, and each image answers an MCP
+`initialize` over stdio in about 0.7-1.1 s under `--network none`; the docs
+server's tool CALLS still reach the public docs site, which is the trade already
+logged above.
+
+`awslabs.aws-iac-mcp-server` 1.0.26 is **not installed**, and the reason is
+upstream. It imports `guardpycfn` at module load, and guardpycfn 0.1.0 publishes
+wheels for macos-arm64, manylinux x86_64 and win_amd64 only — no linux/aarch64 —
+so on the bench's own host arch uv falls back to its Rust sdist and maturin
+downloads rustup mid-build. Three ways out, none of them this file's to take:
+(a) accept an unpinned Rust toolchain plus a crates.io crate tree inside a
+measured image; (b) re-pin the awscdk tuned cell to a server release without that
+dependency, which changes the registered artifact; (c) drop `aws-iac` from
+`equipping/levels/awscdk.tuned*.yaml`, which changes prereg §2.2's awscdk cell.
+Until one is chosen, `make equipping-preflight` is red for the two awscdk tuned
+rows — naming that one command — and **no awscdk tuned trial may be run**.
 
 **Evidence (host-side).**
 

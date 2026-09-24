@@ -238,6 +238,8 @@ sibling in exactly two paths — `task.toml` (`skills_dir` +
 `COPY equipping/ /opt/equipping/`); `instruction.md`, `tests/` and `solution/` are
 byte-identical, so both levels are graded by the same oracle.
 `make equipping-check` / `make equipping-preflight` check that the declaration
-matches the artifact (`../../docs/gates.md#tuned-equipping`). **Not yet runnable**:
-AWS Docs MCP is not installed in this image, so the image half is red for both
-tuned levels; the index tool itself needs no install (it is the sidecar).
+matches the artifact (`../../docs/gates.md#tuned-equipping`), and both halves are
+green: `uv` 0.12.18 and AWS Docs MCP 1.2.1 are `ARG`-pinned in
+`environment/Dockerfile` and installed at build time into `/opt/uv-tools` with the
+console script on PATH, so the image digest covers the server version. The index
+tool needs no install — it is the sidecar.

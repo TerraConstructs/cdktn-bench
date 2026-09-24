@@ -197,8 +197,18 @@ cost: the same material at a pin whose version-specific facts no longer hold).
 - **`tuned-stale`**: the same skill with v1-era facts — `@aws-cdk/aws-*` and
   `@aws-cdk/core` imports (this arm pins `aws-cdk-lib` 2.263.0, so they do not
   compile), `CDK_NEW_BOOTSTRAP=1`, `cdk synth` without `--no-lookups`.
-- **Not yet runnable**: neither MCP server is installed in this image, so
-  `make equipping-preflight` is red for both tuned levels.
+- **AWS Docs MCP is installed; the IaC server is not.** `uv` 0.12.18 and AWS Docs
+  MCP 1.2.1 are `ARG`-pinned in `environment/Dockerfile` and `uv tool install`ed
+  at build time into `/opt/uv-tools` with the console script on PATH, so the image
+  digest — which is in the equipping hash — covers that pin, and nothing resolves
+  a server at launch. `awslabs.aws-iac-mcp-server` 1.0.26 cannot be installed on
+  this host arch: it imports `guardpycfn` at module load, and guardpycfn 0.1.0
+  publishes wheels for macos-arm64, manylinux x86_64 and win_amd64 only, so on
+  linux/arm64 uv builds it from a Rust sdist and maturin downloads rustup
+  mid-build. Adding an unpinned Rust toolchain and a crates.io crate tree to a
+  measured image is a registered-artifact decision, so it is not taken here:
+  `make equipping-preflight` stays red for the two awscdk tuned rows, naming that
+  one command. `../../DECISIONS.md` Amendment 51 carries the options.
 
 A tuned task of this arm differs from its bare sibling in exactly two paths —
 `task.toml` (`skills_dir` + `[[environment.mcp_servers]]`) and `environment/`

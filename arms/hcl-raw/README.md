@@ -27,6 +27,8 @@ file: a **multi-step** task has no root `instruction.md` at all — one per step
 | --- | --- | --- |
 | `terraform` CLI | **1.15.8** | direct download from `releases.hashicorp.com`, sha256-verified against hardcoded checksums (linux\_amd64 and linux\_arm64) from the published `terraform_1.15.8_SHA256SUMS`, not fetched-and-trusted at build time |
 | `hashicorp/aws` provider | **6.66.0** | mirrored into the image via `terraform providers mirror`, which itself verifies HashiCorp's registry signature at build time (`Package authenticated: signed by HashiCorp` in the build log) — not the same version `arms/terraconstructs` mirrors (6.52.0); see `../../DECISIONS.md` "TF provider version per arm" |
+| `uv` | **0.12.18** | pinned tarball from `github.com/astral-sh/uv`, sha256-verified against the checksum astral-sh publishes beside the asset; installs the MCP server below at build time |
+| AWS Docs MCP | **1.2.1** | `awslabs.aws-documentation-mcp-server` from PyPI via `uv tool install` into `/opt/uv-tools`, console script on PATH. Tuned equipping only, no grading path — `../../equipping/MANIFEST.json` |
 | base image | `debian:bookworm-slim` | **digest-pinned** (`@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241`), not just tag-pinned — see `../../DECISIONS.md` "Pinning standard". Also carries the common agent-container baseline: `bash`, `git`, `curl`, `jq`, `unzip`, `ca-certificates`, AWS CLI v2 (see `../../DECISIONS.md` "Agent-container baseline contract") |
 
 The `terraform` pin was current-stable as of 2026-08-06
@@ -258,8 +260,12 @@ cost: the same material at a pin whose version-specific facts no longer hold).
 - **`tuned-stale`**: the same skill at v1.0.0 — no feature-guard/version-floor
   table, `dynamodb_table` state locking with no `use_lockfile`, and no
   "validate schemas before asserting" guard.
-- **Not yet runnable**: AWS Docs MCP is not installed in this image, so
-  `make equipping-preflight` is red for both tuned levels.
+- **Installed, not resolved at trial time.** `uv` 0.12.18 and AWS Docs MCP 1.2.1
+  are pinned in `environment/Dockerfile` by `ARG`, installed at build time into
+  `/opt/uv-tools` with the console script on PATH, so the image digest — which is
+  in the equipping hash — covers the server version. `make equipping-preflight`
+  is green. A `uvx` resolve at launch would instead be a network dependency
+  inside a trial and, on failure, a silently absent tool.
 
 A tuned task of this arm differs from its bare sibling in exactly two paths —
 `task.toml` (`skills_dir` + `[[environment.mcp_servers]]`) and `environment/`
