@@ -274,11 +274,12 @@
   <p class="eyebrow">cdktn-bench · project record</p>
   <h1>The lifecycle of cdktn-bench</h1>
   <p class="lede">From a pre-registered, deployment-free token benchmark to a
-  four-account live AWS instrument: where it started, what the design forks
-  were, which branch was taken, and what the evidence forced it to retract.</p>
+  five-account live AWS instrument with four arms: where it started, what the
+  design forks were, which branch was taken, and what the evidence forced it to
+  retract.</p>
   <div class="meta">
-    <span><b>Window</b> 2026-08-06 → 2026-09-09</span>
-    <span><b>Amendments</b> №1 and 2–34</span>
+    <span><b>Window</b> 2026-08-06 → 2026-09-24</span>
+    <span><b>Amendments</b> №1 and 2–48</span>
     <span><b>Sources</b> DECISIONS.md · ROADMAP.md · docs/ · jobs/</span>
   </div>
 </header>
@@ -390,12 +391,14 @@
     one break in the numbering: <b>two</b> entries are headed Amendment 19
     (<code>iam-e2e-role</code>, 2026-08-08, and <code>QADeployApplicationRole</code>:
     <code>sts:AssumeRole</code>, 2026-08-13, filed after Amendment 20). The row
-    below uses the first; the IAM fork in Section 3 uses the second.</p>
+    below uses the first; the IAM fork in Section 3 uses the second. Six
+    entries carry no date of their own (42&ndash;47); their rows give the date of
+    the status line or promotion run that settled them, and say so.</p>
   </div>
 
   <div class="scroll">
   <table>
-    <caption>Amendments that moved the design, 2026-08-06 → 2026-09-09.
+    <caption>Amendments that moved the design, 2026-08-06 → 2026-09-24.
     Status is the amendment's own status line.</caption>
     <thead>
       <tr><th>Date</th><th class="what">What changed</th><th>Why</th><th>Status</th></tr>
@@ -533,6 +536,90 @@
         <td>Tier 0.5 never gated a reward, one spec ever populated it, and it graded a Python re-implementation rather than the service. Step Functions grades its own expressions, needs no role for Pass/Choice states, and creates nothing</td>
         <td><span class="tag t-ok">ACCEPTED 2026-09-09</span></td>
       </tr>
+      <tr>
+        <td class="when">2026-09-09</td>
+        <td class="what"><b>35</b> — bounded retry on transient AWS errors: one TRANSIENT/RESOLVED classification, two implementations (<code>tests/_live_lib.py::run_aws</code> and the harness side) held identical by a drift test</td>
+        <td>A brownfield trial that deployed the rename correctly scored 0.0 because one <code>aws ec2 describe-security-groups</code> timed out; a failure that never reached a decision was being read as a verdict</td>
+        <td><span class="tag t-draft">DRAFT</span> — promotion needs an observed retry</td>
+      </tr>
+      <tr>
+        <td class="when">2026-09-09</td>
+        <td class="what"><b>36</b> — <code>scenario_form</code> becomes a REQUIRED result-row field and the <i>first</i> element of <code>cell_key</code></td>
+        <td>Three amendments already forbade three poolings (26 §4, 27 §2, 28 §6) and nothing enforced any of them: the operating instruction was prose</td>
+        <td><span class="tag t-ok">ACCEPTED</span></td>
+      </tr>
+      <tr>
+        <td class="when">2026-09-10</td>
+        <td class="what"><b>37</b> — the <b>teardown tier</b>: the agent's own <code>destroy</code> is run and graded, with three outcomes (<code>clean</code>, <code>destroy_failed</code>, <code>not_verifiable</code>)</td>
+        <td>"Teardown leaves the account clean" had never been gradeable — the static tiers can only see <code>force_delete = true</code>, which is a proxy for the requirement, not the requirement</td>
+        <td><span class="tag t-ok">ACCEPTED 2026-09-10</span></td>
+      </tr>
+      <tr>
+        <td class="when">2026-09-09</td>
+        <td class="what"><b>38</b> — agent commands run in the <b>foreground</b>; a deploy the agent runs itself is toolchain evidence, not harness plumbing</td>
+        <td>Harbor's background-task env vars are not read by the Claude Code build in use, so a deploy was still being backgrounded and killed at turn end — the pitfall was never paid for in tokens</td>
+        <td><span class="tag t-ok">ACCEPTED 2026-09-10</span></td>
+      </tr>
+      <tr>
+        <td class="when">2026-09-10</td>
+        <td class="what"><b>39</b> — <code>make grading-proof</code> accepts a <i>live-tier</i> proof of gradeability, not only an observed tier-1 catch</td>
+        <td>On <code>lambda-alias-tracks-unpublished-latest</code> the missing tier-1 rule cannot be written: poisoned and corrected shapes differ only in a CDK-generated logical id, so any rule is either vacuous or coupled to <code>aws-cdk-lib</code>'s private hashing</td>
+        <td><span class="tag t-ok">ACCEPTED</span> — host gate only</td>
+      </tr>
+      <tr>
+        <td class="when">2026-09-10</td>
+        <td class="what"><b>40</b> — the offline gate stub answers <code>sts:GetCallerIdentity</code> with an <i>assumed-role</i> ARN and answers <code>iam:GetRole</code> for that one role name</td>
+        <td>Every live trial holds assumed-role credentials, so an artifact embedding the caller ARN was graded offline on a shape no trial produces — and <code>data "aws_iam_session_context"</code> resolves a session ARN through <code>GetRole</code></td>
+        <td><span class="tag t-ok">ACCEPTED</span></td>
+      </tr>
+      <tr>
+        <td class="when">2026-09-10</td>
+        <td class="what"><b>41</b> — a fourth catch tier, <code>predicted_tier_caught: "teardown"</code>, valid only where the teardown tier is both enabled and <i>gating</i>; first gating teardown ships on <code>ecr-repo-destroy-force-delete</code></td>
+        <td>Amendment 37 gave the tier three outcomes and a gating composition but no catch could name it, so a repository that applies green and refuses to be destroyed had to be filed at a tier that does not describe it</td>
+        <td><span class="tag t-ok">ACCEPTED 2026-09-17</span></td>
+      </tr>
+      <tr>
+        <td class="when">undated<br>(NOT ADOPTED)</td>
+        <td class="what"><b>42</b> — <code>oracle.tier0_engine</code>: compile <code>oracle.structural_asserts</code> to <code>tests/tier0.rego</code> and grade tier 0 with <code>opa</code>, one policy language for both static tiers</td>
+        <td>Reviewed against the jq it would replace: <b>five asserts became hundreds of lines of unrolled node chains, versus one readable line per assert</b> — and Rego turns most errors into silent undefined, collapsing "the question could not be asked" into "the path found no node", which is a vacuous pass on the absence proofs tier 0 exists for</td>
+        <td><span class="tag t-void">NOT ADOPTED</span> · compiler and <code>make tier0-parity</code> kept on demand (zero divergences over 305 artifacts)</td>
+      </tr>
+      <tr>
+        <td class="when">promotion<br>2026-09-21</td>
+        <td class="what"><b>43</b> — the tier-0 driver is Python: generated <code>tests/ops.py</code> + <code>tests/tier0.py</code> over the same jq filters, and the 178-line generated <code>tests/_assert_lib.sh</code> is deleted. Adds the build-time asset mirror</td>
+        <td>The opposite split from Amendment 42 — keep the jq filters, which are the readable part, and delete the bash. The three-valued outcome (<code>held</code>/<code>contradicted</code>/<code>unresolvable</code> → exit 0/1/2) is the contract being preserved</td>
+        <td><span class="tag t-ok">ACCEPTED</span></td>
+      </tr>
+      <tr>
+        <td class="when">promotion<br>2026-09-22</td>
+        <td class="what"><b>44</b> — the whole verifier is Python: <code>tests/tiers.py</code> (the mechanism, byte-identical per task) + <code>tests/verify.py</code> (this task's configuration). <code>test.sh</code> and <code>static_tiers.sh</code> stay as shims because Harbor executes one and every hand-authored <code>solve.sh</code> calls the other</td>
+        <td>~340 generated lines of bash per arm was the largest surface in the shell inventory's class 2; the summary line and every status string are read downstream, so they are unchanged</td>
+        <td><span class="tag t-ok">ACCEPTED</span></td>
+      </tr>
+      <tr>
+        <td class="when">undated<br>(on landing)</td>
+        <td class="what"><b>45</b> — OPA/Rego grades tier 1 on <i>every</i> arm; <code>oracles/cfn-guard/</code> is deleted and cfn-guard is retired from the oracle, kept installed as a measured arm capability</td>
+        <td>cfn-guard 3.2.0 cannot express a cross-resource join, so every intent that stated one degraded into a proxy unsound in both directions — established as a tooling ceiling over three fix rounds, and Amendment 29's equal-strictness rule makes it binding</td>
+        <td><span class="tag t-ok">ACCEPTED</span> on landing</td>
+      </tr>
+      <tr>
+        <td class="when">2026-09-24</td>
+        <td class="what"><b>46</b> — the <code>hcl_modules</code> arm returns as a <b>per-spec-gated fourth arm</b> (<code>arms.hcl_modules {enabled, reason}</code>), with <code>predicted_tier_caught.hcl_modules_override</code> and a loopback registry sidecar serving a vendored <code>terraform-aws-modules</code> set</td>
+        <td>Composing from published modules changes the authoring substrate the way a construct library does — what the agent writes, what it must discover, what the plan looks like — so it must be judged with identical metrics per arm, not as a within-arm condition. Closes ROADMAP open decision 4 and reverses Amendment 2's drop</td>
+        <td><span class="tag t-ok">ACCEPTED 2026-09-24</span> · mutating and brownfield forms unpublished until slice C runs</td>
+      </tr>
+      <tr>
+        <td class="when">undated<br>(on landing)</td>
+        <td class="what"><b>47</b> — equipping hash scheme 2: <code>compose_sha256</code>, <code>harbor_equipping.mcp_servers</code> and <code>harbor_equipping.skills_dir</code> join the manifest; <code>run-bench.sh</code> records <code>--mcp-config</code>/<code>--skill</code> <i>content</i> digests, never the flag's path</td>
+        <td>Scheme 1 read neither declaration, so an inline <code>mcp_servers</code> block changed the trial and not the hash, and the holdout-equipping check was blind to the same channel. Rows across the two schemes are deliberately not comparable by hash</td>
+        <td><span class="tag t-ok">ACCEPTED</span> on landing</td>
+      </tr>
+      <tr>
+        <td class="when">2026-09-22</td>
+        <td class="what"><b>48</b> — <code>arms/hcl-raw</code>'s baked mirror, preflight fixture and <code>required_providers</code> pin move from <code>hashicorp/aws</code> 6.58.0 to <b>6.66.0</b>; <code>arms/terraconstructs</code> stays on 6.52.0</td>
+        <td><code>eks</code> 21.25.1 constrains <code>hashicorp/aws &gt;= 6.59.0</code>, which the <code>hcl_modules</code> arm inherits from this image; terraconstructs cannot follow because <code>@cdktn/provider-aws@24.8.0</code> hardcodes 6.52.0 into every synthesized stack</td>
+        <td><span class="tag t-ok">ACCEPTED 2026-09-23</span> · equipping hash moved; rows either side are not pooled</td>
+      </tr>
     </tbody>
   </table>
   </div>
@@ -540,23 +627,28 @@
   <h3>Milestones, as the roadmap tracks them</h3>
   <div class="scroll">
   <table>
-    <caption>ROADMAP.md §4 (M1–M7) and §5 (M8, M9), read 2026-09-09.
-    Only <b>M7</b> ("Status: DONE — sharded at N = 4") and <b>M5</b>
-    ("Decide <b>after</b> a full battery") carry a status line of their own, and
-    M2's "still unbuilt" comes from <code>DECISIONS.md</code> Amendment 30, not
-    from §4. "Open", "unbuilt" and "queued" on M1, M3, M4, M6 and M9 are this
-    page's reading of the section text, not quoted status.</caption>
+    <caption>ROADMAP.md §4 (M1–M7) and §5 (M8–M11), read 2026-09-24.
+    M3's phases, M7, M8 and M10 carry status lines of their own and are quoted;
+    M5's is "Decide <b>after</b> a full battery"; M2's "still unbuilt" comes from
+    <code>DECISIONS.md</code> Amendment 30, not from §4. "Open", "unbuilt" and
+    "queued" on M1, M4, M6 and M9 are this page's reading of the section text,
+    not quoted status. <b>One conflict is left standing rather than resolved
+    here:</b> M7's status line still reads "sharded at N = 4", while
+    <code>generator/shards.toml</code> — the only place N is written — now carries
+    <code>shard_count = 5</code>.</caption>
     <thead><tr><th>Milestone</th><th class="what">What it is</th><th>State</th></tr></thead>
     <tbody>
       <tr><td>M1</td><td class="what">Finish the profile: blast radius, <code>extract_signals.py</code> wired into the pipeline, rbw / escape-hatch as first-class result fields</td><td><span class="tag t-draft">open</span></td></tr>
       <tr><td>M2</td><td class="what">Equipping factorial — does materialized discovery erase the read-before-write tax? Harness already supports it via the equipping hash</td><td><span class="tag t-draft">unbuilt</span></td></tr>
-      <tr><td>M3</td><td class="what">The <code>hcl-modules</code> arm, treated as a falsification test of the "raw HCL is a strawman" objection</td><td><span class="tag t-draft">unbuilt</span></td></tr>
+      <tr><td>M3</td><td class="what">The <code>hcl-modules</code> arm, treated as a falsification test of the "raw HCL is a strawman" objection. Six phases: (1) the Python verifier, (2) the arm in the schema and closed enums, disabled everywhere, (3) the plan normaliser and its zero-drift parity gate, (4) module delivery — 21 vendored <code>module@version</code> trees plus the compose sidecar responder, proven under <code>docker run --network none</code>, (5) arm plumbing and the three-spec pilot, (6) corpus roll-out in three slices</td><td><span class="tag t-ok">phases 1–5 done</span> <span class="tag t-ok">A done</span> <span class="tag t-draft">B pending</span> <span class="tag t-draft">C in progress</span></td></tr>
       <tr><td>M4</td><td class="what">Scale dose-response — every scenario today is 1–2 files, the regime where abstraction pays off least</td><td><span class="tag t-draft">unbuilt</span></td></tr>
       <tr><td>M5</td><td class="what">Oracle authority: decide after a full battery, using the measured static-green vs live-green divergence</td><td><span class="tag t-draft">deferred</span></td></tr>
       <tr><td>M6</td><td class="what">Closed-book knowledge probe — no AWS, no trials; turns "abstractions help" into a per-trap prediction</td><td><span class="tag t-draft">unbuilt</span></td></tr>
-      <tr><td>M7</td><td class="what">Split the aws-bench scenario into shards</td><td><span class="tag t-ok">DONE at N = 4</span></td></tr>
-      <tr><td>M8</td><td class="what">OPA as the grading engine on all three arms; cfn-guard retained but reclassified as a capability, not the authority</td><td><span class="tag t-ok">engine available (Amdt 30)</span> <span class="tag t-draft">backport in progress</span></td></tr>
+      <tr><td>M7</td><td class="what">Split the aws-bench scenario into shards — one aws-bench scenario is one AWS member account, so N shards is N accounts</td><td><span class="tag t-ok">DONE</span> · <code>shard_count = 5</code> today (§4's status line still says N = 4)</td></tr>
+      <tr><td>M8</td><td class="what">OPA as the grading engine on every arm; cfn-guard retained but reclassified as a measured capability, not the authority</td><td><span class="tag t-ok">DONE</span> — Amendment 45; all 20 specs grade awscdk tier 1 through Rego, and a spec declaring <code>cfn_guard</code> now fails validation</td></tr>
       <tr><td>M9</td><td class="what">Brownfield <i>adoption</i> scenarios — importing already-deployed resources, distinct from Amendment 28's seeded code</td><td><span class="tag t-draft">queued</span></td></tr>
+      <tr><td>M10</td><td class="what">One Rego engine for every tier, and a spike on <code>microsoft/regorus</code> as a library replacement for the <code>opa</code> binary</td><td><span class="tag t-ok">spike done — stay on opa 1.19.0</span>: regorus 0.12.0 diverged on 50 of 504 pairs. The tier-0 half is Amendment 42's <span class="tag t-void">NOT ADOPTED</span>; the driver landed as Amendment 43 instead</td></tr>
+      <tr><td>M11</td><td class="what">Agent access mode as a measured dimension: split the two meanings welded into <code>verifier.live_check.enabled</code> into an <code>agent_access</code> value of <code>read-only</code> / <code>read-write</code>, declared per spec and never per arm, with one task emitted per (arm, mode), both static tiers run in both modes, and <code>agent_access</code> added to <code>cell_key</code></td><td><span class="tag t-draft">outlined, sequenced after M10</span> — migration of the 20 specs is mechanical (14 read-only, 6 read-write)</td></tr>
     </tbody>
   </table>
   </div>
@@ -657,9 +749,12 @@
         the contamination radius; mutating arms still serialize.</p>
       </div>
       <div class="opt taken">
-        <span class="lbl">Taken — N = 4</span>
-        <p>One read-only shard plus three mutating shards, so a spec's three
-        arms run concurrently and their resets overlap.</p>
+        <span class="lbl">Taken — N = 4, then N = 5</span>
+        <p>One read-only shard plus three mutating shards, so a spec's three arms
+        run concurrently and their resets overlap. Amendment 46's fourth arm made
+        three mutating shards put two of one spec's arms on one account, so a
+        fifth account (<code>anchor-4</code>) was added: the rule the number
+        serves is one arm per account per spec, not the number itself.</p>
       </div>
     </div>
     <p class="ev"><b>Evidence.</b> The admission gate is keyed only by
@@ -846,6 +941,228 @@
     The sweep cost ~22s of container time per mutating trial for zero remaining
     marginal coverage. aws-nuke stays parked.</p>
   </div>
+
+  <div class="fork">
+    <h3>Tier 0 compiled to Rego, or generated Python over the same jq filters</h3>
+    <p class="q">Tier 0 grades <code>oracle.structural_asserts</code> through jq
+    and tier 1 through <code>opa</code>. One assert source can feed one policy
+    language — so which one, and what gets deleted?</p>
+    <div class="opts">
+      <div class="opt">
+        <span class="lbl">Option A — Amendment 42</span>
+        <p>Compile the same YAML to <code>tests/tier0.rego</code>
+        (<code>generator/jsonpath_rego.py</code>) and grade both static tiers with
+        <code>opa</code>: one language, one engine, <code>jq</code> dropped from
+        the arm images.</p>
+      </div>
+      <div class="opt taken">
+        <span class="lbl">Taken — Amendment 43</span>
+        <p>The opposite split. Keep the jq filters, which are the readable part,
+        and delete the 178-line generated <code>tests/_assert_lib.sh</code>:
+        <code>tests/ops.py</code> (the op table, one owner, byte-identical
+        everywhere) plus <code>tests/tier0.py</code> (this arm's assert table,
+        one tuple per assert with the declared JSONPath in a comment above it).</p>
+      </div>
+    </div>
+    <p class="ev"><b>Evidence.</b> The emitted policy was reviewed against the jq
+    script it would replace: <b>five asserts became hundreds of lines of unrolled
+    node chains, versus one readable line per assert.</b> The correctness
+    argument pointed the same way — Rego turns most errors into silent undefined,
+    collapsing "the question could not be asked" into "the path found no node",
+    which is a vacuous pass on exactly the absence proofs tier 0 exists for, so
+    every situation jq raises on had to become an explicit rule with its own
+    reason string. What survives Amendment 42 is the compiler, the emitted-policy
+    path behind <code>oracle.tier0_engine: rego</code> (no spec selects it) and
+    <code>make tier0-parity</code> as an on-demand cross-check: zero divergences
+    over 305 artifacts. The HCL pre-parser lift landed and stays.</p>
+  </div>
+
+  <div class="fork">
+    <h3><code>hcl_modules</code> as a fourth arm, or as a scenario attribute</h3>
+    <p class="q">Composing from <code>terraform-aws-modules</code> is the answer
+    to "raw HCL is a strawman". Is that a new arm, or a treatment applied within
+    the <code>hcl_raw</code> arm on some subset of scenarios?</p>
+    <div class="opts">
+      <div class="opt">
+        <span class="lbl">Option A</span>
+        <p>A within-arm condition — a per-scenario attribute switching
+        <code>hcl_raw</code> between "write it yourself" and "compose from
+        modules", comparing the two inside one arm's rows.</p>
+      </div>
+      <div class="opt taken">
+        <span class="lbl">Taken — Amendment 46</span>
+        <p>An arm, gated per spec exactly like terraconstructs:
+        <code>arms.hcl_modules {enabled, reason}</code> with the reason required
+        in both directions, plus
+        <code>predicted_tier_caught.hcl_modules_override</code> alongside the
+        existing terraconstructs override. The factorial is four arms; the
+        per-scenario split and the pre-registered hypotheses are untouched.</p>
+      </div>
+    </div>
+    <p class="ev"><b>Evidence.</b> Composing changes the authoring substrate the
+    way a construct library does — what the agent writes, what it must discover,
+    and what the plan looks like — so it has to be judged with identical metrics
+    <i>per arm</i> rather than as a condition inside one arm's cell. This closes
+    ROADMAP open decision 4 and <b>reverses Amendment 2</b>, which dropped
+    <code>terraform-aws-modules</code> on day one to get to three arms. The mover
+    for the tier override is a module default or an input the module does not
+    expose, not a typed TypeScript surface: a module that hides the trapped
+    attribute behind a default changes the catch's tier or removes the catch on
+    this arm, which is why <code>applies_to</code> stays the other half of the
+    answer.</p>
+  </div>
+
+  <div class="fork">
+    <h3>Vendored local module sources, or a loopback registry sidecar</h3>
+    <p class="q">The image fetches nothing from the network. So where does
+    <code>source = "terraform-aws-modules/s3-bucket/aws"</code> resolve from?</p>
+    <div class="opts">
+      <div class="opt">
+        <span class="lbl">Option A</span>
+        <p>Vendored local sources: the agent writes
+        <code>source = "/opt/terraform-modules/s3-bucket"</code>. Simplest and
+        fully offline.</p>
+      </div>
+      <div class="opt taken">
+        <span class="lbl">Taken — the <code>tf-registry</code> sidecar</span>
+        <p>Terraform's transparent <code>host</code> override in
+        <code>/etc/terraform.d/cli.tfrc</code> points
+        <code>registry.terraform.io</code>'s <code>modules.v1</code> at a ~90-line
+        stdlib Python responder serving discovery, versions and download from the
+        vendored tree — a compose service the agent container waits on via
+        <code>service_healthy</code>.</p>
+      </div>
+    </div>
+    <p class="ev"><b>Evidence.</b> The local-source shape "diverges from practice
+    and version selection disappears as a measured skill" — and version selection
+    is part of what this arm is supposed to measure. The override works over plain
+    HTTP on loopback, a LAN IP and a DNS hostname, so the real authoring shape is
+    preserved, and the forced <code>host</code> override has no fallback: a
+    successful <code>init</code> of a <code>registry.terraform.io</code> source
+    <i>is</i> the sidecar serving it. Amendment 46 nails the rest down so the two
+    options cannot quietly merge: the pruned tree (~4 MB, Apache-2.0, LICENSE
+    files retained) is committed in-repo with a per-module upstream commit sha and
+    a per-file sha256, the image build fetches no module bytes, the sidecar runs
+    <i>this arm's own image</i> with a different <code>command</code> so one digest
+    covers responder, module bytes and manifest together — and in the agent
+    container the tree is <b>unreadable to the agent user</b>, with a local
+    <code>/opt/...</code> source in <code>modules.json</code> a deny.</p>
+  </div>
+
+  <div class="fork">
+    <h3>HashiCorp's Terraform MCP server, or a bench-owned index tool</h3>
+    <p class="q">The tuned equipping for this arm has to answer "which module,
+    which version, which input" — from the allowlist, offline. What serves it?</p>
+    <div class="opts">
+      <div class="opt">
+        <span class="lbl">Option A</span>
+        <p><code>hashicorp/terraform-mcp-server</code> v1.3.0 (MPL-2.0), the
+        upstream tool an agent would plausibly have in the real world.</p>
+      </div>
+      <div class="opt taken">
+        <span class="lbl">Taken — design B, the index tool</span>
+        <p>~400 lines of stdlib Python speaking JSON-RPC 2.0 over
+        <code>streamable-http</code> inside the sidecar process that already
+        serves the modules, advertising exactly the nine <code>registry</code>
+        toolset tools with the input schemas copied verbatim and answering from
+        the manifest. Paired with AWS Docs MCP and the vendored authoring
+        skill.</p>
+      </div>
+    </div>
+    <p class="ev"><b>Evidence.</b> v1.3.0 hard-codes the public registry URL —
+    <code>pkg/client/registry.go:24</code>,
+    <code>DefaultPublicRegistryURL = "https://registry.terraform.io"</code>,
+    interpolated directly at <code>registry.go:71</code> — with no environment
+    variable or flag that redirects it. It can therefore neither answer from the
+    allowlist nor run offline, which makes it unusable as the tuned equipping
+    without a fork. The bench-owned tool also fixes the failure semantics that
+    matter for a measurement: a miss returns a <b>successful</b> tool result
+    naming what <i>is</i> available, never an error an agent could read as an
+    outage and spend tokens retrying.
+    <code>search_providers</code>/<code>get_provider_details</code> are declined
+    in favour of AWS Docs MCP, because the mirror holds no documentation
+    markdown.</p>
+  </div>
+
+  <div class="fork">
+    <h3>A build-time asset mirror, or retrying GitHub's CDN</h3>
+    <p class="q">A task image embeds its arm's Dockerfile verbatim, so a cold
+    build refetches every pinned tool. Who serves those bytes?</p>
+    <div class="opts">
+      <div class="opt">
+        <span class="lbl">Option A</span>
+        <p>Keep fetching from the upstream release CDNs and treat a truncated
+        download as transient — retry the build.</p>
+      </div>
+      <div class="opt taken">
+        <span class="lbl">Taken — Amendment 43</span>
+        <p><code>scripts/asset_mirror.py</code>: the six pinned build-time
+        downloads (opa, jq, hcl2json, the cfn-guard tarball, the terraform zip,
+        the AWS CLI zip) cached on the host and served over HTTP to build
+        containers. The pins stay the integrity guarantee —
+        <code>sha256sum -c</code> still runs — and the mirror is only a
+        <i>source</i>.</p>
+      </div>
+    </div>
+    <p class="ev"><b>Evidence.</b> A retry is only a fix if the build fits in the
+    budget, and it does not: Harbor allows 600 s per image build, and pulling a
+    57 MB release asset over an unreliable link turns a cold build into a coin
+    flip. The Amendment 44 promotion run is the demonstration — <b>two attempts
+    the same evening were voided before any agent ran</b>, both because GitHub's
+    release CDN truncated the pinned <code>opa</code> download inside the task
+    image builds. The run that promoted the amendment built from the mirror with
+    every layer cached.</p>
+  </div>
+
+  <div class="fork">
+    <h3>Emerging: static resolution of plan-time unknowns — module-aware
+    traversal, evaluating APIs, or an emulator</h3>
+    <p class="q">The oracle must decide a statement about a value Terraform will
+    not know until apply, and — since Amendment 46 — about a value set inside a
+    module body the caller's HCL never mentions. What resolves it?</p>
+    <div class="opts">
+      <div class="opt">
+        <span class="lbl">Option A</span>
+        <p><b>Module-aware static traversal.</b> Bind the caller's arguments to
+        the module's <code>variable</code> blocks and evaluate the body, the way
+        Checkov, Trivy, TFLint and Terrascan do — extending
+        <code>oracles/rego/lib/hcl_traversal.rego</code>'s three-valued verdict
+        over resolved module bytes. The one shipped precedent that gets both
+        halves offline is Trivy's plan-snapshot scanner, which reconstructs a
+        virtual filesystem from the binary plan's embedded sources and module
+        manifest.</p>
+      </div>
+      <div class="opt">
+        <span class="lbl">Option B</span>
+        <p><b>An evaluating API.</b> <code>terraform console</code> evaluates for
+        real; <code>terraform show -json</code>, <code>terraform-config-inspect</code>
+        and <code>terraform-json</code> are the typed alternatives.</p>
+      </div>
+      <div class="opt">
+        <span class="lbl">Option C</span>
+        <p><b>An emulator trial.</b> Apply against an emulated account so the
+        unknowns become known, with a measured false-green rate as the price of
+        entry.</p>
+      </div>
+    </div>
+    <p class="ev"><b>Evidence, and no decision.</b> Option B is where the evidence
+    is hardest and most negative: <code>terraform show -json</code> has <b>no
+    <code>locals</code> key</b> (a known, still-open Terraform issue), an
+    expression object carries <code>constant_value</code> <i>or</i>
+    <code>references</code> and never both, <code>planned_values</code> omits
+    unknown values "indistinguishable from absent" — and this class of scenario's
+    referents are exactly the plan-time-unknown ARNs. <code>terraform console</code>
+    needs an initialised module, prints HCL-ish text rather than JSON, needs one
+    invocation per symbol, and still answers "(known after apply)".
+    <code>terraform-config-inspect</code>'s <code>tfconfig.Module</code> has no
+    <code>Locals</code> field at all. Option A is the direction the module survey
+    points, and the plan normaliser already had to learn half of it the hard way
+    (see Corrections). Option C is the one with no result: <code>floci</code> is
+    excluded as a <i>validity oracle</i> and was rejected as the gate backend, and
+    a fidelity spike is <i>named</i> as in progress with no result recorded —
+    <span class="tag t-unver">unverified</span>, because the spike document the
+    record points at does not exist in the tree. Nothing here is decided.</p>
+  </div>
 </section>
 
 <section id="corrections">
@@ -981,6 +1298,115 @@
       runtime of "≈4 minutes" was corrected to ≈8.5–9 minutes, of which deletion
       work is only ≈61s: two account-wide fastscans across 996 CloudFormation
       resource types account for ≈78% of it.</div></div>
+  </div>
+
+  <div class="corr">
+    <div class="believed"><span class="k">Believed</span>
+      <div>An oracle written at equal strictness for the Terraform arms grades a
+      module composition the same way it grades hand-written HCL.</div></div>
+    <div class="found"><span class="k">Found</span>
+      <div>On the first live <code>hcl_modules</code> trial of
+      <code>acm-dns-validation-record-wiring</code> the oracle <b>graded a correct
+      answer wrong</b>. The agent created the hosted zone through the
+      <code>route53</code> module and passed it to the <code>acm</code> module as
+      that call's output; the policy's created-zone rule could not match that
+      shape, so it denied a plan carrying exactly two validation records — reward
+      0.0 for an oracle defect, not an agent mistake. Fixed at equal strictness: a
+      created zone under <code>module.&lt;call&gt;.</code> makes that call prefix a
+      valid reference, non-modular plans are unchanged, and a
+      <code>count</code>/<code>for_each</code> call stays denied. The re-trial on
+      the fixed policy scored 1.0 with the same composition, which is what
+      promoted Amendment 46.</div></div>
+  </div>
+
+  <div class="corr">
+    <div class="believed"><span class="k">Believed</span>
+      <div>A tier-1 FAIL is self-explanatory: the policy denied, the transcript
+      names the spec, and the deny messages are in the policy file.</div></div>
+    <div class="found"><span class="k">Found</span>
+      <div>The generated verifier <b>printed no reason for any tier-1 FAIL</b> on
+      any arm, and charged an <code>opa</code> crash as a FAIL — the engine failing
+      to run and the artifact being wrong were the same line of output. The trial
+      that produced the acm mis-grade is what exposed it, because nothing in the
+      transcript said <i>why</i> the plan was denied. The verifier now prints one
+      <code>DENY:</code> line per message and returns a distinct
+      <code>ENGINE_ERROR</code> status, so a broken engine can no longer be read as
+      a graded failure.</div></div>
+  </div>
+
+  <div class="corr">
+    <div class="believed"><span class="k">Believed</span>
+      <div>The slice-A oracles were ready for the new arm: every pilot policy
+      passed its reference and failed its broken fixtures.</div></div>
+    <div class="found"><span class="k">Found</span>
+      <div><b>Three of them were vacuously green on a module composition.</b> The
+      phase-3A plan normaliser hoists <code>planned_values</code> but leaves
+      <code>configuration</code> in module bodies, so every tier-1 rule keyed on
+      <code>configuration.root_module.resources</code> was graded against an
+      <b>empty set</b> and denied nothing. All three pilot policies were that
+      shape — <code>acm-dns-validation-record-wiring</code>,
+      <code>iam-managed-policy-exclusive-vs-attachment</code> and
+      <code>s3-bucket-hardening-decomposition</code> — so a correct reference and a
+      wrong fixture both scored 1.0, with no error printed anywhere. The same class
+      as the brownfield vacuous pass above: an oracle reporting green while proving
+      nothing.</div></div>
+  </div>
+
+  <div class="corr">
+    <div class="believed"><span class="k">Believed</span>
+      <div>Raising <code>shard_count</code> only changes where a task runs.</div></div>
+    <div class="found"><span class="k">Found</span>
+      <div>It <b>re-minted task identities.</b> Step 3 of the owner procedure,
+      <code>make gen-all</code>, rewrites every task's <code>scenario_id</code>
+      <i>and</i> its path under <code>tasks/</code>, and the generator reused
+      <code>[metadata].id</code> only from a <code>task.toml</code> found at the
+      <i>new</i> path — so a task whose content had not changed came out with a
+      fresh uuid every time it moved. The move to a fifth shard (the fourth arm
+      makes four arms per spec, and three mutating shards put two of one spec's
+      arms on one account) now carries <code>task.toml</code> across with the
+      hand-authored files, so only <code>scenario_id</code> changes in a moved
+      task, and <code>generator/tests/test_shard_task_moves.py</code> holds that
+      property.</div></div>
+  </div>
+
+  <div class="corr">
+    <div class="believed"><span class="k">Believed</span>
+      <div><code>env init</code> creates accounts and <code>env setup</code>
+      provisions them; the dataset is a <code>run</code> concern.</div></div>
+    <div class="found"><span class="k">Found</span>
+      <div><b>Both need the dataset flags</b>, because both need the scenario
+      source: <code>env init --env-name &lt;env&gt; --registry-path
+      local-registry.json -d &lt;dataset&gt; --n-concurrent N
+      --wait-for-quotas</code>, then <code>env setup</code> with the same
+      <code>-d</code> and registry path. <code>env init</code> reuses existing
+      accounts by tag and creates only the new shard's, and <code>env setup</code>
+      must be re-run for shard 0 as well, because deleting
+      <code>node_modules</code>/<code>cdk.out</code>/<code>dist</code> moves
+      <code>anchor</code>'s own source hash. On this host it is preceded by
+      <code>export TMPDIR=$HOME/.awsbench-tmp</code>: colima does not share
+      <code>/var/folders</code>, so bind mounts under it are invisible inside the
+      VM.</div></div>
+  </div>
+
+  <div class="corr">
+    <div class="believed"><span class="k">Believed</span>
+      <div>The local VM at 6 GiB is enough headroom — that bump is what fixed the
+      container OOMs in the first place.</div></div>
+    <div class="found"><span class="k">Found</span>
+      <div>It is enough for <i>one</i> container. The 6 GiB / 4 CPU bump was
+      measured against a single terraconstructs build, where
+      <code>npx tsc --noEmit</code> and a full <code>cdktn synth</code> reliably
+      OOM-killed (<code>JavaScript heap out of memory</code>, container exit 137)
+      at colima's default 2 GiB. A concurrent battery is a different budget: the
+      Amendment 46/48 run — four concurrent trials, four task images — ran with
+      <b>the VM at 16 GiB</b>. The rule that keeps this out of the measurement
+      predates both: a container OOM is <code>invalid-infra</code> (exit 137
+      SIGKILL), never a scored failure and never "the construct doesn't
+      type-check". <span class="tag t-unver">unverified</span> — that a
+      <i>deploy</i> container was OOM-killed under four concurrent deploys at
+      6 GiB is not recorded in <code>DECISIONS.md</code>, the docs, or any
+      <code>jobs/</code> log in this tree; the two measurements above are what the
+      record carries.</div></div>
   </div>
 </section>
 
@@ -1283,20 +1709,24 @@
     <div>
       <h3>The instrument, today</h3>
       <ul>
-        <li>Three arms, all live-green; one uniform TypeScript toolchain shape.</li>
-        <li>Four scenario shards on four member accounts in OU
+        <li><b>Four arms</b>, all live-green. <code>hcl_modules</code> is the
+        newest and is gated per spec: enabled on 13 read-only specs today, with
+        the six mutating and brownfield specs in progress.</li>
+        <li><b>Five</b> scenario shards on five member accounts in OU
         <code>cdktn-anchor</code>; read-only specs and smoke on
-        <code>anchor</code>, each mutating spec's three arms on three different
-        shards.</li>
-        <li>Every trial runs against a live account. Tiers are 0 and 1, plus an
-        optional gating live check and idempotence tier; an AWS failure voids
-        the row rather than scoring it.</li>
+        <code>anchor</code>, each mutating spec's four arms on four different
+        shards — which is why the fifth account exists.</li>
+        <li>Every trial runs against a live account. Tiers are 0 and 1 — both
+        Python drivers now, tier 0 over jq filters and tier 1 through
+        <code>opa</code> on <i>every</i> arm — plus an optional gating live check,
+        idempotence tier and teardown tier; an AWS failure voids the row rather
+        than scoring it.</li>
         <li>Forms shipped and live-proven: greenfield, multi-step
         (<code>apigw-redeploy</code> only), brownfield with a real seed
         deploy.</li>
-        <li>Amendments 26/27, 28, 31, 32, 33 and 34 are ACCEPTED; 29 is still
-        DRAFT. Any new amendment that changes the harness re-enters DRAFT until
-        its own first live run.</li>
+        <li>Amendments 26/27, 28, 31, 32, 33, 34, 36–41 and 43–48 are ACCEPTED;
+        29 and 35 are still DRAFT, and 42 is NOT ADOPTED. Any new amendment that
+        changes the harness re-enters DRAFT until its own first live run.</li>
       </ul>
     </div>
     <div>
@@ -1348,11 +1778,15 @@
     <code>make parity</code> (cross-arm prompt parity) is invoked by no CI path;
     and <code>full-ci</code> has grown from ~45 min to ~3 h with no
     <code>timeout-minutes</code> and no dependency caching.</li>
-    <li><b>Then the measurement milestones.</b> M1 (finish the profile), M6 (the
-    closed-book probe — cheapest high-value experiment on the roadmap, no AWS,
-    no trials), M2 (the equipping factorial), M3 (the <code>hcl-modules</code>
-    falsification arm), M4 (scale dose-response), M5 (oracle authority, decided
-    on battery data).</li>
+    <li><b>Then the measurement milestones.</b> M3 (the <code>hcl-modules</code>
+    falsification arm) is through phase 5 and into phase 6: slice A done, slice B
+    owed an owner decision on the one spec whose oracle cannot read symbols inside
+    an installed module body, slice C — the six mutating and brownfield specs — in
+    progress. That leaves M1 (finish the profile), M6 (the closed-book probe —
+    cheapest high-value experiment on the roadmap, no AWS, no trials), M2 (the
+    equipping factorial, whose tuned equipping for the new arm is the bench-owned
+    index tool), M4 (scale dose-response), M5 (oracle authority, decided on
+    battery data), and M11 (agent access mode as its own dimension).</li>
   </ol>
 
   <div class="note">
@@ -1362,18 +1796,26 @@
     better supported and more falsifiable, but was derived post-hoc from n=1
     pairs, so M6 should test it first); whether the profile metrics become
     pre-registered headline columns or exploratory ones; and whether
-    <code>hcl-modules</code> is a fourth arm or a treatment on a subset.</p>
+    <code>hcl-modules</code> is a fourth arm or a treatment on a subset — that
+    last one is <b>closed</b>: Amendment 46 made it an arm, and the record strikes
+    the entry through. Newly listed: whether fresh-session-per-step is a modelling
+    choice or an M2 condition.</p>
   </div>
 </section>
 
 <footer class="foot">
-  <p>Compiled 2026-09-09 from <code>DECISIONS.md</code> (amendments №1, 2–34),
+  <p>Compiled 2026-09-24 from <code>DECISIONS.md</code> (amendments №1, 2–48),
   <code>ROADMAP.md</code>, <code>docs/prereg-iac-abstraction-benchmark.md</code>,
   <code>docs/live-results.md</code>,
   <code>docs/live-run-findings-amend32.md</code>, <code>README.md</code>,
   <code>CLAUDE.md</code>, <code>mock-endpoints.html</code>,
   <code>docs/scenario-candidates.md</code>, the working tree, and the
-  promotion job directories under <code>jobs/amend3*-promotion/</code>. Every
+  promotion job directories under <code>jobs/amend3*-promotion/</code> and
+  <code>jobs/amend4*-promotion/</code>, plus <code>generator/shards.toml</code>,
+  <code>docs/asset-mirror.md</code> and <code>docs/design/</code> (the
+  <code>hcl-modules</code> arm, the loopback module registry, the registry index
+  tool, the tier-0 assert libraries, the SAST module survey and the M10 memos).
+  Every
   claim not marked <span class="tag t-unver">unverified</span> is sourced from
   those files or from <code>git</code> over this repo. Header line counts and marker counts were measured directly
   against the working tree and the parent of commit

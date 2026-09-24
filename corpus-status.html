@@ -190,34 +190,42 @@
 <header class="head">
   <div class="lbl">cdktn-bench · scenario corpus</div>
   <h1>Measured and Unmeasured</h1>
-  <p class="lede">Twenty specs, fifty-eight task directories, three arms — and, since
-  Amendment 33, <strong>four AWS member accounts</strong> instead of one. The hypothesis is
+  <p class="lede">Twenty specs, seventy-one task directories, <strong>four arms</strong> — and
+  <strong>five AWS member accounts</strong>, because a fourth arm on three mutating shards put two
+  of one spec's arms on one account. The hypothesis is
   <strong>day-2 operations and brownfield</strong>, not greenfield generation, and 15 of 20 specs
-  are still single-step greenfield. Six specs have ever touched a real account. Amendments 33
-  (scenario shards) and 34 (tier 0.5 retired; JSONata graded live by <code>states:TestState</code>)
-  were both registered and promoted on 2026-09-09, each on its first attempt. Three more specs were
-  authored on 2026-09-10 &mdash; <code>caller-identity-arn-as-principal</code> (Amendment 40),
-  <code>apigwv2-route-settings-zero-vs-unset</code> and <code>ecr-repo-destroy-force-delete</code>
-  (Amendment 41, ACCEPTED 2026-09-17: reference 1.0 with teardown clean on all three arms, hcl_raw fixture 0.0 with <code>destroy_failed</code>). The other two have not run.</p>
+  are still single-step greenfield. Ten specs have ever touched a real account. The
+  <code>hcl_modules</code> arm is the newest (Amendment 46, ACCEPTED 2026-09-24): gated per spec,
+  enabled on <strong>13 read-only specs</strong> at <code>HEAD</code>, with six mutating and
+  brownfield specs in progress in the working tree. Both static tiers are now Python — tier 0 a
+  generated driver over the same jq filters (Amendment 43), the whole verifier a generated
+  <code>tests/tiers.py</code> + <code>tests/verify.py</code> (Amendment 44) — and
+  <code>opa</code> grades tier 1 on every arm (Amendment 45). Amendment 41 added the fourth catch
+  tier: the teardown tier, ACCEPTED 2026-09-17.</p>
   <div class="stamp">
-    <span>2026-09-10</span><span>main @ 4608901 + uncommitted</span><span>20 specs + 1 toy</span><span>train 12 / holdout 8</span><span>shard_count = 4</span>
+    <span>2026-09-24</span><span>main @ 75dadc4 + uncommitted</span><span>20 specs + 1 toy</span><span>train 12 / holdout 8</span><span>shard_count = 5</span>
   </div>
 </header>
 
 <section>
   <div class="tiles">
     <div class="tile"><div class="n">20</div><div class="k">specs</div></div>
-    <div class="tile"><div class="n">58</div><div class="k">task dirs</div></div>
+    <div class="tile"><div class="n">71</div><div class="k">task dirs</div></div>
+    <div class="tile"><div class="n">4</div><div class="k">arms</div></div>
     <div class="tile"><div class="n">15</div><div class="k">greenfield</div></div>
     <div class="tile"><div class="n">4</div><div class="k">brownfield</div></div>
     <div class="tile"><div class="n">1</div><div class="k">multi-step</div></div>
-    <div class="tile"><div class="n">4</div><div class="k">shards</div></div>
-    <div class="tile alarm"><div class="n">14</div><div class="k">never run live</div></div>
+    <div class="tile"><div class="n">5</div><div class="k">shards</div></div>
+    <div class="tile alarm"><div class="n">10</div><div class="k">never run live</div></div>
   </div>
   <p style="font-size:13.5px;color:var(--ink-3);margin-top:10px">
-    58 generated task directories across the 20 specs (18 specs × 3 arms, plus <code>sfn-jsonata</code>
-    and <code>apigwv2-route-settings-zero-vs-unset</code> on 2 — terraconstructs is disabled on both). <code>tasks/</code> also holds the hand-maintained
-    <code>smoke</code> task and the 3-arm <code>toy-ssm-parameter</code>, which are not corpus specs.
+    71 generated task directories across the 20 specs, counted from the <code>tasks/</code> tree at
+    <code>HEAD</code> (<code>git ls-tree -d</code>): 20 <code>awscdk</code>, 20 <code>hcl-raw</code>,
+    18 <code>terraconstructs</code> (disabled on <code>sfn-jsonata</code> and
+    <code>apigwv2-route-settings-zero-vs-unset</code>) and 13 <code>hcl-modules</code>.
+    <code>tasks/</code> also holds the hand-maintained <code>smoke</code> task and the 3-arm
+    <code>toy-ssm-parameter</code>, which are not corpus specs, so the tree carries 75 task
+    directories in total.
   </p>
 </section>
 
@@ -234,10 +242,10 @@
     <tbody>
       <tr><td class="id">spec</td><td>cdktn-bench</td><td><code>specs/&lt;id&gt;.yaml</code> — one task specification plus the arms it applies to. The authoring unit; operator-facing, and its <code>id</code> and <code>title</code> may name the pitfall (SCHEMA §0.1).</td><td class="num">20</td></tr>
       <tr><td class="id">generator</td><td>cdktn-bench</td><td><code>generator/gen.py</code> — compiles one spec into one task directory <em>per arm</em>, stamping <code>scenario_id</code> and the task's parent directory. Everything under <code>tasks/**</code> is its output; the only hand-authored files are <code>solution/**/solve.sh</code> and a declared <code>tests/live_check.py</code>.</td><td class="num">—</td></tr>
-      <tr><td class="id">task</td><td>Harbor</td><td><code>tasks/&lt;scenario_id&gt;/&lt;spec&gt;-&lt;arm&gt;/</code> — what a trial actually runs. Carries <code>task.toml</code>, <code>environment/</code>, <code>tests/</code>, <code>solution/</code>, and (single-step only) <code>instruction.md</code>.</td><td class="num">50</td></tr>
-      <tr><td class="id">scenario shard</td><td>aws-bench</td><td><strong>Not a spec.</strong> An aws-bench <em>scenario</em> is a pre-provisioned AWS <em>account state</em> — the unit of <code>env setup</code>, reset, contamination and admission control, and it binds to exactly one member account. Shard 0 is <code>anchor</code>; shard k is <code>anchor-k</code>, materialized by <code>make shards</code> from the tracked files of <code>scenarios/anchor</code>.</td><td class="num">4</td></tr>
-      <tr><td class="id">arm</td><td>cdktn-bench</td><td><code>arms/&lt;arm&gt;/</code> — a toolchain under test: <code>awscdk</code>, <code>terraconstructs</code>, <code>hcl-raw</code>. Owns the image contract and the workspace skeleton.</td><td class="num">3</td></tr>
-      <tr><td class="id">environment</td><td>Harbor</td><td><code>&lt;task&gt;/environment/</code> — the Docker build context, and the build context is that directory itself, never the arm root. <strong>COPY'd into the agent image, so every byte is prompt surface.</strong></td><td class="num">50</td></tr>
+      <tr><td class="id">task</td><td>Harbor</td><td><code>tasks/&lt;scenario_id&gt;/&lt;spec&gt;-&lt;arm&gt;/</code> — what a trial actually runs. Carries <code>task.toml</code>, <code>environment/</code>, <code>tests/</code>, <code>solution/</code>, and (single-step only) <code>instruction.md</code>.</td><td class="num">71</td></tr>
+      <tr><td class="id">scenario shard</td><td>aws-bench</td><td><strong>Not a spec.</strong> An aws-bench <em>scenario</em> is a pre-provisioned AWS <em>account state</em> — the unit of <code>env setup</code>, reset, contamination and admission control, and it binds to exactly one member account. Shard 0 is <code>anchor</code>; shard k is <code>anchor-k</code>, materialized by <code>make shards</code> from the tracked files of <code>scenarios/anchor</code>.</td><td class="num">5</td></tr>
+      <tr><td class="id">arm</td><td>cdktn-bench</td><td><code>arms/&lt;arm&gt;/</code> — a toolchain under test: <code>awscdk</code>, <code>terraconstructs</code>, <code>hcl-raw</code>, <code>hcl-modules</code>. Owns the image contract and the workspace skeleton. <code>hcl_modules</code> and <code>terraconstructs</code> are both gated per spec, with a required reason in both directions.</td><td class="num">4</td></tr>
+      <tr><td class="id">environment</td><td>Harbor</td><td><code>&lt;task&gt;/environment/</code> — the Docker build context, and the build context is that directory itself, never the arm root. <strong>COPY'd into the agent image, so every byte is prompt surface.</strong></td><td class="num">71</td></tr>
       <tr><td class="id">workspace</td><td>agent</td><td><code>/app/project</code> inside the container — what the agent edits. Greenfield: the arm's skeleton with a generated entry file. Brownfield: a hand-authored, already-deployed seed.</td><td class="num">—</td></tr>
     </tbody>
   </table>
@@ -256,7 +264,10 @@
     <p>Derived from <code>specs/*.yaml</code>, <code>specs/split.yaml</code>,
     <code>generator/shards.py</code> and the <code>tasks/</code> tree — not from memory. Type is
     read off the spec: a <code>workspace_seed</code> block makes it brownfield, a top-level
-    <code>steps:</code> list makes it multi-step, neither makes it greenfield.</p>
+    <code>steps:</code> list makes it multi-step, neither makes it greenfield. Arms is the count of
+    arms the spec enables, so a 4 means <code>hcl_modules</code> is on and a 3 on a read-only spec
+    means either <code>hcl_modules</code> or <code>terraconstructs</code> is off with a recorded
+    reason.</p>
   </div>
 
   <div class="scroll">
@@ -267,26 +278,26 @@
       <th>Live check</th><th>Idempotence</th><th>Split</th><th class="num">Catches</th>
     </tr></thead>
     <tbody>
-      <tr class="measured"><td class="id">ecs-swappiness</td><td><span class="chip">greenfield</span></td><td class="num">3</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>train</td><td class="num">2</td></tr>
-      <tr class="measured"><td class="id">named-resource-replacement</td><td><span class="chip acc">brownfield</span></td><td class="num">3</td><td>mutating</td><td class="sh">1 / 2 / 3</td><td><span class="chip ok">gating</span></td><td><span class="chip ok">gating</span></td><td>train</td><td class="num">2</td></tr>
-      <tr class="measured"><td class="id">apigw-redeploy</td><td><span class="chip acc">multi-step</span></td><td class="num">3</td><td>mutating</td><td class="sh">3 / 1 / 2</td><td><span class="chip ok">gating</span></td><td>—</td><td>holdout</td><td class="num">3</td></tr>
-      <tr class="measured"><td class="id">sfn-jsonata</td><td><span class="chip">greenfield</span></td><td class="num">2</td><td>read-only</td><td class="sh">anchor</td><td><span class="chip ok">gating</span></td><td>—</td><td>holdout</td><td class="num">2</td></tr>
-      <tr class="partial"><td class="id">s3-lambda-log-retention</td><td><span class="chip">greenfield</span></td><td class="num">3</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>train</td><td class="num">2</td></tr>
-      <tr class="broken"><td class="id">apigw-openapi</td><td><span class="chip">greenfield</span></td><td class="num">3</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>train</td><td class="num">2</td></tr>
-      <tr class="unrun"><td class="id">lambda-alias-tracks-unpublished-latest</td><td><span class="chip acc">brownfield</span></td><td class="num">3</td><td>mutating</td><td class="sh">1 / 2 / 3</td><td><span class="chip ok">gating</span></td><td><span class="chip warn">non-gating</span></td><td>train</td><td class="num">2</td></tr>
-      <tr class="unrun"><td class="id">s3-acl-vs-object-ownership-log-delivery</td><td><span class="chip acc">brownfield</span></td><td class="num">3</td><td>mutating</td><td class="sh">3 / 1 / 2</td><td><span class="chip ok">gating</span></td><td><span class="chip">declared, off</span></td><td>holdout</td><td class="num">4</td></tr>
-      <tr class="unrun"><td class="id">singleton-child-resource-clobber</td><td><span class="chip acc">brownfield</span></td><td class="num">3</td><td>mutating</td><td class="sh">2 / 3 / 1</td><td><span class="chip ok">gating</span></td><td><span class="chip ok">gating</span></td><td>train</td><td class="num">3</td></tr>
+      <tr class="measured"><td class="id">ecs-swappiness</td><td><span class="chip">greenfield</span></td><td class="num">4</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>train</td><td class="num">2</td></tr>
+      <tr class="measured"><td class="id">named-resource-replacement</td><td><span class="chip acc">brownfield</span></td><td class="num">3</td><td>mutating</td><td class="sh">3 / 4 / 1</td><td><span class="chip ok">gating</span></td><td><span class="chip ok">gating</span></td><td>train</td><td class="num">2</td></tr>
+      <tr class="measured"><td class="id">apigw-redeploy</td><td><span class="chip acc">multi-step</span></td><td class="num">3</td><td>mutating</td><td class="sh">1 / 2 / 3</td><td><span class="chip ok">gating</span></td><td>—</td><td>holdout</td><td class="num">3</td></tr>
+      <tr class="measured"><td class="id">sfn-jsonata</td><td><span class="chip">greenfield</span></td><td class="num">3</td><td>read-only</td><td class="sh">anchor</td><td><span class="chip ok">gating</span></td><td>—</td><td>holdout</td><td class="num">2</td></tr>
+      <tr class="partial"><td class="id">s3-lambda-log-retention</td><td><span class="chip">greenfield</span></td><td class="num">4</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>train</td><td class="num">2</td></tr>
+      <tr class="broken"><td class="id">apigw-openapi</td><td><span class="chip">greenfield</span></td><td class="num">4</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>train</td><td class="num">2</td></tr>
+      <tr class="unrun"><td class="id">lambda-alias-tracks-unpublished-latest</td><td><span class="chip acc">brownfield</span></td><td class="num">3</td><td>mutating</td><td class="sh">4 / 1 / 2</td><td><span class="chip ok">gating</span></td><td><span class="chip warn">non-gating</span></td><td>train</td><td class="num">2</td></tr>
+      <tr class="unrun"><td class="id">s3-acl-vs-object-ownership-log-delivery</td><td><span class="chip acc">brownfield</span></td><td class="num">3</td><td>mutating</td><td class="sh">1 / 2 / 3</td><td><span class="chip ok">gating</span></td><td><span class="chip">declared, off</span></td><td>holdout</td><td class="num">4</td></tr>
+      <tr class="unrun"><td class="id">singleton-child-resource-clobber</td><td><span class="chip acc">brownfield</span></td><td class="num">3</td><td>mutating</td><td class="sh">3 / 4 / 1</td><td><span class="chip ok">gating</span></td><td><span class="chip ok">gating</span></td><td>train</td><td class="num">3</td></tr>
       <tr class="unrun"><td class="id">s3-notification-authoritative-singleton</td><td><span class="chip">greenfield</span></td><td class="num">3</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>holdout</td><td class="num">7</td></tr>
-      <tr class="unrun"><td class="id">s3-bucket-hardening-decomposition</td><td><span class="chip">greenfield</span></td><td class="num">3</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>train</td><td class="num">6</td></tr>
-      <tr class="unrun"><td class="id">iam-managed-policy-exclusive-vs-attachment</td><td><span class="chip">greenfield</span></td><td class="num">3</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>train</td><td class="num">6</td></tr>
-      <tr class="unrun"><td class="id">ddb-gsi-attribute-definitions</td><td><span class="chip">greenfield</span></td><td class="num">3</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>train</td><td class="num">6</td></tr>
-      <tr class="unrun"><td class="id">acm-dns-validation-record-wiring</td><td><span class="chip">greenfield</span></td><td class="num">3</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>train</td><td class="num">5</td></tr>
-      <tr class="unrun"><td class="id">lambda-log-group-ownership-and-retention</td><td><span class="chip">greenfield</span></td><td class="num">3</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>holdout</td><td class="num">5</td></tr>
-      <tr class="unrun"><td class="id">asg-launch-template-tag-propagation</td><td><span class="chip">greenfield</span></td><td class="num">3</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>holdout</td><td class="num">4</td></tr>
-      <tr class="unrun"><td class="id">apigwv2-route-settings-zero-vs-unset</td><td><span class="chip">greenfield</span></td><td class="num">2</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>holdout</td><td class="num">4</td></tr>
-      <tr class="unrun"><td class="id">s3-notification-custom-resource-tax</td><td><span class="chip">greenfield</span></td><td class="num">3</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>train</td><td class="num">3</td></tr>
-      <tr class="unrun"><td class="id">caller-identity-arn-as-principal</td><td><span class="chip">greenfield</span></td><td class="num">3</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>holdout</td><td class="num">3</td></tr>
-      <tr class="measured"><td class="id">ecr-repo-destroy-force-delete</td><td><span class="chip">greenfield</span></td><td class="num">3</td><td>mutating</td><td class="sh">2 / 3 / 1</td><td><span class="chip ok">gating</span></td><td>— · <span class="chip ok">teardown gating</span></td><td>train</td><td class="num">3</td></tr>
+      <tr class="measured"><td class="id">s3-bucket-hardening-decomposition</td><td><span class="chip">greenfield</span></td><td class="num">4</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>train</td><td class="num">6</td></tr>
+      <tr class="measured"><td class="id">iam-managed-policy-exclusive-vs-attachment</td><td><span class="chip">greenfield</span></td><td class="num">4</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>train</td><td class="num">6</td></tr>
+      <tr class="unrun"><td class="id">ddb-gsi-attribute-definitions</td><td><span class="chip">greenfield</span></td><td class="num">4</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>train</td><td class="num">6</td></tr>
+      <tr class="measured"><td class="id">acm-dns-validation-record-wiring</td><td><span class="chip">greenfield</span></td><td class="num">4</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>train</td><td class="num">5</td></tr>
+      <tr class="unrun"><td class="id">lambda-log-group-ownership-and-retention</td><td><span class="chip">greenfield</span></td><td class="num">4</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>holdout</td><td class="num">5</td></tr>
+      <tr class="unrun"><td class="id">asg-launch-template-tag-propagation</td><td><span class="chip">greenfield</span></td><td class="num">4</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>holdout</td><td class="num">4</td></tr>
+      <tr class="unrun"><td class="id">apigwv2-route-settings-zero-vs-unset</td><td><span class="chip">greenfield</span></td><td class="num">3</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>holdout</td><td class="num">4</td></tr>
+      <tr class="unrun"><td class="id">s3-notification-custom-resource-tax</td><td><span class="chip">greenfield</span></td><td class="num">4</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>train</td><td class="num">3</td></tr>
+      <tr class="unrun"><td class="id">caller-identity-arn-as-principal</td><td><span class="chip">greenfield</span></td><td class="num">4</td><td>read-only</td><td class="sh">anchor</td><td>—</td><td>—</td><td>holdout</td><td class="num">3</td></tr>
+      <tr class="measured"><td class="id">ecr-repo-destroy-force-delete</td><td><span class="chip">greenfield</span></td><td class="num">3</td><td>mutating</td><td class="sh">2 / 3 / 4</td><td><span class="chip ok">gating</span></td><td>— · <span class="chip ok">teardown gating</span></td><td>train</td><td class="num">3</td></tr>
     </tbody>
   </table>
   </div>
@@ -295,11 +306,43 @@
     <strong style="color:var(--warn)">amber</strong> partial ·
     <strong style="color:var(--void)">red</strong> ran but produced nothing usable ·
     grey never run. Shard column reads <em>awscdk / hcl-raw / terraconstructs</em>; a bare
-    <code>anchor</code> means all enabled arms are on shard 0.
+    <code>anchor</code> means all enabled arms are on shard 0. The column has three entries and
+    not four because no mutating spec enables <code>hcl_modules</code> yet: those six specs are M3
+    phase 6 slice C, in progress in the working tree.
     <code>ecr-repo-destroy-force-delete</code> declares no idempotence block; the flag in that cell is
     the <strong>teardown tier</strong> (<code>verifier.teardown</code>, <code>gating</code>) &mdash; the
     tier's first gating use; Amendment 41 was ACCEPTED on 2026-09-17 when the reference destroyed clean on all three arms and the hcl_raw fixture failed its destroy.
   </p>
+
+  <div class="note">
+    <h3>Which specs the <code>hcl_modules</code> arm is on</h3>
+    <p><strong>Enabled at <code>HEAD</code> — 13, all read-only:</strong>
+    <code>acm-dns-validation-record-wiring</code>, <code>apigw-openapi</code>,
+    <code>apigwv2-route-settings-zero-vs-unset</code>,
+    <code>asg-launch-template-tag-propagation</code>,
+    <code>caller-identity-arn-as-principal</code>, <code>ddb-gsi-attribute-definitions</code>,
+    <code>ecs-swappiness</code>, <code>iam-managed-policy-exclusive-vs-attachment</code>,
+    <code>lambda-log-group-ownership-and-retention</code>,
+    <code>s3-bucket-hardening-decomposition</code>, <code>s3-lambda-log-retention</code>,
+    <code>s3-notification-custom-resource-tax</code>, <code>sfn-jsonata</code>. Three of them
+    (<code>acm-dns-validation-record-wiring</code>,
+    <code>iam-managed-policy-exclusive-vs-attachment</code>,
+    <code>s3-bucket-hardening-decomposition</code>) are the phase-5 pilots and the only specs with a
+    live <code>hcl_modules</code> row.</p>
+    <p><strong>In progress — 6, the mutating and brownfield specs:</strong>
+    <code>apigw-redeploy</code>, <code>ecr-repo-destroy-force-delete</code>,
+    <code>lambda-alias-tracks-unpublished-latest</code>, <code>named-resource-replacement</code>,
+    <code>s3-acl-vs-object-ownership-log-delivery</code>,
+    <code>singleton-child-resource-clobber</code>. Their spec and task edits are uncommitted in the
+    working tree, so every count on this page reads the spec as it stands at <code>HEAD</code>
+    (<code>git show HEAD:specs/&lt;id&gt;.yaml</code>). Slice C also owes
+    <code>workspace_seed.entry_file</code> a per-arm <code>hcl_modules</code> field and its own live
+    promotion on the mutating shards; until that lands, Amendment 46 publishes no row on those two
+    forms.</p>
+    <p><strong>Refused — 1:</strong> <code>s3-notification-authoritative-singleton</code> (slice B),
+    because the oracle cannot read symbols inside an installed module body. It is an owner decision,
+    not a defect, and it is the one slice-B spec.</p>
+  </div>
 
   <div class="note">
     <h3>The fourth type has no members</h3>
@@ -318,17 +361,19 @@
 <section>
   <div class="sechead">
     <h2>Oracles and their tiers, as they are now</h2>
-    <p>An oracle decides whether a solution is correct. Four tiers, ordered by cost and by how close
-    they sit to the truth. There is no tier 0.5 any more.</p>
+    <p>An oracle decides whether a solution is correct. Five tiers, ordered by cost and by how close
+    they sit to the truth. There is no tier 0.5 any more, no bash left in the verifier, and one
+    policy language on every arm.</p>
   </div>
   <div class="scroll">
   <table>
     <thead><tr><th>Tier</th><th>What it asks</th><th>awscdk</th><th>Terraform arms</th><th>Cost</th><th class="num">Specs</th></tr></thead>
     <tbody>
-      <tr><td class="id">tier 0</td><td>Does the synthesized artifact have the right shape? Structural asserts compiled to <code>jq</code> over a template or a plan.</td><td><code>tsc</code> + <code>cdk synth</code> → CloudFormation JSON</td><td><code>validate</code> + <code>plan -json</code></td><td>seconds</td><td class="num">20</td></tr>
-      <tr><td class="id">tier 1</td><td>A <em>quantified</em> statement a jq path cannot express — "no rule anywhere in this group may be open to the world".</td><td>cfn-guard 3.2.0 by default; OPA/Rego where <code>oracle.awscdk_tier1_engine: rego</code> — 5 of 20</td><td>OPA/Rego 1.19.0, plus <code>hcl2json</code> traversal where <code>oracle.hcl_traversal</code> is set (1 spec)</td><td>seconds</td><td class="num">19</td></tr>
+      <tr><td class="id">tier 0</td><td>Does the synthesized artifact have the right shape? Structural asserts compiled to <code>jq</code> filters, applied by a generated Python driver (Amendment 43): <code>tests/ops.py</code> is the op table and the three-valued outcome, <code>tests/tier0.py</code> this arm's assert table. <code>held</code> / <code>contradicted</code> / <code>unresolvable</code> map to exit 0 / 1 / 2 per assert, and a missing <code>python3</code> or <code>jq</code> fails closed on a marker file.</td><td><code>tsc</code> + <code>cdk synth</code> → CloudFormation JSON</td><td><code>validate</code> + <code>plan -json</code>, normalised before grading so a module plan is readable</td><td>seconds</td><td class="num">20</td></tr>
+      <tr><td class="id">tier 1</td><td>A <em>quantified</em> statement a jq path cannot express — "no rule anywhere in this group may be open to the world". A FAIL now prints one <code>DENY:</code> line per deny message, and an engine crash returns <code>ENGINE_ERROR</code> rather than being charged as a FAIL.</td><td colspan="2">OPA/Rego 1.19.0 on <strong>every</strong> arm (Amendment 45): <code>opa eval -f raw -I -d policy.rego 'data.cdktn_bench.&lt;id&gt;.deny'</code> over the CloudFormation template on <code>awscdk</code> and over <code>terraform show -json</code> on the three Terraform-shaped arms. One identity domain per side — logical ids on the CFN side, plan addresses on the TF side, never a physical name. Plus <code>hcl2json</code> traversal where <code>oracle.hcl_traversal</code> is set (1 spec).</td><td>seconds</td><td class="num">19</td></tr>
       <tr class="measured"><td class="id">live</td><td>Does the real system actually behave? A hand-authored <code>tests/live_check.py</code>, byte-identical across every arm of its spec — verified by hash on all six (<code>apigw-redeploy</code> is multi-step: each step's file is identical across arms).</td><td colspan="2">Real AWS API calls from the verifier phase — 7 of 20 specs, every one of them <strong>gating</strong> and fail-closed</td><td>minutes + $</td><td class="num">7</td></tr>
       <tr class="measured"><td class="id">idempotence</td><td>Is a second apply a no-op against what was just deployed? Plus the seed-movement guard, so a do-nothing agent cannot inherit the seed's own convergence.</td><td><code>cdk diff --fail --no-lookups</code> + a completion marker</td><td><code>plan -input=false -refresh=false -detailed-exitcode</code> + a state-file probe</td><td>minutes</td><td class="num">3</td></tr>
+      <tr class="measured"><td class="id">teardown</td><td>Does the agent's own <code>destroy</code> leave the account clean? Three outcomes — <code>clean</code>, <code>destroy_failed</code>, <code>not_verifiable</code> — because the static tiers can only see the <em>argument</em> (<code>force_delete = true</code>), and grading a proxy for the requirement is the mistake. A catch may be filed here (<code>predicted_tier_caught: "teardown"</code>) only where the tier is enabled <em>and</em> gating, since an observational teardown costs a wrong answer nothing.</td><td><code>cdk destroy</code> → <code>✅  ScenarioStack: destroyed</code></td><td><code>terraform destroy</code> → <code>Destroy complete!</code></td><td>minutes + $</td><td class="num">1</td></tr>
     </tbody>
   </table>
   </div>
@@ -381,7 +426,10 @@
 <section>
   <div class="sechead">
     <h2>What the agent finds at turn 1</h2>
-    <p><code>/app/project</code> is the working directory in all three arms. Everything under
+    <p><code>/app/project</code> is the working directory in every arm, and
+    <code>hcl-modules</code> takes the <code>hcl-raw</code> shape — one <code>main.tf</code>, the only
+    file the agent is expected to edit — with the module registry reachable at
+    <code>registry.terraform.io</code> through the sidecar. Everything under
     <code>environment/</code> is COPY'd into the image, so all of it is prompt surface — which is why
     the entry-file split, and the header on it, are load-bearing rather than tidy.</p>
   </div>
@@ -449,12 +497,27 @@
         <td>node 22.23.2 · terraconstructs 0.2.13 · cdktn + cdktn-cli 0.23.0 · constructs 10.6.0 · @cdktn/provider-aws 24.8.0 · typescript 5.7.3 · ts-node 10.9.1 · terraform 1.15.8 with hashicorp/aws 6.52.0 mirrored · opa 1.19.0 · aws CLI v2</td>
         <td><code>tsc</code>, <code>cdktn synth</code>, then <code>terraform init/validate/plan/apply</code> inside the synthesized stack directory</td>
         <td class="num">4096 MB</td></tr>
+      <tr><td class="id">hcl-modules</td>
+        <td>this arm inherits the <code>hcl-raw</code> image shape: terraform 1.15.8 · <code>hashicorp/aws</code> 6.66.0 in the baked mirror · opa 1.19.0 · hcl2json 0.6.9 · jq 1.7.1 · aws CLI v2 · python3. Seven more providers are mirrored so a module's own <code>required_providers</code> resolves offline: <code>external</code> 2.4.2, <code>local</code> 2.9.1, <code>null</code> 3.3.2, <code>random</code> 3.9.1, <code>tls</code> 4.4.1, <code>time</code> 0.14.2, <code>cloudinit</code> 2.4.1. Plus the vendored module set — 21 <code>module@version</code> trees of <code>terraform-aws-modules</code> (<code>acm</code> 6.2.0 and 6.3.1, <code>alb</code> 10.5.1, <code>apigateway-v2</code> 6.1.1, <code>autoscaling</code> 9.3.2, <code>dynamodb-table</code> 5.5.2, <code>ecr</code> 3.2.0, <code>ecs</code> 7.6.1, <code>eks</code> 21.25.1, <code>iam</code> 6.8.2, <code>kms</code> 4.0.0 and 4.2.2, <code>lambda</code> 8.8.2, <code>rds</code> 7.2.2, <code>route53</code> 6.5.1, <code>s3-bucket</code> 5.16.1, <code>security-group</code> 6.0.0, <code>sns</code> 7.1.1, <code>sqs</code> 5.2.2, <code>step-functions</code> 5.1.1, <code>vpc</code> 6.7.3) with a per-module upstream commit sha and per-file sha256 in <code>environment/modules/manifest.json</code> — and the <code>tf-registry</code> responder, <code>/opt/tf-registry/responder.py</code>, run as the sidecar's compose <code>command</code> out of this same image</td>
+        <td><code>terraform init</code> (offline, modules from the sidecar and providers from the mirror), <code>validate</code>, <code>plan</code>, <code>apply</code> (mutating trials only — none yet)</td>
+        <td class="num">2048 MB</td></tr>
     </tbody>
   </table>
   </div>
   <p style="font-size:13.5px;color:var(--ink-3);margin-top:10px">
-    The memory asymmetry is deliberate: both TypeScript arms compile, hcl-raw does not. Every task
-    gets 1 CPU and 4096 MB of storage.
+    The memory asymmetry is deliberate: both TypeScript arms compile, the two HCL arms do not
+    (<code>generator/gen.py</code>'s <code>ARM_MEMORY_MB</code> is the one owner, and it emits
+    <code>memory_mb</code> into every <code>task.toml</code>). Every task gets 1 CPU and 4096 MB of
+    storage. <code>hcl-modules</code> is the only arm with a second container: the
+    <code>tf-registry</code> compose service, which the agent container waits on through
+    <code>service_healthy</code>. <code>/etc/terraform.d/cli.tfrc</code> points
+    <code>registry.terraform.io</code>'s <code>modules.v1</code> at that sidecar and the override has
+    no fallback, so a successful <code>init</code> of a registry module source <em>is</em> the sidecar
+    serving it. The module tree is unreadable to the agent user and a local <code>/opt/…</code> source
+    in <code>.terraform/modules/modules.json</code> is a deny, so version selection stays a measured
+    skill. <code>kreuzwerker/docker</code> is deliberately not mirrored: its only declarer needs a
+    Docker daemon, and mirroring it cost 370 s of a 415 s mirror step against Harbor's 600 s build
+    budget.
   </p>
 
   <div class="cols" style="margin-top:18px">
@@ -494,7 +557,7 @@
       agent's side of the container.</p></div>
 
     <div class="attr"><h3>The awscdk arm's extra loop</h3>
-      <p style="margin:0">Of the three arms, only awscdk gets a validator invoked automatically by
+      <p style="margin:0">Of the four arms, only awscdk gets a validator invoked automatically by
       its own synth. That is an arm property under measurement — a real shift-left advantage its
       users have — and the reason it must never be read as a bench oracle: it can change what the
       agent knows before grading, but it can never change a score.</p></div>
@@ -503,38 +566,57 @@
 
 <section>
   <div class="sechead">
-    <h2>Four shards, and what <code>-n</code> now buys</h2>
+    <h2>Five shards, and what <code>-n</code> now buys</h2>
     <p>Amendment 33, ACCEPTED 2026-09-09. One aws-bench scenario is one AWS member account by
     construction, so "how many scenarios" <em>is</em> "how many accounts" — and throughput,
-    contamination radius and hash radius are all pinned to that number.</p>
+    contamination radius and hash radius are all pinned to that number. The number the rule needs
+    moved with the arm count: Amendment 46's fourth arm made three mutating shards put two of one
+    spec's arms on one account, so a fifth account was added.</p>
   </div>
 
   <div class="scroll">
   <table>
     <thead><tr><th>Shard</th><th>Account</th><th>Holds</th><th class="num">Tasks</th></tr></thead>
     <tbody>
-      <tr><td class="id">anchor</td><td class="num">886312446417</td><td>every read-only task, plus <code>smoke</code> and the toy</td><td class="num">39</td></tr>
+      <tr><td class="id">anchor</td><td class="num">886312446417</td><td>every read-only task, plus <code>smoke</code> and the toy</td><td class="num">57</td></tr>
       <tr><td class="id">anchor-1</td><td class="num">182715287880</td><td>mutating, one arm per spec</td><td class="num">5</td></tr>
-      <tr><td class="id">anchor-2</td><td class="num">218484443800</td><td>mutating, one arm per spec</td><td class="num">5</td></tr>
+      <tr><td class="id">anchor-2</td><td class="num">218484443800</td><td>mutating, one arm per spec</td><td class="num">4</td></tr>
       <tr><td class="id">anchor-3</td><td class="num">015454941261</td><td>mutating, one arm per spec</td><td class="num">5</td></tr>
+      <tr><td class="id">anchor-4</td><td class="num">189393509079</td><td>mutating, one arm per spec</td><td class="num">4</td></tr>
     </tbody>
   </table>
   </div>
 
+  <p style="margin-top:16px">Counts are <code>git ls-tree -d --name-only HEAD tasks/anchor*</code>
+  per shard: 57 on shard 0 (53 read-only corpus tasks plus <code>smoke</code> and the three
+  <code>toy-ssm-parameter</code> arms) and 18 across the four mutating shards. The mutating shards
+  are uneven because assignment is a hash of the spec id offset by the arm, not a round-robin, and
+  because no mutating spec enables <code>hcl_modules</code> yet. All five accounts sit in OU
+  <code>cdktn-anchor</code>; the shard accounts were created by hand with owner-controlled
+  plus-addresses and the <code>aws-bench:scenario</code> tag, so <code>env init</code> reuses them
+  instead of deriving a claimable root email.</p>
+
   <p style="margin-top:16px"><strong>One knob.</strong> <code>generator/shards.toml</code> carries a
-  single integer, <code>shard_count = 4</code>, and it is the only place N is written.
+  single integer, <code>shard_count = 5</code>, and it is the only place N is written.
   <code>generator/shards.py</code> turns it into names and assignments; nothing else in the repo may
   hardcode a scenario name. The assignment is a pure function of <code>(spec.id, arm)</code> — no
   iteration order, no mtimes:</p>
 
   <pre><code>read-only task            -> shard 0
 mutating task             -> shard 1 + (int(sha256(spec.id).hexdigest()[:8], 16) + arm_index) % (N-1)
-ARM_ORDER = (awscdk, hcl_raw, terraconstructs)</code></pre>
+ARM_ORDER = (awscdk, hcl_raw, terraconstructs, hcl_modules)   # N-1 = 4 mutating shards</code></pre>
 
-  <p>At N ≥ 4 one spec's three arms never share a shard, which is exactly the property the extra
-  accounts are bought for. At N = 1 everything collapses back onto <code>anchor</code> and the
-  generated tree is byte-identical — which is what made the code landing separable from the
-  decision.</p>
+  <p>The rule is one arm per account per spec, and the number that satisfies it is
+  <code>N - 1 &ge; number of arms</code>: at four arms that is four mutating shards, so N = 5. A new
+  arm is <strong>appended</strong> to <code>ARM_ORDER</code>, because
+  <code>ARM_ORDER.index(arm)</code> is the shard offset and inserting one anywhere else would move
+  every later arm's task to a different account. At N = 1 everything collapses back onto
+  <code>anchor</code> and the generated tree is byte-identical — which is what made the code landing
+  separable from the decision. Raising N is an owner action with an AWS consequence:
+  <code>make shards</code>, then <code>make gen-all</code>, which rewrites every task's
+  <code>scenario_id</code> and path, then <code>env init</code>/<code>env setup</code> — and a shard
+  move now carries <code>task.toml</code> across so <code>[metadata].id</code> is reused rather than
+  re-minted for a task whose content did not change.</p>
 
   <h3 style="margin-top:24px">Admission gate semantics</h3>
   <p>The trial queue takes the scenario admission gate <em>before</em> the concurrency semaphore, and
@@ -542,7 +624,7 @@ ARM_ORDER = (awscdk, hcl_raw, terraconstructs)</code></pre>
   <pre><code>async with gate.hold(trial_config.concurrency_mode), self._semaphore:
     return await self._execute_trial_with_retries(trial_config)</code></pre>
   <ul>
-    <li><strong>READ_ONLY</strong> trials admit freely alongside one another. The 12 read-only specs
+    <li><strong>READ_ONLY</strong> trials admit freely alongside one another. The 14 read-only specs
     genuinely parallelize on shard 0 — and <code>sfn-jsonata</code> is read-only <em>with</em> a live
     check, because the mode describes what a trial does <em>to</em> the account, not whether the
     verifier calls AWS.</li>
@@ -554,9 +636,9 @@ ARM_ORDER = (awscdk, hcl_raw, terraconstructs)</code></pre>
     still park a waiting mutating one. Liveness holds only because a run is finite.</li>
     <li><strong>Contamination is per shard, not global.</strong> A failed reset tags one account and
     refuses later trials mapped to that scenario. On a mutating shard that blast radius is now
-    5 tasks rather than the whole corpus &mdash; 51 tasks under one scenario (DECISIONS.md, Amendment
-    33 &sect;2; ROADMAP &sect;2 still carries the older count of 45). A contaminated shard 0 is the
-    exception: it still refuses all 39 read-only tasks.</li>
+    4–5 tasks rather than the whole corpus (DECISIONS.md, Amendment 33 &sect;2, argued this at the
+    then-current 51). A contaminated shard 0 is the exception: it still refuses all 57 tasks that
+    live there.</li>
   </ul>
 
   <div class="note good">
@@ -666,19 +748,19 @@ ARM_ORDER = (awscdk, hcl_raw, terraconstructs)</code></pre>
     </tr></thead>
     <tbody>
       <tr class="measured">
-        <td class="id">named-resource-replacement</td><td class="num">23</td><td>all 3</td><td>2026-09-09</td>
-        <td><span class="chip ok">12 × 1.0</span> <span class="chip void">9 × 0.0</span> <span class="chip">3 exc</span></td>
-        <td>23 <code>result.json</code> rows, not 24: one row (<code>live-brownfield-seed/2026-08-25__21-20-37/&hellip;awscd__Avxqde6</code>) carries <em>both</em> reward 0.0 and an <code>exception_info</code>, so 12 + 9 + 2 exception-only rows = 23 files. The brownfield stratum, and the only spec that has run under all three of Amendments 32, 33 and the shard split. Eight of the nine zeros and all three exceptions predate Amendment 32 and were harness defects. Amendment 32 battery k=2: 6/6 valid, all 1.0. Amendment 33 run: 2 of 3 arms 1.0, one agent-caused 0.0.</td>
+        <td class="id">named-resource-replacement</td><td class="num">30</td><td>3 of 3</td><td>2026-09-22</td>
+        <td><span class="chip ok">17 × 1.0</span> <span class="chip void">10 × 0.0</span> <span class="chip">4 exc</span></td>
+        <td>Rows and exceptions overlap by one: <code>live-brownfield-seed/2026-08-25__21-20-37/&hellip;awscd__Avxqde6</code> carries <em>both</em> reward 0.0 and an <code>exception_info</code>. The brownfield stratum, and the only spec that has run under all three of Amendments 32, 33 and the shard split. Eight of the nine zeros and all three exceptions predate Amendment 32 and were harness defects. Amendment 32 battery k=2: 6/6 valid, all 1.0. Amendment 33 run: 2 of 3 arms 1.0, one agent-caused 0.0.</td>
       </tr>
       <tr class="measured">
-        <td class="id">apigw-redeploy</td><td class="num">13</td><td>all 3</td><td>2026-08-28</td>
-        <td><span class="chip ok">12 × 1.0</span> <span class="chip void">1 × 0.0 &mdash; and it <em>is</em> the 1 exc</span></td>
-        <td>14 trial directories exist but only 13 carry a <code>result.json</code>: <code>claude-sonnet-5/2026-08-20__17-16-22/&hellip;-terraconstructs__W2J5uiF</code> has none and contributes no outcome, and the single 0.0 (<code>g-live-hcl/&hellip;hSvJQ5W</code>) is the exception row. The only multi-step evidence. Promoted Amendments 26/27. Amendment 32 battery, k=2: 6/6 valid, all 1.0, both steps, no harness archaeology in any trajectory.</td>
+        <td class="id">apigw-redeploy</td><td class="num">15</td><td>3 of 3</td><td>2026-09-22</td>
+        <td><span class="chip ok">13 × 1.0</span> <span class="chip void">1 × 0.0</span> <span class="chip">2 exc</span></td>
+        <td>Not every trial directory carries a <code>result.json</code>: <code>claude-sonnet-5/2026-08-20__17-16-22/&hellip;-terraconstructs__W2J5uiF</code> has none and contributes no outcome, and the single 0.0 (<code>g-live-hcl/&hellip;hSvJQ5W</code>) is also an exception row. The only multi-step evidence, and the multi-step shape the Python verifier was proven on. Promoted Amendments 26/27. Amendment 32 battery, k=2: 6/6 valid, all 1.0, both steps, no harness archaeology in any trajectory.</td>
       </tr>
       <tr class="measured">
-        <td class="id">ecs-swappiness</td><td class="num">13</td><td>all 3</td><td>2026-09-09</td>
-        <td><span class="chip ok">8 × 1.0</span> <span class="chip void">4 × 0.0</span> <span class="chip">1 exc</span></td>
-        <td>The strongest thesis evidence in the corpus — see below. Replicated k=2 under Amendment 32, and used again as Amendment 33's read-only co-runner (1.0 / 3,850 tok / 13 turns).</td>
+        <td class="id">ecs-swappiness</td><td class="num">18</td><td>3 of 3</td><td>2026-09-22</td>
+        <td><span class="chip ok">10 × 1.0</span> <span class="chip void">6 × 0.0</span> <span class="chip">2 exc</span></td>
+        <td>The strongest thesis evidence in the corpus — see below. Replicated k=2 under Amendment 32, used again as Amendment 33's read-only co-runner (1.0 / 3,850 tok / 13 turns), and then twice as the tier-0 and verifier pilot: the planted <code>swappiness-requires-maxswap</code> catch fired at tier 1 on <code>hcl_raw</code> under both the Python tier-0 driver and the Python verifier, which is what those amendments needed to see.</td>
       </tr>
       <tr class="measured">
         <td class="id">sfn-jsonata</td><td class="num">4</td><td>2 of 3</td><td>2026-09-09</td>
@@ -695,12 +777,83 @@ ARM_ORDER = (awscdk, hcl_raw, terraconstructs)</code></pre>
         <td><span class="chip void">3 exc</span></td>
         <td>Zero usable rows. Prompt is known-bad (over-specified); deliberately not re-run.</td>
       </tr>
+      <tr class="measured">
+        <td class="id">ecr-repo-destroy-force-delete</td><td class="num">10</td><td>all 3 + a fixture</td><td>2026-09-22</td>
+        <td><span class="chip ok">4 × 1.0</span> <span class="chip void">3 × 0.0</span> <span class="chip">3 exc</span></td>
+        <td>The teardown tier's evidence, and the only spec that has ever been graded by a destroy. Amendment 41's reference half is 1.0 with teardown <code>clean</code> on all three arms; the broken half is the <code>hcl_raw</code> <code>repository-not-emptied-on-delete</code> fixture, which passed every static tier <em>and</em> the live check and lost the reward only at the teardown tier. Re-run once as the live+teardown shape under the Python verifier.</td>
+      </tr>
+      <tr class="measured">
+        <td class="id">s3-bucket-hardening-decomposition</td><td class="num">2</td><td>hcl_modules, hcl_raw</td><td>2026-09-23</td>
+        <td><span class="chip ok">2 × 1.0</span></td>
+        <td>The first spec measured on two Terraform-shaped arms in one battery. The <code>hcl_modules</code> row composed <code>s3-bucket</code> 5.16.1 and <code>kms</code> 4.2.2 through the sidecar; the <code>hcl_raw</code> row is what promoted Amendment 48, with provider 6.66.0 installed from the baked mirror inside the trial.</td>
+      </tr>
+      <tr class="measured">
+        <td class="id">iam-managed-policy-exclusive-vs-attachment</td><td class="num">1</td><td>hcl_modules</td><td>2026-09-23</td>
+        <td><span class="chip ok">1 × 1.0</span></td>
+        <td>Composed through the <code>iam</code> submodules. A partial-fit scenario on the module matrix — no module makes <code>..._exclusive</code> — and it graded clean anyway.</td>
+      </tr>
+      <tr class="measured">
+        <td class="id">acm-dns-validation-record-wiring</td><td class="num">2</td><td>hcl_modules</td><td>2026-09-24</td>
+        <td><span class="chip void">1 × 0.0 — graded wrong</span> <span class="chip ok">1 × 1.0 on the fixed policy</span></td>
+        <td>The oracle defect, and the re-trial that closed it. Both trials composed the zone through <code>route53</code> 6.5.1 and the certificate through <code>acm</code> 6.3.1; the first was denied by a created-zone rule that could not match a zone reached as a module output, the second scored 1.0 on the same composition after the fix. The 0.0 is <strong>not</strong> agent evidence and is not poolable with it.</td>
+      </tr>
     </tbody>
   </table>
   </div>
   <p style="font-size:13.5px;color:var(--ink-3);margin-top:10px">
     Trial counts are the reward and exception tallies in every <code>result.json</code> under
-    <code>jobs/</code>; they are cumulative and mix harness generations; only the per-amendment batteries named in each row are within-stratum comparable.
+    <code>jobs/</code> (<code>verifier_result.rewards.reward</code>), recounted at this page's stamp;
+    they are cumulative and mix harness generations, and a row may be both a reward and an exception.
+    Only the per-amendment batteries named in each row are within-stratum comparable — and since
+    Amendment 48 moved the <code>hcl-raw</code> image's provider pin, and so its equipping hash, rows
+    either side of that bump are not pooled at all.
+  </p>
+
+  <h3 style="margin-top:26px">Every battery since 2026-09-10</h3>
+  <p style="font-size:14px;color:var(--ink-2)">One row per trial, from each job's
+  <code>result.json</code> (<code>verifier_result.rewards.reward</code> and
+  <code>agent_result.n_output_tokens</code>) as narrated in <code>docs/live-results.md</code>. A null
+  token count means Harbor's trajectory conversion failed on a step-id gap and the figure comes from
+  the <code>claude-code-stream</code> fallback or the transcript; every trial is claude-sonnet-5,
+  k=1.</p>
+  <div class="scroll">
+  <table>
+    <thead><tr>
+      <th>Battery</th><th>Spec</th><th>Arm</th><th>Shard</th><th class="num">Reward</th><th class="num">Out tok</th><th>Tiers</th>
+    </tr></thead>
+    <tbody>
+      <tr class="measured"><td class="id">amend38 · 2026-09-10</td><td class="id">named-resource-replacement</td><td>terraconstructs</td><td class="sh">anchor-3</td><td class="num">1.0</td><td class="num">16,796</td><td>live <code>pass</code>, idempotence <code>converged</code></td></tr>
+      <tr class="measured"><td class="id">amend37 · 2026-09-10</td><td class="id">named-resource-replacement</td><td>awscdk</td><td class="sh">anchor-1</td><td class="num">1.0</td><td class="num">3,393</td><td>live <code>pass</code>, <code>converged</code>, teardown <code>clean</code></td></tr>
+      <tr class="measured"><td class="id">amend37 · 2026-09-10</td><td class="id">named-resource-replacement</td><td>hcl_raw</td><td class="sh">anchor-2</td><td class="num">1.0</td><td class="num">3,144</td><td>live <code>pass</code>, <code>converged</code>, teardown <code>clean</code></td></tr>
+      <tr class="measured"><td class="id">amend37 · 2026-09-10</td><td class="id">named-resource-replacement</td><td>terraconstructs</td><td class="sh">anchor-3</td><td class="num">1.0</td><td class="num">12,148</td><td>live <code>pass</code>, <code>converged</code>, teardown <code>clean</code></td></tr>
+      <tr class="measured"><td class="id">amend41 · 2026-09-17</td><td class="id">ecr-repo-destroy-force-delete</td><td>awscdk</td><td class="sh">anchor-2</td><td class="num">1.0</td><td class="num">3,542</td><td>live <code>pass</code>, teardown <code>clean</code></td></tr>
+      <tr class="measured"><td class="id">amend41 · 2026-09-17</td><td class="id">ecr-repo-destroy-force-delete</td><td>hcl_raw</td><td class="sh">anchor-3</td><td class="num">1.0</td><td class="num">2,036</td><td>live <code>pass</code>, teardown <code>clean</code></td></tr>
+      <tr class="measured"><td class="id">amend41 · 2026-09-17</td><td class="id">ecr-repo-destroy-force-delete</td><td>terraconstructs</td><td class="sh">anchor-1</td><td class="num">1.0</td><td class="num">3,282</td><td>live <code>pass</code>, teardown <code>clean</code></td></tr>
+      <tr class="broken"><td class="id">amend41 · 2026-09-17</td><td class="id">ecr &mdash; <code>repository-not-emptied-on-delete</code> fixture</td><td>hcl_raw</td><td class="sh">anchor-3</td><td class="num">0.0</td><td class="num">&mdash;</td><td>tier0 <code>pass</code>, live <code>pass</code>, teardown <code>destroy_failed</code></td></tr>
+      <tr class="measured"><td class="id">amend43 · 2026-09-21</td><td class="id">ecs-swappiness</td><td>awscdk</td><td class="sh">anchor</td><td class="num">1.0</td><td class="num">3,654</td><td>tier0 <code>pass</code>, tier1 PASS &mdash; row VOIDED, <code>audit-unavailable</code></td></tr>
+      <tr class="broken"><td class="id">amend43 · 2026-09-21</td><td class="id">ecs-swappiness</td><td>hcl_raw</td><td class="sh">anchor</td><td class="num">0.0</td><td class="num">1,182</td><td>tier0 <code>pass</code>, tier1 FAIL &mdash; the planted catch</td></tr>
+      <tr class="measured"><td class="id">amend43 · 2026-09-21</td><td class="id">ecs-swappiness</td><td>terraconstructs</td><td class="sh">anchor</td><td class="num">1.0</td><td class="num">6,408</td><td>tier0 <code>pass</code>, tier1 PASS</td></tr>
+      <tr class="broken"><td class="id">amend44 · 2026-09-22</td><td class="id">ecs-swappiness</td><td>hcl_raw</td><td class="sh">anchor</td><td class="num">0.0</td><td class="num">1,251</td><td>static read-only shape; tier1 FAIL &mdash; the planted catch</td></tr>
+      <tr class="measured"><td class="id">amend44 · 2026-09-22</td><td class="id">ecr-repo-destroy-force-delete</td><td>hcl_raw</td><td class="sh">anchor-3</td><td class="num">1.0</td><td class="num">1,838</td><td>live + teardown shape; live <code>pass</code>, teardown <code>clean</code></td></tr>
+      <tr class="measured"><td class="id">amend44 · 2026-09-22</td><td class="id">named-resource-replacement</td><td>awscdk</td><td class="sh">anchor-3</td><td class="num">1.0</td><td class="num">3,255</td><td>brownfield seed-guard shape; PASS, <code>pass</code>, <code>converged</code>, <code>clean</code></td></tr>
+      <tr class="measured"><td class="id">amend44 · 2026-09-22</td><td class="id">apigw-redeploy</td><td>terraconstructs</td><td class="sh">anchor-3</td><td class="num">1.0</td><td class="num">9,504 + 7,821</td><td>multi-step shape; both steps PASS and <code>pass</code></td></tr>
+      <tr class="measured"><td class="id">amend46/48 · 2026-09-23</td><td class="id">s3-bucket-hardening-decomposition</td><td><strong>hcl_modules</strong></td><td class="sh">anchor</td><td class="num">1.0</td><td class="num">4,548</td><td>tier0 <code>pass</code>, tier1 PASS; <code>s3-bucket</code> 5.16.1 + <code>kms</code> 4.2.2 from the sidecar</td></tr>
+      <tr class="measured"><td class="id">amend46/48 · 2026-09-23</td><td class="id">iam-managed-policy-exclusive-vs-attachment</td><td><strong>hcl_modules</strong></td><td class="sh">anchor</td><td class="num">1.0</td><td class="num">6,296</td><td>tier0 <code>pass</code>, tier1 PASS; <code>iam</code> submodules</td></tr>
+      <tr class="broken"><td class="id">amend46/48 · 2026-09-23</td><td class="id">acm-dns-validation-record-wiring</td><td><strong>hcl_modules</strong></td><td class="sh">anchor</td><td class="num">0.0</td><td class="num">3,962</td><td>tier0 <code>pass</code>, tier1 FAIL &mdash; <strong>graded wrong</strong>; <code>route53</code> 6.5.1 + <code>acm</code> 6.3.1</td></tr>
+      <tr class="measured"><td class="id">amend46/48 · 2026-09-23</td><td class="id">s3-bucket-hardening-decomposition</td><td>hcl_raw</td><td class="sh">anchor</td><td class="num">1.0</td><td class="num">5,513</td><td>tier0 <code>pass</code>, tier1 PASS; provider 6.66.0 from the baked mirror &mdash; promotes Amendment 48</td></tr>
+      <tr class="measured"><td class="id">amend46 · 2026-09-24</td><td class="id">acm-dns-validation-record-wiring</td><td><strong>hcl_modules</strong></td><td class="sh">anchor</td><td class="num">1.0</td><td class="num">5,828</td><td>tier0 <code>pass</code>, tier1 PASS on the fixed policy, same composition</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p style="font-size:13.5px;color:var(--ink-3);margin-top:10px">
+    The two 0.0 rows that are <strong>not</strong> agent evidence: the amend41 fixture is a
+    deliberately broken solution applied to prove the teardown tier gates, and the amend46 acm row is
+    an oracle defect. The <code>ecs-swappiness</code> <code>hcl_raw</code> 0.0 is the opposite &mdash;
+    the scenario's planted catch firing exactly where the spec predicts it for that arm, twice, under
+    two different verifier implementations. The amend43 <code>awscdk</code> row is valid as a trial and
+    void as a measurement: Harbor's trajectory conversion failed on a step-id gap, so
+    <code>gates/emit_result.py</code> voids it as <code>invalid-infra</code> /
+    <code>audit-unavailable</code> and its token count comes from the transcript, not the row.
   </p>
 </section>
 
@@ -812,9 +965,10 @@ ARM_ORDER = (awscdk, hcl_raw, terraconstructs)</code></pre>
       <div class="who">every arm, on the 4 <code>workspace_seed.deploy</code> specs</div></div>
 
     <div class="attr"><h3>awscdk tier-1 on OPA/Rego</h3>
-      <p style="margin:0">Rather than cfn-guard, which cannot express a cross-resource join. The M8
-      backport, not yet universal.</p>
-      <div class="who">3 — <code>ddb-gsi-attribute-definitions</code>, <code>iam-managed-policy-exclusive-vs-attachment</code>, <code>s3-notification-authoritative-singleton</code></div></div>
+      <p style="margin:0">Rather than cfn-guard, which cannot express a cross-resource join. No longer
+      an attribute that varies: <code>oracle.awscdk_tier1_engine</code> has one value,
+      <code>rego</code>, and it is the default.</p>
+      <div class="who">every spec — Amendment 45; <code>oracles/cfn-guard/</code> is deleted</div></div>
 
     <div class="attr"><h3><code>hcl_traversal</code></h3>
       <p style="margin:0">hcl2json static traversal, resolving symbols a plan cannot.</p>
@@ -1014,12 +1168,12 @@ ARM_ORDER = (awscdk, hcl_raw, terraconstructs)</code></pre>
     <tbody>
       <tr class="unrun"><td class="id">M1</td><td>Finish the profile — land blast radius, wire <code>extract_signals.py</code> into the pipeline, make rbw / escape-hatch first-class result fields instead of post-hoc extraction.</td><td>Cheap, no new trials</td></tr>
       <tr class="unrun"><td class="id">M2</td><td>Equipping factorial — does materialized discovery erase the abstraction tax? <code>gates/equipping.py</code> already hashes skills/MCP into trial identity, so <code>arm × equipping</code> is a legitimate design today.</td><td>Battery</td></tr>
-      <tr class="unrun"><td class="id">M3</td><td>The <code>hcl-modules</code> arm, as a <em>falsification test</em>. Raw HCL is arguably a strawman — practice is community modules. Without this, the most obvious practitioner objection to the headline stands.</td><td>New arm</td></tr>
+      <tr class="measured"><td class="id">M3</td><td><strong>Phases 1–5 done, phase 6 in progress.</strong> The <code>hcl-modules</code> arm, as a <em>falsification test</em>: raw HCL is arguably a strawman, and practice is community modules. Amendment 46 settled it as an arm rather than a treatment, which closed ROADMAP open decision 4. Phase 6 rolls it over the corpus in three slices — A (the read-only greenfield specs) done, B (one spec) owed an owner decision, C (the six mutating and brownfield specs) in progress.</td><td>New arm</td></tr>
       <tr class="unrun"><td class="id">M4</td><td>Scale dose-response — the biggest live limitation. Every spec is 1–2 files, the regime where abstraction pays off <em>least</em>. The maintainability argument is fundamentally about scale.</td><td>High</td></tr>
       <tr class="unrun"><td class="id">M5</td><td>Oracle-authority inversion — decide after a full battery, on the measured divergence rate between static-green and live-green. Amendment 34 is a first, scoped instance of the inversion: one catch moved from a host-side re-implementation to the service's own evaluator.</td><td>Decision</td></tr>
       <tr class="unrun"><td class="id">M6</td><td>Closed-book knowledge probe — for each trap, ask the model the underlying question with no workspace, docs or tools, and record whether it knows. Operationalizes the §3 law.</td><td>Cheap, no AWS</td></tr>
-      <tr class="measured"><td class="id">M7</td><td><strong>DONE.</strong> Sharded at N = 4, <code>env setup</code> green on all four shards, Amendment 33 ACCEPTED on its first promotion run. The three new accounts were created by hand rather than by <code>env init</code>, because aws-bench derives a new account's root email from the management account's domain — and when that domain is a public mail provider, the generated address is claimable by anyone.</td><td>Paid</td></tr>
-      <tr class="unrun"><td class="id">M8</td><td>OPA/Rego on all three arms; cfn-guard demoted to a measured capability. Proven necessary: cfn-guard 3.2.0 cannot express a cross-resource join, and the resulting proxy was unsound <em>in both directions</em>. Backported to 3 specs so far.</td><td>Per-spec</td></tr>
+      <tr class="measured"><td class="id">M7</td><td><strong>DONE.</strong> Sharded at N = 4 and since raised to N = 5 for the fourth arm, <code>env setup</code> green on every shard, Amendment 33 ACCEPTED on its first promotion run. The three new accounts were created by hand rather than by <code>env init</code>, because aws-bench derives a new account's root email from the management account's domain — and when that domain is a public mail provider, the generated address is claimable by anyone.</td><td>Paid</td></tr>
+      <tr class="measured"><td class="id">M8</td><td><strong>DONE</strong> — Amendment 45. OPA/Rego grades tier 1 on every arm, and cfn-guard is retired from the oracle and kept as an installed, measured capability: a spec declaring <code>cfn_guard</code> now fails validation. Proven necessary: cfn-guard 3.2.0 cannot express a cross-resource join, the resulting proxy was unsound <em>in both directions</em>, and three fix rounds established that as a tooling ceiling rather than fixer error.</td><td>Per-spec</td></tr>
       <tr class="unrun"><td class="id">M9</td><td>Brownfield <em>adoption</em> — import existing infrastructure. Distinct from Amendment 28 brownfield, which seeds <em>code</em>; adoption starts from resources with no config at all, and now has spare shards to live on.</td><td>New form</td></tr>
     </tbody>
   </table>
@@ -1062,6 +1216,13 @@ ARM_ORDER = (awscdk, hcl_raw, terraconstructs)</code></pre>
       <tr class="measured"><td class="id">jobs/amend32-promotion/2026-08-27__21-50-09</td><td>Amendment 32 — <code>named-resource-replacement</code> + <code>apigw-redeploy</code>, 3 arms × k=2, mutating</td><td>2026-08-27 21:53 → 2026-08-28 01:48</td><td class="num">12</td><td>0 errors; 12 × 1.0</td></tr>
       <tr class="measured"><td class="id">jobs/amend33-promotion/2026-09-09__19-09-38</td><td>Amendment 33 — 4 shards, <code>-n 4</code>, one read-only co-runner + one spec's three arms</td><td>2026-09-09 19:13 → 19:34 (20 min 59 s)</td><td class="num">4</td><td>0 errors; 3 × 1.0, 1 × 0.0 (agent-caused); 3 clean resets, overlapping</td></tr>
       <tr class="measured"><td class="id">jobs/amend34-promotion/2026-09-09__21-19-05</td><td>Amendment 34 — <code>sfn-jsonata-*</code>, both enabled arms, read-only on shard <code>anchor</code></td><td>2026-09-09 21:23 → 21:26 (3 min 14 s)</td><td class="num">2</td><td>0 errors; 2 × 1.0, tier-1 PASS and live <code>pass</code> on both</td></tr>
+      <tr class="measured"><td class="id">jobs/amend38-promotion/2026-09-10__00-41-59</td><td>Amendment 38 — one mutating <code>named-resource-replacement</code> trial, foreground-only agent commands</td><td>2026-09-10, 55 min 05 s including a 9 min 51 s reset</td><td class="num">1</td><td>1 × 1.0; the earlier attempt (<code>2026-09-09__23-57-37</code>) is <code>invalid-infra</code> — the deploy was still backgrounded</td></tr>
+      <tr class="measured"><td class="id">jobs/amend37-promotion/2026-09-10__02-53-43</td><td>Amendment 37 — the teardown tier, non-gating, three arms of one spec on their own shards concurrently</td><td>2026-09-10, 47 min 03 s</td><td class="num">3</td><td>0 errors; 3 × 1.0, teardown <code>clean</code> on all three</td></tr>
+      <tr class="measured"><td class="id">jobs/amend41-promotion/2026-09-17__12-33-18, __13-00-13, __13-15-33</td><td>Amendment 41 — the first <em>gating</em> teardown on <code>ecr-repo-destroy-force-delete</code>: reference half on three arms, broken half on the <code>hcl_raw</code> fixture</td><td>2026-09-17</td><td class="num">4 + 1 exc</td><td>3 × 1.0 with teardown <code>clean</code>; the fixture 0.0 on <code>destroy_failed</code> after every static tier and the live check had passed it. The terraconstructs run was repeated because its arm image had lost the HashiCorp apt source</td></tr>
+      <tr class="measured"><td class="id">jobs/amend43-promotion/2026-09-21__00-34-05</td><td>Amendment 43 — the Python tier-0 driver, three arms of <code>ecs-swappiness</code> read-only on shard 0</td><td>2026-09-21</td><td class="num">3</td><td>2 × 1.0, 1 × 0.0 (the planted catch); the awscdk row is VOIDED, <code>audit-unavailable</code>. Parity half: 9 asserts × 2 drivers, identical cell by cell</td></tr>
+      <tr class="measured"><td class="id">jobs/amend44-promotion/2026-09-22__00-10-32</td><td>Amendment 44 — the Python verifier, one trial per verifier shape (static read-only, live + teardown, brownfield seed guard, multi-step) on four shards concurrently</td><td>2026-09-22</td><td class="num">4</td><td>3 × 1.0, 1 × 0.0 (the planted catch). Two earlier attempts that evening were voided before any agent ran: GitHub's release CDN truncated the pinned <code>opa</code> download inside the task image builds</td></tr>
+      <tr class="measured"><td class="id">jobs/amend46-promotion/2026-09-23__18-08-45</td><td>Amendments 46 and 48 — the first <code>hcl_modules</code> trials (three) plus one <code>hcl_raw</code> row at provider 6.66.0, four concurrent and read-only on shard 0, the colima VM at 16 GiB</td><td>2026-09-23</td><td class="num">4</td><td>3 × 1.0, 1 × 0.0 — an oracle defect, not the agent. All four emit with no void and scheme-2 equipping hashes</td></tr>
+      <tr class="measured"><td class="id">jobs/amend46-promotion/2026-09-24__10-00-21</td><td>Amendment 46 — the <code>acm-dns-validation-record-wiring</code> <code>hcl_modules</code> re-trial on the fixed created-zone rule, same task, image and sidecar shape</td><td>2026-09-24</td><td class="num">1</td><td>1 × 1.0 on the same module composition; with it, every read-only <code>hcl_modules</code> form has a clean live trial and Amendment 46 is ACCEPTED</td></tr>
     </tbody>
   </table>
   </div>
@@ -1078,8 +1239,15 @@ ARM_ORDER = (awscdk, hcl_raw, terraconstructs)</code></pre>
   <code>tasks/**/task.toml</code>, <code>arms/*/environment/</code>,
   <code>scenarios/anchor/scenario/cdk_app/stacks/qa_roles_stack.ts</code>,
   <code>metrics/tokens_to_green.py</code> and <code>result_schema.json</code>,
-  <code>DECISIONS.md</code> Amendments 22–41, <code>ROADMAP.md</code>, <code>CLAUDE.md</code>, and
-  the four promotion job directories above, at <code>main @ 4608901</code>. Token counts are
+  <code>arms/hcl-modules/README.md</code> and its <code>environment/</code> (Dockerfile,
+  <code>mirror-src/main.tf</code>, <code>modules/manifest.json</code>,
+  <code>docker-compose.yaml</code>), <code>docs/live-results.md</code>,
+  <code>docs/asset-mirror.md</code>, <code>docs/design/</code> (the <code>hcl-modules</code> arm, the
+  loopback module registry, the module fit matrix, the registry index tool),
+  <code>DECISIONS.md</code> Amendments 22–48, <code>ROADMAP.md</code>, <code>CLAUDE.md</code>, and
+  the promotion job directories above, at <code>main @ 75dadc4</code> plus uncommitted working-tree
+  edits to the six slice-C specs — which is why every spec fact here is read with
+  <code>git show HEAD:specs/&lt;id&gt;.yaml</code>. Token counts are
   directional: n is 1 or 2 per cell, and two runs of one spec on one arm have differed by more than
   2×.
 </div>

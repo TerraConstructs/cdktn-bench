@@ -83,23 +83,59 @@
 <section>
   <div class="sechead">
     <h2>The tiers</h2>
-    <p>Ordered by cost, and by distance from the truth they are trying to establish.</p>
+    <p>Ordered by cost, and by distance from the truth they are trying to establish. The corpus is
+    20 specs across four arms — <code>awscdk</code>, <code>hcl_raw</code>,
+    <code>terraconstructs</code>, <code>hcl_modules</code>.</p>
   </div>
   <div class="scroll">
   <table>
     <thead><tr><th>Tier</th><th>Question</th><th>awscdk substrate</th><th>Terraform substrate</th><th>Specs</th></tr></thead>
     <tbody>
-      <tr><td class="id">0</td><td>Is the value at the right place in the artifact?</td><td><code>cdk synth</code> → CFN JSON, queried by <code>cfn_jsonpath</code></td><td><code>plan -json</code>, queried by <code>tf_jsonpath</code></td><td>17</td></tr>
-      <tr><td class="id">0.5</td><td>Host-side JSONata evaluation of a synthesized definition.</td><td colspan="2"><code>tier05_jsonata</code></td><td>1</td></tr>
-      <tr><td class="id">1</td><td>A <em>quantified</em> claim over a collection — "no rule anywhere may be open to the world".</td><td>cfn-guard → OPA/Rego</td><td>OPA/Rego</td><td>17</td></tr>
-      <tr><td class="id">live</td><td>Does the deployed thing behave?</td><td colspan="2">Real AWS API calls — one <code>live_check.py</code>, byte-identical across arms</td><td>5</td></tr>
-      <tr><td class="id">idem</td><td>Is a second apply a no-op?</td><td><code>cdk diff --fail</code> + completion marker</td><td><code>plan -detailed-exitcode</code></td><td>2 gating</td></tr>
+      <tr><td class="id">0</td><td>Is the value at the right place in the artifact?</td><td><code>cdk synth</code> → CFN JSON, declared as <code>cfn_jsonpath</code></td><td><code>show -json</code>, normalised, declared as <code>tf_jsonpath</code></td><td>20</td></tr>
+      <tr><td class="id">1</td><td>A <em>quantified</em> claim over a collection — "no rule anywhere may be open to the world".</td><td colspan="2">One engine: <code>opa eval -f raw -I -d policy.rego 'data.cdktn_bench.&lt;id&gt;.deny'</code></td><td>20</td></tr>
+      <tr><td class="id">live</td><td>Does the deployed thing behave?</td><td colspan="2">Real AWS API calls — one <code>live_check.py</code>, byte-identical across arms</td><td>7, all gating</td></tr>
+      <tr><td class="id">idem</td><td>Is a second apply a no-op?</td><td><code>cdk diff --fail</code> + completion marker</td><td><code>plan -detailed-exitcode</code></td><td>3 enabled, 2 gating</td></tr>
+      <tr><td class="id">teardown</td><td>Does the agent's own destroy leave the account clean?</td><td><code>cdk destroy --force</code> + completion marker</td><td><code>terraform destroy</code> after a state probe</td><td>2 enabled, 1 gating</td></tr>
     </tbody>
   </table>
   </div>
 
+  <p>One row is gone and two are new. <strong>Tier 0.5</strong> — host-side JSONata evaluation of a
+  synthesized ASL document — was retired whole (<strong>Amendment 34</strong>, retire tier 0.5): one
+  spec ever populated it, it never touched <code>reward.txt</code>, and it graded a re-implementation
+  rather than the service. Its one catch is now a gating live check against
+  <code>states:TestState</code>, which evaluates the state with Step Functions' own evaluator and
+  creates nothing. A tier is <code>"0"</code> or <code>"1"</code>. The teardown row is
+  <strong>Amendment 37</strong> (the agent's own destroy is graded) plus <strong>Amendment 41</strong>
+  (a catch may be predicted at the teardown tier, and the first gating one); it requires
+  <code>live_check.enabled</code>, because an offline destroy of an empty working directory exits 0
+  having removed nothing.</p>
+
+  <p>What runs the static tiers is now Python throughout. Tier 0's driver is a generated
+  <code>tests/tier0.py</code> — one <code>(name, jq filter, op, expected)</code> tuple per applicable
+  assert — over a stdlib <code>tests/ops.py</code> byte-identical in every arm
+  (<strong>Amendment 43</strong>, the tier-0 driver is Python). The jq filters are unchanged and are
+  still the readable part; 178 lines of bash left. Its contract is a <strong>three-valued
+  outcome</strong>: <code>held</code> / <code>contradicted</code> / <code>unresolvable</code>, exit
+  0 / 1 / 2, where a jq error, a missing jq, an unknown op, a mistyped <code>expected</code> and a
+  pattern <code>re</code> cannot compile are all unresolvable. <em>A driver that turned an unasked
+  question into a verdict would be a defect even if every fixture still scored the same.</em> Around
+  it, <code>tests/tiers.py</code> is the mechanism and <code>tests/verify.py</code> this task's
+  configuration (<strong>Amendment 44</strong>, the verifier is Python); the two <code>.sh</code> files
+  stay as shims because Harbor executes one and every hand-authored <code>solve.sh</code> ends with
+  the other.</p>
+
+  <p>And a tier-1 failure now says why. A <code>deny</code> set is printed as one
+  <code>DENY: &lt;message&gt;</code> line per entry, whitespace folded to single spaces so no
+  policy-authored message can occupy a line of its own and imitate the <code>PASS [name]</code> or
+  <code>== summary: … ==</code> lines the gates parse out of the same transcript; an
+  <code>opa eval</code> that aborts is <code>ENGINE_ERROR</code> carrying opa's own stderr, never
+  FAIL, because a Rego runtime error charged to the solution reads as a wrong answer. Both came out
+  of the first live <code>hcl_modules</code> trial, which printed a bare <code>FAIL</code> and
+  discarded the reason.</p>
+
   <figure>
-    <svg viewBox="0 0 820 210" role="img" aria-label="Four grading tiers arranged by increasing distance from the truth: tier 0 and 1 read a static artifact, the live check reads the real account, and only the live check can observe runtime behaviour." style="width:100%;height:auto;color:var(--ink)">
+    <svg viewBox="0 0 820 210" role="img" aria-label="Five grading tiers arranged by increasing distance from the truth: tier 0 and 1 read a static artifact, while the live, idempotence and teardown tiers read the real account, and only those can observe runtime behaviour." style="width:100%;height:auto;color:var(--ink)">
       <defs>
         <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
           <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
@@ -130,16 +166,16 @@
       <line x1="361" y1="96" x2="361" y2="126" stroke="currentColor" stroke-width="1.2"/>
       <line x1="290" y1="126" x2="432" y2="126" stroke="currentColor" stroke-width="1.2"/>
       <text x="361" y="146" text-anchor="middle" font-family="Archivo,sans-serif" font-size="12" font-weight="600" fill="currentColor">tier 0 · tier 1</text>
-      <text x="361" y="164" text-anchor="middle" font-family="Source Serif 4,serif" font-size="11.5" fill="currentColor" opacity="0.72">free, instant, 17 specs</text>
+      <text x="361" y="164" text-anchor="middle" font-family="Source Serif 4,serif" font-size="11.5" fill="currentColor" opacity="0.72">free, instant, 20 specs</text>
       <text x="361" y="182" text-anchor="middle" font-family="Source Serif 4,serif" font-size="11.5" fill="currentColor" opacity="0.72">sees shape, never behaviour</text>
 
       <line x1="651" y1="96" x2="651" y2="126" stroke="#17636b" stroke-width="1.6"/>
-      <text x="651" y="146" text-anchor="middle" font-family="Archivo,sans-serif" font-size="12" font-weight="600" fill="#17636b">live check</text>
-      <text x="651" y="164" text-anchor="middle" font-family="Source Serif 4,serif" font-size="11.5" fill="#17636b" opacity="0.85">minutes + $, 5 specs</text>
-      <text x="651" y="182" text-anchor="middle" font-family="Source Serif 4,serif" font-size="11.5" fill="#17636b" opacity="0.85">the only arm-agnostic one</text>
+      <text x="651" y="146" text-anchor="middle" font-family="Archivo,sans-serif" font-size="12" font-weight="600" fill="#17636b">live · idem · teardown</text>
+      <text x="651" y="164" text-anchor="middle" font-family="Source Serif 4,serif" font-size="11.5" fill="#17636b" opacity="0.85">minutes + $, 7 specs</text>
+      <text x="651" y="182" text-anchor="middle" font-family="Source Serif 4,serif" font-size="11.5" fill="#17636b" opacity="0.85">the only arm-agnostic ones</text>
     </svg>
-    <figcaption>The static tiers read an artifact the toolchain produced; the live check reads the
-    account itself. A property that is only true at runtime is invisible to everything left of the
+    <figcaption>The static tiers read an artifact the toolchain produced; the account-side tiers read
+    the account itself. A property that is only true at runtime is invisible to everything left of the
     account box — no amount of policy sophistication moves it.</figcaption>
   </figure>
 </section>
@@ -159,8 +195,16 @@
   Terraform arms and two on awscdk makes "correct" mean different things per arm, and biases
   tokens-to-green in a way that has nothing to do with the abstraction under test. The live check is
   the one instrument immune to this — <strong>the account does not know which toolchain produced a
-  resource</strong>, which is why <code>live_check.py</code> is byte-identical across all three arms
-  by construction.</p>
+  resource</strong>, which is why <code>live_check.py</code> is byte-identical across arms by
+  construction.</p>
+  <p>Equal strictness is enforced at two points rather than promised in review. One policy language
+  and one identity domain on every arm — logical ids on the CFN side, plan addresses on the TF side,
+  never a physical name (<strong>Amendment 45</strong>, OPA/Rego grades tier 1 on every arm). And
+  <strong>a tier-1 assert has to name the arm it grades</strong>: an enabled arm with no catch in any
+  <code>Catch.applies_to</code> is refused at spec load. That closed a fail-open — the field defaults
+  to the three original arms, so enabling a fourth and stopping there left <code>make
+  falsifiability</code> reporting every catch <code>N/A</code> and still exiting 0, shipping an arm
+  graded by nothing but its own reference.</p>
 </section>
 
 <section>
@@ -186,46 +230,98 @@
 <section>
   <div class="sechead">
     <h2>When it is not — and what each failure cost</h2>
-    <p>Three mechanisms were adopted because the previous one was provably unsound. None was
-    speculative; each replaced something measured to be wrong.</p>
+    <p>Each mechanism here replaced something measured to be wrong. None was speculative.</p>
   </div>
 
-  <div class="note bad">
-    <h3>cfn-guard cannot join two resources — so it graded by counting</h3>
+  <div class="note good">
+    <h3>cfn-guard could not join two resources — closed</h3>
     <p>The question was whether two IAM roles share the same managed policies. cfn-guard 3.2.0 has
     <strong>no logical-id join</strong> between a role and the policy naming it, so the awscdk tier-1
-    degraded into a count-equality proxy — and that proxy was unsound <em>in both directions</em>:</p>
-    <ul>
-      <li>a policy reaching only <strong>one</strong> role scored <strong>1.0</strong> — a false pass
-      that defeated the scenario's own catch;</li>
-      <li>a policy attached to <strong>both</strong> roles from both sides scored <strong>0.0</strong>
-      — a false fail, contradicted by the template itself.</li>
-    </ul>
-    <p>The byte-equivalent terraconstructs solutions scored the opposite way in each case, so the
-    arm comparison was measuring the policy language rather than the abstraction. Three fix rounds
-    could not close it: a <strong>tooling ceiling</strong>, not an authoring error. The remedy is
-    <strong>M8 — OPA/Rego as the grading engine on every arm</strong>, awscdk included, so there is
-    one policy language and one identity domain. Backported to 3 of 17 specs so far.</p>
+    degraded into a count-equality proxy — unsound <em>in both directions</em>: a policy reaching only
+    <strong>one</strong> role scored <strong>1.0</strong>, a policy attached to <strong>both</strong>
+    roles from both sides scored <strong>0.0</strong>, and the byte-equivalent terraconstructs solution
+    scored the opposite way each time. Three fix rounds established a <strong>tooling ceiling</strong>,
+    not an authoring error.</p>
+    <p><strong>This is finished.</strong> All 20 specs grade awscdk tier 1 with
+    <code>oracles/rego-cfn/&lt;id&gt;/policy.rego</code> over the synthesized template, read by the
+    same <code>opa eval … deny</code> line the Terraform arms run over plan JSON
+    (<strong>Amendment 45</strong>; ROADMAP M8 <strong>DONE</strong>).
+    <code>oracle.awscdk_tier1_engine</code> has one value, <code>rego</code>, a spec declaring the
+    retired <code>cfn_guard</code> fails validation, and <code>oracles/cfn-guard/</code> is deleted.
+    The two Rego trees stay separate because their <code>input</code> documents are unrelated.</p>
+    <p>The port was not a translation — every per-scenario strictness diff is recorded in its policy's
+    own header, and almost all of it moves toward <em>stronger</em> — and no shipped fixture's verdict
+    changed. <strong>cfn-guard stays installed</strong> in the awscdk image as a measured arm
+    capability an agent may run, never the grading authority; "awscdk has more guardrail tooling" must
+    not be evidenced by its existence, because Terraform has conftest/OPA, Checkov, tfsec and
+    Sentinel.</p>
   </div>
 
   <div class="note bad">
-    <h3>A Terraform plan hides its own symbols — so the policy guessed by proximity</h3>
-    <p><code>terraform show -json</code> does not carry the <code>locals</code> map, and an attribute
-    of a resource being <em>created</em> is unknown at plan time. The plan therefore shows
-    <code>local.arns.media_bucket</code> — the symbol — and never its referent.</p>
-    <p>Lacking a way to resolve it, the Rego grew a family of proximity heuristics
-    (<code>config_reaches_arn_of</code> and dependents) that effectively asked <em>"does the plan
-    depend on some bucket ARN anywhere?"</em>. That attaches no symbol to the attribute, so:</p>
+    <h3>A Terraform plan hides its own symbols — and static resolution is the fragile answer</h3>
+    <p><code>terraform show -json</code> carries no <code>locals</code> map, and an attribute of a
+    resource being <em>created</em> is unknown at plan time, so the plan shows
+    <code>local.arns.media_bucket</code> — the symbol — and never its referent. Lacking a way to
+    resolve it, the Rego grew proximity heuristics (<code>config_reaches_arn_of</code> and dependents)
+    that effectively asked <em>"does the plan depend on some bucket ARN anywhere?"</em>: a wrong-type
+    ARN behind a local scored <strong>1.0</strong>, a fully correct solution scored <strong>0.0</strong>
+    for spelling one slot hoisted and another direct. Both directions proven by execution.</p>
+    <p>The replacement is <code>tmccombs/hcl2json</code> traversal of the HCL the agent wrote, opt-in
+    per spec as <code>oracle.hcl_traversal</code>, <code>hcl_raw</code> only — still exactly one
+    scenario, <code>s3-notification-authoritative-singleton</code>. It is also the one spec that
+    <em>refuses</em> the <code>hcl_modules</code> arm, for the mechanism's own limit: there the graded
+    resource is declared inside an installed module body the merge never reads, so either the merge
+    learns to read <code>.terraform/modules/</code> — at which point the agent's own file is no longer
+    the unit graded — or the spec stays off the arm with that written down as the reason.</p>
+    <p><strong>The owner's direction has changed, and this note is where it lands.</strong> Statically
+    re-deriving what the plan omits is fragile by construction: each of four adversarial rounds closed
+    its blocker and the next found a new one in the same family, the launder surviving by moving.
+    <code>terraform console -plan</code> evaluates an expression with <em>Terraform's own
+    evaluator</em> rather than a re-implementation of it, which is the same argument that retired
+    tier 0.5. The ordering that follows: an <strong>evaluating AWS API</strong> — the
+    <code>states:TestState</code> shape, which decides a question without deploying anything — comes
+    before <em>deployed</em> state, and deployed state comes before a structural re-derivation. M11
+    already names this distinction as <code>live_check.needs_deployment</code>.</p>
+  </div>
+
+  <div class="note bad">
+    <h3>A module plan graded against an empty set — and denied nothing</h3>
+    <p>The <code>hcl_modules</code> arm (<strong>Amendment 46</strong>, the <code>hcl_modules</code>
+    arm is reintroduced as a per-spec-gated fourth arm) composes from vendored
+    <code>terraform-aws-modules</code> served by a loopback registry sidecar. A module plan nests
+    resources under <code>child_modules</code>, so the verifier normalises it —
+    <code>tiers.py::normalise_plan</code>, pure and deterministic:</p>
     <ul>
-      <li>a <strong>wrong-type ARN</strong> behind a local scored <strong>1.0</strong> as soon as any
-      unrelated correct resource touched the real bucket ARN;</li>
-      <li>a <strong>fully correct</strong> solution scored <strong>0.0</strong> for spelling one slot
-      hoisted and another direct.</li>
+      <li>every <code>child_modules</code> resource is <strong>hoisted</strong> into
+      <code>planned_values.root_module.resources</code>, each carrying <code>x_module_path</code> and,
+      where <code>resource_changes</code> supplies it, <code>x_after_unknown</code>;</li>
+      <li><code>resource_changes</code> is untouched, because it is already flat;</li>
+      <li><code>configuration</code> is annotated with <code>x_unresolved</code> wherever a reference
+      crosses a module boundary the document cannot follow — <em>annotated, never resolved into a
+      value slot</em>;</li>
+      <li>a document it cannot produce is <code>ENGINE_ERROR</code>, not a silent pass.</li>
     </ul>
-    <p>Both directions proven by execution, not argued. Replaced by <code>tmccombs/hcl2json</code>
-    static traversal — parsing the HCL source rather than the plan, so a symbol resolves to its
-    actual referent. Opt-in per spec (<code>oracle.hcl_traversal</code>), hcl-raw only, used by
-    exactly one scenario today.</p>
+    <p>Behind it is a <strong>zero-drift gate</strong> (<code>make normaliser-parity</code>): a
+    module-free plan must normalise to itself byte for byte, so the other three arms grade
+    identically before and after; a module-shaped fixture is held to the other half of the contract —
+    an assert may move <em>off</em> <code>unresolvable</code>, never <em>onto</em> it.</p>
+    <p>What reading the normaliser could not have found: the hoist is a <strong>values-side</strong>
+    mechanism, so every tier-1 rule keyed on <code>configuration.root_module.resources</code> graded a
+    module plan against an <strong>empty set and denied nothing</strong> — a correct reference and a
+    wrong fixture both at 1.0, with no error anywhere. Each policy gained a configuration-side module
+    walk qualifying a body's addresses and references with its call path; on a module-free plan the
+    prefix is empty and the walk is the identity, which keeps the other arms' falsifiability rows where
+    they were.</p>
+    <p><strong>The lesson from the first live trial, and it is a rule now.</strong> A correct
+    composition scored 0.0: the reference covered only a raw <code>aws_route53_zone</code> threaded
+    into the module, the agent took the zone from a module too, so the record's <code>zone_id</code>
+    named a module <em>output</em> and the created-zone check matched nothing. The fix is to
+    <strong>derive the prefix, never loosen the anchor</strong> — a created zone under
+    <code>module.&lt;call&gt;.</code> makes that call prefix a valid reference, and the agent's shape
+    ships as a second reference. Loosening is the wrong repair, measured: relaxing
+    <code>^aws_iam_role\.</code> to <code>(^|\.)aws_iam_role\.</code> also admits
+    <code>data.aws_iam_role.…</code> — a role the plan does <em>not</em> declare — which is the exact
+    wrong answer the rule exists to refuse, on all four arms.</p>
   </div>
 
   <div class="note bad">
@@ -237,10 +333,14 @@
     <code>ForAllValues:</code>) that pass on an empty key set; <code>contains</code> on a string
     doing <em>substring</em>, where the solution's new name was a superstring of the old one;
     <code>set_eq</code> collapsing multiplicity through <code>unique</code>, so a same-named leftover
-    was invisible.</p>
+    was invisible. The fourth arm added two: a fail-closed rule counting <em>configuration</em>
+    resources passed a fixture with nothing waiting, because the module declares the block
+    unconditionally — it counts <em>planned</em> resources now; and a fully literal policy document is
+    read during the plan and lands in <code>prior_state</code>, leaving an "and nothing broader" rule
+    silently unevaluated where not even <code>not_verifiable</code> could see it.</p>
     <p>Each was closed at the gate rather than in a comment — negative-op rejection and a jsonpath
-    shape rule at spec load, exact-membership operators, a three-valued
-    <em>contradicted vs unresolvable</em> return code. The list is still growing.</p>
+    shape rule at spec load, exact-membership operators, the three-valued
+    <em>contradicted vs unresolvable</em> outcome. The list is still growing.</p>
   </div>
 
   <div class="note">
@@ -253,6 +353,79 @@
     behavioural, re-deriving it structurally approaches the <em>slowly reimplementing the
     evaluator</em> boundary — and a live check is both cheaper and more authoritative.</p>
   </div>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>When the module removes the mistake</h2>
+    <p>A class the fourth arm created, and the two rules that keep it honest.</p>
+  </div>
+  <p>A community module can make a trap <em>unreachable</em>: a default the agent never overrides, or
+  a wiring the module does inside itself and exposes through no input. That is not a grading bug — it
+  is the measurement — but it splits into outcomes that must be told apart, each recorded beside the
+  catch:</p>
+  <ul>
+    <li><strong>Removed outright.</strong> <code>subresource-targets-wrong-bucket</code>: every
+    sub-resource's <code>bucket</code> is wired inside the module and no input reaches it.</li>
+    <li><strong>Removed through one input, reachable through another.</strong>
+    <code>attach_deny_insecure_transport_policy</code> emits both ARNs unconditionally and so removes
+    <code>tls-policy-misses-object-arn</code>; <code>attach_policy</code> plus a hand-written document
+    still reaches it, so the catch stays.</li>
+    <li><strong>Hidden behind a default.</strong> <code>missing-certificate-validation-resource</code>
+    sits behind <code>wait_for_validation</code> (default true), and the shape that would have been its
+    fixture is a correct solution.</li>
+    <li><strong>Mechanism or character moved, verdict unchanged.</strong> The module's
+    <code>container_definitions</code> is a <code>map(object(...))</code>, so Terraform's own type
+    conversion silently discards a mis-nested <code>swappiness</code> key where <code>hcl_raw</code>
+    ships it into an artifact ECS ignores — same tier-0 assert, same fixture. Or a
+    <code>terraform</code> refusal on <code>hcl_raw</code> that this arm <em>accepts</em>, turning a
+    loud toolchain failure into a silently half-tagged fleet.</li>
+  </ul>
+  <p><strong>The <code>applies_to</code> rule.</strong> Where the module removes the mistake outright,
+  <code>Catch.applies_to</code> <em>excludes the arm</em> and no fixture exists — a fixture there would
+  score 1.0, and a catch that cannot fire is the vacuous-verification rung under another name. The
+  converse is the spec-load refusal above: an enabled arm with no catch naming it is refused, so
+  exclusion is spelled per catch rather than reached by silence. Where only the tier moves, that is a
+  <code>predicted_tier_caught.hcl_modules_override</code> — and across the pilot and all ten
+  read-only specs decided next, none was needed: every measured tier equalled the <code>hcl</code>
+  column the spec already carried.</p>
+  <p><strong>The red-green measurement rule.</strong> No such verdict may be read off the module's
+  source. Every one is <strong>measured on a real plan through the loopback registry</strong> —
+  <code>gates/tf_registry.py</code> starts the same responder the compose sidecar runs, as a host
+  subprocess on an ephemeral loopback port, concatenating its forced
+  <code>registry.terraform.io</code> host block onto whatever CLI config the environment already names
+  — <em>before</em> the decision is taken, with a red fixture and a green reference per surviving
+  catch. A shape expected to be a fixture that scores 1.0 ships as a <strong>second reference</strong>,
+  never as a broken fixture; one that scores 0.0 for a reason no author of this ticket would hit ships
+  as a <em>non-catch negative</em>, which is still what makes the arm's tier-1 rule falsifiable there.
+  The matrix written in advance (<code>docs/design/hcl-modules-spec-matrix.md</code>) was wrong in the
+  same direction on several specs, claiming catches removed that a published input still reaches —
+  which is the case for measuring rather than reading.</p>
+</section>
+
+<section>
+  <div class="sechead">
+    <h2>The gap tier 0 has no word for</h2>
+    <p>An open proposal, not a decision.</p>
+  </div>
+  <p>Tier 0's three-valued outcome is honest inside one assert and mute outside it. An
+  <code>unresolvable</code> assert — the path resolves to nothing because the value is plan-time
+  unknown, not because the solution is wrong — fails, and the trial scores <strong>0.0</strong>. Tier 1
+  has <code>not_verifiable</code>, an optional rule set that withdraws the verdict instead of granting
+  or refusing it; tier 0 has no equivalent, so "I could not ask this question" and "the answer is no"
+  reach <code>reward.txt</code> as the same number. The fourth arm hit it from both sides: a correct
+  composition scored 0.0 where an <code>eq</code> assert demanded exactly one resolved node and one
+  <code>allowed_triggers</code> entry planned two correct permissions, and a configuration-side tier-0
+  path had to be switched off for one arm because one jsonpath cannot union module scopes.</p>
+  <p><strong>Proposed (Amendment 49 shape, unregistered):</strong> a per-assert
+  <code>on_unresolvable</code> declaring what an unresolvable outcome means for <em>that</em> assert,
+  paired with a <strong>deciding check</strong> — another assert, or a tier-1 rule, that must resolve
+  for the pair to be gradeable at all. The pairing is the whole point: an <code>on_unresolvable</code>
+  on its own is a licence to score 1.0 on a question nobody asked, which is exactly the defect
+  Amendment 43 refused to build into the driver. <em>Nothing here is decided.</em> Until it is, an
+  unresolvable tier-0 assert costs the trial its reward, and the mitigation is the one already in
+  use: pick the op that does not demand a node count the substrate cannot guarantee, and record on
+  the assert why a path is off an arm.</p>
 </section>
 
 <section>
@@ -276,30 +449,36 @@
 
 <section>
   <div class="sechead">
-    <h2>Emulators — the excluded option, and what would change it</h2>
+    <h2>Emulators — the excluded option, being re-measured</h2>
   </div>
-  <p>LocalStack, moto and <code>floci</code> are excluded by locked decision on one ground:
+  <p>LocalStack, moto and <code>floci</code> are excluded as validity oracles on one ground:
   <em>they return false greens on exactly the value-rejection class the study targets</em> — moto
   accepts invalid enums and attributes, so an emulator would grade a wrong value correct.</p>
-  <p>That holds for value-acceptance traps. Day-2 traps are a different class: whether a rename
+  <p>That holds for value-acceptance traps. Day-2 traps are a different class — whether a rename
   forces destroy-then-create, whether an in-use endpoint raises <code>DependencyViolation</code>,
-  whether a second apply converges. Those are <strong>sequencing and dependency</strong> properties
-  an emulator might model faithfully while still mis-modelling value validation.</p>
-  <p>What would justify revisiting, in order: a <strong>measured</strong> false-green rate against
-  scenarios whose live verdict is already known — until that number exists the exclusion rests on
-  an argument, which is the criticism this project applies to everything else; live throughput
-  becoming the binding constraint on day-2 coverage; and a <strong>per-spec opt-in</strong> shaped
-  like <code>hcl_traversal</code>, declaring "this trap's truth is sequencing and the emulator
-  models it", proven by agreement with a live run first. A blanket emulator tier reintroduces
-  precisely the false-green class the exclusion was written against.</p>
+  whether a second apply converges, whether a destroy leaves the account clean — and those are
+  <strong>sequencing and dependency</strong> properties an emulator might model faithfully while still
+  mis-modelling value validation.</p>
+  <p><strong>The exclusion is being re-measured rather than restated.</strong>
+  <code>docs/design/floci-fidelity-spike.md</code> is in progress; no result exists yet and none is
+  claimed here. The <em>proposed</em> shape, the owner's, is a split rather than a swap: <strong>real
+  AWS for authoring and acceptance, the emulator for trials</strong>, with a <strong>per-spec parity
+  gate</strong> a spec must pass before its trials may run there, <strong>voiding</strong> a trial that
+  reaches an unimplemented operation instead of scoring it, and <strong>sampled AWS replay</strong> to
+  keep the parity claim alive rather than one-off. Each of those is a fail-closed clause, and the
+  ordering is the one the rest of this page argues: the emulator may host a trial only where a real
+  account has already said what the answer is. A blanket emulator tier — no parity gate, no voiding, no
+  replay — reintroduces precisely the false-green class the exclusion was written against.</p>
 </section>
 
 <div class="foot">
-  Sources: <code>specs/SCHEMA.md</code> §4–5, <code>ROADMAP.md</code> §5b and M8,
-  <code>docs/prereg-iac-abstraction-benchmark.md</code> §3,
-  <code>docs/design/conftest-hcl-traversal-spike.md</code>, and the executed evidence in
-  <code>gates/oracle_falsifiability.py</code>. Every failure described here was proven by running
-  it, not by reading it.
+  Sources: <code>DECISIONS.md</code> Amendments 34, 37, 41, 43, 44, 45, 46;
+  <code>specs/SCHEMA.md</code> §4–5; <code>ROADMAP.md</code> §5b, M3, M8, M10, M11;
+  <code>docs/design/tf-modules-arm.md</code>, <code>docs/design/hcl-modules-spec-matrix.md</code>;
+  <code>generator/verify_py.py</code>, <code>gates/tf_registry.py</code>,
+  <code>gates/plan_normaliser_parity.py</code>; and the live rows in
+  <code>docs/live-results.md</code>. Every failure described here was proven by running it, not by
+  reading it.
 </div>
 
 </div>

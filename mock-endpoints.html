@@ -81,6 +81,20 @@
     ephemeral port that the three credential-free gates start once per invocation. The compose
     sidecar below is therefore not needed: there is nothing left in the trial path to mock.
     Kept as the record of the problem and the design that was considered.
+    <span style="display:block;margin-top:.7rem"><strong>The design landed anyway, on 2026-09-23, for
+    a different purpose.</strong> The compose sidecar argued for below is now the
+    <code>tf-registry</code> module registry of the <code>hcl_modules</code> arm, serving vendored
+    <code>terraform-aws-modules</code> to an offline <code>terraform init</code>. Amendment 46
+    delivery decision (a) is this page's shape: the service runs <strong>the arm's own image with a
+    different command</strong>, so one image digest covers the responder, the module bytes and the
+    manifest together, and the agent container reaches it <strong>by compose service name</strong>
+    rather than on a port inside its own workspace; the host gates run the identical responder as a
+    subprocess (<code>gates/tf_registry.py</code>), which is what keeps a gate's registry and a
+    trial's registry the same bytes. It is equipping rather than mocking — nothing in the trial path
+    is faked — and the equipping hash covers <code>environment/docker-compose.yaml</code> as
+    <code>compose_sha256</code> since scheme 2 (Amendment 47, Harbor's own equipping channels are in
+    the hash), so declaring a sidecar moves the hash instead of pooling two differently-equipped
+    trials.</span>
   </p>
   <h1>The Mock Endpoint Problem</h1>
   <p class="lede">Two Terraform arms each ship their own loopback HTTP stub so an offline
