@@ -308,19 +308,16 @@ Phases (Amendment 51, DRAFT):
    (`gates/tuned_equipping.py`, `make equipping-check` in `make check`), and a
    tuned task's `instruction.md`/`tests/`/`solution/` are byte-identical to its
    bare sibling's, so an equipping level cannot change what was graded.
-4. **done for both Terraform arms, BLOCKING for awscdk** — the declared MCP
-   servers are installed in the arm images: `uv` 0.12.18 pinned by version and
-   sha256 through the asset mirror, then `awslabs.aws-documentation-mcp-server`
-   1.2.1 `uv tool install`ed at BUILD time into `/opt/uv-tools` with the console
-   script on PATH, on all three tuned arms. Nothing resolves a server at launch,
-   so the image digest covers the pin, and `make equipping-preflight` is green for
-   the four `hcl_raw`/`hcl_modules` tuned rows.
-   `awslabs.aws-iac-mcp-server` 1.0.26 does **not** install on linux/arm64:
-   guardpycfn 0.1.0 ships no aarch64 wheel and its Rust sdist pulls rustup at
-   build time. So the awscdk tuned rows stay red and **no awscdk tuned trial may
-   be run** — claude-code registers a server it cannot start, logs it, and
-   continues, and the row would overstate the equipping. The three ways out, each
-   a registered-artifact decision, are in `DECISIONS.md` Amendment 51.
+4. **done** — the declared MCP servers are installed in the arm images: `uv`
+   0.12.18 pinned by version and sha256 through the asset mirror, then
+   `awslabs.aws-documentation-mcp-server` 1.2.1 (all three tuned arms) and
+   `awslabs.cdk-mcp-server` 1.0.15 (awscdk) `uv tool install`ed at BUILD time
+   into `/opt/uv-tools` with the console scripts on PATH. Nothing resolves a
+   server at launch, so the image digest covers the pins, and
+   `make equipping-preflight` is green for all six tuned rows. The CDK server
+   replaces the `awslabs.aws-iac-mcp-server` the Kiro power names, which does
+   not install on linux/arm64 (guardpycfn 0.1.0 ships no aarch64 wheel, only a
+   Rust sdist); the substitution is registered in `DECISIONS.md` Amendment 51.
    The arm image digests moved: re-run `env setup` for every shard before the next
    live run.
 5. The tuned-row equipping iterated on the **train** split only, then the live

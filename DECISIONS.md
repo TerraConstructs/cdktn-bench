@@ -9405,7 +9405,7 @@ re-registered as a pinned artifact instead of a name. Five parts:
 |---|---|---|---|---|---|
 | `hcl_modules` | `terraform-skill` v1.17.1 | bench index tool (`streamable-http http://tf-registry:8081/mcp`) + AWS Docs MCP 1.2.1 | antonbabenko/terraform-skill `b59d2be9ff4db8f835c8459e05e325ba11e3a21f` | Apache-2.0 (LICENSE vendored; GitHub reads "Other" only because of a prepended copyright header) | same skill at v1.0.0, `7ec2e136cb51dd9a01c0704200f992b19c2f3771` |
 | `hcl_raw` | same | AWS Docs MCP 1.2.1 only — **no index tool** | same | Apache-2.0 | same |
-| `awscdk` | `cdk-authoring`, **bench-written** | `awslabs.aws-iac-mcp-server` 1.0.26 + AWS Docs MCP 1.2.1 | awslabs/mcp (Apache-2.0); the skill *cites* kirodotdev/powers `aws-infrastructure-as-code` | the Kiro power is **not redistributable** (no LICENSE; a use licence for Kiro users) → pointer + bench skill | same skill with v1-era facts |
+| `awscdk` | `cdk-authoring`, **bench-written** | `awslabs.cdk-mcp-server` 1.0.15 (MCP SDK 1.30.0) + AWS Docs MCP 1.2.1 | awslabs/mcp (Apache-2.0); the skill *cites* kirodotdev/powers `aws-infrastructure-as-code` | the Kiro power is **not redistributable** (no LICENSE; a use licence for Kiro users) → pointer + bench skill | same skill with v1-era facts |
 | `terraconstructs` | none | none | — | — | none |
 
 **What is stale, exactly** (H2 must name its own independent variable).
@@ -9446,11 +9446,10 @@ covers the copied `skills/` tree byte for byte, the emitted `mcp.json`,
 workspace seed and the image digest. It therefore moves per level and per byte of
 skill text (proved below). It does **not** cover the *version* of an MCP server
 declared only by `command`: the pin lives in `equipping/MANIFEST.json`, which
-ships in no task. **Installed, and the image digests cover the pins.** AWS Docs
-MCP is `ARG`-pinned in each arm's Dockerfile and `uv tool install`ed at build time
-into `/opt/uv-tools`, so its version is inside the image the digest addresses and
-nothing resolves a server at launch. The exception is `awslabs.aws-iac-mcp-server`
-on awscdk, which does not install on linux/arm64 at all (below). AWS Docs MCP
+ships in no task. **Installed, and the image digests cover the pins.** Every
+declared server is `ARG`-pinned in its arm's Dockerfile and `uv tool install`ed at
+build time into `/opt/uv-tools`, so its version is inside the image the digest
+addresses and nothing resolves a server at launch. AWS Docs MCP
 additionally reaches the public internet by design, so for that server the hash
 pins the client and never the corpus it answers from — logged, and the same
 deliberate fairness trade §2.2 already made.
@@ -9473,8 +9472,7 @@ deliberate fairness trade §2.2 already made.
 
 **DRAFT, and what promotes it.** Nothing here has run a trial. It is promoted by
 the first tuned live trial whose row carries `harness: tuned` derived from a
-container that actually held the material. Both Terraform arms are now ready for
-that; awscdk is not, for the reason below.
+container that actually held the material. All three arms are ready for it.
 
 **Phase 4: the servers installed in the images, and the one that cannot be.**
 `uv` 0.12.18 is pinned by version and sha256 and fetched through the asset
@@ -9486,22 +9484,33 @@ two needed no reconciliation — and `UV_PYTHON_DOWNLOADS=never` holds the
 interpreter at the apt python3 the image already had (3.11, against the package's
 >=3.10 floor) instead of an unpinned python-build-standalone download. Cost: about
 +110-120 MB per image, 41 MB of it the tool venv. `make equipping-preflight` is
-green for the four Terraform tuned rows, and each image answers an MCP
-`initialize` over stdio in about 0.7-1.1 s under `--network none`; the docs
-server's tool CALLS still reach the public docs site, which is the trade already
-logged above.
+green for all six tuned rows, and each image answers an MCP `initialize` over
+stdio in about 0.7-1.1 s under `--network none`; the docs server's tool CALLS
+still reach the public docs site, which is the trade already logged above.
 
-`awslabs.aws-iac-mcp-server` 1.0.26 is **not installed**, and the reason is
-upstream. It imports `guardpycfn` at module load, and guardpycfn 0.1.0 publishes
-wheels for macos-arm64, manylinux x86_64 and win_amd64 only — no linux/aarch64 —
-so on the bench's own host arch uv falls back to its Rust sdist and maturin
-downloads rustup mid-build. Three ways out, none of them this file's to take:
-(a) accept an unpinned Rust toolchain plus a crates.io crate tree inside a
-measured image; (b) re-pin the awscdk tuned cell to a server release without that
-dependency, which changes the registered artifact; (c) drop `aws-iac` from
-`equipping/levels/awscdk.tuned*.yaml`, which changes prereg §2.2's awscdk cell.
-Until one is chosen, `make equipping-preflight` is red for the two awscdk tuned
-rows — naming that one command — and **no awscdk tuned trial may be run**.
+**The awscdk substitution.** The Kiro power's `mcp.json` names
+`awslabs.aws-iac-mcp-server` 1.0.26, which does not install on linux/aarch64: it
+imports `guardpycfn` at module load, and guardpycfn 0.1.0 publishes wheels for
+macos-arm64, manylinux x86_64 and win_amd64 only, so on the bench's own host arch
+uv falls back to its Rust sdist and maturin downloads rustup mid-build. Of the
+three ways out — (a) an unpinned Rust toolchain plus a crates.io crate tree inside
+a measured image, (b) a different server release for the cell, (c) dropping the
+server from the cell — the owner took (b): `awslabs.cdk-mcp-server` 1.0.15, the
+CDK-specific server in the same `awslabs/mcp` repository that the aws-iac package
+succeeded, pure Python, seven credential-free tools (CDK guidance, cdk-nag rule
+explanation and suppression check, Solutions Constructs and GenAI-constructs
+lookup, Bedrock agent schema, Lambda layer docs). Two facts about that pin are
+part of the record: PyPI marks every cdk-mcp-server release **yanked** with the
+reason "Superceeded by awslabs.aws-iac-mcp-server", so only an exact `==` resolves
+it and no bump is coming; and its own SDK floor (`mcp[cli]>=1.23.0`) now resolves
+to mcp 2.x, which removed the `mcp.server.fastmcp` module the package imports, so
+the Dockerfile holds the SDK at `mcp[cli]==1.30.0` and the resolved pair is inside
+the image digest. This is a narrower "AWS MCP" than the power's (no CloudFormation
+docs search, no deploy/troubleshoot tools), and it is what the awscdk tuned cell
+means from here on; `scripts/vendor_equipping.pins.json` carries the same
+reasoning beside the pin. The stdio handshake proof: `initialize` →
+`tools/list` returns the seven names in the rebuilt image under
+`--network none`.
 
 **Evidence (host-side).**
 
@@ -9518,10 +9527,9 @@ rows — naming that one command — and **no awscdk tuned trial may be run**.
   `environment/Dockerfile` (the appended COPY), `environment/equipping/` (new) and
   `task.toml`.
 * `make equipping-check` (static): 6 of 6 OK, exit 0. `make equipping-preflight`
-  (with images): **exit 1 for all six**, naming
-  `awslabs.aws-documentation-mcp-server` (three arms) and
-  `awslabs.aws-iac-mcp-server` (awscdk) as absent from PATH. That red is the
-  amendment's own blocking finding, not a test defect.
+  (with images): 6 of 6 OK once every declared command is installed at build
+  time; before phase 4 it was exit 1 for all six, naming the absent commands,
+  which is the gate doing its job.
 * MCP round trip against the sidecar in the rebuilt `cdktn-bench/hcl-modules:dev`
   (scratch compose file, one session): `initialize` → `notifications/initialized`
   → `tools/list` (nine names) → one `tools/call` per tool, no `isError`; five

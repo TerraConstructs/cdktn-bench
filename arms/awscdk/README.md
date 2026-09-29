@@ -189,7 +189,7 @@ under `equipping/`, keyed `levels/awscdk.<level>.yaml`, and a spec opts in with
 this arm emits today), `tuned` (prereg §2.2's row), `tuned-stale` (H2's staleness
 cost: the same material at a pin whose version-specific facts no longer hold).
 
-- **Tuned**: a bench-written `cdk-authoring` skill plus `awslabs.aws-iac-mcp-server`
+- **Tuned**: a bench-written `cdk-authoring` skill plus `awslabs.cdk-mcp-server`
   and AWS Docs MCP. prereg §2.2 names "AWS MCP + AWSCDK agent-tool plugins / Kiro
   Powers"; the Kiro power's prose is **not redistributable** (no LICENSE, a
   use-licence for Kiro users), so the skill is bench-written and cites it in
@@ -197,18 +197,17 @@ cost: the same material at a pin whose version-specific facts no longer hold).
 - **`tuned-stale`**: the same skill with v1-era facts — `@aws-cdk/aws-*` and
   `@aws-cdk/core` imports (this arm pins `aws-cdk-lib` 2.263.0, so they do not
   compile), `CDK_NEW_BOOTSTRAP=1`, `cdk synth` without `--no-lookups`.
-- **AWS Docs MCP is installed; the IaC server is not.** `uv` 0.12.18 and AWS Docs
-  MCP 1.2.1 are `ARG`-pinned in `environment/Dockerfile` and `uv tool install`ed
-  at build time into `/opt/uv-tools` with the console script on PATH, so the image
-  digest — which is in the equipping hash — covers that pin, and nothing resolves
-  a server at launch. `awslabs.aws-iac-mcp-server` 1.0.26 cannot be installed on
-  this host arch: it imports `guardpycfn` at module load, and guardpycfn 0.1.0
-  publishes wheels for macos-arm64, manylinux x86_64 and win_amd64 only, so on
-  linux/arm64 uv builds it from a Rust sdist and maturin downloads rustup
-  mid-build. Adding an unpinned Rust toolchain and a crates.io crate tree to a
-  measured image is a registered-artifact decision, so it is not taken here:
-  `make equipping-preflight` stays red for the two awscdk tuned rows, naming that
-  one command. `../../DECISIONS.md` Amendment 51 carries the options.
+- **Both servers are installed at build time.** `uv` 0.12.18, AWS Docs MCP 1.2.1
+  and AWS CDK MCP 1.0.15 are `ARG`-pinned in `environment/Dockerfile` and
+  `uv tool install`ed into `/opt/uv-tools` with the console scripts on PATH, so
+  the image digest — which is in the equipping hash — covers the pins, and
+  nothing resolves a server at launch. The CDK server stands in for the
+  `awslabs.aws-iac-mcp-server` the Kiro power names, which imports `guardpycfn`
+  at module load and has no linux/aarch64 wheel (only a Rust sdist). Every
+  cdk-mcp-server release is yanked on PyPI in favour of that successor, so the
+  pin is an exact `==`, and its MCP SDK is held at 1.30.0 because the package
+  imports a module mcp 2.x removed. `../../DECISIONS.md` Amendment 51 registers
+  the substitution.
 
 A tuned task of this arm differs from its bare sibling in exactly two paths —
 `task.toml` (`skills_dir` + `[[environment.mcp_servers]]`) and `environment/`

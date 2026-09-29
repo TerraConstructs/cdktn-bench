@@ -69,22 +69,28 @@
       "reaches_the_public_internet_note": "This server fetches docs.aws.amazon.com at call time, by design and per prereg \u00a72.2. It is the one tuned component whose ANSWERS the equipping hash cannot cover; the version pin bounds the client, not the corpus."
     },
     {
-      "name": "aws-iac-mcp-server",
+      "name": "cdk-mcp-server",
       "level": "tuned",
       "arms": [
         "awscdk"
       ],
       "prereg_row": "\u00a72.2 tuned, AWSCDK arm: \"AWS MCP + AWSCDK agent-tool plugins\"",
       "upstream_repo": "awslabs/mcp",
-      "subtree": "src/aws-iac-mcp-server",
-      "distribution": "PyPI awslabs.aws-iac-mcp-server",
-      "version": "1.0.26",
+      "subtree": "src/cdk-mcp-server",
+      "distribution": "PyPI awslabs.cdk-mcp-server",
+      "version": "1.0.15",
       "licence": "Apache-2.0",
       "redistributable": true,
       "vendored": false,
-      "vendoring_note": "Same shape as the docs server: declared and pinned, installed into the awscdk image, not vendored as text. UNPROVEN here.",
-      "launch_form": "stdio, console script `awslabs.aws-iac-mcp-server`. Its CDK tools (search_cdk_documentation, search_cdk_samples_and_constructs, cdk_best_practices, read_iac_documentation_page, search_cloudformation_documentation) need no AWS credentials; the deploy/troubleshoot tools do, and are not used by an authoring trial.",
-      "is_the_kiro_power_mcp": "Yes -- kirodotdev/powers/aws-infrastructure-as-code/mcp.json declares exactly this server. The power's CONFIG is this pin; the power's PROSE is what is not redistributable, see cdk-authoring below."
+      "vendoring_note": "Same shape as the docs server: declared and pinned, `uv tool install`ed into the awscdk image at build time, not vendored as text.",
+      "launch_form": "stdio, console script `awslabs.cdk-mcp-server`. Seven tools, none needing AWS credentials: CDKGeneralGuidance, ExplainCDKNagRule, CheckCDKNagSuppressions, GenerateBedrockAgentSchema, GetAwsSolutionsConstructPattern, SearchGenAICDKConstructs, LambdaLayerDocumentationProvider. The two Solutions-Constructs / GenAI-constructs lookups fetch from GitHub at call time, the same corpus-not-pinned trade as the docs server.",
+      "why_not_aws_iac_mcp_server": "The Kiro power (kirodotdev/powers/aws-infrastructure-as-code/mcp.json) declares awslabs.aws-iac-mcp-server, which cannot be installed on linux/aarch64: it imports guardpycfn at module load and guardpycfn 0.1.0 ships no aarch64 wheel, only a Rust sdist. awslabs.cdk-mcp-server is the CDK-specific predecessor in the same repository, pure Python, and PyPI marks every release yanked with reason \"Superceeded by awslabs.aws-iac-mcp-server\": the pin is therefore an exact `==`, which is the only form uv resolves a yanked release under, and it is a registered-artifact choice (DECISIONS.md Amendment 51, option b).",
+      "mcp_sdk_pin": {
+        "distribution": "PyPI mcp",
+        "version": "1.30.0",
+        "why": "1.0.15 imports mcp.server.fastmcp, removed in mcp 2.x; its own floor is `mcp[cli]>=1.23.0`, which resolves to 2.x today and fails at launch. The awscdk Dockerfile installs it with `--with mcp[cli]==1.30.0` so the resolved SDK is exact and inside the image digest."
+      },
+      "is_the_kiro_power_mcp": "No: the power's config names aws-iac-mcp-server. The power's PROSE remains not redistributable, see cdk-authoring below."
     },
     {
       "name": "cdk-authoring",

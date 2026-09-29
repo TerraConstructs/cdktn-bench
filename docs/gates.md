@@ -395,11 +395,11 @@ What it checks, per generated task:
 | `oracle_identity_defects` | any byte outside `task.toml`/`environment/` differing from the bare sibling — equipping changes the prompt surface, never the oracle |
 | `image_defects` | a declared `stdio` MCP command that is not on PATH in `cdktn-bench/<arm>:dev` |
 
-**Status: the image half is RED.** No arm image installs
-`awslabs.aws-documentation-mcp-server` (all three tuned arms) or
-`awslabs.aws-iac-mcp-server` (awscdk), so a tuned trial run today would publish a
-row overstating what the agent had. That install is the phase that unblocks the
-first tuned trial (DECISIONS.md Amendment 51).
+Every declared `stdio` command (`awslabs.aws-documentation-mcp-server` on the
+three tuned arms, `awslabs.cdk-mcp-server` on awscdk) is installed into its arm
+image at build time under an `ARG` pin, so the image half is green for all six
+tuned rows and a tuned row cannot overstate what the agent had (DECISIONS.md
+Amendment 51).
 
 ### Where the `harness` value comes from
 

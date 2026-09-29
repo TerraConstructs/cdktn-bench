@@ -29,11 +29,9 @@
 # resolve happens at trial time. They are prompt surface, never a grading path;
 # equipping/levels/awscdk.tuned*.yaml declares them and the image digest (in the
 # equipping hash) covers these pins:
-#   uv          0.12.18   (installs the server below into /opt/uv-tools)
+#   uv          0.12.18   (installs the two servers below into /opt/uv-tools)
 #   AWS Docs MCP 1.2.1    (`awslabs.aws-documentation-mcp-server` on PATH)
-# The level also declares AWS IaC MCP 1.0.26, which is NOT installed: guardpycfn
-# publishes no linux/aarch64 wheel, so on this host arch it only builds through a
-# Rust toolchain. The step below says what that would cost.
+#   AWS CDK MCP 1.0.15    (`awslabs.cdk-mcp-server` on PATH, MCP SDK held at 1.30.0)
 #
 # BOTH tier-1 graders ship here on purpose. cfn-guard 3.2.0 cannot express a
 # cross-resource logical-id join, so it cannot be the grading AUTHORITY in a
@@ -243,18 +241,22 @@ RUN set -eu; \
       "awslabs.aws-documentation-mcp-server==${AWS_DOCUMENTATION_MCP_VERSION}"; \
     command -v awslabs.aws-documentation-mcp-server
 
-# --- AWS IaC MCP server, the second `stdio` server the awscdk tuned level
-# --- declares (equipping/levels/awscdk.tuned*.yaml) -- NOT INSTALLED, and the
-# --- reason is upstream, not a choice: 1.0.26 imports `guardpycfn` at module
-# --- load (tools/cloudformation_compliance_checker.py), and guardpycfn 0.1.0
-# --- publishes wheels for macos-arm64, manylinux x86_64 and win_amd64 only. On
-# --- a linux/arm64 build -- the bench's own host arch -- uv therefore builds it
-# --- from its Rust sdist, maturin finds no cargo and downloads rustup mid-build.
-# --- Installing it here would mean an unpinned Rust toolchain plus a crates.io
-# --- crate tree inside a measured image, which is a registered-artifact decision
-# --- and not one this file may make. `make equipping-preflight` stays red for
-# --- the two awscdk tuned rows until it is taken; ROADMAP.md M2 phase 4 and
-# --- DECISIONS.md Amendment 51 carry the options.
+# --- AWS CDK MCP server, the second `stdio` server the awscdk tuned level
+# --- declares (equipping/levels/awscdk.tuned*.yaml), installed the same way.
+# --- It replaces the aws-iac server the Kiro power names, which imports
+# --- `guardpycfn` at module load and has no linux/aarch64 wheel (DECISIONS.md
+# --- Amendment 51). PyPI marks every cdk-mcp-server release yanked in favour of
+# --- that successor, so only an exact `==` resolves it, and its own MCP SDK floor
+# --- (`mcp[cli]>=1.23.0`) now lands on mcp 2.x, which removed the
+# --- `mcp.server.fastmcp` module it imports: the SDK is pinned exact as well, so
+# --- the resolved pair is inside the image digest.
+ARG AWS_CDK_MCP_VERSION=1.0.15
+ARG AWS_CDK_MCP_SDK_VERSION=1.30.0
+RUN set -eu; \
+    uv tool install --no-cache --python /usr/bin/python3 \
+      --with "mcp[cli]==${AWS_CDK_MCP_SDK_VERSION}" \
+      "awslabs.cdk-mcp-server==${AWS_CDK_MCP_VERSION}"; \
+    command -v awslabs.cdk-mcp-server
 
 # --- Workspace scaffold ---------------------------------------------------
 # /app/project is the agent's working directory: a starting CDK TypeScript

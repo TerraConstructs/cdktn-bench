@@ -1,9 +1,9 @@
 {
   "mcp_servers": [
     {
-      "name": "aws-iac",
+      "name": "aws-cdk",
       "transport": "stdio",
-      "command": "awslabs.aws-iac-mcp-server",
+      "command": "awslabs.cdk-mcp-server",
       "args": []
     },
     {

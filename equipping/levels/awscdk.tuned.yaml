@@ -6,12 +6,12 @@ skills:
   - source: bench/cdk-authoring
     as: cdk-authoring
 mcp_servers:
-  # The MCP the Kiro power itself declares (kirodotdev/powers/
-  # aws-infrastructure-as-code/mcp.json), pinned. Its CDK documentation,
-  # samples and best-practice tools need no AWS credentials.
-  - name: aws-iac
+  # awslabs' CDK-specific server (CDK guidance, cdk-nag rules, Solutions
+  # Constructs), pinned in equipping/MANIFEST.json. It stands in for the
+  # aws-iac server the Kiro power declares, which has no linux/aarch64 build.
+  - name: aws-cdk
     transport: stdio
-    command: awslabs.aws-iac-mcp-server
+    command: awslabs.cdk-mcp-server
     args: []
   - name: aws-documentation
     transport: stdio

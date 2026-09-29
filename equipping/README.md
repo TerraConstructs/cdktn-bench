@@ -48,12 +48,10 @@ installed with `cp -r <skills_dir>/* ... || true`, and claude-code reports an MC
 server it cannot start in its own log and carries on. So the declaration is
 checked against the artifact instead — `gates/tuned_equipping.py`, `make
 equipping-check` (bytes only, in `make check`) and `make equipping-preflight`
-(one `docker run` per declared `stdio` command). **That gate is RED today**: no
-arm image installs `awslabs.aws-documentation-mcp-server` or
-`awslabs.aws-iac-mcp-server`, so a tuned trial run now would publish a row
-claiming equipping the agent did not have. Installing them in the arm images is
-the phase that unblocks the first tuned trial (ROADMAP M2, DECISIONS.md
-Amendment 51).
+(one `docker run` per declared `stdio` command). Every declared server is
+`uv tool install`ed into its arm image at build time under an `ARG` pin, so the
+gate is green for all six tuned rows and the image digest covers the versions
+(ROADMAP M2 phase 4, DECISIONS.md Amendment 51).
 
 The row's own label is derived, never passed: `gates/equipping.py::
 harness_for_task` reads the level off the task directory and the fact that the

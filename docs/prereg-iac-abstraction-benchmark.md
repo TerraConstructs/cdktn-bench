@@ -88,8 +88,10 @@ Both conditions keep the execute-and-read-error loop. **Tuned** adds each ecosys
 > power is not redistributable; the skill is bench-written and cites it). The
 > factorial's third level (`tuned-stale`, H2) is a third value of the published
 > `harness` column, so it is its own cell and never pools with `tuned`. Amendment
-> 51 also records what is NOT yet true: no arm image installs the declared MCP
-> servers, so no tuned trial may be run until `make equipping-preflight` is green.
+> The AWSCDK cell's "AWS MCP" is `awslabs.cdk-mcp-server` 1.0.15, not the
+> `aws-iac` server the power names, because the latter has no linux/aarch64 build;
+> Amendment 51 registers that substitution and the build-time install of every
+> declared server, which is what makes `make equipping-preflight` green.
 > The `terraconstructs` cell stays blank — this table names no material for it.
 
 Symmetry principle: each arm gets the *same kind* of equipping — an ecosystem docs/MCP layer plus an authoring skill — differing only in substrate. Note both TF arms additionally get AWS Docs MCP so the comparison is not handicapped on provider-attribute lookup; that is a deliberate fairness choice, logged. What makes the comparison unriggable is that no arm gets a capability class the others are denied.

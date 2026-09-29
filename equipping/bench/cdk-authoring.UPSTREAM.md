@@ -16,17 +16,22 @@ use the power for their personal or business purposes" to Kiro users — no
 redistribution grant, so copying its prose into this repository or into an arm
 image is not permitted. `scripts/vendor_equipping.pins.json` records the quote.
 
-**What is taken, and what is not.** The power's *MCP configuration* is a factual
-pin and is reused: `awslabs.aws-iac-mcp-server` (Apache-2.0, `awslabs/mcp`,
-pinned 1.0.26), whose credential-free tools are `search_cdk_documentation`,
-`search_cdk_samples_and_constructs`, `cdk_best_practices`,
-`read_iac_documentation_page` and `search_cloudformation_documentation`. The
-power's *prose* is not taken: `SKILL.md` beside this file is written here, from
+**What is taken, and what is not.** The power's *MCP configuration* names
+`awslabs.aws-iac-mcp-server`, which cannot be installed on linux/aarch64 (it
+imports `guardpycfn`, which ships no wheel for that arch). The level therefore
+declares `awslabs.cdk-mcp-server` 1.0.15 instead (Apache-2.0, the same
+`awslabs/mcp` repository, the CDK-specific server that package succeeded), whose
+credential-free tools are `CDKGeneralGuidance`, `ExplainCDKNagRule`,
+`CheckCDKNagSuppressions`, `GetAwsSolutionsConstructPattern`,
+`SearchGenAICDKConstructs`, `GenerateBedrockAgentSchema` and
+`LambdaLayerDocumentationProvider`; `scripts/vendor_equipping.pins.json` records
+the substitution and DECISIONS.md Amendment 51 registers it. The power's *prose*
+is not taken: `SKILL.md` beside this file is written here, from
 the public CDK documentation and from this arm's own pinned versions
 (`aws-cdk-lib` 2.263.0, `constructs` 10.8.1, CDK CLI 2.1135.0 —
 `arms/awscdk/environment/Dockerfile`).
 
 **The consequence for the result.** The AWSCDK tuned cell is therefore
-"pinned AWS IaC MCP + AWS Docs MCP + a bench-written authoring skill", not
+"pinned AWS CDK MCP + AWS Docs MCP + a bench-written authoring skill", not
 "the Kiro power". That is a deviation from prereg §2.2's wording and must be
 registered as such; it is a licence constraint, not a design preference.
