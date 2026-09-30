@@ -239,7 +239,7 @@ arm). Only the first is visible in a trial. M6 separates them.
 
 ## 4. Measurement roadmap
 
-### M1 — finish the profile — **done host-side; blast radius promotes on the next live trial**
+### M1 — finish the profile — **done; Amendment 49 ACCEPTED 2026-10-01 (live action buckets read a converged plan, see the amendment)**
 All three profile columns are first-class fields of the published row
 (`metrics/result_schema.json`), emitted by `gates/emit_result.py` at gate time
 rather than extracted afterwards from a job dir that may be gone, and reported
@@ -266,7 +266,12 @@ which harbor collects into `<trial>/artifacts/`. Cost measured over one spec's
 40–55 KB terraconstructs, 248–338 KB hcl-modules — against an ~812 KB read-only
 trial dir. **The four `jobs/amend46-promotion` trials predate this**, so their
 rows carry `blast_radius: null` with `blast_radius_unavailable` naming the
-reason; the field is not backfillable and is never guessed at zero.
+reason; the field is not backfillable and is never guessed at zero. The six
+`jobs/sliceC-promotion/2026-09-30__23-58-05` rows all carry it. They also show
+that on a live Terraform row the verifier's plan is post-apply, so the action
+buckets are all `no_op`: `total` and the root/module split are the live
+measurement, and the agent's own change classes need a plan against the seed
+state — an open verifier change, registered in Amendment 49's acceptance note.
 
 ### M2 — equipping factorial: does materialized discovery erase the tax?
 The harness is **already built for this**: `gates/equipping.py` hashes
@@ -402,8 +407,12 @@ Phases, each landing on its own:
    Live: four `hcl_modules` trials on shard 0 (`jobs/amend46-promotion`), all
    through the compose sidecar; three clean 1.0 rows and one 0.0 that was an
    oracle defect on a module-created zone, fixed and re-run to 1.0
-   (`docs/live-results.md`). The mutating and brownfield arm forms are
-   promoted by slice C's own trials.
+   (`docs/live-results.md`). The mutating and brownfield arm forms were
+   promoted by slice C's live battery on 2026-09-30: five clean 1.0 rows
+   (teardown, replacement, two brownfield mutations, the singleton clobber);
+   the multi-step form's one trial is a valid 0.0 (the agent built an HTTP API
+   where a REST API was asked, because the registry has no REST module) and
+   that form still owes a green row.
 6. **Corpus roll-out**, in three slices because the three have different
    blockers.
    * **Slice A — done, offline. Ten read-only greenfield specs decided, all

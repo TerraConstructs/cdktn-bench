@@ -9239,7 +9239,7 @@ bump are not pooled.
   under `generator/tests/fixtures/`), unchanged by this bump.
 * Full `pytest` (1858 passed, 6 skipped) and `ci/check-smoke-drift.sh` green.
 
-## Amendment 49 (2026-09-24) — blast radius is a row field, and the verifier keeps the document it graded — DRAFT
+## Amendment 49 (2026-09-24) — blast radius is a row field, and the verifier keeps the document it graded — ACCEPTED
 
 **Decision.** The published result row (`metrics/result_schema.json`) gains three
 OPTIONAL profile columns, and the generated verifier keeps one more file so the
@@ -9295,13 +9295,35 @@ per hcl-raw plan pair, 40–55 KB terraconstructs, 248–338 KB hcl-modules (who
 plans carry the vendored modules' configuration), against an ~812 KB read-only
 trial dir.
 
-**DRAFT, and what promotes it.** This moves generated verifier behaviour, so it
-follows the classification the Python-verifier change took (Amendment 44: a
-verifier-only change, ACCEPTED on its own promotion run, not on landing).
-**It is promoted by the next live trial whose row carries a non-null
-`blast_radius`** read from an artifact that trial's own verifier persisted. Until
-then the host-side proof below stands, and no published row claims a blast
-radius.
+**Promotion clause.** This moves generated verifier behaviour, so it follows
+the classification the Python-verifier change took (Amendment 44: a
+verifier-only change, ACCEPTED on its own promotion run, not on landing). It is
+promoted by the next live trial whose row carries a non-null `blast_radius` read
+from an artifact that trial's own verifier persisted.
+
+**ACCEPTED 2026-10-01** on all six rows of `jobs/sliceC-promotion/2026-09-30__23-58-05`
+(`hcl_modules`, `docs/live-results.md`): every verifier persisted `plan.json`
+and `plan.normalised.json`, every row carries a non-null `blast_radius` with
+`source: terraform-plan` (totals 3 to 25, module-scoped 3 to 21, root 0 to 4),
+`rbw` (0.9% to 50.5%) and `escape_hatch`, and none carries
+`blast_radius_unavailable`. The multi-step trial's read comes from its last
+executed step's artifact, `steps/01-initial-deploy/artifacts/plan.json`, and the
+row says so.
+
+**One limitation the live rows registered, which the offline collection could
+not.** The verifier plans AFTER the agent has applied, so on a live Terraform
+row `resource_changes[]` describes a converged workspace: all six rows count
+every resource as `no_op` and zero in every other bucket. `total` and the
+root-vs-module split are exact — they are the footprint the agent's
+configuration manages, and the compression claim reads from them — but the
+action buckets on a live row say nothing about what the agent's change did to
+what was already there. The offline collections in the evidence below show
+creates because `gates/aws_stub.py` never applies. The read that would fill the
+buckets with the agent's own change is a plan of the agent's final
+configuration against the SEED state the pre-invoke proof already fingerprints
+(`-refresh=false`, a state copy kept under `/logs`), which is a verifier change
+and therefore its own amendment; until then `make metrics` must not present a
+live Terraform row's replace or delete rate as a measurement.
 
 **Evidence (host-side).**
 

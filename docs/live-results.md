@@ -436,3 +436,46 @@ Fixed in the spec and the reference (`key = "quote-service.zip"` plus an
 explicit `depends_on` on the object module); `seed-parity`, `check-paths` and
 `falsifiability` are green again. The scenario reset returned anchor-3 to
 baseline, so the partial seed left nothing behind.
+
+## Slice C promotion — 2026-09-30 (the six `hcl_modules` arm forms; Amendment 49 promoted)
+
+`jobs/sliceC-promotion/2026-09-30__23-58-05`, `claude-code` on
+`claude-sonnet-5`, six tasks across the five shards, no exceptions. Every
+row emits through `gates/emit_result.py` with no void, and every row carries
+a non-null `blast_radius` read from the plan its own verifier persisted,
+which is what promotes Amendment 49.
+
+| scenario | arm | reward | output tok | LLM calls | tier0 | tier1 | blast (total / module) | rbw | escape hatch |
+|---|---|---:|---:|---:|:---:|:---:|---:|---:|:---:|
+| singleton-child-resource-clobber | hcl_modules | 1.0 | 2,583 | 13 | pass | PASS | 3 / 3 | 50.5% | no |
+| named-resource-replacement | hcl_modules | 1.0 | 14,708 | 27 | pass | PASS | 9 / 8 | 2.4% | no |
+| ecr-repo-destroy-force-delete | hcl_modules | 1.0 | 3,306 | 13 | pass | no asserts | 3 / 3 | 47.7% | no |
+| s3-acl-vs-object-ownership-log-delivery | hcl_modules | 1.0 | 12,543 | 26 | pass | PASS | 5 / 5 | 1.0% | no |
+| lambda-alias-tracks-unpublished-latest | hcl_modules | 1.0 | 3,921 | 15 | pass | no asserts | 9 / 9 | 3.2% | no |
+| apigw-redeploy (step 1 of 2) | hcl_modules | 0.0 | 17,389 | 47 | 1 of 5 | PASS | 25 / 21 | 0.9% | yes |
+
+The five 1.0 rows promote the teardown, replacement, brownfield-mutation and
+singleton arm forms of `hcl_modules`. The lambda-alias row is also the first
+live deploy of the seed fixed earlier the same day, and its idempotence tier
+converged, so the module-level `depends_on` the fix added does not perturb a
+post-apply plan.
+
+**The apigw 0.0 is the agent's, and it is the arm's discovery cost in the
+open.** The instruction asks for a REST API; the agent found that the registry
+serves only `apigateway-v2`, wrote in its own summary that "the REST/v1
+module isn't available", and built an HTTP API instead of composing the REST
+resources raw beside the Lambda module calls, which is what the reference
+does and what `specs/apigw-redeploy.yaml`'s `arms.hcl_modules.reason` says
+the arm requires. Four of five tier-0 asserts found no `aws_api_gateway_*`
+resource. Step 2 never ran. Its `escape_hatch: yes` is the raw
+`aws_lambda_permission` resources it did write; on a partial-fit spec the
+correct answer is itself raw-plus-modules, so that flag is not a deviation
+signal there — a per-spec caveat for the profile columns, not a defect in
+the row.
+
+**What the live rows say about blast radius.** Every action bucket on every
+row is `no_op`: the verifier plans after the agent has applied, so the plan
+describes a converged workspace. `total` and the root-vs-module split are the
+measurement these rows carry; the change classes of the agent's own edit need
+a plan against the seed state, registered as an open verifier change in
+Amendment 49's acceptance note.
