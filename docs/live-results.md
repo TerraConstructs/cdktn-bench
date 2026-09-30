@@ -413,3 +413,26 @@ module and the certificate through the acm module.
 Output tokens come from the `claude-code-stream` fallback (Harbor's
 trajectory conversion hit its step-id gap on this run). With this row every
 read-only `hcl_modules` form has a clean live trial; Amendment 46 is ACCEPTED.
+
+## Slice C promotion, attempt 1 — 2026-09-30 (invalid: wrong agent; one seed defect)
+
+`jobs/sliceC-promotion/2026-09-30__16-49-42`, six `hcl_modules` tasks across
+the five shards. **No row here is a measurement.** The battery was launched
+with `-a oracle`, Harbor's reference-solution agent, instead of the default
+`claude-code`. That agent runs `solution/solve.sh` inside the agent container,
+where `tests/` is not mounted and `LIVE` is unset, so every reference wrote
+its `main.tf`, exited 127 on `tests/static_tiers.sh`, applied nothing, and
+was correctly downgraded to 0.0 by `live_check` (`fail_stale`) and the
+idempotence tier (`not_verifiable`, seed serial unchanged). Five rows of 0.0
+that prove the gating, not the arm.
+
+The sixth task never reached an agent: the `lambda-alias` `hcl_modules` seed
+failed its live seed proof on anchor-3 (`ScriptExecutionError`). The seed
+passed the Lambda module `key = module.quote_service_package.s3_object_id`;
+under aws provider 6 an `aws_s3_object`'s `id` is `bucket/key`, so Lambda's
+`CreateFunction` asked S3 for a key that does not exist (`NoSuchKey`). The
+offline seed gates plan without applying, which is why they never saw it.
+Fixed in the spec and the reference (`key = "quote-service.zip"` plus an
+explicit `depends_on` on the object module); `seed-parity`, `check-paths` and
+`falsifiability` are green again. The scenario reset returned anchor-3 to
+baseline, so the partial seed left nothing behind.

@@ -25,10 +25,15 @@ module "quote_service" {
 
   create_package = false
 
+  # The object submodule's only key-shaped output is `s3_object_id`, which
+  # aws provider 6 renders as `bucket/key`; Lambda would then look up a key
+  # that does not exist. The key is named and the order is kept explicit.
   s3_existing_package = {
     bucket = module.quote_service_packages.s3_bucket_id
-    key    = module.quote_service_package.s3_object_id
+    key    = "quote-service.zip"
   }
+
+  depends_on = [module.quote_service_package]
 
   publish = true
 

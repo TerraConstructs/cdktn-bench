@@ -57,8 +57,10 @@ module "quote_service" {
 
   s3_existing_package = {
     bucket = module.quote_service_packages.s3_bucket_id
-    key    = module.quote_service_package.s3_object_id
+    key    = "quote-service.zip"
   }
+
+  depends_on = [module.quote_service_package]
 
   publish = true
 
