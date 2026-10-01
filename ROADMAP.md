@@ -416,8 +416,10 @@ Phases, each landing on its own:
    the multi-step form failed twice the same way (an HTTP API built where a
    REST API was asked, the arm sentence read as modules-only), which
    Amendment 52 answered by naming in the sentence that a provider resource is
-   written raw where no module fits; that form owes a green row under the new
-   sentence.
+   written raw where no module fits. Under that sentence the first trial went
+   1.0 on both steps (`jobs/amend52-apigw/2026-10-01__11-20-53`): REST
+   resources raw beside the Lambda module calls, the reference's own shape. Every
+   `hcl_modules` arm form now has a clean live row.
 6. **Corpus roll-out**, in three slices because the three have different
    blockers.
    * **Slice A — done, offline. Ten read-only greenfield specs decided, all

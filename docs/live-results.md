@@ -524,5 +524,24 @@ Amendment 52: the sentence now says where no module covers a resource, the
 provider resource is written directly beside the module calls. Both apigw
 rows stay as valid 0.0 rows of the superseded prompt, kept apart from the
 new prompt's rows by the equipping hash; the retry is the first row under
-the new sentence, and the multi-step form of this arm has no green row until
-it lands.
+the new sentence.
+
+## Amendment 52 first row — 2026-10-01 (apigw-redeploy on `hcl_modules`, both steps)
+
+`jobs/amend52-apigw/2026-10-01__11-20-53`, one trial, 6 m 48 s, run from the
+agent session under aws-vault. The first row of the amended sentence.
+
+| scenario | arm | reward | output tok (s1 + s2) | LLM calls | tier0 | tier1 | blast (total / module) | rbw | escape hatch |
+|---|---|---:|---:|---:|:---:|:---:|---:|---:|:---:|
+| apigw-redeploy (2 steps) | hcl_modules | 1.0 | 15,943 (9,425 + 6,518) | 48 | 5/5, 6/6 | PASS, PASS | 30 / 16 | 1.9% | yes |
+
+The agent again found only `apigateway-v2` in the registry and this time did
+what the sentence now names: Lambda functions and their `/cdktn-bench-task/`
+roles through `terraform-aws-modules/lambda/aws` 8.8.2, the REST API, its
+resources, methods, integrations, deployment and stage as raw
+`aws_api_gateway_*` resources beside them. Step 2 added the MOCK `/status`
+route, extended the deployment's trigger hash and redeployed in place with
+nothing destroyed, which is the redeploy fact the scenario measures.
+`escape_hatch: yes` is that raw composition, the correct answer on this
+partial-fit spec. With this row every `hcl_modules` arm form has a clean live
+trial.
