@@ -413,9 +413,11 @@ Phases, each landing on its own:
    (`docs/live-results.md`). The mutating and brownfield arm forms were
    promoted by slice C's live battery on 2026-09-30: five clean 1.0 rows
    (teardown, replacement, two brownfield mutations, the singleton clobber);
-   the multi-step form's one trial is a valid 0.0 (the agent built an HTTP API
-   where a REST API was asked, because the registry has no REST module) and
-   that form still owes a green row.
+   the multi-step form failed twice the same way (an HTTP API built where a
+   REST API was asked, the arm sentence read as modules-only), which
+   Amendment 52 answered by naming in the sentence that a provider resource is
+   written raw where no module fits; that form owes a green row under the new
+   sentence.
 6. **Corpus roll-out**, in three slices because the three have different
    blockers.
    * **Slice A — done, offline. Ten read-only greenfield specs decided, all

@@ -519,5 +519,10 @@ says the REST resources stay raw beside the Lambda module calls, which is
 what the reference does, but no sentence the agent sees says a provider
 resource is allowed where no module fits. Whether that is the arm's discovery
 cost in the open or an instruction defect is a registered-prompt decision
-(the sentence is shared by every `hcl_modules` task), recorded here and left
-to the owner; the multi-step form of this arm has no green row either way.
+(the sentence is shared by every `hcl_modules` task). Taken the same day as
+Amendment 52: the sentence now says where no module covers a resource, the
+provider resource is written directly beside the module calls. Both apigw
+rows stay as valid 0.0 rows of the superseded prompt, kept apart from the
+new prompt's rows by the equipping hash; the retry is the first row under
+the new sentence, and the multi-step form of this arm has no green row until
+it lands.

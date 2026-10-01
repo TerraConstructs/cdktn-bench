@@ -9602,3 +9602,51 @@ as one literal string, so the most natural phrasing of the commonest request —
 whitespace-separated word must now match, each anywhere in a module name, its
 description or one of its input names. A single-word query is unaffected; a
 handicap on the tuned level is not a property of the index.
+
+---
+
+## Amendment 52 (2026-10-01) — the `hcl_modules` arm sentence names what to do where no module fits — ACCEPTED
+
+**Decision.** Every `hcl_modules` `language_line` (twenty specs, plus the three
+per-step copies in `apigw-redeploy`) gains one sentence after the registry
+clause: *"Where no module covers a resource, write that provider resource
+directly beside the module calls."* Nothing else in the prompt surface moves;
+`make gen-all` touches exactly the 23 `instruction.md` lines that carry it.
+
+**Why.** Amendment 46 built the arm as design C — the vendored module set plus
+one toolchain sentence — on a corpus the spec matrix
+(`docs/design/hcl-modules-spec-matrix.md`) classifies as full, partial or no
+module fit per spec, with partial-fit references composing raw provider
+resources beside module calls. The sentence the agent saw said only "composed
+from `terraform-aws-modules` registry modules". On the one partial-fit spec run
+live so far, `apigw-redeploy`, two independent sessions read that as
+*modules only*: each discovered that the registry serves no REST API module,
+wrote the caveat into its own summary, and built an HTTP API in place of the
+REST API the instruction asks for (`docs/live-results.md`, 2026-09-30 and
+2026-10-01). That is not the discovery cost the arm exists to measure. The
+raw arm is allowed every provider resource by construction; withholding the
+same permission from the modules arm, by omission, handicaps it on exactly
+the specs where composition is partial, and a 0.0 produced that way would be
+read as a module-ecosystem finding when it is a prompt defect.
+
+**What the sentence does not do.** It does not name which module is missing,
+which modules exist, or which resource to write raw: discovering that
+`terraform-aws-modules` publishes no REST API module remains the agent's
+work. It does not change the verifier: the registry-source rule still denies
+a non-registry `module` source, and raw resources were never denied.
+`escape_hatch` on this arm still flags a raw `resource "aws_` beside module
+calls, so on a partial-fit spec the correct answer carries `yes` — a per-spec
+reading the profile column already needed, not a change this amendment makes.
+
+**Promotion.** Prompt-surface only, no generated verifier or oracle byte
+moves, no image rebuild, so it is accepted on landing; the equipping hash of
+every `hcl_modules` task moves with its `instruction.md`, which is what the
+hash is for. The two `apigw-redeploy` rows that motivated it stay in their
+job dirs as valid 0.0 rows of the superseded prompt and are not pooled with
+rows of this one — the hash keeps them apart. The retry of `apigw-redeploy`
+under this sentence is the first row of the new prompt.
+
+**Evidence.** `make gen-all`: 23 files, 23 insertions, 23 deletions, all
+`instruction.md`. `make check` green after regeneration (parity self-check:
+shared `instruction.md` prefix identical across arms, since the sentence is
+per-arm and sits after the shared prefix).
