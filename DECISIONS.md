@@ -9357,7 +9357,7 @@ live Terraform row's replace or delete rate as a measurement.
 
 ---
 
-## Amendment 51 (2026-09-24) — the `arm x equipping` factorial: prereg §2.2's tuned cell, re-registered as an artifact — DRAFT
+## Amendment 51 (2026-09-24) — the `arm x equipping` factorial: prereg §2.2's tuned cell, re-registered as an artifact — ACCEPTED
 
 > Numbered 51 by the M2 work order; no Amendment 50 exists in this file. The gap
 > is left as-is rather than closed, because renumbering an amendment breaks every
@@ -9492,9 +9492,23 @@ deliberate fairness trade §2.2 already made.
 * Neither hypothesis is readable if the two cells were graded differently, which
   is what part 3 above exists to make impossible.
 
-**DRAFT, and what promotes it.** Nothing here has run a trial. It is promoted by
-the first tuned live trial whose row carries `harness: tuned` derived from a
-container that actually held the material. All three arms are ready for it.
+**Promotion clause.** It is promoted by the first tuned live trial whose row
+carries `harness: tuned` derived from a container that actually held the
+material.
+
+**ACCEPTED 2026-10-01** on `jobs/amend51-promotion/2026-10-01__10-22-16`
+(`docs/live-results.md`): five `s3-bucket-hardening-decomposition` trials, one
+per cell of awscdk x {empty, tuned, tuned-stale} plus hcl_raw and hcl_modules
+tuned, all 1.0, all valid, each row's `harness` derived by
+`gates/equipping.py::harness_for_task` with no label mismatch, five distinct
+equipping hashes. The container held the material: claude-code's own init
+record lists every declared MCP server as `connected` (`aws-cdk` +
+`aws-documentation` on both awscdk tuned rows, `terraform` + `aws-documentation`
+on hcl_modules, `aws-documentation` on hcl_raw), and every tuned agent invoked
+its skill (`cdk-authoring` on awscdk, `terraform-skill` on both Terraform arms);
+the hcl_modules agent also called the registry index tool twice. The first
+reading of H1/H2 at n=1 per cell is in the live-results entry and decides
+nothing.
 
 **Phase 4: the servers installed in the images, and the one that cannot be.**
 `uv` 0.12.18 is pinned by version and sha256 and fetched through the asset

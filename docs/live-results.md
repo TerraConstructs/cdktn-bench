@@ -479,3 +479,45 @@ describes a converged workspace. `total` and the root-vs-module split are the
 measurement these rows carry; the change classes of the agent's own edit need
 a plan against the seed state, registered as an open verifier change in
 Amendment 49's acceptance note.
+
+## Amendment 51 promotion — 2026-10-01 (first tuned rows; apigw multi-step retried)
+
+`jobs/amend51-promotion/2026-10-01__10-22-16`, `claude-code` on
+`claude-sonnet-5`, six trials, no exceptions, every row valid with the
+`harness` label derived from the task directory and the hashed channel.
+claude-code's init record in each tuned container lists every declared MCP
+server as `connected`; each tuned agent invoked its skill.
+
+| scenario | arm | harness | reward | output tok | LLM calls | total tok | rbw | servers connected | skill / MCP used |
+|---|---|---|---:|---:|---:|---:|---:|---|---|
+| s3-bucket-hardening-decomposition | awscdk | empty | 1.0 | 5,762 | 8 | 496,911 | 46.0% | — | — |
+| s3-bucket-hardening-decomposition | awscdk | tuned | 1.0 | 5,184 | 9 | 600,863 | 22.7% | aws-cdk, aws-documentation | cdk-authoring |
+| s3-bucket-hardening-decomposition | awscdk | tuned-stale | 1.0 | 6,183 | 10 | 676,525 | 4.3% | aws-cdk, aws-documentation | cdk-authoring (stale) |
+| s3-bucket-hardening-decomposition | hcl_raw | tuned | 1.0 | 12,660 | 11 | 939,721 | 71.7% | aws-documentation | terraform-skill |
+| s3-bucket-hardening-decomposition | hcl_modules | tuned | 1.0 | 13,997 | 21 | 2,591,670 | 82.6% | terraform, aws-documentation | terraform-skill; search_modules, get_module_details |
+| apigw-redeploy (step 1 of 2) | hcl_modules | empty | 0.0 | 13,485 | 41 | 3,823,460 | 72.1% | — | — |
+
+The five 1.0 rows promote Amendment 51. **At one row per cell they decide
+nothing about H1 or H2**, and the one direction they point is the opposite
+of H1's: on this spec the tuned Terraform rows spent more output tokens than
+the bare rows of 2026-09-23 (hcl_raw 12,660 against 5,513; hcl_modules 13,997
+against 4,548) and the hcl_modules tuned trial's total context was 2.6 M
+tokens over 21 calls, with the skill text and the module-detail answers in
+every turn. rbw on the awscdk levels fell 46% → 23% → 4% from empty to tuned
+to tuned-stale, which is the read-before-write collapse H1 predicts, at n=1.
+awscdk tuned-stale still reached 1.0 — the v1-era import block did not trap
+this agent on this spec. None of that is a result until the cells have n.
+
+**apigw-redeploy failed the same way a second time.** The agent again found
+only `apigateway-v2` in the registry, wrote the caveat into its own summary
+("there's no v1/REST-API module available"), and built an HTTP API where the
+instruction asks for a REST API; the same four tier-0 asserts failed and step
+2 never ran. Two trials, two different sessions, one reading of the arm's
+sentence "Author this as Terraform HCL composed from `terraform-aws-modules`
+registry modules" as *modules only*. The spec's own `arms.hcl_modules.reason`
+says the REST resources stay raw beside the Lambda module calls, which is
+what the reference does, but no sentence the agent sees says a provider
+resource is allowed where no module fits. Whether that is the arm's discovery
+cost in the open or an instruction defect is a registered-prompt decision
+(the sentence is shared by every `hcl_modules` task), recorded here and left
+to the owner; the multi-step form of this arm has no green row either way.

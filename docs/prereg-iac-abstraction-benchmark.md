@@ -80,7 +80,7 @@ Both conditions keep the execute-and-read-error loop. **Tuned** adds each ecosys
 > registry sidecar plus the arm's one-line toolchain sentence: module *availability*
 > is the arm's substrate, and only *discovery tooling* is the tuned level.
 
-> **Re-registered as built (`DECISIONS.md` Amendment 51, DRAFT).** M2 turned the
+> **Re-registered as built (`DECISIONS.md` Amendment 51, ACCEPTED 2026-10-01).** M2 turned the
 > table above into emitted task directories, so the tuned cell is now a pinned,
 > digested artifact rather than a name: the vendored authoring skill and its sha,
 > the bench index tool, AWS Docs MCP, the `tuned-stale` variant and exactly what is

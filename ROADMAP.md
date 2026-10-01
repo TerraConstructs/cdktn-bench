@@ -273,7 +273,7 @@ buckets are all `no_op`: `total` and the root/module split are the live
 measurement, and the agent's own change classes need a plan against the seed
 state — an open verifier change, registered in Amendment 49's acceptance note.
 
-### M2 — equipping factorial: does materialized discovery erase the tax?
+### M2 — equipping factorial: does materialized discovery erase the tax? — **built and promoted (Amendment 51 ACCEPTED 2026-10-01); n per cell is 1**
 The harness is **already built for this**: `gates/equipping.py` hashes
 skills/MCP/plugins into trial identity, so `arm × equipping` is a legitimate
 factorial design today.
@@ -325,8 +325,11 @@ Phases (Amendment 51, DRAFT):
    Rust sdist); the substitution is registered in `DECISIONS.md` Amendment 51.
    The arm image digests moved: re-run `env setup` for every shard before the next
    live run.
-5. The tuned-row equipping iterated on the **train** split only, then the live
-   trials that promote Amendment 51 out of DRAFT.
+5. **done** — `jobs/amend51-promotion/2026-10-01__10-22-16`: one trial per
+   cell on the train spec (awscdk x three levels, hcl_raw and hcl_modules
+   tuned), all 1.0, every declared server `connected` in the agent's own init
+   record and every skill invoked; Amendment 51 ACCEPTED. What remains is n:
+   the factorial reads nothing at one row per cell.
 
 ### M3 — the `hcl-modules` arm (treat as a falsification test, not an enhancement)
 Raw HCL is arguably a strawman: Terraform best practice is community modules
